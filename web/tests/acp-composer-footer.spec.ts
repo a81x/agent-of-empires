@@ -52,7 +52,7 @@ test("mobile composer footer keeps the Send action reachable when config control
           ],
         },
       ]),
-      // The usage hint shares the pinned action cluster at every width (#3916).
+      // Usage is present at every width, so its hint competes for footer space (#3916).
       usageUpdated({ used: 1_950_000, size: 2_000_000, cost: { amount: 1234.5678, currency: "EUR" } }),
     ],
   });

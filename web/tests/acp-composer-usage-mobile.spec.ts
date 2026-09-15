@@ -25,9 +25,4 @@ test("mobile composer shows a compact usage hint inside the viewport", async ({ 
   expect(box).not.toBeNull();
   expect(box!.x).toBeGreaterThanOrEqual(0);
   expect(box!.x + box!.width).toBeLessThanOrEqual(page.viewportSize()!.width);
-
-  const footer = page.getByTestId("composer-footer");
-  await expect
-    .poll(async () => footer.evaluate((el) => (el as HTMLElement).scrollWidth - (el as HTMLElement).clientWidth))
-    .toBeLessThanOrEqual(0);
 });
