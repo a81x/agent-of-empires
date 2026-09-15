@@ -1,6 +1,5 @@
-// User story (#3916): on a phone-width viewport the composer still shows
-// context-window usage and session spend. The hint used to be hidden below
-// the `sm` breakpoint, leaving mobile with no usage surface at all.
+// User story (#3916): on a phone-width viewport the composer shows
+// context-window usage and session spend.
 
 import { test, expect } from "./helpers/mockedTest";
 import { mockAcpSession, openStructuredSession, usageUpdated } from "./helpers/acpMock";
