@@ -100,4 +100,17 @@ describe("composer usage indicator tooltip", () => {
     expect(tip).toContain(`${(50_000).toLocaleString()} of ${(200_000).toLocaleString()} tokens used (25%)`);
     expect(tip).not.toContain("cumulative session spend");
   });
+
+  it.each([
+    ["with cost", { used: 120_000, size: 200_000, cost: { amount: 0.42, currency: "USD" } }, "60%", true],
+    ["without cost", { used: 50_000, size: 200_000, cost: null }, "25%", false],
+  ] as const)("renders %s under its accessible label at every width", (_name, usage, pct, hasCost) => {
+    render(<Harness usage={usage} />);
+    const indicator = screen.getByTestId("composer-usage");
+    expect(indicator.getAttribute("aria-label")).toMatch(/^Context window:/);
+    expect(indicator.textContent).toContain(pct);
+    expect(indicator.textContent?.includes("0.42")).toBe(hasCost);
+    // #3916: the hint itself must not be breakpoint-hidden.
+    expect(indicator.classList.contains("hidden")).toBe(false);
+  });
 });

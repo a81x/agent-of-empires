@@ -1652,13 +1652,18 @@ function UsageHint({ usage }: { usage: AcpState["sessionUsage"] }) {
   return (
     <Tooltip text={explanation} multiline>
       <span
-        className={`hidden sm:inline-flex items-center gap-1 text-[11px] tabular-nums ${tone}`}
+        data-testid="composer-usage"
+        className={`inline-flex items-center gap-1 text-[11px] tabular-nums ${tone}`}
         aria-label={explanation}
       >
-        <span>
+        {/* Below sm the token counts drop, leaving the percent and cost. */}
+        <span className="hidden sm:inline">
           {usedLabel}/{sizeLabel}
         </span>
-        <span className="opacity-70">({pct}%)</span>
+        <span className="opacity-70">
+          <span className="hidden sm:inline">(</span>
+          {pct}%<span className="hidden sm:inline">)</span>
+        </span>
         {cost ? <span className="opacity-70">· {cost}</span> : null}
       </span>
     </Tooltip>
