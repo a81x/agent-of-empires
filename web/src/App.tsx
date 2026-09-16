@@ -1131,8 +1131,6 @@ function AppContent({
     if (window.innerWidth < 768) setSidebarOpen(false);
   }, [navigate]);
 
-  // Profiles moved into Settings as a tab; redirect the retired standalone
-  // route so old bookmarks and links still land somewhere valid.
   useEffect(() => {
     if (profilesMatch) navigate(`/settings/profiles${window.location.search}`, { replace: true });
   }, [profilesMatch, navigate]);
@@ -1167,14 +1165,9 @@ function AppContent({
   }, [isMdUp, openTab]);
   useEdgeSwipe({
     edge: "left",
-    // The swipe-right-to-open gesture only makes sense for a left-anchored
-    // drawer; with the sidebar on the right edge it would slide in from the
-    // opposite side of the drag, so disable it there (#2244).
     enabled: !sidebarOpen && webSettings.sidebarSide !== "right",
     onSwipe: openSidebar,
     blurOnSwipe: true,
-    // A swipe-right anywhere on screen opens the sidebar, not just from the
-    // left edge. The right-edge (diff) swipe stays edge-only below.
     anywhere: true,
   });
   useEdgeSwipe({
@@ -1183,9 +1176,6 @@ function AppContent({
     onSwipe: openDiff,
   });
 
-  // Read-only mode hides mutation UI. Guard creation at the handler so every
-  // caller (keyboard shortcut, command palette) is a no-op rather than opening
-  // a wizard that 403s on submit. Caught by the live read-only-mode spec.
   const handleNewSession = useCallback(() => {
     if (serverAbout?.read_only) return;
     setWizardPrefill(undefined);
@@ -1205,13 +1195,6 @@ function AppContent({
 
   const handleToggleTerminalFocus = useCallback(() => {
     if (!activeSessionId) return;
-    // Probe by data-term attribute rather than a component ref: it is
-    // robust against panel reorderings and against the paired terminal
-    // living in either the desktop split or the mobile single pane.
-    //
-    // Semantic: VSCode-like "Cmd+` opens/focuses the terminal." So if the
-    // user is NOT in the paired terminal, send them there; only flip back
-    // to agent when they're already in paired.
     const active = document.activeElement;
     const pairedPanels = document.querySelectorAll<HTMLElement>('[data-term="paired"]');
     let inPaired = false;
@@ -1226,12 +1209,6 @@ function AppContent({
     const target = inPaired ? "agent" : "paired";
 
     if (singlePane) {
-      // Below md there is one full-viewport pane. Promote the target view,
-      // then dispatch focus on the next frame: the inactive layer is inert
-      // until React commits the switch, and focus() on an inert subtree is
-      // a no-op. The paired shell mounts lazily on first activation, so its
-      // PTY may not be ready when the dispatch fires; latch the intent too,
-      // and PairedTerminal grabs focus once ready.
       setRightPanelView(target);
       if (target === "paired") setPendingTerminalFocus("paired");
       requestAnimationFrame(() => dispatchFocusTerminal(target));
@@ -1239,32 +1216,21 @@ function AppContent({
     }
 
     if (target === "paired") {
-      // The paired shell only mounts when a terminal tab is the active tab of
-      // its group. Prefer a terminal that is already active (and thus mounted)
-      // over the first one, so multi-group layouts focus the live terminal
-      // instead of switching another group's tab.
       const terminalTabs = (["right", "bottom"] as DockLocation[])
         .flatMap((d) => dockTabs(paneLayout, d))
         .filter(isTerminalTabId);
       const termTab = terminalTabs.find((id) => isActiveTab(paneLayout, id)) ?? terminalTabs[0] ?? terminalTabId(0);
       const termDock = dockOf(paneLayout, termTab);
       if (termDock && isActiveTab(paneLayout, termTab)) {
-        // Already the active tab (mounted): move focus synchronously so rapid
-        // agent<->paired toggles stay deterministic.
         dispatchFocusTerminal("paired");
         return;
       }
-      // Not mounted yet: latch the intent and activate/open its tab; the paired
-      // panel grabs focus once its PTY is ready.
       setPendingTerminalFocus("paired");
       if (termDock) activateTab(termDock, termTab);
       else openTab(termTab, "right");
       return;
     }
     if (target === "agent" && selectedFilePath) {
-      // Agent terminal is hidden under the diff viewer; close the diff first
-      // so the wrapper un-hides, then dispatch on the next frame because
-      // focus() on a display:none element is a no-op.
       setSelectedFile(null);
       requestAnimationFrame(() => dispatchFocusTerminal("agent"));
       return;
@@ -1272,9 +1238,6 @@ function AppContent({
     dispatchFocusTerminal(target);
   }, [activeSessionId, singlePane, paneLayout, openTab, activateTab, selectedFilePath]);
 
-  // Flattened, display-ordered session ids plus the subset needing attention,
-  // sourced from the same sidebar model the user sees so jump-to-next follows
-  // the visible order under any sort or axis.
   const attentionJump = useMemo(() => {
     const orderedIds: string[] = [];
     const attention = new Set<string>();
@@ -1301,12 +1264,6 @@ function AppContent({
         onJumpToAttention: handleJumpToAttention,
         onNewScratch: handleNewScratch,
         onDiff: () => toggleDiff(),
-        // Escape closes local UI surfaces only (dialogs, palette,
-        // wizard, settings, help, file viewer). Never wire this to
-        // acp.cancelPrompt; Claude Code CLI does that and stray
-        // Escape presses kill in-flight turns the user didn't mean to
-        // abort. Cancel/stop must stay behind an explicit gesture
-        // (the assistant-ui Stop button in the composer).
         onEscape: () => {
           if (deletingWorkspaceId) {
             setDeletingWorkspaceId(null);
@@ -1354,10 +1311,6 @@ function AppContent({
     ),
   );
 
-  // Palette triage toggles for the active session. "snooze" needs a duration,
-  // so it opens the shared modal; the rest are argless server toggles that
-  // apply the returned snapshot immediately (re-bucketing without waiting for
-  // the poll) and surface a toast on failure.
   const handleSessionStateAction = useCallback(
     async (id: string, action: SessionStateAction) => {
       if (action === "snooze") {
@@ -1413,9 +1366,6 @@ function AppContent({
     activeSessionId,
   );
 
-  // Conversation-content search for the palette (#2515). paletteQuery is
-  // declared above (near showPalette) so the keyboard handlers can clear it
-  // on close/toggle; consumed here.
   const { results: conversationHits, loading: conversationSearching } = useConversationSearch(paletteQuery);
   const conversationActions = useMemo(
     () =>
@@ -1450,15 +1400,7 @@ function AppContent({
       );
     }
 
-    // Refresh on `/session/<id>` paints once with `sessions === []` before
-    // the first poll resolves. Without this guard the lookup misses, the
-    // dashboard fallback renders, and the acp/terminal view only
-    // reappears once the fetch lands. Hold the minimal pre-auth shell
-    // until the first fetch settles, then let the real fallback decide.
-    // See #1351.
     if (activeSessionId && !sessionsLoaded) {
-      // The shell (TopBar + sidebar) already renders around this; fill the main
-      // pane with a skeleton rather than blanking it until the first fetch lands.
       return <MainPaneSkeleton />;
     }
 
@@ -1476,14 +1418,6 @@ function AppContent({
       );
     }
 
-    // Below the md breakpoint there is no room for the side-by-side split.
-    // Render one full-viewport pane and let the picker choose which view
-    // occupies it (#1452). The agent terminal (and the paired shell, once
-    // first opened) stay mounted but hidden so their PTY, scrollback, and
-    // focus survive view switches; the diff view has no xterm so it mounts
-    // on demand. Inactive layers use visibility, never display:none, which
-    // would collapse xterm's measured geometry to zero. The desktop branch
-    // below is left exactly as it was; only this mobile branch is new.
     if (singlePane) {
       return (
         <MobileMainPane
@@ -1520,9 +1454,6 @@ function AppContent({
       );
     }
 
-    // Render a pane body by id. Passed to the docks as a callback (rather than
-    // building an array of {icon, body} objects here) so the per-session JSX is
-    // constructed inside the dock, not threaded through a prop object.
     const renderPaneBody = (id: string): ReactNode => {
       const plugin = pluginPaneById.get(id);
       if (plugin) return <PluginPaneBody entry={plugin.entry} />;
@@ -1530,9 +1461,6 @@ function AppContent({
         return <BackgroundAgentsPanel sessionId={activeSessionId} />;
       }
       if (id === "files") {
-        // Remount on session switch so the selected file (and any in-flight
-        // read) resets instead of requesting the old path from the new
-        // session. See #3088 review.
         return <FilesPane key={activeSessionId ?? "none"} sessionId={activeSessionId} />;
       }
       if (id === "diff") {
@@ -1678,10 +1606,6 @@ function AppContent({
                 diffComments.setOutroDraft("");
               }
               setSendDialogOpen(false);
-              // Close the diff viewer so the acp transcript is in
-              // view: the user just dispatched feedback and wants to
-              // see the agent's response. They can re-open any file
-              // from the right-panel list afterwards.
               setSelectedFile(null);
               toastBus.handler?.info("Comments sent to agent");
             }}
@@ -1690,12 +1614,6 @@ function AppContent({
       </div>
     );
   };
-
-  // No root-height pin remains: every mobile terminal surface (agent,
-  // paired host, paired container) is the capture-snapshot live view
-  // now, with no PTY to protect from keyboard-driven layout shrink. The
-  // natural `100dvh` shrink keeps bottom-anchored UI above the keyboard
-  // everywhere (#1177, #1452 are fully superseded).
 
   const acpPrefs = useMemo(
     () => ({
@@ -1718,30 +1636,17 @@ function AppContent({
       : activeSession.view === "structured"
         ? "structured-view"
         : "session";
-  // First-run tour "seen" state, sourced from the backend (app_state) so it
-  // follows the user across browsers and devices. `tourSeenKnown` stays false
-  // until settings resolve, so the tour never flashes on a `false` default
-  // while the request is in flight (and never auto-launches when the fetch
-  // fails). Fetched here in AppContent (post-auth) so the request runs as the
-  // authenticated user. `LEGACY_TOUR_SEEN_KEY` is the pre-#1832 per-browser
-  // flag, read once to migrate existing users so they are not re-shown the tour.
   const [tourSeen, setTourSeen] = useState(false);
   const [tourSeenKnown, setTourSeenKnown] = useState(false);
 
   useEffect(() => {
     fetchSettings().then((settings) => {
-      // Fetch failed: leave the seen state unknown so the tour does not
-      // auto-launch over an error/recovery screen. The menu trigger still works.
       if (!settings) return;
       const backendSeen = settings.app_state?.has_seen_web_tour === true;
       const legacySeen = safeGetItem(LEGACY_TOUR_SEEN_KEY) === "1";
-      // Treat the legacy local flag as a suppression hint while the migration
-      // POST is in flight, so the tour cannot flash before the backend agrees.
       const seenAtLoad = backendSeen || legacySeen;
       setTourSeen(seenAtLoad);
       setTourSeenKnown(true);
-      // Capture whether onboarding was already done at load so completing the
-      // tour this session does not then pop the tip-of-the-day on top of it.
       tourSeenAtLoadRef.current = seenAtLoad;
       if (legacySeen && !backendSeen) {
         void markWebTourSeen().then((ok) => {
@@ -1751,16 +1656,11 @@ function AppContent({
     });
   }, []);
 
-  // Persist the seen flag when the user finishes or skips the tour. Optimistic:
-  // flip local state immediately so a failed POST (e.g. read-only 403) cannot
-  // re-auto-launch the tour for the rest of this page's lifetime.
   const handleTourSeen = useCallback(() => {
     setTourSeen(true);
     void markWebTourSeen();
   }, []);
 
-  // Only auto-launch on a settled, unobstructed dashboard. Any open overlay or
-  // an in-flight session route defers it (the flag stays unset until then).
   const tourAutoLaunchReady =
     serverAboutLoaded &&
     sessionsLoaded &&
@@ -1771,9 +1671,6 @@ function AppContent({
     !showAbout &&
     !showPalette &&
     !projectForm;
-  // First-run theme choice is phase one of onboarding. It decides on the same
-  // settled-dashboard gate as the tour, then the tour follows once the modal
-  // resolves so the two never overlap on first load.
   const welcome = useWelcomePhase({
     scope: tourScope,
     readOnly: !!serverAbout?.read_only,
@@ -1793,13 +1690,6 @@ function AppContent({
     onNavigate: (tab) => (tab ? navigate(`/settings/${tab}`) : handleCloseSettings()),
   });
 
-  // Auto-pop the tip-of-the-day once per load, after onboarding settles, like
-  // GIMP/DBeaver. Gated like the tour: only on a settled dashboard, only when a
-  // tip is unseen and tips are enabled, never while the welcome/telemetry/tour
-  // flows are up, and never in an automated browser session (so the modal can't
-  // intercept the rest of the Playwright suite). Only for users who already
-  // finished onboarding before this load: first-run users get the welcome and
-  // tour, not a tips modal piled on top. Reopen any time from the menu.
   useEffect(() => {
     if (tipsAutoPoppedRef.current) return;
     const gate = shouldAutoPopTips({
@@ -1807,24 +1697,12 @@ function AppContent({
       hasUnseen: tips.hasUnseen,
       tourSeenAtLoad: tourSeenAtLoadRef.current,
       onboardingReady: tourAutoLaunchReady && welcome.resolved,
-      // Treat "not resolved yet" as pending so tips can't pop ahead of a consent
-      // modal that the in-flight status fetch is about to raise.
       telemetryPending: !telemetryConsentKnown || telemetryConsentNeeded,
       tourActive: tour.isTourActive,
       automated: isAutomatedSession(),
     });
     if (!gate) return;
     tipsAutoPoppedRef.current = true;
-    // Defer one frame so the open happens off the effect body (mirrors the
-    // tour's begin()), keeping the state change out of the effect. The frame is
-    // deliberately NOT cancelled when this effect re-runs: `useTips()` returns a
-    // fresh object each render, so `tips` changes identity on every render and
-    // this effect re-runs constantly. Cancelling on re-run meant any render in
-    // the ~16ms before the frame fired (an in-flight fetch resolving, the 3s
-    // session poll) killed the pending open, and the ref guard above then
-    // stopped it from ever being rescheduled: the tip modal silently never
-    // appeared for that load. The ref already makes the pop one-shot, so the
-    // only cleanup needed is on unmount (below).
     tipsAutoPopFrameRef.current = requestAnimationFrame(() => tips.open());
   }, [
     tips,
@@ -1836,8 +1714,6 @@ function AppContent({
     tour.isTourActive,
   ]);
 
-  // Drop a still-pending auto-pop frame on unmount only, so a committed open is
-  // never cancelled by an unrelated re-render (see the effect above).
   useEffect(
     () => () => {
       if (tipsAutoPopFrameRef.current !== null) {
@@ -1847,17 +1723,10 @@ function AppContent({
     [],
   );
 
-  // Hold the shell behind a placeholder until /api/about resolves, so
-  // CityHall-gated affordances (Clone URL, advanced sidebar) never flash in
-  // before caps.cityhall settles. Early return (matching the other loading
-  // gates) rather than a wrapper so the shell markup stays unindented. See #7.
   if (!serverAboutLoaded) {
     return <div className="h-dvh bg-surface-900 safe-area-inset" />;
   }
 
-  // The header collapse is a phone affordance for the conversation view only:
-  // at md and up there is room for both the bar and the transcript, and on the
-  // dashboard / settings / diff panes the bar is the only navigation there is.
   const headerCollapsible =
     singlePane &&
     !showSettings &&
@@ -1868,12 +1737,6 @@ function AppContent({
   return (
     <AcpPrefsProvider value={acpPrefs}>
       <div className="h-dvh flex flex-col bg-surface-900 text-text-primary overflow-hidden safe-area-inset">
-        {/* Wrapped unconditionally, not behind the `headerCollapsible`
-            ternary: swapping the element type at this position would remount
-            `TopBar` (and reset its overflow menu) every time the boundary
-            flips, e.g. opening settings on a phone. An expanded region is a
-            `1fr` grid row around a fixed-height bar, so the wrapper is inert
-            for every view that cannot collapse. */}
         <CollapsibleRegion id="conversation-header" collapsed={headerCollapsible && headerCollapsed}>
           <TopBar
             activeWorkspace={activeWorkspace}
@@ -1903,10 +1766,6 @@ function AppContent({
         <UpdateBanner />
         <DashboardUpdateBanner />
 
-        {/* Below the banners, not directly under the bar: the handle is
-            absolutely positioned at the top-right, and hanging it off the bar
-            puts it on top of the update banner's dismiss button (same corner),
-            which then cannot be tapped at all. */}
         {headerCollapsible && (
           <ChromeCollapseHandle
             edge="top"
@@ -2098,15 +1957,8 @@ function AppContent({
           data-keyboard-proxy
           aria-hidden="true"
           tabIndex={-1}
-          // Keep the element in the visual viewport. Focusing a zero-size
-          // textarea thousands of pixels above an iOS PWA can leave WebKit's
-          // focus scroll in a broken state until the keyboard is toggled.
-          // This matches the live terminal's hidden input geometry.
           className="fixed bottom-0 left-0 w-px h-px opacity-0 pointer-events-none"
           style={{ caretColor: "transparent", color: "transparent" }}
-          // Typed text now stays in this textarea as IME context (see
-          // forwardTerminalBeforeInput), so keep the OS from rewriting it
-          // the way the live terminal's own hidden input already does.
           autoCapitalize="off"
           autoCorrect="off"
           autoComplete="off"
