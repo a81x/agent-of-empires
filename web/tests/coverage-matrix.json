@@ -1241,7 +1241,7 @@
       "id": "sessions.fork.round-trip",
       "kind": "live-playwright",
       "risk": "high",
-      "specs": ["tests/live/session-fork.spec.ts"],
+      "specs": ["tests/live/session-actions.spec.ts"],
       "components": ["web/src/components/WorkspaceSidebar.tsx"]
     },
     {
@@ -1556,14 +1556,14 @@
       "id": "session.lifecycle",
       "kind": "live-playwright",
       "risk": "high",
-      "specs": ["tests/live/session-rename.spec.ts", "tests/live/session-delete.spec.ts"],
+      "specs": ["tests/live/session-actions.spec.ts"],
       "components": ["web/src/components/DeleteSessionDialog.tsx", "web/src/components/WorkspaceSidebar.tsx"]
     },
     {
       "id": "session.trash",
       "kind": "live-playwright",
       "risk": "high",
-      "specs": ["tests/live/session-trash.spec.ts"],
+      "specs": ["tests/live/session-actions.spec.ts"],
       "components": [
         "web/src/components/DeleteSessionDialog.tsx",
         "web/src/components/WorkspaceSidebar.tsx",
@@ -1626,7 +1626,7 @@
       "id": "session.group-edit",
       "kind": "live-playwright",
       "risk": "high",
-      "specs": ["tests/live/session-group-edit.spec.ts", "src/lib/api.test.ts"],
+      "specs": ["tests/live/session-actions.spec.ts", "src/lib/api.test.ts"],
       "components": [
         "web/src/components/WorkspaceSidebar.tsx",
         "web/src/components/SessionGroupModal.tsx",
@@ -3389,7 +3389,7 @@
       "id": "triage.pin-toggle",
       "kind": "live-playwright",
       "risk": "high",
-      "specs": ["tests/live/triage-pin.spec.ts"],
+      "specs": ["tests/live/triage.spec.ts"],
       "components": ["web/src/components/WorkspaceSidebar.tsx", "web/src/lib/sidebarSort.ts"]
     },
     {
@@ -3416,14 +3416,14 @@
       "id": "triage.archive-toggle",
       "kind": "live-playwright",
       "risk": "high",
-      "specs": ["tests/live/triage-archive.spec.ts"],
+      "specs": ["tests/live/triage.spec.ts"],
       "components": ["web/src/components/WorkspaceSidebar.tsx"]
     },
     {
       "id": "triage.snooze-toggle",
       "kind": "live-playwright",
       "risk": "high",
-      "specs": ["tests/live/triage-snooze.spec.ts"],
+      "specs": ["tests/live/triage.spec.ts"],
       "components": ["web/src/components/WorkspaceSidebar.tsx"]
     },
     {
@@ -3444,7 +3444,7 @@
       "id": "triage.empty-group-hide",
       "kind": "vitest",
       "risk": "medium",
-      "specs": ["src/lib/__tests__/sidebarSort.test.ts", "tests/live/triage-archive.spec.ts"],
+      "specs": ["src/lib/__tests__/sidebarSort.test.ts", "tests/live/triage.spec.ts"],
       "components": ["web/src/lib/sidebarSort.ts", "web/src/components/WorkspaceSidebar.tsx"]
     },
     {
@@ -3557,7 +3557,7 @@
       "id": "sidebar.bulk-triage-live",
       "kind": "live-playwright",
       "risk": "high",
-      "specs": ["tests/live/sidebar-bulk-triage.spec.ts"],
+      "specs": ["tests/live/triage.spec.ts"],
       "components": ["web/src/components/WorkspaceSidebar.tsx"]
     },
     {
