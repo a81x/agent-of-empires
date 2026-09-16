@@ -15,7 +15,6 @@
 
 use std::path::PathBuf;
 use std::process::{Child, Command};
-use std::sync::Arc;
 use std::time::Duration;
 
 use agent_of_empires::server::test_support::{

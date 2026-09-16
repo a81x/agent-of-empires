@@ -944,7 +944,7 @@ mod tests {
             StatusSource::DiskOnly,
             1,
             {
-                let metadata = (&state).canonical_metadata.read().await.clone();
+                let metadata = state.canonical_metadata.read().await.clone();
                 metadata
             },
             Default::default(),
@@ -969,7 +969,7 @@ mod tests {
             StatusSource::DiskOnly,
             0,
             {
-                let metadata = (&state).canonical_metadata.read().await.clone();
+                let metadata = state.canonical_metadata.read().await.clone();
                 metadata
             },
             Default::default(),
@@ -992,7 +992,7 @@ mod tests {
             StatusSource::DiskOnly,
             0,
             {
-                let metadata = (&state).canonical_metadata.read().await.clone();
+                let metadata = state.canonical_metadata.read().await.clone();
                 metadata
             },
             Default::default(),

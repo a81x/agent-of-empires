@@ -701,7 +701,8 @@ mod tests {
         let server = tokio::spawn(async move {
             let (mut stream, _) = listener.accept().await.unwrap();
             let mut request = [0; 4096];
-            stream.read(&mut request).await.unwrap();
+            let read = stream.read(&mut request).await.unwrap();
+            assert!(read > 0, "the client must send its request");
             stream.write_all(b"HTTP/1.1 403 Forbidden\r\nAoE-Error-Code: read_only\r\nContent-Length: 100\r\n\r\n").await.unwrap();
             std::future::pending::<()>().await;
         });

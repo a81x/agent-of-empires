@@ -594,7 +594,7 @@ mod tests {
             StatusSource::DiskOnly,
             read_epoch,
             {
-                let metadata = (&state).canonical_metadata.read().await.clone();
+                let metadata = state.canonical_metadata.read().await.clone();
                 metadata
             },
             Default::default(),
@@ -646,7 +646,7 @@ mod tests {
             StatusSource::DiskOnly,
             0,
             {
-                let metadata = (&state).canonical_metadata.read().await.clone();
+                let metadata = state.canonical_metadata.read().await.clone();
                 metadata
             },
             Default::default(),
@@ -677,7 +677,7 @@ mod tests {
             StatusSource::DiskOnly,
             0,
             {
-                let metadata = (&unbumped).canonical_metadata.read().await.clone();
+                let metadata = unbumped.canonical_metadata.read().await.clone();
                 metadata
             },
             Default::default(),
@@ -731,7 +731,7 @@ mod tests {
                 StatusSource::DiskOnly,
                 read_epoch,
                 {
-                    let metadata = (&reload_state).canonical_metadata.read().await.clone();
+                    let metadata = reload_state.canonical_metadata.read().await.clone();
                     metadata
                 },
                 Default::default(),
@@ -784,7 +784,7 @@ mod tests {
             StatusSource::DiskOnly,
             read_epoch,
             {
-                let metadata = (&state).canonical_metadata.read().await.clone();
+                let metadata = state.canonical_metadata.read().await.clone();
                 metadata
             },
             Default::default(),

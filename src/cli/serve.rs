@@ -1724,7 +1724,8 @@ mod tests {
         let server = tokio::spawn(async move {
             let (mut stream, _) = listener.accept().await.unwrap();
             let mut request = [0; 4096];
-            stream.read(&mut request).await.unwrap();
+            let read = stream.read(&mut request).await.unwrap();
+            assert!(read > 0, "the client must send its request");
             stream.write_all(format!("HTTP/1.1 403 Forbidden\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{token}", token.len()).as_bytes()).await.unwrap();
         });
         let error = fetch_cityhall_bundle(&format!("http://{address}/api/cityhall/bundle"), token)

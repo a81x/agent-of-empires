@@ -4533,10 +4533,7 @@ gemini = "{}"
                     &|_| Ok(true),
                     false,
                     true,
-                    MigrationScope {
-                        only: only,
-                        store: None,
-                    },
+                    MigrationScope { only, store: None },
                 )
             })
         };
