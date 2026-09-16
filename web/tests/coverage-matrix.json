@@ -42,7 +42,7 @@
       "id": "settings.mcp-servers",
       "kind": "live-playwright",
       "risk": "high",
-      "specs": ["tests/live/mcp-servers.spec.ts", "tests/live/mcp-codex-disabled.spec.ts"],
+      "specs": ["tests/live/settings-panels.spec.ts"],
       "components": ["web/src/components/McpServers.tsx"]
     },
     {
@@ -56,7 +56,7 @@
       "id": "settings.skills-management",
       "kind": "live-playwright",
       "risk": "high",
-      "specs": ["tests/live/skills-management.spec.ts"],
+      "specs": ["tests/live/settings-panels.spec.ts"],
       "components": ["web/src/components/SkillsManager.tsx"]
     },
     {
@@ -82,7 +82,7 @@
       "id": "session.create-worktree-name-collisions",
       "kind": "live-playwright",
       "risk": "medium",
-      "specs": ["tests/live/session-create-duplicate-worktree.spec.ts"]
+      "specs": ["tests/live/session-create.spec.ts"]
     },
     {
       "id": "terminal.mobile-backspace-autorepeat",
@@ -500,7 +500,7 @@
       "id": "telemetry.form-factor",
       "kind": "live-playwright",
       "risk": "medium",
-      "specs": ["tests/live/telemetry-form-factor.spec.ts", "src/lib/__tests__/formFactor.test.ts"],
+      "specs": ["tests/live/onboarding.spec.ts", "src/lib/__tests__/formFactor.test.ts"],
       "components": ["web/src/lib/formFactor.ts", "web/src/lib/api.ts"]
     },
     {
@@ -532,7 +532,7 @@
       "id": "telemetry.feature-usage-signals",
       "kind": "live-playwright",
       "risk": "medium",
-      "specs": ["tests/live/feature-usage-signals.spec.ts", "tests/diff-comments.spec.ts"],
+      "specs": ["tests/live/onboarding.spec.ts", "tests/diff-comments.spec.ts"],
       "components": [
         "web/src/hooks/useDiffFiles.ts",
         "web/src/components/diff/comments/SendCommentsDialog.tsx",
@@ -776,7 +776,7 @@
       "id": "tips.persistence",
       "kind": "live-playwright",
       "risk": "medium",
-      "specs": ["tests/live/tips.spec.ts"],
+      "specs": ["tests/live/onboarding.spec.ts"],
       "components": ["web/src/components/TipsModal.tsx", "web/src/hooks/useTips.ts", "web/src/lib/api.ts"]
     },
     {
@@ -844,7 +844,7 @@
       "id": "profiles.override",
       "kind": "live-playwright",
       "risk": "high",
-      "specs": ["tests/live/profile-override.spec.ts"],
+      "specs": ["tests/live/settings-panels.spec.ts"],
       "components": []
     },
     {
@@ -917,7 +917,7 @@
       "id": "wizard.recent-projects",
       "kind": "live-playwright",
       "risk": "medium",
-      "specs": ["tests/live/wizard-recent-projects-persist.spec.ts"],
+      "specs": ["tests/live/session-create.spec.ts"],
       "components": ["web/src/components/session-wizard/steps/ProjectStep.tsx"]
     },
     {
@@ -1058,7 +1058,7 @@
       "id": "wizard.scratch-launch",
       "kind": "live-playwright",
       "risk": "high",
-      "specs": ["tests/live/wizard-scratch-launch.spec.ts"],
+      "specs": ["tests/live/session-create.spec.ts"],
       "components": [
         "web/src/components/session-wizard/SessionWizard.tsx",
         "web/src/components/session-wizard/steps/ProjectStep.tsx",
@@ -1069,7 +1069,7 @@
       "id": "wizard.acp-mode-creation",
       "kind": "live-playwright",
       "risk": "high",
-      "specs": ["tests/live/wizard-acp-create-session.spec.ts"],
+      "specs": ["tests/live/session-create.spec.ts"],
       "components": [
         "web/src/components/session-wizard/SessionWizard.tsx",
         "web/src/components/session-wizard/steps/AgentStep.tsx",
@@ -1102,7 +1102,7 @@
       "id": "wizard.scratch-delete-cleans-tempdir",
       "kind": "live-playwright",
       "risk": "high",
-      "specs": ["tests/live/wizard-scratch-delete-cleans-tempdir.spec.ts"],
+      "specs": ["tests/live/session-create.spec.ts"],
       "components": ["web/src/components/session-wizard/SessionWizard.tsx"]
     },
     {
@@ -1127,7 +1127,7 @@
       "id": "palette.new-scratch-session",
       "kind": "live-playwright",
       "risk": "medium",
-      "specs": ["tests/live/palette-scratch-launch.spec.ts", "src/hooks/__tests__/useCommandActions.test.tsx"],
+      "specs": ["tests/live/session-create.spec.ts", "src/hooks/__tests__/useCommandActions.test.tsx"],
       "components": [
         "web/src/App.tsx",
         "web/src/components/command-palette/CommandPalette.tsx",
@@ -1139,7 +1139,7 @@
       "kind": "live-playwright",
       "risk": "medium",
       "specs": [
-        "tests/live/palette-content-search.spec.ts",
+        "tests/live/session-create.spec.ts",
         "src/components/command-palette/__tests__/CommandPalette.test.tsx",
         "src/hooks/useConversationSearch.test.ts",
         "src/hooks/__tests__/useCommandActions.test.tsx",
@@ -1185,7 +1185,7 @@
       "id": "directory-browser",
       "kind": "live-playwright",
       "risk": "medium",
-      "specs": ["tests/live/directory-browser.spec.ts"],
+      "specs": ["tests/live/session-create.spec.ts"],
       "components": ["web/src/components/DirectoryBrowser.tsx"]
     },
     {
@@ -1255,7 +1255,7 @@
       "id": "sidebar.workspace-ordering",
       "kind": "live-playwright",
       "risk": "medium",
-      "specs": ["tests/live/workspace-ordering.spec.ts"],
+      "specs": ["tests/live/workspaces.spec.ts"],
       "components": ["web/src/components/WorkspaceSidebar.tsx"]
     },
     {
@@ -3396,7 +3396,7 @@
       "id": "sidebar.project-pin",
       "kind": "live-playwright",
       "risk": "high",
-      "specs": ["tests/live/project-pin.spec.ts"],
+      "specs": ["tests/live/workspaces.spec.ts"],
       "components": [
         "web/src/components/WorkspaceSidebar.tsx",
         "web/src/lib/registeredProjects.ts",
@@ -3472,7 +3472,7 @@
       "id": "sidebar.add-project-daemon",
       "kind": "live-playwright",
       "risk": "high",
-      "specs": ["tests/live/attach-project.spec.ts"],
+      "specs": ["tests/live/workspaces.spec.ts"],
       "components": ["web/src/components/WorkspaceSidebar.tsx", "web/src/lib/api.ts"]
     },
     {
@@ -3581,7 +3581,7 @@
       "id": "onboarding.first-run-tutorial",
       "kind": "live-playwright",
       "risk": "medium",
-      "specs": ["tests/live/tutorial.spec.ts"],
+      "specs": ["tests/live/onboarding.spec.ts"],
       "components": [
         "web/src/components/tour/TourRunner.tsx",
         "web/src/components/TopBar.tsx",
@@ -3672,14 +3672,14 @@
       "id": "settings.plugins-live-toggle",
       "kind": "live-playwright",
       "risk": "high",
-      "specs": ["tests/live/plugins-enable-toggle.spec.ts"],
+      "specs": ["tests/live/settings-panels.spec.ts"],
       "components": ["web/src/components/settings/PluginsSettings.tsx"]
     },
     {
       "id": "settings.plugins-passphrase-loopback",
       "kind": "live-playwright",
       "risk": "high",
-      "specs": ["tests/live/plugins-passphrase-loopback.spec.ts"],
+      "specs": ["tests/live/settings-panels.spec.ts"],
       "components": [
         "web/src/components/settings/PluginsSettings.tsx",
         "web/src/components/ElevationPrompt.tsx",
