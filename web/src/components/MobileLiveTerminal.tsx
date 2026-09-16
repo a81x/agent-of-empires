@@ -2,13 +2,14 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import type { CSSProperties, RefObject } from "react";
 import type { AnsiSegment } from "../lib/ansi";
 import { LineParseCache, wrapLine } from "../lib/liveTermLines";
-import { cursorLineIndex, pointerPaneCell, wheelNotches } from "../lib/liveMouse";
+import { cursorLineIndex, pointerPaneCell } from "../lib/liveMouse";
 import type { LiveFrame, LiveStats } from "../hooks/useLiveTerminal";
 import { useWebSettings } from "../hooks/useWebSettings";
 import { useIsCoarsePointer } from "../hooks/useIsCoarsePointer";
 import { useTerminalGestureBoundary } from "../hooks/useTerminalGestureBoundary";
 import { useSelectionHold } from "../hooks/useSelectionHold";
-import { FrameTimingProbe, MAX_QUEUED_TOUCH_NOTCHES, NotchPacer, mountedBlocks } from "./live-terminal/pacing";
+import { FrameTimingProbe, mountedBlocks } from "./live-terminal/pacing";
+import { FORWARD_TOUCH_GAIN, useForwardInput } from "./live-terminal/useForwardInput";
 import { Row } from "./live-terminal/TermRow";
 import { useTerminalInput } from "./live-terminal/useTerminalInput";
 
@@ -28,17 +29,12 @@ const RESIZE_DEBOUNCE_MS = 150;
 const SHRINK_DELAY_MS = 1500;
 /** Live capture window in screenfuls, so a peek up lands on real text; within the server's fast-cadence bound. */
 const LIVE_WINDOW_SCREENS = 2;
-/** Pane lines per line-height of finger travel; small, because each notch waits on a remote redraw. */
-const FORWARD_TOUCH_GAIN = 1.25;
 /** Release velocities (px/ms): below the minimum a drag stops dead; the cap keeps a flick a small continuation. */
 const FLICK_MIN_VELOCITY = 0.3;
 const FLICK_MAX_VELOCITY = 1.5;
 /** A lift this long (ms) after the last move does not coast. */
 const FLICK_MAX_PAUSE_MS = 80;
 const FLICK_VELOCITY_WINDOW_MS = 100;
-/** Per-ms momentum decay; stops sooner than a native scroller since every notch redraws a remote app. */
-const MOMENTUM_DECAY_PER_MS = 0.992;
-const MOMENTUM_STOP_VELOCITY = 0.05;
 
 // `?livedebug=1` shows the geometry and wire stats the view is working from.
 const LIVE_DEBUG = typeof location !== "undefined" && new URLSearchParams(location.search).has("livedebug");
@@ -273,15 +269,10 @@ export function MobileLiveTerminal({
     mouseSgr: frame?.mouseSgr ?? false,
   });
   const forwardGestures = forwardMode && !selectionHeld;
-  const wheelAccumRef = useRef(0);
   const touchForwardYRef = useRef<number | null>(null);
-  const [notchPacer] = useState(() => new NotchPacer());
   // WebKit may synthesize a click after a custom forward-mode drag; a moved touch must not raise the keyboard.
   const touchStartRef = useRef<{ x: number; y: number } | null>(null);
   const suppressTouchClickRef = useRef(false);
-  // The pressed button of a forwarded mouse drag and its last reported cell (one motion report per cell).
-  const forwardBtnRef = useRef<number | null>(null);
-  const lastForwardCellRef = useRef<{ col: number; row: number } | null>(null);
   useEffect(() => {
     rowsRef.current = screenRows || rowsRef.current;
   }, [screenRows]);
@@ -428,75 +419,22 @@ export function MobileLiveTerminal({
     [frame?.pane0?.rows],
   );
 
-  const onWheel = useCallback(
-    (e: React.WheelEvent) => {
-      if (!forwardModeRef.current) return;
-      const unit = lineH || 16;
-      const factor = e.deltaMode === 1 ? unit : e.deltaMode === 2 ? unit * (rowsRef.current || 1) : 1;
-      wheelAccumRef.current += e.deltaY * factor;
-      const { notches, remainder } = wheelNotches(wheelAccumRef.current, unit, 8);
-      wheelAccumRef.current = remainder;
-      if (notches === 0) return;
-      const { col, row } = pointerCell(e.clientX, e.clientY);
-      for (let i = 0; i < Math.abs(notches); i++) forwardWheel(notches < 0, mouseSgrRef.current, col, row);
-    },
-    [lineH, pointerCell, forwardWheel, forwardModeRef, mouseSgrRef],
-  );
-
-  const cancelTouchWheelQueue = useCallback(() => notchPacer.cancel(), [notchPacer]);
-  const enqueueTouchWheelDelta = useCallback(
-    (deltaPx: number, clientX: number, clientY: number) => {
-      wheelAccumRef.current += deltaPx;
-      const { notches, remainder } = wheelNotches(wheelAccumRef.current, lineH || 16, MAX_QUEUED_TOUCH_NOTCHES);
-      wheelAccumRef.current = remainder;
-      if (notches === 0) return;
-      notchPacer.enqueue(notches, (up, count) => {
-        if (!forwardModeRef.current) return;
-        const { col } = pointerCell(clientX, clientY);
-        const row = inputPaneMiddleRow();
-        for (let i = 0; i < count; i++) forwardWheel(up, mouseSgrRef.current, col, row);
-      });
-    },
-    [lineH, notchPacer, pointerCell, forwardWheel, forwardModeRef, mouseSgrRef, inputPaneMiddleRow],
-  );
-  useEffect(() => cancelTouchWheelQueue, [cancelTouchWheelQueue]);
-  // A frame after a forwarded notch acknowledges it, releasing the next burst.
-  useEffect(() => {
-    // eslint-disable-next-line react-you-might-not-need-an-effect/no-event-handler
-    if (streamFrame) notchPacer.onFrame();
-  }, [streamFrame, notchPacer]);
-
-  // Forward mode has no native scroller, so flick inertia is synthesized: sample the drag, coast on lift.
+  const forward = useForwardInput({
+    streamFrame,
+    lineH,
+    rowsRef,
+    forwardModeRef,
+    mouseSgrRef,
+    pointerCell,
+    inputPaneMiddleRow,
+    forwardWheel,
+    forwardButton,
+    inputRef,
+    armAgentClipboard,
+  });
+  const { wheelAccumRef, enqueueTouchWheelDelta, cancelTouchWheelQueue, startMomentum, stopMomentum } = forward;
+  // Recent drag samples for the release velocity.
   const flickSamplesRef = useRef<FlickSample[]>([]);
-  const momentumRef = useRef<{ v: number; lastT: number; x: number; y: number; raf: number } | null>(null);
-  const stopMomentum = useCallback(() => {
-    if (momentumRef.current) cancelAnimationFrame(momentumRef.current.raf);
-    momentumRef.current = null;
-  }, []);
-  useEffect(() => stopMomentum, [stopMomentum]);
-  const startMomentum = useCallback(
-    (velocity: number, clientX: number, clientY: number) => {
-      stopMomentum();
-      const state = { v: velocity, lastT: performance.now(), x: clientX, y: clientY, raf: 0 };
-      momentumRef.current = state;
-      const step = (now: number) => {
-        if (momentumRef.current !== state) return;
-        if (!forwardModeRef.current) {
-          momentumRef.current = null;
-          return;
-        }
-        // Clamped so one late frame cannot teleport the transcript.
-        const dt = Math.min(64, Math.max(0, now - state.lastT));
-        state.lastT = now;
-        enqueueTouchWheelDelta(-state.v * dt * FORWARD_TOUCH_GAIN, state.x, state.y);
-        state.v *= Math.pow(MOMENTUM_DECAY_PER_MS, dt);
-        if (Math.abs(state.v) < MOMENTUM_STOP_VELOCITY) momentumRef.current = null;
-        else state.raf = requestAnimationFrame(step);
-      };
-      state.raf = requestAnimationFrame(step);
-    },
-    [stopMomentum, enqueueTouchWheelDelta, forwardModeRef],
-  );
   // Every input path funnels through here, so typing interrupts a coast instead of queueing behind it.
   const sendData = useCallback(
     (data: string) => {
@@ -505,59 +443,6 @@ export function MobileLiveTerminal({
       return sendDataRaw(data);
     },
     [sendDataRaw, stopMomentum, cancelTouchWheelQueue],
-  );
-
-  // Mouse buttons for a full-screen mouse app; touch has its own path and Shift keeps local selection.
-  const onPointerDown = useCallback(
-    (e: React.PointerEvent) => {
-      if (e.pointerType !== "mouse" || !forwardModeRef.current || e.shiftKey) return;
-      const base = [0, 1, 2].includes(e.button) ? e.button : -1;
-      // A primary press on a link belongs to the browser; capture would retarget the click away from it.
-      if (base < 0 || (base === 0 && (e.target as Element | null)?.closest?.("a[href]"))) return;
-      e.preventDefault();
-      inputRef.current?.focus();
-      const { col, row } = pointerCell(e.clientX, e.clientY);
-      forwardButton(base, false, false, mouseSgrRef.current, col, row);
-      forwardBtnRef.current = base;
-      lastForwardCellRef.current = { col, row };
-      try {
-        (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
-      } catch {
-        // Unsupported in jsdom; capture is optional.
-      }
-    },
-    [pointerCell, forwardButton, inputRef, forwardModeRef, mouseSgrRef],
-  );
-  const onPointerMove = useCallback(
-    (e: React.PointerEvent) => {
-      if (e.pointerType !== "mouse" || forwardBtnRef.current == null) return;
-      const { col, row } = pointerCell(e.clientX, e.clientY);
-      const last = lastForwardCellRef.current;
-      if (last && last.col === col && last.row === row) return;
-      e.preventDefault();
-      lastForwardCellRef.current = { col, row };
-      forwardButton(forwardBtnRef.current, false, true, mouseSgrRef.current, col, row);
-    },
-    [pointerCell, forwardButton, mouseSgrRef],
-  );
-  const endPointerForward = useCallback(
-    (e: React.PointerEvent) => {
-      if (e.pointerType !== "mouse" || forwardBtnRef.current == null) return;
-      e.preventDefault();
-      const { col, row } = pointerCell(e.clientX, e.clientY);
-      const button = forwardBtnRef.current;
-      // Agents emit OSC 52 after the release ending a selection; arm while this is still a user gesture.
-      if (button === 0) armAgentClipboard?.();
-      forwardButton(button, true, false, mouseSgrRef.current, col, row);
-      forwardBtnRef.current = null;
-      lastForwardCellRef.current = null;
-      try {
-        (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId);
-      } catch {
-        // Capture may never have been taken.
-      }
-    },
-    [pointerCell, forwardButton, armAgentClipboard, mouseSgrRef],
   );
 
   const pinchRef = useRef<{ startDist: number; startSize: number; changed: boolean } | null>(null);
@@ -779,12 +664,12 @@ export function MobileLiveTerminal({
       <div
         ref={scrollerRef}
         onScroll={onScroll}
-        onWheel={onWheel}
+        onWheel={forward.onWheel}
         onClick={focusInputOnTap}
-        onPointerDown={onPointerDown}
-        onPointerMove={onPointerMove}
-        onPointerUp={endPointerForward}
-        onPointerCancel={endPointerForward}
+        onPointerDown={forward.onPointerDown}
+        onPointerMove={forward.onPointerMove}
+        onPointerUp={forward.endPointerForward}
+        onPointerCancel={forward.endPointerForward}
         onContextMenu={(e) => {
           if (forwardModeRef.current) e.preventDefault();
         }}
