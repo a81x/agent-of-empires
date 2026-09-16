@@ -14,42 +14,24 @@ import { CUSTOM_SETTINGS_WIDGETS } from "./customWidgetRegistry";
 import { CronField, DynamicSelectField, ObjectListField } from "./StructuredWidgets";
 
 interface Props {
-  /** Config section name (e.g. "sandbox"). */
   section: string;
-  /** Full schema descriptor list from `GET /api/settings/schema`. */
   schema: SettingsFieldDescriptor[];
-  /** Current values for this section (from the effective config JSON). */
   values: Record<string, unknown>;
-  /** Persist one field. Mirrors `saveField`'s (section, field, value) shape;
-   *  passing `null` clears a profile override server-side. May be async
-   *  (returns Promise<boolean>) or sync. */
+  /** Persist one field; `null` clears a profile override. May be sync or async. */
   onSaveField: (section: string, field: string, value: unknown) => unknown;
-  /** Subtitle for the auto-generated "Advanced" fold. */
   advancedSubtitle?: string;
-  /** Section-level post-save hook, run once after any field in this section
-   *  saves successfully. Used by the acp section to refresh `serverAbout`
-   *  (consumed live by ToolCards / the composer); widget-specific effects
-   *  (e.g. theme repaint) live in the custom widget itself, not here. */
+  /** Runs once after any field in this section saves successfully. */
   onAfterSave?: (descriptor: SettingsFieldDescriptor, value: unknown) => Promise<void> | void;
-  /** Set by a settings-search jump. When `section` matches this section, the
-   *  named field is scrolled into view and briefly highlighted, and the
-   *  Advanced fold opens if the target lives inside it. The `nonce` only
-   *  participates in the SettingsView remount key; this component reacts to the
-   *  fresh mount. */
+  /** A settings-search jump: scroll to and highlight the field, opening Advanced if needed. */
   focusRequest?: { section: string; field: string; nonce: number } | null;
-  /** Attach a tour anchor to one specific field's wrapper, so the first-run tour
-   *  can spotlight a single control (e.g. the worktree path template) rather
-   *  than the whole section. */
+  /** Tour anchor for one field's wrapper. */
   fieldAnchor?: { field: string; anchor: TourAnchorId };
-  /** CityHall client mode curation. `onlyFields`, when set, restricts the
-   *  section to those field names (allowlist); `hideFields` drops the named
-   *  fields (denylist). Both apply on top of the local_only skip. See #7. */
+  /** CityHall curation: an allowlist and a denylist of field names. */
   onlyFields?: string[];
   hideFields?: string[];
 }
 
-/** Client-side list-entry validator derived from the server's validation rule,
- *  purely a UX nicety; the server is authoritative either way. */
+/** Client-side list-entry check mirroring the server rule. */
 function listValidator(validation: SettingsValidation): ((value: string) => string | null) | undefined {
   switch (validation.rule) {
     case "volume_list":
@@ -64,17 +46,13 @@ function listValidator(validation: SettingsValidation): ((value: string) => stri
   }
 }
 
-/** Global-only fields are shown but not profile-overridable; surface that so a
- *  per-profile edit does not look profile-scoped when it is not. */
 function describe(d: SettingsFieldDescriptor): string {
   if (d.profile_overridable) return d.description;
   const note = "Applies to all profiles (not profile-overridable).";
   return d.description ? `${d.description} ${note}` : note;
 }
 
-/** Visible placeholder for a `custom` widget whose `id` has no registered web
- *  component. Rendering this (rather than silently dropping the field) keeps a
- *  schema/web mismatch obvious instead of letting a setting vanish. */
+/** Keeps a schema/web mismatch visible instead of silently dropping the field. */
 function UnsupportedCustomWidget({ d, id }: { d: SettingsFieldDescriptor; id: string }) {
   return (
     <div className="text-xs text-status-error bg-status-error/10 rounded-lg p-3">
@@ -84,7 +62,6 @@ function UnsupportedCustomWidget({ d, id }: { d: SettingsFieldDescriptor; id: st
   );
 }
 
-/** Render one schema-backed field with the matching FormFields control. */
 function renderField(
   d: SettingsFieldDescriptor,
   values: Record<string, unknown>,
@@ -124,7 +101,6 @@ function renderField(
           label={d.label}
           description={description}
           value={typeof raw === "string" ? raw : ""}
-          // Empty clears the value (and the override, server-side).
           onChange={(v) => save(v || null)}
           mono={widget.mono}
         />
@@ -225,14 +201,7 @@ function renderField(
   }
 }
 
-/**
- * Generic schema-driven renderer for one settings section (#1692). Builds the
- * form rows from `GET /api/settings/schema` instead of hand-written per-field
- * JSX, so adding a config field surfaces here automatically. Fields the
- * dashboard may not write (`local_only`) are skipped; `advanced` fields are
- * grouped under an "Advanced" fold to match the TUI. `custom` widgets render
- * via the custom-widget registry (`customWidgets.tsx`).
- */
+/** Schema-driven form for one settings section; `local_only` fields are skipped and `advanced` ones folded. */
 export function SchemaSection({
   section,
   schema,
@@ -255,10 +224,6 @@ export function SchemaSection({
   const primary = fields.filter((d) => !d.advanced);
   const advanced = fields.filter((d) => d.advanced);
 
-  // A settings-search jump targeting this section: scroll the field into view
-  // (effect below) and open the Advanced fold if the field lives there. The
-  // flash is a one-shot CSS animation on the target wrapper, which replays on
-  // every jump because SettingsView remounts this subtree on the focus nonce.
   const targetField = focusRequest && focusRequest.section === section ? focusRequest.field : null;
   const targetAdvanced = !!targetField && advanced.some((d) => d.field === targetField);
   const targetRef = useRef<HTMLDivElement | null>(null);
@@ -289,17 +254,12 @@ export function SchemaSection({
     );
   };
 
-  // Wrap onSaveField so a successful save in this section runs the optional
-  // section-level hook once. Custom widgets receive this same `save`, so their
-  // own success-gated effects compose with it.
   const makeSave =
     (d: SettingsFieldDescriptor) =>
     async (value: unknown): Promise<boolean> => {
       const result = onSaveField(d.section, d.field, value);
       const ok = result instanceof Promise ? await result : result !== false;
-      // The setting is already persisted; a failing post-save hook (e.g. a
-      // serverAbout refresh that errors) must not turn a successful save into
-      // a failed one.
+      // The setting is already persisted, so a failing hook must not report failure.
       if (ok && onAfterSave) {
         try {
           await onAfterSave(d, value);
