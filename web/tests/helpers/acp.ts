@@ -148,11 +148,7 @@ export async function spawnAcpAgent(baseUrl: string, sessionId: string, agent = 
 }
 
 export async function postPrompt(baseUrl: string, sessionId: string, text: string): Promise<Response> {
-  return fetch(`${baseUrl}/api/sessions/${sessionId}/acp/prompt`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ text }),
-  });
+  return postAcp(baseUrl, sessionId, "/prompt", { text });
 }
 
 export async function sessionIdByTitle(baseUrl: string, title: string): Promise<string> {
@@ -161,15 +157,34 @@ export async function sessionIdByTitle(baseUrl: string, title: string): Promise<
   return session.id;
 }
 
-/** Spawn a structured view server with one seeded session and wait until its agent is ready. */
-export async function startAcpSession(
-  spawnServe: (opts?: ServeOptions) => Promise<ServeHandle>,
-  { title, tool, ...opts }: ServeOptions & { title: string; tool?: string },
+type SpawnServe = (opts?: ServeOptions) => Promise<ServeHandle>;
+type AcpSessionOptions = ServeOptions & { title: string; tool?: string };
+
+/** Spawn a structured view server with one seeded session, without enabling structured view on it. */
+export async function seedAcpSession(
+  spawnServe: SpawnServe,
+  { title, tool, ...opts }: AcpSessionOptions,
 ): Promise<{ serve: ServeHandle; sessionId: string }> {
   const serve = await spawnServe({ acp: true, seedFn: seedSessionViaAoeAdd({ title, tool }), ...opts });
-  const sessionId = await sessionIdByTitle(serve.baseUrl, title);
-  await enableStructuredViewAndWait(serve.baseUrl, sessionId, 30_000, serve.home);
-  return { serve, sessionId };
+  return { serve, sessionId: await sessionIdByTitle(serve.baseUrl, title) };
+}
+
+/** `seedAcpSession`, then enable structured view and wait until the agent is ready. */
+export async function startAcpSession(spawnServe: SpawnServe, opts: AcpSessionOptions) {
+  const started = await seedAcpSession(spawnServe, opts);
+  await enableStructuredViewAndWait(started.serve.baseUrl, started.sessionId, 30_000, started.serve.home);
+  return started;
+}
+
+export async function replayJson(baseUrl: string, sessionId: string): Promise<string> {
+  return JSON.stringify(await replayFrames(baseUrl, sessionId));
+}
+
+export async function postAcp(baseUrl: string, sessionId: string, path: string, body?: unknown): Promise<Response> {
+  return fetch(`${baseUrl}/api/sessions/${sessionId}/acp${path}`, {
+    method: "POST",
+    ...(body === undefined ? {} : { headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }),
+  });
 }
 
 export const chunk = (text: string) => ({ sessionUpdate: "agent_message_chunk", content: { type: "text", text } });

@@ -522,8 +522,8 @@
       "kind": "live-playwright",
       "risk": "high",
       "specs": [
-        "tests/live/acp-mid-turn-steering.spec.ts",
-        "tests/live/acp-compaction-phase.spec.ts",
+        "tests/live/acp-prompt-lifecycle.spec.ts",
+        "tests/live/acp-transcript.spec.ts",
         "src/hooks/useAcpSession.queue.test.ts"
       ],
       "components": ["web/src/hooks/useAcpSession.ts"]
@@ -1015,7 +1015,7 @@
       "id": "acp.custom-agent-acp-capable",
       "kind": "live-playwright",
       "risk": "high",
-      "specs": ["tests/live/acp-custom-agent.spec.ts"],
+      "specs": ["tests/live/acp-worker-api.spec.ts"],
       "components": [
         "web/src/components/session-wizard/SessionWizard.tsx",
         "web/src/components/session-wizard/steps/AgentStep.tsx",
@@ -1081,7 +1081,7 @@
       "id": "wizard.import-claude-session",
       "kind": "live-playwright",
       "risk": "high",
-      "specs": ["tests/live/acp-import-claude-session.spec.ts"],
+      "specs": ["tests/live/acp-session-history.spec.ts"],
       "components": [
         "web/src/components/session-wizard/SessionWizard.tsx",
         "web/src/components/session-wizard/steps/ProjectStep.tsx",
@@ -1948,7 +1948,7 @@
       "id": "acp.spawn-prompt",
       "kind": "live-playwright",
       "risk": "high",
-      "specs": ["tests/live/acp-spawn-prompt.spec.ts"],
+      "specs": ["tests/live/acp-prompt-lifecycle.spec.ts"],
       "components": [
         "web/src/components/acp/StructuredView.tsx",
         "web/src/components/acp/AcpRuntime.tsx",
@@ -1979,7 +1979,7 @@
       "id": "acp.memory-recall",
       "kind": "live-playwright",
       "risk": "medium",
-      "specs": ["tests/live/acp-memory-recall.spec.ts", "tests/acp-memory-recall.spec.ts"],
+      "specs": ["tests/live/acp-transcript.spec.ts", "tests/acp-memory-recall.spec.ts"],
       "components": [
         "web/src/components/acp/ToolCards.tsx",
         "web/src/components/acp/StructuredView.tsx",
@@ -1992,7 +1992,7 @@
       "id": "acp.attachments",
       "kind": "live-playwright",
       "risk": "high",
-      "specs": ["tests/live/acp-attachment.spec.ts", "src/components/acp/Composer.paste.test.tsx"],
+      "specs": ["tests/live/acp-transcript.spec.ts", "src/components/acp/Composer.paste.test.tsx"],
       "components": [
         "web/src/components/acp/Composer.tsx",
         "web/src/components/acp/AcpRuntime.tsx",
@@ -2003,7 +2003,7 @@
       "id": "acp.attachment-drafts",
       "kind": "live-playwright",
       "risk": "high",
-      "specs": ["tests/live/acp-attachment-draft.spec.ts"],
+      "specs": ["tests/live/acp-transcript.spec.ts"],
       "components": [
         "web/src/components/acp/AcpRuntime.tsx",
         "web/src/components/acp/Composer.tsx",
@@ -2014,7 +2014,7 @@
       "id": "acp.approval",
       "kind": "live-playwright",
       "risk": "high",
-      "specs": ["tests/live/acp-approval.spec.ts"],
+      "specs": ["tests/live/acp-prompt-lifecycle.spec.ts"],
       "components": ["web/src/components/acp/ApprovalCard.tsx"]
     },
     {
@@ -2100,7 +2100,7 @@
       "risk": "medium",
       "notes": "#3219: /compact runs 90-170s with zero frames, so it trips the 30s stall watchdog every time. The spinner must name the phase instead of claiming the model is stalled, must not offer the Force-end-turn hatch (it would abort the compaction), and the composer must park a follow-up rather than steer it into a turn that never answers it. The live spec drives a fake agent that reproduces the real marker-hold-marker shape end to end; the vitest specs cover the reducer, gate and label in isolation.",
       "specs": [
-        "tests/live/acp-compaction-phase.spec.ts",
+        "tests/live/acp-transcript.spec.ts",
         "src/components/acp/__tests__/WorkingSpinner.test.tsx",
         "src/lib/acpTypes.test.ts",
         "src/hooks/useAcpSession.queue.test.ts"
@@ -2111,7 +2111,7 @@
       "id": "acp.escape-no-cancel",
       "kind": "live-playwright",
       "risk": "medium",
-      "specs": ["tests/live/acp-escape-no-cancel.spec.ts"],
+      "specs": ["tests/live/acp-transcript.spec.ts"],
       "components": []
     },
     {
@@ -2180,7 +2180,7 @@
       "kind": "live-playwright",
       "risk": "medium",
       "specs": [
-        "tests/live/acp-config-pickers.spec.ts",
+        "tests/live/acp-worker-api.spec.ts",
         "tests/acp-config-pickers-ui.spec.ts",
         "src/components/acp/SessionConfigControls.test.tsx",
         "src/hooks/useAcpSession.configOption.test.ts"
@@ -2198,7 +2198,7 @@
       "id": "acp.mode-switch",
       "kind": "live-playwright",
       "risk": "medium",
-      "specs": ["tests/live/acp-mode-switch.spec.ts"],
+      "specs": ["tests/live/acp-worker-api.spec.ts"],
       "components": ["web/src/components/acp/ContextPrimerBanner.tsx"]
     },
     {
@@ -2206,13 +2206,9 @@
       "kind": "live-playwright",
       "risk": "high",
       "specs": [
-        "tests/live/acp-files.spec.ts",
-        "tests/live/acp-context-primer.spec.ts",
-        "tests/live/acp-view-switch.spec.ts",
-        "tests/live/acp-disable.spec.ts",
-        "tests/live/acp-force-end-turn.spec.ts",
-        "tests/live/acp-replay-catchup.spec.ts",
-        "tests/live/acp-cancel.spec.ts"
+        "tests/live/acp-worker-api.spec.ts",
+        "tests/live/acp-prompt-lifecycle.spec.ts",
+        "tests/live/acp-session-history.spec.ts"
       ],
       "components": [
         "src/server/api/acp.rs",
@@ -2293,7 +2289,7 @@
       "id": "acp.keep-context-round-trip",
       "kind": "live-playwright",
       "risk": "high",
-      "specs": ["tests/live/acp-keep-context-round-trip.spec.ts"],
+      "specs": ["tests/live/acp-session-history.spec.ts"],
       "components": ["src/server/api/acp.rs"]
     },
     {
@@ -2340,7 +2336,7 @@
       "id": "acp.codex-new-reset",
       "kind": "live-playwright",
       "risk": "high",
-      "specs": ["tests/live/acp-codex-new-reset.spec.ts"],
+      "specs": ["tests/live/acp-session-history.spec.ts"],
       "components": [
         "src/acp/acp_client/",
         "src/acp/agent_profiles.rs",
@@ -2354,7 +2350,7 @@
       "id": "acp.claude-clear-reset",
       "kind": "live-playwright",
       "risk": "high",
-      "specs": ["tests/live/acp-claude-clear-reset.spec.ts"],
+      "specs": ["tests/live/acp-session-history.spec.ts"],
       "components": [
         "src/acp/acp_client/",
         "src/acp/agent_profiles.rs",
@@ -2432,7 +2428,7 @@
       "id": "acp.file-links",
       "kind": "live-playwright",
       "risk": "high",
-      "specs": ["tests/live/acp-file-links.spec.ts"],
+      "specs": ["tests/live/acp-transcript.spec.ts"],
       "components": [
         "web/src/components/acp/AcpFileRefContext.tsx",
         "web/src/components/acp/Markdown.tsx",
@@ -2592,7 +2588,7 @@
       "id": "acp.startup-error-banner-live",
       "kind": "live-playwright",
       "risk": "high",
-      "specs": ["tests/live/acp-worker-log.spec.ts", "tests/live/acp-stories/agent-status.spec.ts"],
+      "specs": ["tests/live/acp-worker-api.spec.ts", "tests/live/acp-stories/agent-status.spec.ts"],
       "components": ["web/src/components/acp/StructuredView.tsx", "src/server/api/acp.rs", "src/acp/acp_client/"]
     },
     {
@@ -3264,7 +3260,7 @@
       "kind": "live-playwright",
       "risk": "high",
       "specs": [
-        "tests/live/acp-mid-turn-steering.spec.ts",
+        "tests/live/acp-prompt-lifecycle.spec.ts",
         "src/hooks/useAcpSession.queue.test.ts",
         "src/lib/acpTypes.reducer.test.ts"
       ],
