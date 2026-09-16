@@ -2944,7 +2944,9 @@ impl HomeView {
                 .as_ref()
                 .and_then(|id| self.get_instance(id))
                 .is_some_and(|inst| {
-                    inst.last_error.as_deref() == Some(crate::session::TMUX_SESSION_GONE_ERROR)
+                    inst.status == Status::Stopped
+                        && inst.last_error.as_deref()
+                            != Some(crate::session::TMUX_SERVER_UNREACHABLE_ERROR)
                 });
 
         // A structured (ACP) session has no agent tmux pane at all: its

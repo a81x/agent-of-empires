@@ -84,7 +84,7 @@ pub use instance::{
     LifecycleReservation, LifecycleReservationError, PaneObservation, PanePresence,
     PluginCreateIdempotency, PollerStart, SandboxInfo, SessionBucket, StartOutcome, Status,
     TerminalInfo, View, WorkspaceInfo, WorkspaceRepo, WorktreeInfo, SESSION_COLORS,
-    TMUX_SESSION_GONE_ERROR,
+    TMUX_SERVER_UNREACHABLE_ERROR, TMUX_SESSION_GONE_ERROR,
 };
 #[cfg(test)]
 pub(crate) use move_journal::{
