@@ -13,22 +13,16 @@ interface Props {
   isSubmitting: boolean;
   error: string | null;
   onSubmit: () => void;
-  /** CityHall name-only mode: the project path is derived server-side, so the
-   *  launch gate does not require a client-selected path. See #7. */
+  /** CityHall name-only mode: the server derives the project. */
   nameOnly?: boolean;
 }
 
 const isMac = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.userAgent);
 
-/** Always-visible launch affordance for the single-screen wizard (#2210).
- *  Owns the Launch button, the submit gate, the Cmd/Ctrl+Enter shortcut,
- *  and the error / offline banners that previously lived in ReviewStep. */
+/** Launch button, submit gate, Cmd/Ctrl+Enter shortcut, and error banners. */
 export function LaunchFooter({ data, isSubmitting, error, onSubmit, nameOnly = false }: Props) {
   const offline = useServerDown();
-  // Scratch sessions intentionally carry no path until the server
-  // provisions one on submit; treat that as satisfying the "need a
-  // project" gate so the user can launch. CityHall name-only sessions are
-  // the same: the server derives the project set, so only the tool is needed.
+  // Scratch and name-only sessions get their directory from the server.
   const canSubmit = !isSubmitting && !offline && (nameOnly || data.scratch || !!data.path) && !!data.tool;
 
   useEffect(() => {

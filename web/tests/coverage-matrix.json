@@ -944,7 +944,7 @@
       "kind": "vitest",
       "risk": "high",
       "specs": [
-        "src/components/session-wizard/__tests__/HooksTrustDialog.test.tsx",
+        "src/components/session-wizard/__tests__/ConfirmCreateDialogs.test.tsx",
         "src/components/session-wizard/__tests__/SessionWizard.test.tsx",
         "src/lib/__tests__/createSessionApi.test.ts"
       ],
@@ -959,10 +959,13 @@
       "kind": "vitest",
       "risk": "medium",
       "specs": [
-        "src/components/session-wizard/__tests__/VolumeIgnoresGlobDialog.test.tsx",
+        "src/components/session-wizard/__tests__/ConfirmCreateDialogs.test.tsx",
         "src/lib/__tests__/volumeIgnoresApi.test.ts"
       ],
-      "components": ["web/src/components/session-wizard/VolumeIgnoresGlobDialog.tsx"]
+      "components": [
+        "web/src/components/session-wizard/VolumeIgnoresGlobDialog.tsx",
+        "web/src/components/session-wizard/ConfirmCreateDialog.tsx"
+      ]
     },
     {
       "id": "wizard.acp-opt-out",
@@ -3037,7 +3040,7 @@
       "id": "wizard.per-repo-base-branch",
       "kind": "vitest",
       "risk": "medium",
-      "specs": ["src/components/session-wizard/__tests__/ExtraReposPicker.perRepoBase.test.tsx"],
+      "specs": ["src/components/session-wizard/__tests__/ExtraReposPicker.test.tsx"],
       "components": [
         "web/src/components/session-wizard/steps/ExtraReposPicker.tsx",
         "web/src/components/session-wizard/steps/ProjectStep.tsx",
