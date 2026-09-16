@@ -441,6 +441,58 @@ fn terminal_status_follows_canonical_snapshots_across_stop_and_disconnect() {
     env.view.apply_session_feed();
     assert_eq!(env.view.get_instance(&id).unwrap().status, Status::Stopped);
 }
+#[test]
+#[serial]
+fn terminal_rows_take_status_and_observations_from_the_daemon_only() {
+    use crate::session::{AuxiliaryTarget, PaneObservation, PanePresence};
+    let mut env = create_test_env_with_sessions(1);
+    let id = env.view.instance_at(0).id.clone();
+    env.view.mutate_instance(&id, |instance| {
+        instance.view = crate::session::View::Terminal;
+        instance.status = Status::Running;
+        instance.last_error =
+            Some("tmux session is gone. The agent process may have exited or been killed.".into());
+        instance.pane_dead_observed = false;
+        instance.agent_pane = PaneObservation::default();
+        instance.auxiliary = vec![crate::session::AuxiliaryObservation {
+            target: AuxiliaryTarget::Host { index: 0 },
+            pane: PaneObservation::default(),
+        }];
+    });
+    let SessionFeedResult::Snapshot(snapshot) = daemon_snapshot(&id, "Idle") else {
+        unreachable!()
+    };
+    let snapshot = {
+        let mut snapshot =
+            std::sync::Arc::try_unwrap(snapshot).unwrap_or_else(|snapshot| (*snapshot).clone());
+        let row = &mut snapshot.contents.sessions[0];
+        row.view = crate::session::View::Terminal;
+        row.agent_pane = PaneObservation {
+            state: PanePresence::Alive,
+            ..PaneObservation::default()
+        };
+        row.auxiliary = vec![crate::session::AuxiliaryObservation {
+            target: AuxiliaryTarget::Host { index: 0 },
+            pane: PaneObservation {
+                state: PanePresence::Alive,
+                ..PaneObservation::default()
+            },
+        }];
+        std::sync::Arc::new(snapshot)
+    };
+    env.view
+        .session_feed
+        .publish_for_test(SessionFeedResult::Snapshot(snapshot));
+    env.view.apply_session_feed();
+    let instance = env.view.get_instance(&id).unwrap();
+    assert_eq!(instance.status, Status::Idle);
+    assert_eq!(instance.last_error, None);
+    assert_eq!(instance.agent_pane.state, PanePresence::Alive);
+    assert_eq!(
+        instance.auxiliary_presence(&AuxiliaryTarget::Host { index: 0 }),
+        PanePresence::Alive
+    );
+}
 
 #[test]
 #[serial]
@@ -732,4 +784,85 @@ fn daemon_update_clears_cached_approvals_when_a_row_is_sunk() {
             "a {label} row must not keep cached approvals after the transition"
         );
     }
+}
+
+/// I5 freshness contract: a terminal row converges to the daemon snapshot
+/// within one feed apply, including the Running->Stopped transition that used
+/// to need the local 500ms poller. No tmux probe runs between publish and
+/// apply; the feed alone must carry status, last_error, pane_dead_observed,
+/// agent_pane, and auxiliary (status.rs feed-overwrite lines).
+#[test]
+#[serial]
+fn terminal_status_converges_in_one_feed_apply_without_a_local_probe() {
+    use crate::session::{AuxiliaryObservation, AuxiliaryTarget, PaneObservation, PanePresence};
+    let mut env = create_test_env_with_sessions(1);
+    let id = env.view.instance_at(0).id.clone();
+    // Seed the row stale the way a live Running terminal looks before the
+    // daemon reports the stop.
+    env.view.mutate_instance(&id, |instance| {
+        instance.view = crate::session::View::Terminal;
+        instance.status = Status::Running;
+        instance.last_error = Some("stale local probe error".into());
+        instance.pane_dead_observed = false;
+        instance.agent_pane = PaneObservation {
+            state: PanePresence::Alive,
+            ..PaneObservation::default()
+        };
+        instance.auxiliary = vec![AuxiliaryObservation {
+            target: AuxiliaryTarget::Host { index: 0 },
+            pane: PaneObservation {
+                state: PanePresence::Alive,
+                ..PaneObservation::default()
+            },
+        }];
+    });
+    // The daemon publishes the stop: Stopped + pane_dead_observed with both
+    // pane seeds flipped to Dead.
+    let SessionFeedResult::Snapshot(snapshot) = daemon_snapshot(&id, "Stopped") else {
+        unreachable!()
+    };
+    let snapshot = {
+        let mut snapshot =
+            std::sync::Arc::try_unwrap(snapshot).unwrap_or_else(|snapshot| (*snapshot).clone());
+        let row = &mut snapshot.contents.sessions[0];
+        row.view = crate::session::View::Terminal;
+        row.pane_dead_observed = true;
+        row.last_error = Some("agent process exited".into());
+        row.agent_pane = PaneObservation {
+            state: PanePresence::Dead,
+            ..PaneObservation::default()
+        };
+        row.auxiliary = vec![AuxiliaryObservation {
+            target: AuxiliaryTarget::Host { index: 0 },
+            pane: PaneObservation {
+                state: PanePresence::Dead,
+                ..PaneObservation::default()
+            },
+        }];
+        std::sync::Arc::new(snapshot)
+    };
+    env.view
+        .session_feed
+        .publish_for_test(SessionFeedResult::Snapshot(snapshot));
+    // No local tmux probe runs between publish and apply: one feed apply must
+    // carry the whole transition.
+    env.view.apply_session_feed();
+
+    let instance = env.view.get_instance(&id).unwrap();
+    assert_eq!(instance.status, Status::Stopped);
+    assert_eq!(instance.last_error.as_deref(), Some("agent process exited"));
+    assert!(instance.pane_dead_observed);
+    assert_eq!(instance.agent_pane.state, PanePresence::Dead);
+    assert_eq!(
+        instance.auxiliary_presence(&AuxiliaryTarget::Host { index: 0 }),
+        PanePresence::Dead
+    );
+    // The Terminal row seed reads through auxiliary_presence_for_view, so it
+    // must flip from spinner to ICON_STOPPED input on the same apply.
+    env.view.view_mode = crate::tui::home::ViewMode::Terminal;
+    let seed = {
+        let instance = env.view.get_instance(&id).unwrap();
+        env.view.auxiliary_presence_for_view(instance)
+    };
+    assert_eq!(seed, PanePresence::Dead);
 }

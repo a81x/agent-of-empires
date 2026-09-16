@@ -327,8 +327,12 @@ impl HomeView {
         changed
     }
 
-    /// Recreate stopped terminal session-id pollers after a status-refresh
-    /// cadence has refreshed tmux state. This is deliberately separate from
+    /// Recreate stopped terminal session-id pollers on the 500ms repair
+    /// cadence. I5 invariant: this is session-id bookkeeping only and MUST
+    /// NOT write terminal-row status/display fields (`status`, `last_error`,
+    /// `pane_dead_observed`, `agent_pane`, `auxiliary`, `unread`). Those are
+    /// daemon-authoritative and arrive via `apply_session_feed` ->
+    /// `apply_daemon_status_update`. This is deliberately separate from
     /// [`Self::apply_session_id_updates`], which runs on every input/render
     /// wake while live views are open.
     pub fn repair_session_id_pollers(&mut self) {
@@ -341,6 +345,10 @@ impl HomeView {
         for instance in self.instances.values_mut() {
             instance.repair_session_id_poller_if_needed(&live);
         }
+        // Session-id repair only: no status/display field may change here.
+        // (`repair_session_id_poller_if_needed` touches only the
+        // `session_id_poller` slot and its retry schedule, never status
+        // fields; verified against `src/session/instance/polling.rs`.)
     }
 
     /// Drain the startup-recovery channel and apply each `RecoveryUpdate`

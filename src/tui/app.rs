@@ -867,7 +867,7 @@ impl App {
         // the second frame starts overwriting them.
         let mut last_refresh_at: Option<std::time::Instant> = None;
         const REFRESH_COOLDOWN: Duration = Duration::from_millis(15);
-        let mut last_status_refresh = std::time::Instant::now();
+        let mut last_poller_repair = std::time::Instant::now();
         let mut last_metrics_sample = std::time::Instant::now();
         let mut last_disk_refresh = std::time::Instant::now();
         let mut full_heartbeat_deferred = false;
@@ -879,7 +879,10 @@ impl App {
         // iteration once any time has passed, hitting the config file at
         // the 20Hz loop rate.
         let mut last_update_eval = std::time::Instant::now();
-        const STATUS_REFRESH_INTERVAL: Duration = Duration::from_millis(500);
+        // I5: session-id poller repair cadence only. It MUST NOT refresh
+        // terminal-row status: status/display fields are daemon-authoritative
+        // and arrive via `apply_session_feed` -> `apply_daemon_status_update`.
+        const SESSION_ID_POLLER_REPAIR_INTERVAL: Duration = Duration::from_millis(500);
         const DISK_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
         // Diagnostics-strip sampling. 1s keeps the sparkline responsive to a
         // fast memory climb; request_metrics_refresh is a no-op unless the strip
@@ -1844,9 +1847,11 @@ impl App {
                 needs_full_refresh = true;
             }
 
-            if last_status_refresh.elapsed() >= STATUS_REFRESH_INTERVAL {
+            // I5: session-id repair only, not a status refresh. Terminal-row
+            // status comes from the daemon feed (`apply_session_feed`).
+            if last_poller_repair.elapsed() >= SESSION_ID_POLLER_REPAIR_INTERVAL {
                 self.home.repair_session_id_pollers();
-                last_status_refresh = std::time::Instant::now();
+                last_poller_repair = std::time::Instant::now();
             }
 
             if last_metrics_sample.elapsed() >= METRICS_SAMPLE_INTERVAL {
