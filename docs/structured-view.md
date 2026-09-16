@@ -152,16 +152,18 @@ Each session gets a managed artifact directory, exposed to the agent as `AOE_ART
 
 ## Cross-machine attach
 
-Set `AOE_DAEMON_URL` (and optionally `AOE_DAEMON_TOKEN`) to point at a remote `aoe serve`:
+To work with sessions on another machine's daemon from the TUI, register it
+with `aoe remote add` or set `AOE_DAEMON_URL`; see
+[Remote Machines](guides/remotes.md). For one known structured session:
 
 ```sh
-AOE_DAEMON_URL=https://aoe.example.com AOE_DAEMON_TOKEN=… aoe   # remote session picker
 aoe acp attach <session_id> --daemon-url https://aoe.example.com
 ```
 
-When `AOE_DAEMON_URL` is set, the TUI swaps the local home view for a remote session picker, and `aoe serve --status` / the `aoe acp *` verbs retarget to the remote. Local-only operations (tmux attach, `aoe stop`, file edit) aren't available against a remote; use the web dashboard or SSH into the host. Unset the variable to fall back to local introspection.
-
-The session list is read with a bearer token only over HTTPS or a loopback URL. With `AOE_DAEMON_TOKEN` set and a plaintext `http://` URL on another host, the picker reports that refusal instead of listing sessions. The other daemon requests do not apply this check yet (#3839), so use HTTPS or a tunnel for a remote daemon.
+The `aoe acp *` verbs and `aoe serve --status` follow `AOE_DAEMON_URL` too.
+Credentials travel only over HTTPS or a loopback URL for the session list and
+live terminal socket; the remaining daemon requests do not apply this check yet
+(#3839), so use HTTPS or a tunnel for a remote daemon.
 
 ## Headless CLI verbs
 
