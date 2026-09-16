@@ -100,7 +100,6 @@ export function TextField({
   const [local, setLocal] = useState(value);
   const [focused, setFocused] = useState(false);
 
-  // Sync from parent when not focused (external updates)
   if (!focused && local !== value) setLocal(value);
 
   const commit = () => {
@@ -160,9 +159,7 @@ export function SelectField({
   value: string;
   onChange: (v: string) => void;
   options: { value: string; label: string }[];
-  /** Override the default `text-sm text-text-bright mb-1` label classes
-   *  (used by the Logging panel to render heavier section labels).
-   *  Pass `""` to suppress the label element entirely. */
+  /** Overrides the label classes; `""` hides the label. */
   labelClassName?: string;
 }) {
   return (

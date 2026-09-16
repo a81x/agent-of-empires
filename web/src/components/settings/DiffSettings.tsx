@@ -1,9 +1,6 @@
 import { useWebSettings } from "../../hooks/useWebSettings";
 
-/// Client-side diff view preferences. These are pure rendering choices stored
-/// per browser in `localStorage` (like the Terminal section), not backend
-/// config, so they need no server round-trip or elevation. The same toggles
-/// are also reachable inline from the diff view itself.
+/// Per-browser diff preferences, also reachable from the diff view.
 export function DiffSettings() {
   const { settings, update } = useWebSettings();
 
