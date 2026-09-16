@@ -1,13 +1,4 @@
 // @vitest-environment jsdom
-//
-// FullFileViewer contract (#1810): the full-file fallback shown when an
-// agent-cited file has no diff against the base. Verifies it
-//   - highlights the file via the shared shiki highlighter for a known
-//     language and injects the resulting markup,
-//   - falls back to a plain <pre> with the raw content for an unknown
-//     extension (highlighter never runs),
-//   - drops stale highlighted markup when the rendered file changes, so a
-//     switch can't keep painting the previous file's html.
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render, waitFor } from "@testing-library/react";

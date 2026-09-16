@@ -1,5 +1,4 @@
 // @vitest-environment jsdom
-// Each schema-driven control must PATCH only its own (profile, { section: { field } }) leaf.
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";

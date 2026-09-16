@@ -1,11 +1,4 @@
 // @vitest-environment jsdom
-//
-// Covers the Rendered/Raw Markdown toggle in DiffFileViewer (#3088): a `.md`
-// file renders formatted by default, the toggle flips back to the diff and
-// persists via useWebSettings, and non-Markdown files expose no toggle.
-//
-// The Pierre renderer is mocked (as in DiffFileViewer.split.test.tsx) since it
-// needs real DOM + workers; MarkdownFileView (react-markdown) runs for real.
 
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";

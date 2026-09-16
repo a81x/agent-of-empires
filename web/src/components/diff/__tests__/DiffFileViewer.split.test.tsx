@@ -1,14 +1,4 @@
 // @vitest-environment jsdom
-//
-// Covers the unified/split toggle in DiffFileViewer, its localStorage
-// persistence via useWebSettings, that the width ResizeObserver attaches even
-// when the diff container mounts after an initial loading phase, and that the
-// selected layout is forwarded to the Pierre renderer as `options.diffStyle`.
-//
-// The Pierre renderer (`@pierre/diffs/react`) manipulates the DOM and spins up
-// workers, neither of which runs under jsdom, so it's mocked here with a light
-// stand-in that surfaces the diffStyle it was handed. Round-trip rendering is
-// covered by the live Playwright suite instead.
 
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";

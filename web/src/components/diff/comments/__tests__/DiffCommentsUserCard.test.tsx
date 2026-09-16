@@ -1,12 +1,4 @@
 // @vitest-environment jsdom
-//
-// Render tests for DiffCommentsUserCard, the rich diff-review prompt card in
-// the structured-view user-message slot. Covers the comment count label, the
-// optional intro/outro framing, the stable sort across repo/file/line/side,
-// the single-line vs range header wording, and the multi-repo repo chip. The
-// Shiki highlighter is mocked so the snippet renderer stays deterministic and
-// the test never touches the network or leaves async work pending; with no
-// resolved HTML the card falls back to a plain <pre>, exercising that path.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render, waitFor } from "@testing-library/react";

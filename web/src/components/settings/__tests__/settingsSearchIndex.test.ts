@@ -1,8 +1,3 @@
-// Unit test for the settings-search index builder. The index is what the
-// web search box filters over, so this pins the inclusion rules: skip fields
-// the dashboard cannot write, skip sections with no web tab (a hit must be
-// able to jump somewhere), and map web/acp to their non-identity tabs.
-
 import { describe, expect, it } from "vitest";
 import { buildSettingsSearchIndex, SECTION_TO_TAB } from "../settingsSearchIndex";
 import type { SettingsFieldDescriptor } from "../../../lib/types";

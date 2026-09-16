@@ -1,16 +1,4 @@
 // @vitest-environment jsdom
-//
-// Branch coverage for DiffFileViewer that the split-layout spec does not reach:
-// the loading / error / no-contents / binary / truncated / no-changes states,
-// the renamed-file header (old_path → path), the Find toggle and Cmd+F
-// shortcut, the stale-comments block, active comment annotations, and the
-// draft-comment flow (line selection -> CommentForm -> save / cancel).
-//
-// The Pierre renderer and worker pool never run under jsdom, so
-// `@pierre/diffs/react` is mocked with a stand-in that exposes the passed
-// annotations and lets a test fire `options.onLineSelected` to start a draft.
-// Comment anchoring is mocked so each test can pick the active / stale shape it
-// needs without constructing real diff metadata.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";

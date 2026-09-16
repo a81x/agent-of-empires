@@ -1,8 +1,4 @@
 // @vitest-environment jsdom
-//
-// FileContentViewer contract (#3088): fetches the provenance-confined /file
-// endpoint and renders Markdown (rendered by default, Raw toggle) or a shiki
-// full-file view for other extensions, plus the binary notice.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";

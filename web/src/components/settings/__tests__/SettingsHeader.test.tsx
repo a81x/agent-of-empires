@@ -1,10 +1,4 @@
 // @vitest-environment jsdom
-//
-// Contract test for the SettingsHeader extracted from SettingsView so the
-// header's transient render branches (`saving`, `saveError`) get hit by
-// vitest. The end-to-end layout assertions (two-row mobile, single-row
-// desktop) live in `web/tests/mobile-settings-header.spec.ts`; this file
-// covers the conditional render branches and the back-button click path.
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";

@@ -1,9 +1,4 @@
 // @vitest-environment jsdom
-//
-// Tests for SendCommentsDialog: the three-piece compose dialog that
-// forwards diff review comments to the ACP worker. Cover compose/submit
-// (asserting the POST payload), the empty/disabled state, cancel, the
-// Cmd+Enter / Escape hotkeys, and the failure path.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, waitFor } from "@testing-library/react";

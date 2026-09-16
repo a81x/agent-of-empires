@@ -1,10 +1,4 @@
 // @vitest-environment jsdom
-//
-// Contract test for the TelemetrySettings panel. Unlike the other settings
-// panels it talks to the dedicated telemetry endpoints directly (the daemon
-// owns the install id; the browser never posts to the telemetry backend), so
-// this mocks the api module and asserts the toggle calls setTelemetryConsent
-// with the right value, and that DO_NOT_TRACK forces the toggle off.
 
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import { fireEvent, render, waitFor } from "@testing-library/react";

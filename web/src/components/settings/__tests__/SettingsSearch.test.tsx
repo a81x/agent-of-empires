@@ -1,8 +1,4 @@
 // @vitest-environment jsdom
-//
-// Pins the web settings search box: it stays closed until you type, filters
-// the schema-backed settings, and emits the chosen hit (with its resolved jump
-// tab) through onJump so SettingsView can switch tabs and scroll to the field.
 
 import { describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen } from "@testing-library/react";

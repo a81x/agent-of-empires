@@ -1,5 +1,4 @@
 // @vitest-environment jsdom
-// Security invariant: the settings GET returns `hooks`, but no PATCH may carry them.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, waitFor } from "@testing-library/react";

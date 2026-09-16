@@ -1,8 +1,4 @@
 // @vitest-environment jsdom
-//
-// sweepOrphanComments iterates window.localStorage, so it needs a real DOM
-// storage (jsdom) rather than the node-env fake used by storage.test.ts.
-// Mirrors the sweepOrphanDrafts coverage in acpDrafts.test.ts (#1842).
 
 import { beforeEach, describe, expect, it } from "vitest";
 

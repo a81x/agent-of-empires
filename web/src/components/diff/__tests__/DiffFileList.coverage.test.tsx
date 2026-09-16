@@ -1,14 +1,4 @@
 // @vitest-environment jsdom
-//
-// Branch coverage for DiffFileList: loading / empty states, flat vs tree
-// rendering, the view-mode toggle, directory expand/collapse (click +
-// keyboard), per-file selection, status letters for every git status,
-// keyboard navigation, multi-repo grouping (collapse, empty repo, tree body),
-// and the per-session BasePicker popover.
-//
-// The branch picker hits `fetchBranches` / `setSessionDiffBase`; both are
-// mocked. `useWebSettings` is left real (it reads/writes localStorage), so the
-// view-mode and collapsed-dir persistence paths exercise the actual hook.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
