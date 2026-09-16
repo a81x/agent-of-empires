@@ -73,8 +73,8 @@ export interface SpawnOptions {
    * boots.
    */
   acp?: boolean;
-  /** Optional path to a FAKE_ACP_SCRIPT for structured view tests. */
-  fakeAcpScript?: string;
+  /** FAKE_ACP_SCRIPT path, or a script object written into the isolated HOME. */
+  fakeAcpScript?: string | object;
   /** Extra environment variables exported in the fake-ACP shim. Lets
    *  structured view tests toggle behavior on the fake agent (e.g. force a
    *  rejection of session/set_config_option) without writing a full
@@ -732,7 +732,13 @@ export async function spawnAoeServe(opts: SpawnOptions): Promise<ServeHandle> {
   writeFileSync(join(appDir, "config.toml"), "[app_state]\nhas_acknowledged_agent_hooks = true\n");
   const fakeAcpDebugLog = join(home, "fake-acp.log");
   if (opts.acp) {
-    writeFakeAcpShim(shimBin, opts.fakeAcpScript, fakeAcpDebugLog, opts.extraEnv);
+    let script = opts.fakeAcpScript;
+    if (script !== undefined && typeof script !== "string") {
+      const path = join(home, "fake-acp-script.json");
+      writeFileSync(path, JSON.stringify(script));
+      script = path;
+    }
+    writeFakeAcpShim(shimBin, script, fakeAcpDebugLog, opts.extraEnv);
   } else {
     writeFakeClaudeShim(shimBin);
   }
@@ -871,6 +877,7 @@ export async function spawnAoeServe(opts: SpawnOptions): Promise<ServeHandle> {
   }
 
   const pendingChildren = new Set<ChildProcess>();
+  let stopped: Promise<void> | undefined;
   let proc: ChildProcess | null = null;
   let port = 0;
   let baseUrl = "";
@@ -961,7 +968,7 @@ export async function spawnAoeServe(opts: SpawnOptions): Promise<ServeHandle> {
           handle.authToken = refreshed;
         }
       },
-      stop: cleanup,
+      stop: () => (stopped ??= cleanup()),
     };
 
     if (authMode === "passphrase" && passphrase && opts.preloginViaHarness) {
