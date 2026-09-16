@@ -1751,7 +1751,7 @@
       "specs": [
         "src/components/diff/comments/buildPrompt.test.ts",
         "src/lib/acpTypes.test.ts",
-        "src/components/acp/AcpRuntime.test.ts"
+        "src/components/acp/activityMessages.test.ts"
       ],
       "components": [
         "web/src/components/diff/comments/DiffCommentsUserCard.tsx",
@@ -1786,7 +1786,7 @@
       "id": "acp.clear-fold-remount",
       "kind": "vitest",
       "risk": "high",
-      "specs": ["src/components/acp/__tests__/AcpRuntime.clearFold.test.tsx"],
+      "specs": ["src/components/acp/__tests__/AcpRuntime.test.tsx"],
       "components": ["web/src/components/acp/AcpRuntime.tsx"]
     },
     {
@@ -2086,10 +2086,7 @@
       "id": "acp.stop-button-escalation",
       "kind": "vitest",
       "risk": "high",
-      "specs": [
-        "src/components/acp/__tests__/AcpRuntime.cancelEscalation.test.ts",
-        "src/components/acp/__tests__/useCancelEscalation.test.tsx"
-      ],
+      "specs": ["src/components/acp/__tests__/useCancelEscalation.test.tsx"],
       "components": ["web/src/components/acp/AcpRuntime.tsx", "web/src/components/acp/useCancelEscalation.ts"]
     },
     {
@@ -2496,7 +2493,7 @@
       "id": "acp.reused-tool-message-ids",
       "kind": "vitest",
       "risk": "high",
-      "specs": ["src/components/acp/AcpRuntime.test.ts"],
+      "specs": ["src/components/acp/activityMessages.test.ts"],
       "components": ["web/src/components/acp/AcpRuntime.tsx", "web/src/lib/acpTypes.ts"]
     },
     {
@@ -2537,7 +2534,7 @@
       "id": "acp.tool-stopped-sweep",
       "kind": "vitest",
       "risk": "high",
-      "specs": ["src/components/acp/AcpRuntime.test.ts", "src/components/acp/ToolCards.render.test.tsx"],
+      "specs": ["src/components/acp/activityMessages.test.ts", "src/components/acp/ToolCards.render.test.tsx"],
       "components": [
         "web/src/components/acp/AcpRuntime.tsx",
         "web/src/components/acp/StructuredView.tsx",
@@ -2562,7 +2559,7 @@
       "id": "acp.todo-group-fold",
       "kind": "vitest",
       "risk": "medium",
-      "specs": ["src/components/acp/AcpRuntime.test.ts", "src/components/acp/ToolCards.render.test.tsx"],
+      "specs": ["src/components/acp/activityMessages.test.ts", "src/components/acp/ToolCards.render.test.tsx"],
       "components": [
         "web/src/components/acp/AcpRuntime.tsx",
         "web/src/components/acp/StructuredView.tsx",
@@ -2580,7 +2577,7 @@
       "kind": "vitest",
       "risk": "medium",
       "specs": [
-        "src/components/acp/AcpRuntime.test.ts",
+        "src/components/acp/activityMessages.test.ts",
         "src/components/acp/ToolCards.render.test.tsx",
         "src/lib/agentProfiles.test.ts",
         "src/lib/acpTypes.test.ts"
@@ -3238,7 +3235,7 @@
       "id": "acp.story.composer-draft-cleared-on-send",
       "kind": "vitest",
       "risk": "medium",
-      "specs": ["src/components/acp/Composer.test.tsx", "src/components/acp/__tests__/AcpRuntime.draft.test.tsx"],
+      "specs": ["src/components/acp/Composer.test.tsx", "src/components/acp/__tests__/AcpRuntime.test.tsx"],
       "components": [
         "web/src/components/acp/Composer.tsx",
         "web/src/components/acp/AcpRuntime.tsx",

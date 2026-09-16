@@ -5,7 +5,7 @@ import { parseJsonObject } from "../../lib/acpArgs";
 import { pickMemoryRecall } from "../../lib/memoryRecall";
 import { DiffCommentsUserCard } from "../diff/comments/DiffCommentsUserCard";
 import { isDiffCommentsCardPayload, parseDiffCommentsSentinel } from "../diff/comments/buildPrompt";
-import { SUBAGENT_TASK_NAME, TODO_GROUP_NAME, TOOL_GROUP_NAME } from "./AcpRuntime";
+import { SUBAGENT_TASK_NAME, TODO_GROUP_NAME, TOOL_GROUP_NAME } from "./activityMessages";
 import { ElicitationAnswerCard } from "./ElicitationAnswerCard";
 import { Markdown } from "./Markdown";
 import { AsyncSubagentCard, SubagentCard, ToolGroupCard } from "./GroupToolCards";
