@@ -82,7 +82,8 @@
       "id": "session.create-worktree-name-collisions",
       "kind": "live-playwright",
       "risk": "medium",
-      "specs": ["tests/live/session-create-duplicate-worktree.spec.ts"]
+      "specs": ["tests/live/session-create-duplicate-worktree.spec.ts"],
+      "components": []
     },
     {
       "id": "terminal.mobile-backspace-autorepeat",
@@ -1605,8 +1606,8 @@
       "id": "session.trash.restore-banner",
       "kind": "vitest",
       "risk": "medium",
-      "specs": ["src/components/acp/__tests__/TrashedWorkerStoppedBanner.test.tsx"],
-      "components": ["web/src/components/acp/StructuredView.tsx"]
+      "specs": ["src/components/acp/__tests__/SessionBanners.test.tsx"],
+      "components": ["web/src/components/acp/StructuredView.tsx", "web/src/components/acp/SessionBanners.tsx"]
     },
     {
       "id": "acp.worker-stopping",
@@ -1755,7 +1756,8 @@
       "components": [
         "web/src/components/diff/comments/DiffCommentsUserCard.tsx",
         "web/src/components/acp/AcpRuntime.tsx",
-        "web/src/components/acp/StructuredView.tsx"
+        "web/src/components/acp/StructuredView.tsx",
+        "web/src/components/acp/ThreadMessages.tsx"
       ]
     },
     {
@@ -2071,7 +2073,7 @@
       "kind": "vitest",
       "risk": "medium",
       "specs": ["src/components/acp/__tests__/WorkingSpinner.test.tsx"],
-      "components": []
+      "components": ["web/src/components/acp/WorkingSpinner.tsx"]
     },
     {
       "id": "acp.stop-button-escalation",
@@ -2092,7 +2094,7 @@
         "src/lib/acpTypes.test.ts",
         "src/lib/acpRattle.test.ts"
       ],
-      "components": ["web/src/components/acp/StructuredView.tsx"]
+      "components": ["web/src/components/acp/StructuredView.tsx", "web/src/components/acp/WorkingSpinner.tsx"]
     },
     {
       "id": "acp.compaction-in-progress",
@@ -2105,7 +2107,7 @@
         "src/lib/acpTypes.test.ts",
         "src/hooks/useAcpSession.queue.test.ts"
       ],
-      "components": ["web/src/components/acp/StructuredView.tsx"]
+      "components": ["web/src/components/acp/StructuredView.tsx", "web/src/components/acp/WorkingSpinner.tsx"]
     },
     {
       "id": "acp.escape-no-cancel",
@@ -2127,7 +2129,6 @@
       "risk": "medium",
       "specs": [
         "tests/acp-composer-keyboard.spec.ts",
-        "src/components/acp/StructuredView.layout.test.ts",
         "src/components/acp/__tests__/StructuredViewRoot.test.tsx",
         "src/components/acp/Composer.layout.test.ts",
         "src/lib/__tests__/platform.test.ts"
@@ -2244,7 +2245,6 @@
         "src/hooks/useAcpSession.queue.test.ts",
         "src/hooks/useRespawnSession.test.tsx",
         "src/components/acp/SystemNotices.test.tsx",
-        "src/components/acp/RateLimitRecoverySection.test.tsx",
         "src/components/acp/SwitchAgentModal.test.tsx",
         "src/hooks/useAcpSession.rateLimitPark.test.ts"
       ],
@@ -2254,7 +2254,8 @@
         "web/src/components/acp/SwitchAgentModal.tsx",
         "web/src/hooks/useAcpSession.ts",
         "web/src/hooks/useRespawnSession.ts",
-        "web/src/lib/acpTypes.ts"
+        "web/src/lib/acpTypes.ts",
+        "web/src/components/acp/SystemNotices.tsx"
       ]
     },
     {
@@ -2300,8 +2301,8 @@
       "id": "acp.silent-orphan-watchdog",
       "kind": "vitest",
       "risk": "medium",
-      "specs": ["src/lib/acpTypes.test.ts", "src/components/acp/__tests__/WorkerRestartingBanner.test.tsx"],
-      "components": []
+      "specs": ["src/lib/acpTypes.test.ts", "src/components/acp/__tests__/SessionBanners.test.tsx"],
+      "components": ["web/src/components/acp/SessionBanners.tsx"]
     },
     {
       "id": "acp.usage-baseline",
@@ -2393,7 +2394,8 @@
         "web/src/components/acp/StructuredView.tsx",
         "web/src/components/acp/AcpRuntime.tsx",
         "web/src/hooks/useAcpSession.ts",
-        "web/src/lib/acpTypes.ts"
+        "web/src/lib/acpTypes.ts",
+        "web/src/components/acp/WorkingSpinner.tsx"
       ]
     },
     {
@@ -2475,7 +2477,7 @@
       "kind": "vitest",
       "risk": "medium",
       "specs": ["src/components/acp/QueuedPromptsStrip.test.tsx"],
-      "components": ["web/src/components/acp/StructuredView.tsx"]
+      "components": ["web/src/components/acp/StructuredView.tsx", "web/src/components/acp/PromptStrips.tsx"]
     },
     {
       "id": "acp.queue-send-now",
@@ -2488,7 +2490,8 @@
       "components": [
         "web/src/components/acp/StructuredView.tsx",
         "web/src/components/acp/Composer.tsx",
-        "web/src/hooks/useAcpSession.ts"
+        "web/src/hooks/useAcpSession.ts",
+        "web/src/components/acp/PromptStrips.tsx"
       ]
     },
     {
@@ -2586,7 +2589,7 @@
       "kind": "vitest",
       "risk": "high",
       "specs": ["src/components/acp/__tests__/StartupErrorBanner.test.tsx"],
-      "components": ["web/src/components/acp/StructuredView.tsx"]
+      "components": ["web/src/components/acp/StructuredView.tsx", "web/src/components/acp/StartupErrorBanner.tsx"]
     },
     {
       "id": "acp.startup-error-banner-live",
@@ -3094,7 +3097,7 @@
       "kind": "live-playwright",
       "risk": "high",
       "specs": ["tests/live/acp-stories/acp-plan-strip.spec.ts"],
-      "components": ["web/src/components/acp/StructuredView.tsx"]
+      "components": ["web/src/components/acp/StructuredView.tsx", "web/src/components/acp/PlanStrip.tsx"]
     },
     {
       "id": "story.diff-viewer-shows-files",
@@ -3235,7 +3238,7 @@
       "kind": "vitest",
       "risk": "low",
       "specs": ["src/components/acp/QueuedPromptsStrip.test.tsx", "src/components/acp/queuedPromptsLayout.test.ts"],
-      "components": ["web/src/components/acp/StructuredView.tsx"]
+      "components": ["web/src/components/acp/StructuredView.tsx", "web/src/components/acp/PromptStrips.tsx"]
     },
     {
       "id": "acp.story.fold-failed-tool-card",
@@ -3581,11 +3584,8 @@
       "id": "triage.acp-banners",
       "kind": "vitest",
       "risk": "medium",
-      "specs": [
-        "src/components/acp/__tests__/TriageBanners.test.tsx",
-        "src/components/acp/__tests__/ScheduledWakeupBanner.test.tsx"
-      ],
-      "components": ["web/src/components/acp/StructuredView.tsx"]
+      "specs": ["src/components/acp/__tests__/SessionBanners.test.tsx"],
+      "components": ["web/src/components/acp/StructuredView.tsx", "web/src/components/acp/SessionBanners.tsx"]
     },
     {
       "id": "onboarding.first-run-tutorial",
