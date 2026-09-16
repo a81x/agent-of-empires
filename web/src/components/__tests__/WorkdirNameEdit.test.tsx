@@ -10,7 +10,9 @@ import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { useRef, type ReactNode } from "react";
 
 import { reportError, reportInfo } from "../../lib/toastBus";
-import { DragSuppressContext, SessionRow, type RowBulkApi } from "../WorkspaceSidebar";
+import { DragSuppressContext } from "../sidebar/dnd";
+import { SessionRow } from "../sidebar/SessionRow";
+import type { RowBulkApi } from "../sidebar/types";
 
 // Single-row stub for the bulk-triage bridge; this harness mounts one
 // unselected row, so the menu is always single-scope. See #2312.

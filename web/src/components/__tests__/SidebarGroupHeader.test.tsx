@@ -10,7 +10,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 
-import { SidebarGroupHeader } from "../WorkspaceSidebar";
+import { SidebarGroupHeader } from "../sidebar/SidebarGroupHeader";
 import type { SidebarGroup } from "../../lib/sidebarGroups";
 import type { SessionResponse, Workspace } from "../../lib/types";
 

@@ -105,7 +105,8 @@ import {
   forwardTerminalBeforeInput,
 } from "./lib/mobileKeyboardProxy";
 import { hydrateWebUiStateFromServer, initWebUiSync } from "./lib/webUiSync";
-import { WorkspaceSidebar, SnoozeModal } from "./components/WorkspaceSidebar";
+import { WorkspaceSidebar } from "./components/WorkspaceSidebar";
+import { SnoozeModal } from "./components/sidebar/SnoozeModal";
 import { DeleteSessionDialog } from "./components/DeleteSessionDialog";
 import { StopSessionDialog } from "./components/StopSessionDialog";
 import { SwitchViewDialog } from "./components/SwitchViewDialog";

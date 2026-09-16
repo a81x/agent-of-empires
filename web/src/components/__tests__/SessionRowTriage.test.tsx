@@ -11,7 +11,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { useMemo, useRef, type ReactNode } from "react";
 
-import { DragSuppressContext, SessionRow, type RowBulkApi } from "../WorkspaceSidebar";
+import { DragSuppressContext } from "../sidebar/dnd";
+import { SessionRow } from "../sidebar/SessionRow";
+import type { RowBulkApi } from "../sidebar/types";
 
 // Single-row stub for the bulk-triage bridge: these tests mount one
 // unselected row, so the context menu is always single-scope. See #2312.

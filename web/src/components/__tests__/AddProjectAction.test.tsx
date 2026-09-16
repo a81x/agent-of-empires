@@ -11,7 +11,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { useMemo, useRef, type ReactNode } from "react";
 
-import { DragSuppressContext, SessionRow, type RowBulkApi } from "../WorkspaceSidebar";
+import { DragSuppressContext } from "../sidebar/dnd";
+import { SessionRow } from "../sidebar/SessionRow";
+import type { RowBulkApi } from "../sidebar/types";
 import { useSidebarTriage } from "../../hooks/useSidebarTriage";
 import type { SessionResponse, Workspace } from "../../lib/types";
 

@@ -11,12 +11,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 
-import {
-  SnoozeModal,
-  SNOOZE_PRESETS,
-  formatSnoozeRemainingShort,
-  makeOptimisticSnoozedUntil,
-} from "../WorkspaceSidebar";
+import { SnoozeModal } from "../sidebar/SnoozeModal";
+import { SNOOZE_PRESETS, formatSnoozeRemainingShort } from "../sidebar/format";
+import { makeOptimisticSnoozedUntil } from "../../lib/sidebarOptimistic";
 
 afterEach(() => {
   cleanup();
