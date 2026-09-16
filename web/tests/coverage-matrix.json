@@ -2000,11 +2000,12 @@
       "id": "acp.attachments",
       "kind": "live-playwright",
       "risk": "high",
-      "specs": ["tests/live/acp-attachment.spec.ts", "src/components/acp/Composer.paste.test.tsx"],
+      "specs": ["tests/live/acp-attachment.spec.ts", "src/components/acp/Composer.test.tsx"],
       "components": [
         "web/src/components/acp/Composer.tsx",
         "web/src/components/acp/AcpRuntime.tsx",
-        "web/src/components/acp/StructuredView.tsx"
+        "web/src/components/acp/StructuredView.tsx",
+        "web/src/components/acp/ComposerControls.tsx"
       ]
     },
     {
@@ -2126,8 +2127,8 @@
       "id": "acp.escape-no-cancel-contract",
       "kind": "vitest",
       "risk": "medium",
-      "specs": ["src/components/acp/Composer.escape.test.tsx"],
-      "components": []
+      "specs": ["src/components/acp/Composer.test.tsx"],
+      "components": ["web/src/components/acp/ComposerControls.tsx"]
     },
     {
       "id": "acp.composer-ios-keyboard-reservation",
@@ -2136,7 +2137,7 @@
       "specs": [
         "tests/acp-composer-keyboard.spec.ts",
         "src/components/acp/__tests__/StructuredViewRoot.test.tsx",
-        "src/components/acp/Composer.layout.test.ts",
+        "src/components/acp/composerInput.test.ts",
         "src/lib/__tests__/platform.test.ts"
       ],
       "components": [
@@ -2159,28 +2160,37 @@
       "specs": [
         "tests/acp-composer-recall.spec.ts",
         "src/components/acp/recallNav.test.ts",
-        "src/components/acp/Composer.recall.test.ts",
-        "src/components/acp/Composer.recall.dom.test.tsx"
+        "src/components/acp/composerInput.test.ts",
+        "src/components/acp/Composer.test.tsx"
       ],
-      "components": ["web/src/components/acp/Composer.tsx", "web/src/components/acp/recallNav.ts"]
+      "components": [
+        "web/src/components/acp/Composer.tsx",
+        "web/src/components/acp/recallNav.ts",
+        "web/src/components/acp/ComposerControls.tsx"
+      ]
     },
     {
       "id": "acp.composer-slash-skill-provenance",
       "kind": "vitest",
       "risk": "medium",
-      "specs": ["src/components/acp/Composer.slashProvenance.test.tsx", "src/lib/skillProvenance.test.ts"],
+      "specs": ["src/components/acp/Composer.test.tsx", "src/lib/skillProvenance.test.ts"],
       "components": [
         "web/src/components/acp/Composer.tsx",
         "web/src/lib/skillProvenance.ts",
-        "web/src/components/ProvenanceBadge.tsx"
+        "web/src/components/ProvenanceBadge.tsx",
+        "web/src/components/acp/ComposerControls.tsx"
       ]
     },
     {
       "id": "acp.composer-usage-tooltip",
       "kind": "vitest",
       "risk": "low",
-      "specs": ["src/components/acp/Composer.usageHint.test.tsx"],
-      "components": ["web/src/components/acp/Composer.tsx", "web/src/components/Tooltip.tsx"]
+      "specs": ["src/components/acp/Composer.test.tsx"],
+      "components": [
+        "web/src/components/acp/Composer.tsx",
+        "web/src/components/Tooltip.tsx",
+        "web/src/components/acp/ComposerControls.tsx"
+      ]
     },
     {
       "id": "acp.config-pickers",
@@ -2507,15 +2517,13 @@
       "id": "acp.queue-send-now",
       "kind": "vitest",
       "risk": "medium",
-      "specs": [
-        "src/components/acp/QueuedPromptsStrip.test.tsx",
-        "src/components/acp/Composer.toolbarButtons.test.tsx"
-      ],
+      "specs": ["src/components/acp/QueuedPromptsStrip.test.tsx", "src/components/acp/Composer.test.tsx"],
       "components": [
         "web/src/components/acp/StructuredView.tsx",
         "web/src/components/acp/Composer.tsx",
         "web/src/hooks/useAcpSession.ts",
-        "web/src/components/acp/PromptStrips.tsx"
+        "web/src/components/acp/PromptStrips.tsx",
+        "web/src/components/acp/ComposerControls.tsx"
       ]
     },
     {
@@ -3159,14 +3167,14 @@
       "id": "acp.story.composer-ios-dictation",
       "kind": "vitest",
       "risk": "medium",
-      "specs": ["src/components/acp/Composer.dictation.test.ts", "src/components/acp/useDictationBurstGuard.test.ts"],
+      "specs": ["src/components/acp/useDictationBurstGuard.test.ts"],
       "components": ["web/src/components/acp/Composer.tsx"]
     },
     {
       "id": "acp.composer-ios-dictation-state-machine",
       "kind": "vitest",
       "risk": "medium",
-      "specs": ["src/components/acp/Composer.dictation.test.ts"],
+      "specs": ["src/components/acp/useDictationBurstGuard.test.ts"],
       "components": ["web/src/components/acp/Composer.tsx"]
     },
     {
@@ -3208,25 +3216,34 @@
       "id": "acp.story.composer-draft-reload",
       "kind": "vitest",
       "risk": "medium",
-      "specs": ["src/components/acp/Composer.draft.test.tsx"],
-      "components": ["web/src/components/acp/Composer.tsx", "web/src/lib/acpDrafts.ts"]
+      "specs": ["src/components/acp/Composer.test.tsx"],
+      "components": [
+        "web/src/components/acp/Composer.tsx",
+        "web/src/lib/acpDrafts.ts",
+        "web/src/components/acp/ComposerControls.tsx"
+      ]
     },
     {
       "id": "acp.story.composer-draft-session-switch",
       "kind": "vitest",
       "risk": "medium",
-      "specs": ["src/components/acp/Composer.draft.test.tsx"],
-      "components": ["web/src/components/acp/Composer.tsx", "web/src/lib/acpDrafts.ts"]
+      "specs": ["src/components/acp/Composer.test.tsx"],
+      "components": [
+        "web/src/components/acp/Composer.tsx",
+        "web/src/lib/acpDrafts.ts",
+        "web/src/components/acp/ComposerControls.tsx"
+      ]
     },
     {
       "id": "acp.story.composer-draft-cleared-on-send",
       "kind": "vitest",
       "risk": "medium",
-      "specs": ["src/components/acp/Composer.draft.test.tsx", "src/components/acp/__tests__/AcpRuntime.draft.test.tsx"],
+      "specs": ["src/components/acp/Composer.test.tsx", "src/components/acp/__tests__/AcpRuntime.draft.test.tsx"],
       "components": [
         "web/src/components/acp/Composer.tsx",
         "web/src/components/acp/AcpRuntime.tsx",
-        "web/src/lib/acpDrafts.ts"
+        "web/src/lib/acpDrafts.ts",
+        "web/src/components/acp/ComposerControls.tsx"
       ]
     },
     {
@@ -3254,15 +3271,19 @@
       "id": "acp.story.queue-recall-arrow",
       "kind": "vitest",
       "risk": "medium",
-      "specs": ["src/components/acp/recallNav.test.ts", "src/components/acp/Composer.recall.dom.test.tsx"],
-      "components": ["web/src/components/acp/Composer.tsx", "web/src/components/acp/StructuredView.tsx"]
+      "specs": ["src/components/acp/recallNav.test.ts", "src/components/acp/Composer.test.tsx"],
+      "components": [
+        "web/src/components/acp/Composer.tsx",
+        "web/src/components/acp/StructuredView.tsx",
+        "web/src/components/acp/ComposerControls.tsx"
+      ]
     },
     {
       "id": "acp.story.composer-toolbar-insert",
       "kind": "vitest",
       "risk": "low",
-      "specs": ["src/components/acp/Composer.toolbarButtons.test.tsx"],
-      "components": ["web/src/components/acp/Composer.tsx"]
+      "specs": ["src/components/acp/Composer.test.tsx"],
+      "components": ["web/src/components/acp/Composer.tsx", "web/src/components/acp/ComposerControls.tsx"]
     },
     {
       "id": "acp.story.composer-slash-pick-no-arg",
@@ -3270,10 +3291,14 @@
       "risk": "high",
       "specs": [
         "tests/live/acp-stories/composer-slash-pick-no-arg.spec.ts",
-        "src/components/acp/Composer.slashCommand.dom.test.tsx",
+        "src/components/acp/Composer.test.tsx",
         "src/components/acp/slashCompletion.test.ts"
       ],
-      "components": ["web/src/components/acp/Composer.tsx", "web/src/components/acp/slashCompletion.ts"]
+      "components": [
+        "web/src/components/acp/Composer.tsx",
+        "web/src/components/acp/slashCompletion.ts",
+        "web/src/components/acp/ComposerControls.tsx"
+      ]
     },
     {
       "id": "acp.story.queue-fold-unfold",
@@ -3791,11 +3816,12 @@
       "id": "plugins.composer-actions",
       "kind": "vitest",
       "risk": "medium",
-      "specs": [
-        "src/components/plugin/__tests__/PluginSlots.test.tsx",
-        "src/components/acp/Composer.pluginComposerActions.test.tsx"
-      ],
-      "components": ["web/src/components/plugin/PluginSlots.tsx", "web/src/components/acp/Composer.tsx"]
+      "specs": ["src/components/plugin/__tests__/PluginSlots.test.tsx", "src/components/acp/Composer.test.tsx"],
+      "components": [
+        "web/src/components/plugin/PluginSlots.tsx",
+        "web/src/components/acp/Composer.tsx",
+        "web/src/components/acp/ComposerControls.tsx"
+      ]
     }
   ]
 }
