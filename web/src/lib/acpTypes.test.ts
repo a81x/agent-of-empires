@@ -1301,7 +1301,7 @@ describe("turnActive: daemon truth plus an optimistic overlay (#3417)", () => {
     // running turn, and the daemon deliberately emits no extra terminal event
     // for them, so five prompts closed with one Stopped. The old counters
     // ended 5 vs 1 and the composer showed Stop plus a spinner forever.
-    const { acpHookReducer } = await import("../hooks/useAcpSession");
+    const { reducer: acpHookReducer } = await import("../hooks/useAcpSession");
     let state = applyEvent(emptyAcpState(), {
       session_id: "s-1",
       seq: 1,
@@ -1353,7 +1353,7 @@ describe("turnActive: daemon truth plus an optimistic overlay (#3417)", () => {
     // #1170. The user taps Send the instant the prior turn ends, so the
     // optimistic dispatch lands before that turn's Stopped frame. The
     // unacknowledged id holds the spinner up through it.
-    const { acpHookReducer } = await import("../hooks/useAcpSession");
+    const { reducer: acpHookReducer } = await import("../hooks/useAcpSession");
     let state = applyEvent(emptyAcpState(), {
       session_id: "s-1",
       seq: 1,
@@ -1422,7 +1422,7 @@ describe("turnActive: daemon truth plus an optimistic overlay (#3417)", () => {
   });
 
   it("optimistic user_prompt plus its matching echo settles exactly that id", async () => {
-    const { acpHookReducer } = await import("../hooks/useAcpSession");
+    const { reducer: acpHookReducer } = await import("../hooks/useAcpSession");
     let state = acpHookReducer(emptyAcpState(), { kind: "user_prompt", id: "cmp-echo", text: "echo me" });
     expect(state.inflightPromptIds).toEqual(["cmp-echo"]);
     state = applyEvent(state, {
@@ -1457,7 +1457,7 @@ describe("turnActive: daemon truth plus an optimistic overlay (#3417)", () => {
     // made the echo of an idle session's FIRST prompt look steered. The
     // per-turn resets were then skipped and the worker banners survived a
     // prompt that actually opened a fresh turn.
-    const { acpHookReducer } = await import("../hooks/useAcpSession");
+    const { reducer: acpHookReducer } = await import("../hooks/useAcpSession");
     let state = applyEvent(emptyAcpState(), {
       session_id: "s-1",
       seq: 1,
@@ -1580,7 +1580,7 @@ describe("compaction reminder dismissal", () => {
   });
 
   it("survives usage climbing further, and re-arms after a context boundary", async () => {
-    const { acpHookReducer } = await import("../hooks/useAcpSession");
+    const { reducer: acpHookReducer } = await import("../hooks/useAcpSession");
     let state = applyEvent(emptyAcpState(), usageFrame(1, 160_000));
 
     state = acpHookReducer(state, { kind: "dismiss_compaction_reminder" });
@@ -1610,7 +1610,7 @@ describe("compaction reminder dismissal", () => {
   });
 
   it("re-arms on every boundary that nulls the usage snapshot", async () => {
-    const { acpHookReducer } = await import("../hooks/useAcpSession");
+    const { reducer: acpHookReducer } = await import("../hooks/useAcpSession");
     const boundaries: AcpFrame["event"][] = [
       "ConversationCompacted",
       "SessionCleared",
@@ -1642,7 +1642,7 @@ describe("acpHookReducer / dismiss_primer", () => {
   // re-seeds contextPrimerAvailable with a new resetSeq so a later
   // incident still surfaces the banner. See #1110.
   it("clears contextPrimerAvailable", async () => {
-    const { acpHookReducer } = await import("../hooks/useAcpSession");
+    const { reducer: acpHookReducer } = await import("../hooks/useAcpSession");
     const seeded: AcpState = {
       ...emptyAcpState(),
       contextPrimerAvailable: {
@@ -1694,7 +1694,7 @@ describe("applyEvent / ModeSwitchFailed", () => {
 
 describe("acpHookReducer / dismiss_mode_switch_failed", () => {
   it("clears the notice", async () => {
-    const { acpHookReducer } = await import("../hooks/useAcpSession");
+    const { reducer: acpHookReducer } = await import("../hooks/useAcpSession");
     const seeded: AcpState = {
       ...emptyAcpState(),
       modeSwitchFailed: {
