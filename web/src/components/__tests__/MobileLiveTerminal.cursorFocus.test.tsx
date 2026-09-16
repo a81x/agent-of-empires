@@ -10,7 +10,7 @@
 
 import { describe, expect, it } from "vitest";
 import { render } from "@testing-library/react";
-import { Row } from "../MobileLiveTerminal";
+import { Row } from "../live-terminal/TermRow";
 import type { AnsiSegment } from "../../lib/ansi";
 
 function seg(text: string): AnsiSegment {
