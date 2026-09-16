@@ -2,7 +2,58 @@
 
 import type { Locator, Page } from "@playwright/test";
 import { test, expect, authHeaders, bootDashboard, type ServeHandle } from "../helpers/liveTest";
-import { loginWithPassphrase } from "../helpers/aoeServe";
+import { loginWithPassphrase, spawnAoeServe } from "../helpers/aoeServe";
+
+// #1189: the theme resolver once deadlocked per request, which mocked specs cannot see.
+test.describe("theme API", () => {
+  let handle: ServeHandle;
+  test.beforeAll(async ({}, workerInfo) => {
+    handle = await spawnAoeServe({ workerIndex: workerInfo.workerIndex, parallelIndex: workerInfo.parallelIndex });
+  });
+  test.afterAll(async () => {
+    await handle?.stop();
+  });
+
+  const fetchTheme = async (name: string) => {
+    const res = await fetch(`${handle.baseUrl}/api/themes/${name}`, { signal: AbortSignal.timeout(2_000) });
+    expect(res.ok, `${name} did not return`).toBe(true);
+    return res.json();
+  };
+
+  test("GET /api/themes/:name returns within 2s and is not stuck in resolve", async () => {
+    const body = await fetchTheme("dracula");
+    expect(body.name).toBe("dracula");
+    expect(body.source).toBe("builtin");
+    expect(body.appearance).toBe("dark");
+    expect(body.web.cssVars["--color-surface-900"]).toBe(DRACULA_SURFACE);
+    expect(body.terminal.cssVars["--term-bg"]).toBe(DRACULA_SURFACE);
+    expect(body.syntax.shikiTheme).toBe("dracula");
+  });
+
+  test("GET /api/themes/:name handles all 6 builtins sequentially without hanging", async () => {
+    for (const name of ["empire", "phosphor", "tokyo-night-storm", "catppuccin-latte", "dracula", "rose-pine"]) {
+      const body = await fetchTheme(name);
+      expect(body.name).toBe(name);
+      expect(body.web.cssVars).toBeTruthy();
+    }
+  });
+
+  test("dashboard chrome repaints when theme switches via API", async ({ page }) => {
+    const surface = () =>
+      page.evaluate(() => document.documentElement.style.getPropertyValue("--color-surface-900").trim());
+    await page.goto(`${handle.baseUrl}/`);
+    await expect
+      .poll(async () => (await surface()).length > 0, { timeout: 10_000, intervals: [100, 250, 500] })
+      .toBe(true);
+    const patch = await page.request.patch(`${handle.baseUrl}/api/theme`, { data: { name: "dracula" } });
+    expect(patch.ok()).toBe(true);
+    await page.evaluate((name) => {
+      window.dispatchEvent(new CustomEvent("aoe:theme-picker-changed", { detail: { name } }));
+    }, "dracula");
+    await expectRepaint(page);
+    expect(await page.evaluate(() => getComputedStyle(document.body).backgroundColor)).toMatch(/40,\s*42,\s*54/);
+  });
+});
 
 const DRACULA_SURFACE = "#282a36";
 const labelledSelect = (page: Page, label: RegExp) =>

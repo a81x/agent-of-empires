@@ -70,7 +70,7 @@
       "id": "dashboard.golden-path",
       "kind": "live-playwright",
       "risk": "high",
-      "specs": ["tests/live/golden-path.spec.ts"],
+      "specs": ["tests/live/session-lifecycle.spec.ts"],
       "components": [
         "web/src/components/Dashboard.tsx",
         "web/src/components/TerminalView.tsx",
@@ -998,7 +998,7 @@
       "id": "wizard.multi-repo-stale-base",
       "kind": "live-playwright",
       "risk": "high",
-      "specs": ["tests/live/multi-repo-stale-base.spec.ts"],
+      "specs": ["tests/live/repositories.spec.ts"],
       "components": ["web/src/components/session-wizard/SessionWizard.tsx"]
     },
     {
@@ -1680,11 +1680,7 @@
       "id": "right-panel.diff",
       "kind": "live-playwright",
       "risk": "medium",
-      "specs": [
-        "tests/live/right-panel-diff-files.spec.ts",
-        "tests/live/right-panel-large-diff.spec.ts",
-        "tests/live/right-panel-notifications.spec.ts"
-      ],
+      "specs": ["tests/live/right-panel.spec.ts"],
       "components": [
         "web/src/components/DiffPane.tsx",
         "web/src/components/diff/DiffFileList.tsx",
@@ -1723,7 +1719,7 @@
       "id": "right-panel.files-pane-live",
       "kind": "live-playwright",
       "risk": "medium",
-      "specs": ["tests/live/right-panel-files.spec.ts"],
+      "specs": ["tests/live/right-panel.spec.ts"],
       "components": [
         "web/src/components/FilesPane.tsx",
         "web/src/components/diff/FileContentViewer.tsx",
@@ -1927,7 +1923,7 @@
       "id": "connectivity.disconnect-banner",
       "kind": "live-playwright",
       "risk": "medium",
-      "specs": ["tests/live/disconnect-banner.spec.ts"],
+      "specs": ["tests/live/session-lifecycle.spec.ts"],
       "components": ["web/src/components/DisconnectBanner.tsx"]
     },
     {
@@ -1941,7 +1937,7 @@
       "id": "git-clone",
       "kind": "live-playwright",
       "risk": "medium",
-      "specs": ["tests/live/git-clone.spec.ts"],
+      "specs": ["tests/live/repositories.spec.ts"],
       "components": ["web/src/components/session-wizard/steps/ProjectStep.tsx"]
     },
     {
@@ -2221,7 +2217,7 @@
       "id": "acp.mode-switch-tmux-teardown",
       "kind": "live-playwright",
       "risk": "high",
-      "specs": ["tests/live/mode-switch-kills-tmux.spec.ts"],
+      "specs": ["tests/live/session-lifecycle.spec.ts"],
       "components": ["src/server/api/acp.rs"]
     },
     {
@@ -2602,7 +2598,7 @@
       "id": "ensure-session-restart",
       "kind": "live-playwright",
       "risk": "high",
-      "specs": ["tests/live/ensure-session-restart.spec.ts"],
+      "specs": ["tests/live/session-lifecycle.spec.ts"],
       "components": []
     },
     {
@@ -3019,7 +3015,7 @@
       "risk": "medium",
       "specs": [
         "tests/diff-base-override.spec.ts",
-        "tests/live/diff-base-from-worktree.spec.ts",
+        "tests/live/repositories.spec.ts",
         "src/components/diff/__tests__/DiffFileList.coverage.test.tsx"
       ],
       "components": ["web/src/components/diff/DiffFileList.tsx"]
@@ -3648,7 +3644,7 @@
       "id": "sessions.file-watch-peer-propagation",
       "kind": "live-playwright",
       "risk": "high",
-      "specs": ["tests/live/file-watch-peer-propagation.spec.ts"],
+      "specs": ["tests/live/session-lifecycle.spec.ts"],
       "components": ["web/src/components/WorkspaceSidebar.tsx"]
     },
     {

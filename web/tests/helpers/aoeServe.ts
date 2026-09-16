@@ -24,7 +24,7 @@ import { expect } from "@playwright/test";
 import { setTimeout as delay } from "node:timers/promises";
 import { once } from "node:events";
 import { isolateEnv } from "./isolatedEnv";
-import { initWorkingRepo } from "./gitFixture";
+import { commitAll, initWorkingRepo, writeFiles } from "./gitFixture";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -154,15 +154,29 @@ export async function waitForView(
     .toBe(expected);
 }
 
-/** A `seedFn` that git-inits `~/<subdir>` and registers it with `aoe add`. */
+/**
+ * A `seedFn` that creates `~/<subdir>` (a git repo unless `git: false`), commits `committed`, writes
+ * `files` uncommitted, runs `prepare`, and registers the directory with `aoe add`.
+ */
 export function seedSessionViaAoeAdd(opts: {
   title: string;
   tool?: string;
   subdir?: string;
+  git?: boolean;
+  committed?: Record<string, string>;
+  files?: Record<string, string>;
+  prepare?: (projectDir: string, env: NodeJS.ProcessEnv) => void;
 }): (seedEnv: { home: string; shimBin: string; env: NodeJS.ProcessEnv }) => void {
   return ({ home, env }) => {
     const projectDir = join(home, opts.subdir ?? "project");
-    initWorkingRepo(projectDir, env);
+    if (opts.git === false) mkdirSync(projectDir, { recursive: true });
+    else initWorkingRepo(projectDir, env);
+    if (opts.committed) {
+      writeFiles(projectDir, opts.committed);
+      commitAll(projectDir, "baseline", env);
+    }
+    if (opts.files) writeFiles(projectDir, opts.files);
+    opts.prepare?.(projectDir, env);
     const addRes = spawnSync(resolveAoeBinary(), ["add", projectDir, "-t", opts.title, "-c", opts.tool ?? "claude"], {
       env,
     });
