@@ -6,7 +6,7 @@ import { DiffFileList } from "./diff/DiffFileList";
 import { DiffFileViewer } from "./diff/DiffFileViewer";
 import { CommentsBanner } from "./diff/comments/CommentsBanner";
 import { SendCommentsDialog } from "./diff/comments/SendCommentsDialog";
-import { PluginPaneBody } from "./plugin/PluginSlots";
+import { PluginPaneBody } from "./plugin/PluginPane";
 import type { RightPanelView } from "../lib/rightPanelView";
 import { isPluginPaneId, type PluginPane } from "../lib/pluginPanes";
 import type { RepoBase, RichDiffFile, SessionResponse } from "../lib/types";
