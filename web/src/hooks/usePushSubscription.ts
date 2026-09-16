@@ -1,16 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { isIOS, isStandalone } from "../lib/platform";
 
-// Minimal end-to-end push hook. Returns the current state and primitives
-// for the NotificationSettings UI: enable(), disable(), sendTest(),
-// refresh(). Works with the server endpoints /api/push/{status,
-// vapid-public-key, subscribe, unsubscribe, test}.
-//
-// iOS note: Push requires the PWA to have been installed via "Add to
-// Home Screen" AND opened standalone. In Safari tabs, `PushManager` is
-// present but permission requests silently fail. Detection is in the
-// `state.kind === 'unsupported'` path.
-
 export type PushState =
   | { kind: "loading" }
   | { kind: "off" }
@@ -30,12 +20,6 @@ export type PushState =
 const supportsPush = (): boolean =>
   typeof window !== "undefined" && "serviceWorker" in navigator && "PushManager" in window && "Notification" in window;
 
-/** Web Push requires a secure context. Localhost and 127.0.0.1 are
- *  allowed over http for dev, but any LAN IP or hostname must be
- *  served over https. This is especially relevant on mobile where
- *  users hit the dashboard at `http://<laptop-ip>:<port>` and are
- *  surprised push doesn't work. Tunnel mode (aoe serve --remote)
- *  provides https out of the box via Cloudflare. */
 const isSecureOrigin = (): boolean => {
   if (typeof window === "undefined") return false;
   if (window.isSecureContext) return true;
@@ -85,13 +69,7 @@ export function usePushSubscription() {
       const reg = await navigator.serviceWorker.ready;
       const sub = await reg.pushManager.getSubscription();
       if (perm === "granted" && sub) {
-        // Auto-heal: re-register the existing browser subscription on every
-        // open. The server upserts by endpoint, so this re-binds the sub's
-        // owner to the current auth token and re-inserts it if the server had
-        // dropped the record (e.g. the token rotated and the rotation-prune
-        // path removed the old-owned entry). Without this, the browser still
-        // reports "enabled" while the server no longer delivers to it (#3386).
-        // Best-effort: a failure here just leaves the sub as the server has it.
+        // Re-register on every open so the server re-binds the sub to the current token (#3386).
         const json = sub.toJSON();
         await fetch("/api/push/subscribe", {
           method: "POST",
@@ -168,8 +146,6 @@ export function usePushSubscription() {
         }),
       });
       if (!subscribeResp.ok) {
-        // Roll back the browser-side subscription so we don't end up with
-        // a subscription the server has no record of.
         await sub.unsubscribe().catch(() => {});
         setState({
           kind: "error",
@@ -239,12 +215,6 @@ export function usePushSubscription() {
     }
   }, []);
 
-  // Re-subscribe: unsubscribe then re-subscribe in a single click. Used
-  // by the "Re-subscribe" affordance in NotificationSettings to refresh
-  // the server-side `Subscription.origin` field after the user moved
-  // the deployment to a different port or origin. Existing subs from
-  // before the origin-tracking landed have no recorded origin and get
-  // skipped on send (#1188); re-subscribing refreshes the entry.
   const resubscribe = useCallback(async () => {
     await disable();
     await enable();

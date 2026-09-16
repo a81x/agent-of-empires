@@ -2,16 +2,6 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { EMPTY_STORAGE, loadComments, saveComments } from "../components/diff/comments/storage";
 import type { DiffComment } from "../components/diff/comments/types";
 
-// `useDiffComments` switches the React state when the active sessionId
-// changes by calling `loadComments(newSessionId)`. The hook itself
-// requires a React renderer + DOM to test directly, but its contract
-// collapses to: "after a sessionId change, the in-view data must come
-// from the new session's storage envelope, not the previous one's".
-// These tests exercise that storage round-trip in the exact pattern the
-// hook uses (load on session change, save on state mutation), so a
-// regression in the storage layer's isolation guarantees would also
-// break the hook.
-
 function installFakeLocalStorage() {
   const data = new Map<string, string>();
   const fake: Storage = {
@@ -93,9 +83,6 @@ describe("useDiffComments contract", () => {
   });
 
   it("null sessionId yields the empty envelope (no save)", () => {
-    // The hook explicitly guards `if (!sessionId) return;` in its save
-    // and load effects, so a logged-out / pre-selection render stays
-    // empty and never writes a key with the literal string "null".
     expect((globalThis as { localStorage: Storage }).localStorage.length).toBe(0);
     expect({ ...EMPTY_STORAGE }).toEqual(EMPTY_STORAGE);
   });

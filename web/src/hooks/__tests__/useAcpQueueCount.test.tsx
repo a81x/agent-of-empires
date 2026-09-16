@@ -10,8 +10,6 @@ function entryKey(id: string): string {
   return `${STORAGE_KEY_PREFIX}${id}`;
 }
 
-// Write a persisted acp-state entry shaped like useAcpSession's
-// persistState output, with `queuedPrompts` of the given length.
 function writeEntry(id: string, queued: number, savedAt = Date.now()): void {
   const queuedPrompts = Array.from({ length: queued }, (_, i) => ({
     id: `${id}-${i}`,
@@ -29,8 +27,6 @@ function writeEntry(id: string, queued: number, savedAt = Date.now()): void {
 
 beforeEach(() => {
   localStorage.clear();
-  // Reset the module-level in-memory count cache between cases so a
-  // prior test's writes don't leak into the next.
   clearQueueCount();
 });
 
@@ -58,8 +54,6 @@ describe("useQueuedCountForSessions", () => {
     expect(result.current).toBe(3);
   });
 
-  // Story: queued prompts drain (Stopped pops the head) or the queue is
-  // cleared; the badge updates to the remaining count and disappears at 0.
   it("updates same-tab as the queue grows and drains via persistState", () => {
     const { result } = renderHook(() => useQueuedCountForSessions(["a"]));
     expect(result.current).toBe(0);
@@ -74,8 +68,6 @@ describe("useQueuedCountForSessions", () => {
     expect(result.current).toBe(0);
   });
 
-  // Story: one tab enqueues a prompt; another tab's sidebar updates via
-  // the `storage` event without polling.
   it("updates cross-tab via a storage event without a local write", () => {
     const { result } = renderHook(() => useQueuedCountForSessions(["a"]));
     expect(result.current).toBe(0);
@@ -142,7 +134,6 @@ describe("useQueuedCountForSessions", () => {
     act(() => setQueueCount("a", 2));
     expect(result.current).toBe(2);
     unmount();
-    // A leaked listener would still overwrite the shared cache after unmount.
     act(() => {
       window.dispatchEvent(
         new StorageEvent("storage", {

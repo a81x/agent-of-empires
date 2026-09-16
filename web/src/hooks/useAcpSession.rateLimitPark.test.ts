@@ -1,11 +1,4 @@
 // @vitest-environment jsdom
-//
-// Regression tests for #3688: the redelivery-cap park is the second
-// daemon-side state that answers "sent" for a session with no worker. The
-// client's compensating enqueue and its "Send now" affordance were both
-// keyed on the first one (`workerIdleStopped`) alone, so a recovery prompt
-// that 503'd on a slow resume vanished with no message, and a queued row
-// stranded behind the park had no manual send.
 
 import { act, renderHook } from "@testing-library/react";
 import { createElement, type ReactNode } from "react";
@@ -34,9 +27,7 @@ class FakeWebSocket {
   close(): void {
     this.readyState = FakeWebSocket.CLOSED;
   }
-  send(): void {
-    /* no-op */
-  }
+  send(): void {}
 }
 
 async function flushAsync(): Promise<void> {
@@ -66,8 +57,6 @@ describe("useAcpSession rate-limit redelivery-cap park (#3688)", () => {
             : [];
           return new Response(JSON.stringify({ frames, lost: false, highest_seq: parked ? 1 : 0 }), { status: 200 });
         }
-        // The park routes the prompt through `send_turn`, whose resume did
-        // not produce a live worker inside the readiness window.
         if (url.includes("/acp/prompt") && method === "POST") {
           return new Response("worker_not_ready", { status: 503 });
         }
@@ -125,8 +114,6 @@ describe("useAcpSession rate-limit redelivery-cap park (#3688)", () => {
   });
 
   it("drops it when the session is in neither workerless-but-sendable state", async () => {
-    // The control: without a park (and without idle dormancy) a 503 means the
-    // daemon queued nothing and the client must not invent a row.
     stubFetch(false);
     const { result } = renderHook(() => useAcpSession("sess-cap-live", "running", null, null), { wrapper });
     await flushAsync();

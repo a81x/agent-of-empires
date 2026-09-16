@@ -69,10 +69,6 @@ describe("useRespawnSession resetKey", () => {
     expect(result.current.error).toBeNull();
   });
 
-  // #3152: a rate limit whose agent reported no reset has no timestamp to
-  // key on, so consecutive incidents share one key. The null in between (the
-  // reducer clears the banner on the next prompt) has to drop the stored
-  // status, or the second incident opens showing the first one's failure.
   it("starts fresh for a second incident that reuses the same key", async () => {
     vi.stubGlobal(
       "fetch",
@@ -94,7 +90,6 @@ describe("useRespawnSession resetKey", () => {
     });
     expect(result.current.state).toBe("failed");
 
-    // Banner cleared by the next prompt, then a fresh limit with the same key.
     rerender({ resetKey: null });
     rerender({ resetKey: "unknown" });
 
@@ -102,11 +97,6 @@ describe("useRespawnSession resetKey", () => {
     expect(result.current.error).toBeNull();
   });
 
-  // #3152 follow-up: the request itself can straddle the incident boundary.
-  // Matching on resetKey alone would let this one's success land in the new
-  // incident, because the key repeats: an unreported reset keys on a literal,
-  // and the key in between is either the null the next prompt sets or another
-  // incident's reported reset.
   it.each([
     ["a null in between", [null, "unknown"] as (string | null)[]],
     ["another reset in between", ["2099-01-01T09:30:00Z", "unknown"] as (string | null)[]],

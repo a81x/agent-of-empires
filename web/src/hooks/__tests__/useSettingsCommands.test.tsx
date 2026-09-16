@@ -1,9 +1,4 @@
 // @vitest-environment jsdom
-//
-// Contract test for the per-setting command-palette entries (#2108). Asserts
-// schema -> entry generation (local_only omitted), that writable toggles flip
-// inline through the default profile, and that every other widget, elevation
-// toggles, and read-only mode produce a jump instead of a write.
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { renderHook, waitFor } from "@testing-library/react";

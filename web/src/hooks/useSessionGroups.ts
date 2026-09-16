@@ -5,9 +5,6 @@ import { buildSessionGroups, type SidebarGroup } from "../lib/sidebarGroups";
 import type { PluginSortContext, SidebarSortMode } from "../lib/sidebarSort";
 import { useIdleDecayWindowMs } from "../lib/idleDecay";
 
-// Distinct from the repo axis prefix (`aoe-repo-collapsed-`) so collapse
-// state is per-axis: collapsing a user group never changes a repo group's
-// state and vice versa. See #1234.
 const COLLAPSED_KEY_PREFIX = "aoe-group-collapsed-";
 
 function loadCollapsed(id: string): boolean {
@@ -36,12 +33,7 @@ export function useSessionGroups(
     [workspaces, idleDecayWindowMs, sortMode, pluginSort, collapsedMap],
   );
 
-  // The updater stays pure: it reads the current value but performs no
-  // storage IO. Writing inside the updater is unsafe under React
-  // StrictMode, which double-invokes updaters in dev: the first pass's
-  // write would make the second pass's `loadCollapsed` read see the new
-  // value and compute the opposite result, so the toggle no-ops and
-  // storage desyncs from state. Persistence runs in an effect instead.
+  // Keep the updater pure: StrictMode double-invokes it, so persist in an effect.
   const toggleGroupCollapsed = useCallback((groupId: string) => {
     setCollapsedMap((prev) => {
       const current = prev[groupId] ?? loadCollapsed(groupId);

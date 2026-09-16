@@ -1,12 +1,3 @@
-// Structured view subscription hook.
-//
-// Connects to /sessions/{id}/acp/ws, receives AcpBroadcastFrame
-// JSON, and reduces them into a AcpState. On `lagged` notices the
-// hook hits the snapshot endpoint to recover any missed frames before
-// resuming live broadcast. Errors from sendPrompt / resolveApproval /
-// cancelPrompt are surfaced via state.lastError so the user gets a
-// dismissible banner instead of a silently-lost action.
-
 import { useCallback, useEffect, useReducer, useRef, useState, useSyncExternalStore } from "react";
 import {
   appendElicitationAnswerRow,
@@ -57,19 +48,12 @@ import {
   type ServerQueuedPrompt,
 } from "../lib/api";
 
-/** Outcome of an immediate prompt POST, used by the drain effect to
- *  decide whether to retire queued items (delivered or permanently
- *  rejected) or keep them for a later retry (transient failure). */
 type PromptSendResult =
-  /** The daemon started a fresh turn or steered the prompt into the running
-   *  one. Either way the optimistic transcript row stands. */
   | { kind: "dispatched" }
-  /** The daemon parked it and returned the server queue row id. */
   | { kind: "queued"; queuedId: string }
   | { kind: "retryable_failure" }
   | { kind: "non_retryable_failure" };
 
-/** Wire shape of the `/acp/prompt` 202 body (Rust `PromptDispatchResponse`). */
 interface PromptDispatchBody {
   disposition?: "sent" | "steered" | "queued";
   queued_id?: string;
@@ -77,23 +61,13 @@ interface PromptDispatchBody {
 
 export type Action =
   | { kind: "frame"; frame: AcpFrame }
-  /** The daemon's folded control state, adopted verbatim (Tier 1.2). */
   | { kind: "reduced_state"; state: ReducedState; unchanged: string[] }
   | { kind: "frames"; frames: AcpFrame[]; rows?: ActivityRow[]; oldestSeq?: number }
   | { kind: "prepend"; rows: ActivityRow[]; oldestSeq: number }
   | { kind: "handshake"; frames: AcpFrame[] }
-  /** Full server-folded row list from a WS `transcript_snapshot` (usually a
-   *  no-op since the WS dials at the current lastSeq; carries the gap rows on
-   *  a reconnect-with-events). Merged by id. */
   | { kind: "transcript_snapshot"; rows: ActivityRow[] }
-  /** A live `transcript_delta` Append: a new server row (merged by id, so a
-   *  re-delivered append is idempotent). */
   | { kind: "transcript_append"; row: ActivityRow }
-  /** A live `transcript_delta` Patch: replace the row by id with the server's
-   *  authoritative new row. */
   | { kind: "transcript_patch"; row: ActivityRow }
-  /** A live `transcript_delta` Remove: drop the row by id (an AskUserQuestion
-   *  tool card superseded by its elicitation form). */
   | { kind: "transcript_remove"; id: string }
   | { kind: "lagged"; skipped: number }
   | { kind: "user_prompt"; text: string; attachments?: AcpAttachment[]; id?: string }
@@ -109,8 +83,6 @@ export type Action =
   | { kind: "hydrate"; state: AcpState }
   | {
       kind: "enqueue_prompt";
-      /** Caller-minted stable id, so the enqueue POST + confirm can target
-       *  this exact optimistic row and the server row reconciles against it. */
       id: string;
       text: string;
       attachments?: PromptAttachmentInput[];
@@ -127,20 +99,12 @@ export type Action =
   | { kind: "set_pending_config_option"; configId: string; value: string }
   | { kind: "clear_pending_config_option" }
   | {
-      /** Clear pendingConfigOption only when it still matches the
-       *  (configId, value) pair of the failed request. Prevents a
-       *  stale request A from wiping a newer request B's pending
-       *  state after the user clicked a second option mid-flight.
-       *  See #1403 (review feedback). */
       kind: "clear_pending_config_option_if_match";
       configId: string;
       value: string;
     }
   | { kind: "dismiss_config_option_switch_failed" };
 
-// Per-session memory and localStorage cache. Versioned keys allow schema
-// invalidation; TTL and LRU limits bound abandoned session state. Refresh an
-// existing Map key with delete then set because Map.set preserves its order.
 const STATE_CACHE_CAP = 32;
 const stateCache = new Map<string, AcpState>();
 
@@ -148,13 +112,6 @@ function storageKey(sessionId: string): string {
   return STORAGE_KEY_PREFIX + sessionId;
 }
 
-// Walk `aoe:acp-state:v1:*` keys and remove the single oldest one
-// (by `savedAt`), preferring corrupt entries when present. Returns true
-// when an entry was removed so the caller can retry the write. The
-// whitelist filter is load-bearing: it must never touch `acp:draft:*`
-// or any unrelated key. Drafts are authoritative client-side state and
-// cross-tab subscribers observe their removal immediately, so silently
-// evicting them would be data loss (see #1345 debate).
 function evictOldestPersistedAcpState(currentKey: string): boolean {
   if (typeof window === "undefined") return false;
   try {
@@ -190,19 +147,7 @@ function evictOldestPersistedAcpState(currentKey: string): boolean {
   }
 }
 
-/** Project the in-memory reducer state into the shape written to
- *  localStorage. Queued prompts that carry attachments are dropped
- *  entirely: their base64 bytes would blow the per-origin quota, and
- *  persisting the text alone would silently drain a degraded prompt on
- *  reload (e.g. "fix this screenshot:" with no screenshot). The full
- *  row stays in the in-memory `stateCache`, so it survives a component
- *  remount but not a hard page reload. See #1833 / #1000. */
 function toPersistedState(state: AcpState): AcpState {
-  // Optimistic overlay rows are ephemeral client presentation: a confirmed
-  // prompt is already in the server-owned `activity` (re-fetched on reload),
-  // so persisting the overlay would risk a stale duplicate. Drop it, and
-  // with it the in-flight prompt ids: after a reload no POST is left to
-  // acknowledge them, so a persisted id would latch the spinner forever.
   const base: AcpState =
     state.optimisticRows.length > 0 || state.inflightPromptIds.length > 0
       ? { ...state, optimisticRows: [], inflightPromptIds: [] }
@@ -224,18 +169,12 @@ function persistState(sessionId: string, state: AcpState): void {
     setQueueCount(sessionId, state.queuedPrompts.length);
     return;
   }
-  // Storage write failed (likely QuotaExceeded). Evict a single oldest
-  // structured view cache entry and retry exactly once. On a second failure the
-  // cache is best-effort: the next reload replays from the server, so
-  // we stay silent here per the deliberate UX choice for cache writes.
   if (!evictOldestPersistedAcpState(key)) return;
   if (safeSetItem(key, body)) {
     setQueueCount(sessionId, state.queuedPrompts.length);
   }
 }
 
-// Test-only exports so the eviction policy can be exercised without
-// driving the full hook lifecycle. Not part of the public API.
 export const __test = {
   persistState,
   loadPersistedState,
@@ -261,11 +200,6 @@ function loadPersistedState(sessionId: string): AcpState | undefined {
       window.localStorage.removeItem(storageKey(sessionId));
       return undefined;
     }
-    // Merge over the current defaults so an entry persisted by an older
-    // bundle gains any fields added since (e.g. `pendingElicitations`);
-    // without this the new code reads `undefined` for a freshly-added
-    // array and crashes on `.map`. Then backfill the turn state; see
-    // `normaliseTurnState` for the rules.
     const merged: AcpState = { ...emptyAcpState(), ...(state as AcpState) };
     return normaliseTurnState(merged);
   } catch {
@@ -278,7 +212,7 @@ function dropPersistedState(sessionId: string): void {
   try {
     window.localStorage.removeItem(storageKey(sessionId));
   } catch {
-    // ignore
+    // Storage unavailable.
   }
 }
 
@@ -292,7 +226,7 @@ function dropAllPersistedState(): void {
     }
     for (const k of toRemove) window.localStorage.removeItem(k);
   } catch {
-    // ignore
+    // Storage unavailable.
   }
 }
 
@@ -323,15 +257,13 @@ function sweepExpiredStorage(): void {
     }
     for (const k of toRemove) window.localStorage.removeItem(k);
   } catch {
-    // ignore
+    // Storage unavailable.
   }
 }
 
 function cacheGet(sessionId: string): AcpState | undefined {
   const value = stateCache.get(sessionId);
   if (value !== undefined) {
-    // Touch the LRU position by re-inserting at the back of the Map's
-    // insertion order.
     stateCache.delete(sessionId);
     stateCache.set(sessionId, value);
     return value;
@@ -344,11 +276,6 @@ function cacheGet(sessionId: string): AcpState | undefined {
       if (oldest === undefined) break;
       stateCache.delete(oldest);
     }
-    // A `useBackgroundAgents` subscriber that already rendered an empty
-    // snapshot (panel open before this cache was primed) won't see the
-    // persisted agents until something else calls `cacheSet`. Wake it.
-    // Deferred so the notify never fires during a render that called
-    // `cacheGet` (e.g. the reducer initializer).
     queueMicrotask(() => notifyStateListeners(sessionId));
     return persisted;
   }
@@ -367,11 +294,6 @@ function cacheSet(sessionId: string, value: AcpState): void {
   notifyStateListeners(sessionId);
 }
 
-// Lightweight per-session subscription over `stateCache` so a component
-// that is NOT a child of <StructuredView> (the Background agents panel
-// lives in a sibling Dock) can read derived ACP state without opening a
-// second WebSocket. Notified on every `cacheSet`; consumers diff by
-// reference in their `getSnapshot`, so a no-op change costs nothing.
 const stateListeners = new Map<string, Set<() => void>>();
 
 function notifyStateListeners(sessionId: string): void {
@@ -380,7 +302,6 @@ function notifyStateListeners(sessionId: string): void {
   for (const cb of set) cb();
 }
 
-/** Subscribe to ACP-state changes for `sessionId`. Returns an unsubscribe. */
 function subscribeAcpState(sessionId: string, cb: () => void): () => void {
   let set = stateListeners.get(sessionId);
   if (!set) {
@@ -396,16 +317,12 @@ function subscribeAcpState(sessionId: string, cb: () => void): () => void {
   };
 }
 
-/** Non-mutating peek at cached state (no LRU touch; safe in getSnapshot). */
 function peekAcpState(sessionId: string): AcpState | undefined {
   return stateCache.get(sessionId);
 }
 
 const EMPTY_BACKGROUND_AGENTS: BackgroundAgent[] = [];
 
-/** Read the live background-agents list for a session. Sibling-safe (no
- *  extra WebSocket); reuses the single subscription <StructuredView>
- *  already holds. Re-renders only when the list reference changes. */
 export function useBackgroundAgents(sessionId: string | null): BackgroundAgent[] {
   const subscribe = useCallback(
     (cb: () => void) => (sessionId ? subscribeAcpState(sessionId, cb) : () => {}),
@@ -419,38 +336,14 @@ export function useBackgroundAgents(sessionId: string | null): BackgroundAgent[]
   return useSyncExternalStore(subscribe, getSnapshot);
 }
 
-/** Drop a session's cached state (or the entire cache when called
- *  with no argument). Call from the session-delete handler so the
- *  next session created with the same id doesn't briefly show the
- *  prior transcript on remount. */
-/** How far back of a seq overlap `fetchReplay` requests on every call.
- *  Catches events that landed in the broadcast tail without being
- *  applied by the reducer (e.g. WS connect drain races against the
- *  REST replay call). The reducer's `frame.seq <= state.lastSeq`
- *  dedupe makes the overlap idempotent. See #1100. */
 const REPLAY_OVERLAP = 50;
 
-/** Page size `fetchReplay` requests per call. The server paginates the
- *  replay endpoint and bounds its own page; this stays at or under that
- *  bound so a long session loads over several requests instead of one
- *  giant response. The loop follows `next_cursor` while `has_more`. */
 const REPLAY_PAGE_SIZE = 1000;
 
-/** `before` sentinel for the recent-first tail request: any value above
- *  every real seq makes the backend return the most recent page. The
- *  server clamps to i64, so MAX_SAFE_INTEGER is comfortably "newest".
- *  See #2236. */
 const TAIL_BEFORE = Number.MAX_SAFE_INTEGER;
 
-/** Frames pulled from seq 0 on a long-session cold open purely to project
- *  the handshake snapshot (capabilities, slash palette, agent/model);
- *  small because the handshake fires in the first few events. See #2236. */
 const HANDSHAKE_PREFIX_SIZE = 50;
 
-/** Shape of the `acp/replay` JSON response (forward and backward modes).
- *  `rows` is present only when the request passed `?view=rows` (the
- *  server-folded transcript rows for the page; `frames` is empty in that
- *  case). See `ReplayResponse` in src/acp/protocol.rs. */
 type ReplayPageResponse = {
   frames: AcpFrame[];
   rows?: TranscriptRow[] | null;
@@ -481,16 +374,8 @@ export function acpHookReducer(state: AcpState, action: Action): AcpState {
   return reducer(state, action);
 }
 
-/** Outcome of an approval-resolve POST: the card should clear, or an
- *  error banner should show. Pure so it can be unit-tested without the
- *  full hook. See #1821. */
 export type ApprovalResolveOutcome = { kind: "resolved" } | { kind: "error"; message: string };
 
-/** Classify an approval-resolve response. A 204 (ok) or a 404 whose body
- *  names *this* nonce both mean "this card is done" and clear it; any other
- *  failure (a session-gone 404, or a 404 that doesn't name the nonce)
- *  surfaces an error. Matching the nonce keeps a generic 404 from silently
- *  clearing the clicked card. See #1821. */
 export function classifyApprovalResolveResponse(
   ok: boolean,
   status: number,
@@ -507,10 +392,6 @@ export function classifyApprovalResolveResponse(
   };
 }
 
-/** Classify an elicitation-resolve response. Mirrors
- *  `classifyApprovalResolveResponse`: a 204 or a 404 naming *this* nonce
- *  (the question already resolved or was torn down server-side) both clear
- *  the card; anything else surfaces an error. */
 export function classifyElicitationResolveResponse(
   ok: boolean,
   status: number,
@@ -527,12 +408,6 @@ export function classifyElicitationResolveResponse(
   };
 }
 
-/** Drop optimistic overlay rows whose server counterpart has landed in
- *  `activity` (same deterministic id), so the overlay never double-renders a
- *  confirmed prompt / elicitation answer. Returns `state` unchanged when
- *  nothing was pruned. */
-/** Drop one in-flight prompt id and re-derive `turnActive`. Called for every
- *  POST outcome that no `UserPromptSent` echo will follow. */
 function settleInflightPrompt(state: AcpState, id: string): AcpState {
   const inflightPromptIds = state.inflightPromptIds.filter((p) => p !== id);
   if (inflightPromptIds.length === state.inflightPromptIds.length) return state;
@@ -559,42 +434,23 @@ export function reducer(state: AcpState, action: Action): AcpState {
     return applyReducedState(state, action.state, action.unchanged);
   }
   if (action.kind === "frames") {
-    // Reduce the raw frames for CONTROL state (turn/approvals/usage/modes),
-    // then merge the server-folded rows into the transcript (activity). The
-    // transcript is server-owned (Tier 4); `applyEvent` no longer builds it.
     let next = action.frames.reduce(applyEvent, state);
     if (action.rows && action.rows.length > 0) {
       next = { ...next, activity: mergeServerRows(next.activity, action.rows) };
       next = pruneOptimisticRows(next);
     }
-    // The recent-first tail load passes the page's lowest seq so the first
-    // forward fold seeds the older-history watermark. Live WS batches omit it
-    // (they append newer rows, never lower the floor).
     if (action.oldestSeq != null && state.oldestSeq === 0) {
       return { ...next, oldestSeq: action.oldestSeq };
     }
     return next;
   }
   if (action.kind === "prepend") {
-    // Older history page: prepend its server-folded rows only; never touch
-    // control state (optimistic prompt overlay, locally-resolved approvals
-    // #1821, the prompt queue, pendingConfigOption are not a pure fold and
-    // would be clobbered). Backward paging guarantees the page starts at a
-    // turn boundary and ends just below the current oldest, so the only seam
-    // artifact is a tool call whose real `tool_start` sits in this older page
-    // while a synth start was already in the tail (the server's per-page
-    // `?view=rows` fold synthesizes it); `mergePrependedActivity` merges the
-    // real start into the tail row rather than emitting a duplicate id that
-    // crashes assistant-ui's useResources ("Duplicate key"). See #2236 / #2711.
     const next = { ...state, oldestSeq: action.oldestSeq };
     if (action.rows.length === 0) return next;
     next.activity = mergePrependedActivity(action.rows, state.activity);
     return next;
   }
   if (action.kind === "transcript_snapshot") {
-    // WS connect snapshot: the server folds events after our `since`, so this
-    // is usually empty (the WS dials at the current lastSeq) and carries the
-    // gap rows only on a reconnect that raced live events. Merge by id.
     if (action.rows.length === 0) return state;
     return pruneOptimisticRows({ ...state, activity: mergeServerRows(state.activity, action.rows) });
   }
@@ -610,13 +466,6 @@ export function reducer(state: AcpState, action: Action): AcpState {
     return { ...state, activity };
   }
   if (action.kind === "handshake") {
-    // Recent-first cold open skips the seq-0 handshake on a long session,
-    // so the composer would have null capabilities and an empty slash
-    // palette. Project the pinned handshake/snapshot frames (#1049) and
-    // backfill ONLY the fields still at their empty default, so the tail's
-    // authoritative recent values (e.g. a later model/mode switch) win and
-    // no transcript rows are added (avoiding a detached island above the
-    // gap). See #2236.
     const hs = reduceFrames(action.frames);
     return {
       ...state,
@@ -643,13 +492,7 @@ export function reducer(state: AcpState, action: Action): AcpState {
     return { ...state, lastError: null };
   }
   if (action.kind === "approval_resolved_locally") {
-    // Optimistically drop the approval card once the server has accepted
-    // the decision (204) or reports the nonce already gone (404), instead
-    // of waiting on the ApprovalResolved broadcast, which the seq dedupe
-    // can swallow and leave the card stuck. See #1821.
     const pendingApprovals = state.pendingApprovals.filter((a) => a.nonce !== action.nonce);
-    // Only clear the error banner when a card was actually removed, so a
-    // duplicate or stale action can't quietly hide an unrelated error.
     const removed = pendingApprovals.length !== state.pendingApprovals.length;
     return {
       ...state,
@@ -659,16 +502,9 @@ export function reducer(state: AcpState, action: Action): AcpState {
     };
   }
   if (action.kind === "elicitation_resolved_locally") {
-    // Optimistically drop the elicitation card once the server accepts the
-    // resolution (204) or reports the nonce gone (404), instead of waiting
-    // on the ElicitationResolved broadcast, which the seq dedupe can drop.
     const card = state.pendingElicitations.find((e) => e.nonce === action.nonce);
     const pendingElicitations = state.pendingElicitations.filter((e) => e.nonce !== action.nonce);
     const removed = pendingElicitations.length !== state.pendingElicitations.length;
-    // Record the picked answer as an optimistic overlay row (deduped by id),
-    // so it shows instantly; the authoritative same-id row is server-owned
-    // (the daemon folds ElicitationResolved into the transcript) and drops
-    // this overlay once it lands. See #2209.
     const answers =
       card && action.resolution.action === "accept" ? summarizeAnswers(card, action.resolution.answers) : [];
     return {
@@ -683,15 +519,6 @@ export function reducer(state: AcpState, action: Action): AcpState {
     return action.state;
   }
   if (action.kind === "user_prompt") {
-    // Optimistic overlay row: rendered on top of the server-owned transcript
-    // for instant feedback. Its id is the client-minted `prompt_id` sent on
-    // the POST, so the authoritative same-id `user_prompt` row the server
-    // echoes reconciles it (the overlay is dropped once that row lands in
-    // `activity`). Never appended to `activity` (that is server-owned).
-    //
-    // Record the minted id as in flight so the spinner shows immediately;
-    // the server `UserPromptSent` echo settles it by the same id, and every
-    // POST failure path settles it too. See #3417 / #3173.
     const id = action.id ?? `user-opt-${Date.now()}-${state.optimisticRows.length}`;
     const row: ActivityRow = {
       id,
@@ -703,8 +530,6 @@ export function reducer(state: AcpState, action: Action): AcpState {
     return {
       ...state,
       optimisticRows: state.optimisticRows.concat(row),
-      // A fresh prompt clears stale errors: the user has indicated they're
-      // trying again, so don't keep nagging them.
       startupError: null,
       lastError: null,
       inflightPromptIds: state.inflightPromptIds.includes(id)
@@ -715,28 +540,12 @@ export function reducer(state: AcpState, action: Action): AcpState {
     };
   }
   if (action.kind === "prompt_send_rejected") {
-    // The prompt POST was rejected with a 4xx (for example unsupported
-    // attachments), so no `UserPromptSent` will ever acknowledge this id.
-    // Settle it so Stop unlocks. The overlay row deliberately stays so the
-    // user still sees what they tried to send.
     return settleInflightPrompt({ ...state, inFlightTool: null }, action.id);
   }
   if (action.kind === "settle_inflight_prompt") {
-    // Every other POST outcome that no `UserPromptSent` will follow: a 5xx,
-    // a network exception, a daemon `queued` disposition. Without this the
-    // optimistic id latches the spinner forever, which is the same defect
-    // class as #3417 arriving by a different route.
     return settleInflightPrompt(state, action.id);
   }
   if (action.kind === "rollback_optimistic_prompt") {
-    // A transient send failure (worker_not_ready 503 while resuming) re-queues
-    // the prompt, so its optimistic overlay row must be removed: otherwise the
-    // drain's re-send would echo a second copy the server `UserPromptSent`
-    // cannot reconcile. Remove exactly the overlay row we added; the prompt now
-    // lives only in `queuedPrompts` (the QUEUED strip), which is server-owned
-    // and drains on its own. Settle the id with it: a queued prompt is not a
-    // running turn, and leaving it in flight would hold Stop over an idle
-    // session. See #3094 / #3087.
     const idx = state.optimisticRows.findIndex((r) => r.id === action.id);
     if (idx === -1) return settleInflightPrompt(state, action.id);
     return settleInflightPrompt(
@@ -748,9 +557,6 @@ export function reducer(state: AcpState, action: Action): AcpState {
     );
   }
   if (action.kind === "enqueue_prompt") {
-    // Optimistic row: shown immediately, marked `pending` until the server
-    // enqueue POST is confirmed. The id is the stable key the server row
-    // reconciles against (a re-POST of the same id updates in place).
     const entry: QueuedPrompt = {
       id: action.id,
       text: action.text,
@@ -776,12 +582,6 @@ export function reducer(state: AcpState, action: Action): AcpState {
     return { ...state, queuedPrompts: [] };
   }
   if (action.kind === "hydrate_server_queue") {
-    // Reconcile the local optimistic queue with the server's authoritative
-    // snapshot (ordered by seq). For a row we queued on this client, keep the
-    // in-memory attachment bytes so the strip can still render a thumbnail;
-    // for a row we've never seen (reload / another device) build a
-    // metadata-only attachment view from the server refs (bytes stay
-    // server-side and are delivered on drain).
     const rows = Array.isArray(action.rows) ? action.rows : [];
     const serverIds = new Set(rows.map((r) => r.id));
     const localById = new Map(state.queuedPrompts.map((q) => [q.id, q]));
@@ -804,8 +604,6 @@ export function reducer(state: AcpState, action: Action): AcpState {
         ...(attachments ? { attachments } : {}),
       };
     });
-    // Keep optimistic rows whose enqueue POST is still in flight (not yet in
-    // the server snapshot) so a hydrate racing the POST doesn't drop them.
     const stillPending = state.queuedPrompts.filter((q) => q.pending && !serverIds.has(q.id));
     return { ...state, queuedPrompts: merged.concat(stillPending) };
   }
@@ -816,16 +614,9 @@ export function reducer(state: AcpState, action: Action): AcpState {
     };
   }
   if (action.kind === "dismiss_primer") {
-    // Clear the offer entirely so it doesn't re-render on session
-    // re-mount. A subsequent SessionContextReset re-seeds the field
-    // with a new `resetSeq`, which the banner reads as a fresh
-    // incident and shows again. See #1110.
     return { ...state, contextPrimerAvailable: null };
   }
   if (action.kind === "dismiss_compaction_reminder") {
-    // Latch the snapshot the user dismissed at. The `UsageUpdated` arm
-    // re-arms on the first snapshot after any context boundary, so this
-    // stays set only for the life of the current context. See #3253.
     return { ...state, compactionReminderDismissed: state.sessionUsage };
   }
   if (action.kind === "dismiss_rejected_prompt") {
@@ -858,9 +649,6 @@ export function reducer(state: AcpState, action: Action): AcpState {
   return emptyAcpState();
 }
 
-/** Translate a wire {@link TranscriptDelta} (externally tagged) into the
- *  matching reducer action, mapping the carried row to the client
- *  {@link ActivityRow} shape. Returns null for an unrecognized shape. */
 export function transcriptDeltaAction(delta: TranscriptDelta, sessionId: string): Action | null {
   if ("Append" in delta) {
     if (!webRendersServerRow(delta.Append)) return null;
@@ -878,12 +666,6 @@ export function transcriptDeltaAction(delta: TranscriptDelta, sessionId: string)
 
 export type ConnectionStatus = "connecting" | "open" | "closed" | "error";
 
-/** Reconnect backoff: 1s, 2s, 4s, 8s, 16s, 30s, 30s (cap). Seven
- *  attempts cover the common mobile-background / Cloudflare-idle /
- *  WiFi-flap recovery shapes without flooding the daemon when the
- *  backend is genuinely down. After the cap, the UI surfaces a manual
- *  "Tap to retry" affordance via `manualReconnect`. Mirrors the
- *  retry envelope already used by `useTerminal` (#1009 / #1107). */
 const ACP_MAX_RETRIES = 7;
 const ACP_RETRY_BASE_MS = 1000;
 const ACP_RETRY_CAP_MS = 30000;
@@ -892,27 +674,9 @@ export function acpRetryDelayMs(attempt: number): number {
 }
 export const ACP_MAX_RETRIES_EXPORT = ACP_MAX_RETRIES;
 
-/** Liveness watchdog (#2287). The server emits a `{"kind":"heartbeat"}`
- *  Text frame every 30s. A proxy can RST the idle connection so the
- *  daemon's Close never reaches the browser, leaving the socket in
- *  `readyState === OPEN` (a zombie) while no frames arrive. Browser JS
- *  cannot see WS Ping/Pong, so the heartbeat is the only liveness
- *  signal: if none arrives within `ACP_WS_STALE_MS`, the socket is
- *  treated as dead and re-dialed. 75s tolerates two missed heartbeats
- *  plus a watchdog interval and stays under the daemon's 90s pong
- *  reaper, so the client heals first. A false positive is cheap: the
- *  redial resumes from `?since=<lastSeq>` and dedupes. */
 const ACP_WS_WATCHDOG_INTERVAL_MS = 15000;
 export const ACP_WS_STALE_MS = 75000;
 
-/** A real UUID v4 for the optimistic prompt id (#3173). `crypto.randomUUID`
- *  is restricted to secure contexts (HTTPS or localhost); `aoe serve
- *  --host <LAN-IP>` is plain HTTP on a non-loopback host, where it is
- *  undefined. `crypto.getRandomValues` has no such restriction, so build
- *  the UUID from that instead of falling back to a non-UUID string. Only
- *  when crypto itself is entirely unavailable (older webviews, jsdom) does
- *  this fall back to a Date.now/Math.random id, same as StructuredWidgets.tsx's
- *  `newItemId()`. */
 function optimisticPromptId(): string {
   const c = globalThis.crypto;
   if (c && typeof c.randomUUID === "function") return c.randomUUID();
@@ -926,31 +690,13 @@ function optimisticPromptId(): string {
 
 export function useAcpSession(
   sessionId: string | null,
-  /** Live structured view worker lifecycle from `SessionResponse.acp_worker_state`.
-   *  When not `"running"`, the drain effect parks queued prompts so they
-   *  don't dispatch into a worker that isn't online yet. Defaults to
-   *  `"running"` so non-structured view / pre-#1088 call sites keep working. */
   workerState: "absent" | "resuming" | "running" | "stopping" = "running",
-  /** RFC3339 archived-at, or null. `sendPrompt` clears this server-side
-   *  (via PATCH /api/sessions/{id}/archive) before enqueueing so the
-   *  reconciler stops skipping the session and respawns the worker.
-   *  See #1581. */
   archivedAt: string | null = null,
-  /** RFC3339 snoozed-until, or null. Same wake purpose as
-   *  `archivedAt`, via PATCH /api/sessions/{id}/snooze with
-   *  `{ minutes: null }`. See #1581. */
   snoozedUntil: string | null = null,
 ) {
-  // Sweep stale persisted state entries on first hook mount in this
-  // module's lifetime. Idempotent (guarded by `sweptStorage`) so the
-  // cost is one full localStorage scan per page load.
   sweepExpiredStorage();
   const [state, dispatch] = useReducer(reducer, sessionId, initialState);
   const [status, setStatus] = useState<ConnectionStatus>("connecting");
-  // Mirror the triage timestamps onto refs so `sendPrompt`'s wake
-  // step always sees the freshest value without forcing a re-create
-  // of the callback (the dep churn would also blow `dispatchPromptNow`
-  // away on every poll). See #1581.
   const archivedAtRef = useRef(archivedAt);
   const snoozedUntilRef = useRef(snoozedUntil);
   useEffect(() => {
@@ -959,49 +705,17 @@ export function useAcpSession(
   useEffect(() => {
     snoozedUntilRef.current = snoozedUntil;
   }, [snoozedUntil]);
-  // The `/clear`-boundary batching that used to happen here (slicing the
-  // queued-prompt snapshot so `/clear` fires as its own turn) is now server-
-  // side, in the queue drain (`queue_drain_batch`). See #1356 and the
-  // server-side prompt queue design. The activity buffer is server-owned
-  // (Tier 4) and the daemon enforces the `acp.replay_events` retention cap,
-  // so there is no longer a client-side row cap to mirror (#1111).
-  //
-  // Mirror status into a ref so the WS lifecycle can read the latest value
-  // without re-creating callbacks on every status flip (which would
-  // invalidate downstream memoised handlers).
   const statusRef = useRef<ConnectionStatus>("connecting");
   useEffect(() => {
     statusRef.current = status;
   }, [status]);
 
-  // Mirror every state change into the module-level cache so that on
-  // remount (e.g. user navigates back to the structured view tab) we hydrate
-  // from the last-known state instead of staring at an empty chat
-  // until the WS connection completes.
-  // Use a ref so the effect doesn't depend on sessionId directly,
-  // satisfying react-you-might-not-need-an-effect/no-event-handler.
   const sessionIdRef = useRef(sessionId);
   sessionIdRef.current = sessionId;
   useEffect(() => {
     if (sessionIdRef.current) cacheSet(sessionIdRef.current, state);
   }, [state]);
   const wsRef = useRef<WebSocket | null>(null);
-  // Auto-reconnect machinery (#1130). retryCountRef is the persistent
-  // attempt counter across `onclose` -> scheduled `connect()` cycles;
-  // retryTimerRef holds the pending setTimeout so manualReconnect can
-  // cancel a backed-off retry without leaking it. countdownTimerRef
-  // drives the per-second `retryCountdown` decrement that the banner
-  // renders. connectRef is the stable indirection so listeners
-  // installed outside the connection effect (visibilitychange, online,
-  // pageshow) can dial without re-creating the listeners.
-  //
-  // dialGenRef is a monotonic generation counter. Every connect() call
-  // bumps it; each in-flight IIFE captures its generation at entry and
-  // bails (or no-ops in its WS handlers) once the current generation
-  // moves past it. Without this, a visibilitychange / manualReconnect
-  // that fires while a prior IIFE is mid-`await fetchReplay` allocates
-  // a second WS, and the orphaned first WS's onclose still nulls
-  // wsRef.current and schedules a retry on top of a healthy socket.
   const retryCountRef = useRef(0);
   const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const countdownTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -1010,25 +724,14 @@ export function useAcpSession(
   const [reconnecting, setReconnecting] = useState(false);
   const [retryCount, setRetryCount] = useState(0);
   const [retryCountdown, setRetryCountdown] = useState(0);
-  // Track lastSeq in a ref so the snapshot fetcher always sees the
-  // latest value without re-running the effect when it changes.
-  // The ref is updated inside an effect (not during render) to keep
-  // the react-hooks linter happy; fetchReplay only ever runs from
-  // an event handler or another effect, so the one-tick lag is fine.
   const lastSeqRef = useRef(0);
   useEffect(() => {
     lastSeqRef.current = state.lastSeq;
   }, [state.lastSeq]);
-  // Mirror the queue so the one-time server-migration read (below) sees the
-  // current rows without a stale closure or a queue-sized dep array.
   const queuedPromptsRef = useRef(state.queuedPrompts);
   useEffect(() => {
     queuedPromptsRef.current = state.queuedPrompts;
   }, [state.queuedPrompts]);
-  // Older-history paging (#2236). `oldestSeqRef` mirrors the recent-first
-  // load watermark so `loadOlder` (a stable callback) reads it without
-  // re-creating. `hasMoreOlder` / `loadingOlder` drive the scroll-up
-  // affordance and guard against concurrent fetches.
   const oldestSeqRef = useRef(0);
   useEffect(() => {
     oldestSeqRef.current = state.oldestSeq;
@@ -1040,14 +743,6 @@ export function useAcpSession(
   }, [hasMoreOlder]);
   const [loadingOlder, setLoadingOlder] = useState(false);
   const loadingOlderRef = useRef(false);
-  // Flips true the first time the WS opens for this session and
-  // resets on session change. Lets the SystemNotices banner copy
-  // distinguish "first connect, worker still spawning" from
-  // "reconnecting after a real drop". The prior wording was misleading
-  // on brand-new sessions; see #1106.
-  // Derive hasEverOpened reset from sessionId changes during render
-  // rather than in a useEffect, to satisfy
-  // react-you-might-not-need-an-effect/no-adjust-state-on-prop-change.
   const [hasEverOpened, setHasEverOpened] = useState(false);
   const prevSessionId1Ref = useRef(sessionId);
   if (sessionId !== prevSessionId1Ref.current) {
@@ -1055,9 +750,6 @@ export function useAcpSession(
     setHasEverOpened(false);
   }
 
-  // Ref-indirected setState helpers so the session effect can call them
-  // without the plugin seeing direct setState calls inside an effect that
-  // also subscribes to external stores. Refs are opaque to static analysis.
   const setStatusRef = useRef(setStatus);
   setStatusRef.current = setStatus;
   const setReconnectingRef = useRef(setReconnecting);
@@ -1069,10 +761,6 @@ export function useAcpSession(
   const setHasEverOpenedRef = useRef(setHasEverOpened);
   setHasEverOpenedRef.current = setHasEverOpened;
 
-  // clearRetryTimers is shared across the session effect (scheduleReconnect,
-  // connect cleanup) and the auto-reconnect trigger effect below. Defined
-  // as a useCallback (not inlined in any effect) so the reactive listeners
-  // can reference it without re-subscribing.
   const clearRetryTimers = useCallback(() => {
     if (retryTimerRef.current) {
       clearTimeout(retryTimerRef.current);
@@ -1084,25 +772,13 @@ export function useAcpSession(
     }
   }, []);
 
-  // Timestamp (ms) of the most recent message received on the current
-  // socket (any frame, including the server heartbeat). The liveness
-  // watchdog and the visibility/online triggers compare it against
-  // ACP_WS_STALE_MS to spot a zombie socket. See #2287.
   const lastServerMsgRef = useRef<number>(0);
 
-  // Stable callback ref for visibility/online/pageshow triggers so the
-  // reactive effects below can reconnect without depending on sessionId
-  // (satisfies react-you-might-not-need-an-effect/no-event-handler).
   const tryAutoReconnectRef = useRef<() => void>(() => {});
   tryAutoReconnectRef.current = () => {
     const ws = wsRef.current;
     const ready = ws?.readyState;
     if (ready === WebSocket.CONNECTING) return;
-    // A socket that reports OPEN but has gone quiet past the stale
-    // window is a half-open zombie (proxy RST the browser never saw).
-    // Fall through and re-dial; connect() closes it and bumps the dial
-    // generation, so we don't rely on the dead socket ever firing
-    // onclose. A genuinely fresh OPEN socket bails here. See #2287.
     if (ready === WebSocket.OPEN && Date.now() - lastServerMsgRef.current < ACP_WS_STALE_MS) {
       return;
     }
@@ -1113,12 +789,6 @@ export function useAcpSession(
     connectRef.current?.();
   };
 
-  // Liveness watchdog: a foreground-visible idle tab fires neither
-  // visibilitychange nor online, so a zombie socket would otherwise sit
-  // forever. Poll while the socket reports OPEN and let
-  // tryAutoReconnect re-dial only when it's also stale. Gated on OPEN so
-  // it never resurrects an intentionally-closed or retry-exhausted
-  // socket; backoff owns those. See #2287.
   useEffect(() => {
     const id = setInterval(() => {
       if (wsRef.current?.readyState === WebSocket.OPEN) {
@@ -1128,9 +798,6 @@ export function useAcpSession(
     return () => clearInterval(id);
   }, []);
 
-  // Subscribe to visibility+pageshow and online via useSyncExternalStore
-  // so no effect directly subscribes to an external store, satisfying
-  // react-you-might-not-need-an-effect/no-external-store-subscription.
   const visCounterRef = useRef(0);
   const subscribeVisibility = useCallback((cb: () => void) => {
     const handler = () => {
@@ -1160,9 +827,6 @@ export function useAcpSession(
     () => true, // SSR guard
   );
 
-  // React to visibility/pageshow events: reconnect when page is restored
-  // from background or bfcache. Skip the initial mount to avoid a
-  // redundant connect() alongside the session effect's connect().
   const isFirstVis = useRef(true);
   useEffect(() => {
     if (isFirstVis.current) {
@@ -1172,8 +836,6 @@ export function useAcpSession(
     tryAutoReconnectRef.current();
   }, [visCounter]);
 
-  // React to online transitions: reconnect when the OS rejoins the
-  // network (Cloudflare kills tunnel WSs after ~100s of offline).
   const prevOnlineRef = useRef(isOnline);
   useEffect(() => {
     if (!prevOnlineRef.current && isOnline) {
@@ -1182,38 +844,11 @@ export function useAcpSession(
     prevOnlineRef.current = isOnline;
   }, [isOnline]);
 
-  // Timestamp (ms) of the most recent applied frame. Read by the
-  // "Force end turn" escape hatch in WorkingSpinner: when `turnActive`
-  // is true and `Date.now() - lastActivity` exceeds the configured
-  // threshold, the spinner offers the button. Kept as a ref (not
-  // reducer state) so updating it on every frame doesn't trigger a
-  // rerender; the spinner polls the ref on its own 1s timer. See
-  // #1100 (C).
-  // Initialised to 0; bumped to a real timestamp on first applied
-  // frame or first user submit. Date.now() at render time would trip
-  // react-hooks/purity (renders must be deterministic), and the zero
-  // sentinel does the right thing on first read since
-  // `Date.now() - 0` is enormous and the spinner only checks against
-  // it while `turnActive` is true (false on a freshly-mounted hook).
   const lastActivityRef = useRef<number>(0);
 
   const fetchReplay = useCallback(async (sid: string) => {
     try {
-      // Cold open (cache miss, nothing loaded): recent-first. Render the
-      // most recent page immediately and page older history lazily on
-      // scroll-up, instead of forward-folding the whole transcript from
-      // seq 0 before first paint. The warm path below (hydrated from
-      // cache, lastSeq > 0) keeps the cheap forward seq-delta top-up.
-      // See #2236.
       if (lastSeqRef.current === 0) {
-        // The transcript (activity) and the bulk of control state are
-        // server-owned, but the frames leg still feeds what the daemon does
-        // not model (worker latches, monitor and wakeup badges, the usage cost
-        // baseline, rejected prompts, the optimistic turn counters).
-        // `?view=rows` returns the folded rows with an EMPTY `frames`, so pull
-        // both projections of the SAME page in parallel: default frames feed
-        // the control reducer, `view=rows` feeds the transcript. Identical
-        // pagination metadata, so the frames response drives the cursors.
         const tailParams = `before=${TAIL_BEFORE}&limit=${REPLAY_PAGE_SIZE}`;
         const [tailRes, tailRowsRes] = await Promise.all([
           fetch(`/api/sessions/${encodeURIComponent(sid)}/acp/replay?${tailParams}`, { credentials: "same-origin" }),
@@ -1227,10 +862,6 @@ export function useAcpSession(
           dispatch({ kind: "lagged", skipped: tail.highest_seq });
           return;
         }
-        // Bail rather than render a hole: the frames leg below advances
-        // `lastSeqRef`, and the WS then drains from that cursor, so a page of
-        // rows dropped here would never be resent. Returning leaves the
-        // cursors untouched so the next hydrate retries the same page.
         if (!tailRowsRes.ok) return;
         const tailRows = ((await tailRowsRes.json()) as ReplayPageResponse).rows ?? [];
         dispatch({
@@ -1240,18 +871,9 @@ export function useAcpSession(
           oldestSeq: tail.next_cursor ?? 0,
         });
         setHasMoreOlder(tail.has_more ?? false);
-        // Advance the seq ref synchronously (the [state.lastSeq] effect
-        // mirror lags a render tick) so the WS dial that follows this
-        // awaited call subscribes with `since = highest_seq` and the
-        // server drains only live events, not the whole transcript we
-        // just rendered recent-first. See #2236.
         if (tail.highest_seq > lastSeqRef.current) {
           lastSeqRef.current = tail.highest_seq;
         }
-        // Long session: the tail skipped the seq-0 handshake (prompt
-        // capabilities, slash palette, agent/model/mode), pinned near the
-        // start by #1049. Pull a small prefix and project just those
-        // fields so the composer isn't crippled until the user scrolls up.
         if ((tail.has_more ?? false) && (tail.next_cursor ?? 0) > 1) {
           const hsRes = await fetch(
             `/api/sessions/${encodeURIComponent(sid)}/acp/replay?since=0&limit=${HANDSHAKE_PREFIX_SIZE}`,
@@ -1265,22 +887,10 @@ export function useAcpSession(
         dispatch({ kind: "lagged_resolved" });
         return;
       }
-      // Defensive overlap: re-fetch from `lastSeq - REPLAY_OVERLAP`
-      // instead of `lastSeq` so events that landed in the broadcast
-      // tail without being applied (WS-vs-replay race, broadcast lag
-      // window, etc.) get a second chance. The reducer's
-      // `frame.seq <= state.lastSeq` dedupe drops the overlap, so
-      // this is idempotent. See #1100.
       const firstSince = Math.max(0, lastSeqRef.current - REPLAY_OVERLAP);
       let cursor = firstSince;
-      // Snapshot the highest seq seen on the first page and stop there:
-      // events appended after replay began arrive over the live WS and
-      // are deduped, so chasing them here would never converge on a
-      // busy session. Captured from page one's `highest_seq`.
       let target: number | null = null;
       for (;;) {
-        // Same two-projection fetch as the cold tail: default frames for the
-        // control reducer, `view=rows` for the server-owned transcript.
         const pageParams = `since=${cursor}&limit=${REPLAY_PAGE_SIZE}`;
         const [res, rowsRes] = await Promise.all([
           fetch(`/api/sessions/${encodeURIComponent(sid)}/acp/replay?${pageParams}`, { credentials: "same-origin" }),
@@ -1288,29 +898,15 @@ export function useAcpSession(
             credentials: "same-origin",
           }),
         ]);
-        // Both legs page the same window, so a failure on either one has to
-        // stop the loop: advancing the cursor past a page whose rows never
-        // arrived leaves a hole nothing refetches.
         if (!res.ok || !rowsRes.ok) return;
         const data = (await res.json()) as ReplayPageResponse;
         const pageRows = ((await rowsRes.json()) as ReplayPageResponse).rows ?? [];
         if (target === null) {
           target = data.highest_seq;
-          // Detect a server-side seq reset: the supervisor's per-session
-          // counter has been forgotten (acp_disable → acp_enable,
-          // or session delete+recreate with the same id), so the new
-          // conversation is starting fresh from seq=1. Without this reset
-          // the client-side dedupe would drop the new events because
-          // `frame.seq <= state.lastSeq` is true. Only meaningful on the
-          // first page, where `cursor` is the client's resume point.
           if (data.highest_seq < firstSince) {
             dispatch({ kind: "reset" });
           }
         }
-        // Honor `lost` on every page: a retention prune between pages
-        // can open a real gap after page one, so surface it via the
-        // existing `lagged` flag and let the user reload for the full
-        // transcript. Stop the loop; a partial transcript is wrong.
         if (data.lost) {
           dispatch({ kind: "lagged", skipped: data.highest_seq });
           return;
@@ -1331,16 +927,10 @@ export function useAcpSession(
       }
       dispatch({ kind: "lagged_resolved" });
     } catch {
-      // Network failure: leave the lagged flag set so the user
-      // sees something is wrong rather than silently dropping
-      // frames.
+      // Best effort; the next lagged notice retries.
     }
   }, []);
 
-  // Fetch the next-older page of history and prepend it. Stable callback;
-  // reads the watermark / guards from refs. The scroll-up handler and the
-  // "Load earlier" button both call this once the already-loaded rows are
-  // exhausted. See #2236.
   const loadOlder = useCallback(async () => {
     const sid = sessionIdRef.current;
     const before = oldestSeqRef.current;
@@ -1348,9 +938,6 @@ export function useAcpSession(
     loadingOlderRef.current = true;
     setLoadingOlder(true);
     try {
-      // Older history is transcript-only (the prepend never re-folds control
-      // state), so a single `?view=rows` fetch suffices; no companion frames
-      // request is needed here.
       const res = await fetch(
         `/api/sessions/${encodeURIComponent(sid)}/acp/replay?before=${before}&limit=${REPLAY_PAGE_SIZE}&view=rows`,
         { credentials: "same-origin" },
@@ -1363,18 +950,13 @@ export function useAcpSession(
       }
       setHasMoreOlder(data.has_more ?? false);
     } catch {
-      // Leave hasMoreOlder as-is; a transient failure shouldn't
-      // permanently hide the affordance. The next scroll-up retries.
+      // Keep hasMoreOlder; the next scroll-up retries.
     } finally {
       loadingOlderRef.current = false;
       setLoadingOlder(false);
     }
   }, []);
 
-  // Derive status and retry state from sessionId changes during render,
-  // not in a useEffect, to satisfy
-  // react-you-might-not-need-an-effect/no-adjust-state-on-prop-change
-  // and react-hooks/set-state-in-effect.
   const prevSessionId2Ref = useRef(sessionId);
   if (sessionId !== prevSessionId2Ref.current) {
     prevSessionId2Ref.current = sessionId;
@@ -1386,18 +968,9 @@ export function useAcpSession(
     setReconnecting(false);
     setRetryCount(0);
     setRetryCountdown(0);
-    // The new session re-derives its window from its own recent-first
-    // load; clear the older-paging flags so a stale "more above" doesn't
-    // carry across the switch. See #2236.
     setHasMoreOlder(false);
     setLoadingOlder(false);
     loadingOlderRef.current = false;
-    // Sync the seq refs to the switched-in session synchronously: the
-    // [state.lastSeq] / [state.oldestSeq] effect mirrors lag a render
-    // tick, so without this `fetchReplay` would read the PREVIOUS
-    // session's seq and take the warm forward path instead of a
-    // recent-first cold open (or fetch from the wrong cursor). Match what
-    // the effect's `hydrate` restores: the cache, else 0. See #2236.
     const switched = sessionId ? cacheGet(sessionId) : undefined;
     lastSeqRef.current = switched?.lastSeq ?? 0;
     oldestSeqRef.current = switched?.oldestSeq ?? 0;
@@ -1408,10 +981,6 @@ export function useAcpSession(
       statusRef.current = "closed";
       return;
     }
-    // Hydrate the reducer from the per-session cache rather than
-    // resetting to empty. fetchReplay will then top up anything that
-    // happened on the server while this component was unmounted using
-    // the cached lastSeq as the `since` cursor.
     dispatch({
       kind: "hydrate",
       state: cacheGet(sessionId) ?? emptyAcpState(),
@@ -1419,10 +988,6 @@ export function useAcpSession(
     statusRef.current = "connecting";
     retryCountRef.current = 0;
 
-    // Set up cancellation so the cleanup function can stop a pending
-    // open if the effect re-runs (sessionId change) before the WS dial
-    // completed. Without this, a fast session-switch could leak a WS
-    // that fires onmessage into a now-stale reducer.
     let cancelled = false;
 
     const scheduleReconnect = () => {
@@ -1456,22 +1021,13 @@ export function useAcpSession(
 
     const connect = () => {
       if (cancelled) return;
-      // Cancel any pending scheduled retry; a fresh dial supersedes it.
       clearRetryTimers();
-      // Bump the dial generation BEFORE closing any prior socket, so a
-      // synchronously-firing `onclose` sees itself as orphaned
-      // (`isCurrentDial()` false) and bails instead of re-arming
-      // scheduleReconnect on top of this fresh dial. This matters when
-      // connect() is invoked on a still-OPEN zombie socket (the
-      // staleness watchdog path, #2287); the previous order only worked
-      // because every other caller reached connect() with an
-      // already-closed or null socket.
       dialGenRef.current += 1;
       if (wsRef.current) {
         try {
           wsRef.current.close();
         } catch {
-          // ignore
+          // Already closed.
         }
         wsRef.current = null;
       }
@@ -1479,25 +1035,11 @@ export function useAcpSession(
       const isCurrentDial = () => !cancelled && dialGenRef.current === myGen;
       statusRef.current = "connecting";
       void (async () => {
-        // Order: replay first, then open WS. Today the server's WS
-        // on-connect drain and the REST replay endpoint read the same
-        // disk store; awaiting the replay before the dial gives the
-        // reducer a known-correct `lastSeq` so the WS subscribes from a
-        // settled cursor instead of racing two delivery paths. Without
-        // this, an event landing during the dial window could be
-        // delivered by both paths in different orders, and the dedupe
-        // would drop later applies, which is exactly the "Stopped never
-        // reaches the reducer" failure mode in #1100.
         await fetchReplay(sessionId);
         if (!isCurrentDial()) return;
 
         const token = getToken();
         const protocol = window.location.protocol === "https:" ? "wss" : "ws";
-        // Pass `?since=<lastSeq>` so the server's on-connect drain only
-        // resends events newer than what we already have. Without this,
-        // a long-running session resends its full transcript on every
-        // reconnect (page refresh / mobile flap), which can be tens of
-        // MB at the retention cap.
         const since = lastSeqRef.current;
         const url = `${protocol}://${window.location.host}/sessions/${encodeURIComponent(sessionId)}/acp/ws?since=${since}`;
 

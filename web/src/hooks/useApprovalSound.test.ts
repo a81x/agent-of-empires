@@ -1,15 +1,4 @@
 // @vitest-environment jsdom
-//
-// Unit tests for useApprovalSound. Covers the 0 -> >=1 pending-approval
-// edge that plays the configured chime, the replay-quiet grace window
-// that swallows the initial-load case, settings caching/TTL, sound-name
-// resolution (explicit override / specific / random), the disabled and
-// missing-blob short-circuits, the autoplay-rejection swallow, and the
-// cache-clear path used by logout.
-//
-// The api layer (fetchSettings / fetchSounds / fetchSoundBlob) is mocked,
-// and window.Audio is replaced with a recording stub so playback is
-// observable without real audio.
 
 import { describe, expect, it, beforeEach, afterEach, vi } from "vitest";
 import { renderHook, act } from "@testing-library/react";
@@ -48,8 +37,6 @@ class FakeAudio {
   }
 }
 
-// Drain the two layered async hops: the setTimeout(0) playback timer and
-// the awaited promise chain inside playApprovalSound.
 async function flushPlayback(): Promise<void> {
   await act(async () => {
     vi.advanceTimersByTime(0);
@@ -77,7 +64,6 @@ describe("useApprovalSound", () => {
     vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:fake-url");
     vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => {});
     clearApprovalSoundCache();
-    // clearApprovalSoundCache may have triggered a revoke spy call; reset.
     (URL.revokeObjectURL as ReturnType<typeof vi.fn>).mockClear();
   });
 
@@ -88,7 +74,6 @@ describe("useApprovalSound", () => {
     vi.restoreAllMocks();
   });
 
-  // Crosses the replay-quiet grace window, then drives a 0 -> 1 edge.
   async function mountPastQuietPeriod(initial = 0) {
     const view = renderHook((p: number) => useApprovalSound(p), {
       initialProps: initial,
@@ -114,7 +99,6 @@ describe("useApprovalSound", () => {
     const { rerender } = renderHook((p: number) => useApprovalSound(p), {
       initialProps: 0,
     });
-    // Edge arrives before the quiet timer fires -> no chime.
     rerender(2);
     await flushPlayback();
     expect(audioInstances).toHaveLength(0);
@@ -126,7 +110,6 @@ describe("useApprovalSound", () => {
     await flushPlayback();
     expect(audioInstances).toHaveLength(1);
 
-    // 1 -> 3 is not a 0-edge; no new chime.
     rerender(3);
     await flushPlayback();
     expect(audioInstances).toHaveLength(1);
@@ -178,7 +161,6 @@ describe("useApprovalSound", () => {
     rerender(1);
     await flushPlayback();
     expect(fetchSounds).toHaveBeenCalled();
-    // 0.99 * 2 -> index 1 -> "chime".
     expect(fetchSoundBlob).toHaveBeenCalledWith("chime");
   });
 
@@ -235,7 +217,6 @@ describe("useApprovalSound", () => {
     playImpl = () => Promise.reject(new Error("autoplay blocked"));
     const { rerender } = await mountPastQuietPeriod(0);
     rerender(1);
-    // Must not surface an unhandled rejection.
     await flushPlayback();
     expect(audioInstances[0].play).toHaveBeenCalledTimes(1);
   });
@@ -248,7 +229,6 @@ describe("useApprovalSound", () => {
     await flushPlayback();
     rerender(1);
     await flushPlayback();
-    // Two plays, but settings fetched once thanks to the 30s TTL cache.
     expect(audioInstances).toHaveLength(2);
     expect(fetchSettings).toHaveBeenCalledTimes(1);
   });
@@ -261,7 +241,6 @@ describe("useApprovalSound", () => {
     await flushPlayback();
     rerender(1);
     await flushPlayback();
-    // Same name "ding" both times -> blob fetched once, URL created once.
     expect(fetchSoundBlob).toHaveBeenCalledTimes(1);
     expect(URL.createObjectURL).toHaveBeenCalledTimes(1);
   });
@@ -281,7 +260,6 @@ describe("useApprovalSound", () => {
     await flushPlayback();
     rerender(1);
     await flushPlayback();
-    // Cache dropped -> settings and blob fetched again.
     expect(fetchSettings).toHaveBeenCalledTimes(2);
     expect(fetchSoundBlob).toHaveBeenCalledTimes(2);
   });

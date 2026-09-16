@@ -1,14 +1,4 @@
 // @vitest-environment jsdom
-//
-// Hook tests for useLongPressDrag. The hook returns pointer handlers that
-// implement: tap-to-repeat on release (short press, vertical, no emit),
-// press-and-hold to repeat the active axis every 100ms after a 300ms delay,
-// horizontal drag past 16px to switch the emit axis (dominant axis wins),
-// and an axis-change callback for the visual hint. cancel/leave abort.
-//
-// The handlers take React pointer events but only read clientX/clientY, so
-// plain objects suffice. Timers are faked to drive the 300ms long-press
-// delay and 100ms repeat interval deterministically.
 
 import { renderHook, act } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -37,7 +27,6 @@ describe("useLongPressDrag tap", () => {
     act(() => {
       result.current.onPointerDown(ptr(10, 10));
     });
-    // Release before the 300ms long-press delay elapses.
     act(() => {
       vi.advanceTimersByTime(100);
       result.current.onPointerUp(ptr(10, 10));
@@ -72,7 +61,6 @@ describe("useLongPressDrag press-and-hold repeat", () => {
     act(() => {
       result.current.onPointerDown(ptr(10, 10));
     });
-    // Nothing yet before the delay.
     act(() => {
       vi.advanceTimersByTime(300);
     });
@@ -83,7 +71,6 @@ describe("useLongPressDrag press-and-hold repeat", () => {
     });
     expect(onRepeat).toHaveBeenCalledTimes(3);
 
-    // Release: long-press emitted, so no extra tap, and the interval stops.
     act(() => {
       result.current.onPointerUp(ptr(10, 10));
       vi.advanceTimersByTime(500);
@@ -144,7 +131,6 @@ describe("useLongPressDrag axis tracking", () => {
       result.current.onPointerDown(ptr(10, 10));
       result.current.onPointerMove(ptr(20, 11)); // dx 10 < 16 -> still vertical
     });
-    // Only the initial "vertical" from pointerDown; no axis change emitted.
     expect(onAxisChange).toHaveBeenCalledTimes(1);
     expect(onAxisChange).toHaveBeenCalledWith("vertical");
   });
@@ -183,7 +169,6 @@ describe("useLongPressDrag cancel / leave", () => {
     act(() => {
       vi.advanceTimersByTime(500);
     });
-    // Interval cleared: no further repeats.
     expect(onRepeat).toHaveBeenCalledTimes(1);
   });
 
@@ -229,7 +214,6 @@ describe("useLongPressDrag cleanup", () => {
     act(() => {
       vi.advanceTimersByTime(1000);
     });
-    // Unmount cleanup cleared the interval; no repeats fire post-unmount.
     expect(onRepeat).toHaveBeenCalledTimes(0);
   });
 });

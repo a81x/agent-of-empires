@@ -113,11 +113,6 @@ import { TopBar } from "./components/TopBar";
 import { AppShellSkeleton, MainPaneSkeleton } from "./components/AppShellSkeleton";
 import { ContentSplit } from "./components/ContentSplit";
 import { TerminalSessionStack } from "./components/TerminalSessionStack";
-// Lazy-load the acp surface so non-acp users never download
-// the @assistant-ui/react, shiki, and in-house StringDiff/DiffLine
-// dependency tree. Cuts ~hundreds of KB off the cold-start bundle
-// for the (currently default) tmux-only flow. The Suspense fallback
-// below covers the brief load while the chunk arrives.
 const StructuredView = lazy(() =>
   import("./components/acp/StructuredView").then((m) => ({
     default: m.StructuredView,
@@ -163,17 +158,10 @@ import { ElevationPrompt } from "./components/ElevationPrompt";
 import { UpdateBanner } from "./components/UpdateBanner";
 import { DashboardUpdateBanner } from "./components/DashboardUpdateBanner";
 
-// Pre-#1832 per-browser tour-seen flag. Read once on load to migrate users who
-// already dismissed the tour to the backend; no longer written.
 const LEGACY_TOUR_SEEN_KEY = "aoe-tour-seen";
 
 export default function App() {
   useMobileViewportLock();
-  // Apply the user-selected theme as CSS custom properties on the root
-  // element. Runs once on mount + on settings-driven theme changes.
-  // The pre-React /theme-bootstrap.js (referenced from index.html)
-  // paints the cached theme before hydration; this hook keeps it in
-  // sync with the server's view.
   useResolvedTheme();
   const [loginRequired, setLoginRequired] = useState<boolean | null>(null);
   const [loginAuthenticated, setLoginAuthenticated] = useState(true);
@@ -200,9 +188,6 @@ export default function App() {
     return () => window.removeEventListener(TOKEN_EXPIRED_EVENT, onTokenExpired);
   }, []);
 
-  // Clearing tokenExpired here matters: the render order below shows
-  // TokenEntryPage above LoginPage, so without the reset a token that's
-  // actually fine would keep getting shown the wrong screen.
   useEffect(() => {
     const onLoginRequired = () => {
       setTokenExpired(false);
@@ -226,7 +211,6 @@ export default function App() {
 
   const handleTokenSuccess = () => {
     setTokenExpired(false);
-    // Re-check login status now that token auth works
     loginStatus().then(({ required, authenticated }) => {
       setLoginRequired(required);
       setLoginAuthenticated(authenticated);
@@ -235,7 +219,6 @@ export default function App() {
 
   const handleLoginSuccess = () => {
     setLoginAuthenticated(true);
-    // Reset dedup flags so a future session expiry can re-fire the event.
     resetTokenExpired();
   };
 
@@ -244,9 +227,6 @@ export default function App() {
     setLoginAuthenticated(false);
   };
 
-  // Only hydrate once the user is past every auth gate, so the request runs as
-  // the authenticated user (and never against the login/token screens).
-  // Token auth is the first factor; show token entry before anything else
   if (tokenExpired) {
     return <TokenEntryPage onSuccess={handleTokenSuccess} />;
   }
@@ -256,8 +236,6 @@ export default function App() {
   }
 
   if (loginRequired === null) {
-    // Paint the app-shell chrome immediately instead of a blank surface while
-    // loginStatus() resolves, so a PWA cold launch fills in progressively.
     return <AppShellSkeleton />;
   }
 
@@ -266,9 +244,6 @@ export default function App() {
       <UnreadIndicatorContext.Provider value={unreadIndicatorEnabled}>
         <SessionRowTagContext.Provider value={sessionRowTagMode}>
           <SessionColorsContext.Provider value={sessionColorsEnabled}>
-            {/* PluginUiProvider must sit above AppContent: AppContent itself reads
-                the plugin UI snapshot (usePluginPanes), so the provider can't live
-                inside its own return. */}
             <PluginUiProvider>
               <AppContent
                 loginRequired={loginRequired}
@@ -284,10 +259,6 @@ export default function App() {
   );
 }
 
-/** Walk from the event target up to the document root looking for any
- *  text-input surface, so global hotkeys don't fire when the user is
- *  typing in an `<input>`, `<textarea>`, or contenteditable element
- *  (or any contenteditable ancestor of a deeper rich-text widget). */
 function isInsideEditable(target: EventTarget | null): boolean {
   let el: HTMLElement | null = target instanceof HTMLElement ? target : null;
   while (el) {
@@ -310,13 +281,6 @@ function AppContent({
   onSettingsRefresh: () => Promise<void> | void;
 }) {
   useDashboardPresence();
-  // Wire the localStorage write chokepoint and pull the server-side UI-state
-  // blob into localStorage. AppContent only mounts past auth, so this runs as
-  // the authenticated user. Background (does NOT gate render): blocking first
-  // paint on this fetch raced immediate interactions and could flash a blank
-  // screen if the endpoint were slow. A brand-new browser paints local defaults
-  // for the first session; hydration writes the synced values for the next
-  // mount/reload. Same-device loads (populated cache) are unaffected.
   useEffect(() => {
     initWebUiSync();
     void hydrateWebUiStateFromServer();
@@ -345,25 +309,10 @@ function AppContent({
     applySession,
   } = useSessions();
   const workspaces = useWorkspaces(sessions);
-  // Trash is a whole-workspace concern, so it is derived here from the
-  // authoritative unsliced workspace list rather than reconstructed from the
-  // sidebar's per-`group_path` slice views. A workspace is in Trash only when
-  // every one of its sessions is trashed, and Restore/Delete then cover all of
-  // them. See #2533.
   const trashedWorkspaces = useMemo(() => workspaces.filter(workspaceIsTrashed), [workspaces]);
 
-  // Remember the active session and restore it on a PWA relaunch (#2103).
   useLastSessionRestore({ activeSessionId, sessions, sessionsLoaded });
 
-  // One-shot orphan-draft sweep once useSessions has settled its first
-  // fetch (success or null). Catches acp:draft:<id> keys left behind
-  // by deletions that happened in another tab or on another device since
-  // the last load (#1358). The local-tab delete path calls clearDraft
-  // directly so it does not need to wait for this. Gating on
-  // `sessionsLoaded` rather than `sessions.length > 0` covers the
-  // legitimate empty-server case: a brand-new user with zero sessions
-  // must still get prior orphan drafts swept. Bounded by localStorage
-  // entry count; cheap.
   const sweptDraftsRef = useRef(false);
   useEffect(() => {
     if (sweptDraftsRef.current) return;
@@ -372,9 +321,6 @@ function AppContent({
     sweepOrphanDrafts(new Set(sessions.map((s) => s.id)));
   }, [sessionsLoaded, sessions]);
 
-  // Same once-on-mount sweep for diff-comments keys (#1842). Clears keys for
-  // deleted sessions and retroactively removes empty keys written before the
-  // empty-removal fix. Mirrors the draft sweep above.
   const sweptCommentsRef = useRef(false);
   useEffect(() => {
     if (sweptCommentsRef.current) return;
@@ -386,12 +332,6 @@ function AppContent({
   const [sidebarSortMode, setSidebarSortMode] = useSidebarSortMode();
   const [sidebarAxis, setSidebarAxis] = useSidebarAxis();
 
-  // Active plugin sort (#2401): an ephemeral selection of a live `sort-key`
-  // entry. Not persisted (plugin entries die with the daemon). The ref is only
-  // ever read by resolving it against the live snapshot, so a stale ref (entry
-  // gone after a daemon restart) is inert and the sidebar falls back to the
-  // built-in sort; if the entry reappears on a later poll the selection
-  // resumes. Selecting a built-in mode clears it via `selectSidebarSortMode`.
   const pluginUiEntries = usePluginUiEntries();
   const [pluginSortRef, setPluginSortRef] = useState<{ pluginId: string; entryId: string } | null>(null);
   const activePluginSort = useMemo(() => {
@@ -429,40 +369,23 @@ function AppContent({
     reorderRepoGroups,
   } = useRepoGroups(workspaces, workspaceOrdering, sidebarSortMode, projects, pluginSort);
   const { groups: sessionGroups, toggleGroupCollapsed } = useSessionGroups(workspaces, sidebarSortMode, pluginSort);
-  // The nested `repo+group` axis reuses the already-built repo groups for
-  // its top level (so repo collapse, appearance, and ordering are shared
-  // with the repo axis) and splits each repo by `group_path` underneath.
-  // See #1720.
   const { groups: nestedGroups, toggleSubgroupCollapsed } = useNestedSidebarGroups(
     repoGroups,
     sidebarSortMode,
     pluginSort,
   );
-  // The org axis (#3283) partitions the same repo groups by remote owner;
-  // it needs no sort/plugin-sort input of its own since it reuses each
-  // repo's already-ordered workspace list verbatim, just like the nested
-  // axis's repo header.
   const {
     groups: orgGroups,
     toggleOrgCollapsed,
     toggleRepoCollapsed: toggleOrgRepoCollapsed,
   } = useOrgGroups(repoGroups);
 
-  // The sidebar render path consumes one honest model (SidebarGroup): the
-  // repo axis maps in via an adapter, the user-group axis is already in
-  // that shape. Collapse routing follows the active axis so the two
-  // axes keep independent collapse state. See #1234.
   const sidebarGroups = useMemo(
     () => (sidebarAxis === "group" ? sessionGroups : repoGroups.map(repoGroupToSidebarGroup)),
     [sidebarAxis, sessionGroups, repoGroups],
   );
   const toggleSidebarGroup = sidebarAxis === "group" ? toggleGroupCollapsed : toggleRepoCollapsed;
 
-  // Drag-end handler for the sidebar. Optimistically applies the new
-  // order locally so the row snaps into place, then persists to the
-  // server. `markLocalOrderingUpdate` opens a short window during
-  // which polled responses do not clobber our just-applied state, so a
-  // poll firing mid-PUT can't revert the drag.
   const handleReorderWorkspaces = useCallback(
     (newOrder: string[]) => {
       setWorkspaceOrdering(newOrder);
@@ -472,36 +395,17 @@ function AppContent({
     [setWorkspaceOrdering, markLocalOrderingUpdate],
   );
 
-  // Selected diff-file identity. `repoName` is undefined for single-repo
-  // sessions and the workspace member name for multi-repo workspaces.
-  // Kept as one state so the path + repo always update together; with
-  // two parallel states we'd briefly fetch the wrong repo when only
-  // one side changed (workspace path collisions across repos make this
-  // a real bug, not theoretical). See #1047.
   const [selectedFile, setSelectedFile] = useState<{
     path: string;
     repoName?: string;
-    /** 1-based source line to scroll into view, when the file was opened from a
-     *  transcript `path:line` link. Undefined for plain file-list clicks. */
     line?: number;
-    /** Opened from a transcript file-ref rather than the diff list. Such a
-     *  file may have no diff against the base (full-file fallback, #1810), so
-     *  it must not be auto-cleared for being absent from the diff list. */
     cited?: boolean;
-    /** An absolute path OUTSIDE the session's repo roots that the agent
-     *  touched this session (a cited `/tmp/plan.md`, `~/.claude/x.md`). Read
-     *  via the provenance-confined `/file` endpoint and rendered by
-     *  FileContentViewer instead of the git-diff viewer. See #3088. */
     external?: boolean;
   } | null>(null);
   const selectedFilePath = selectedFile?.path ?? null;
   const selectedFileExternal = selectedFile?.external ?? false;
   const selectedRepoName = selectedFile?.repoName;
   const selectedFileLine = selectedFile?.line;
-  // Dock panes render as tabbed groups (#2437): each dock holds an ordered set
-  // of tabs (diff, one-or-more terminals, plugin panes) with one active body.
-  // The tab membership + active tab + terminal count are persisted per session;
-  // dock sizes stay global (Dock/BottomDock own those localStorage keys).
   const {
     layout: paneLayout,
     openTab,
@@ -522,25 +426,12 @@ function AppContent({
     return m;
   }, [pluginPanes]);
 
-  // Auto-add newly available plugin panes as tabs in their default dock; the
-  // layout suppresses any the user explicitly closed. When the user disabled
-  // plugin auto-open (#3035) pass an empty list rather than skipping the
-  // effect: syncPlugins still materializes the session's seeded layout on
-  // mount (pinning the diff/terminal defaults), it just adds no plugin panes.
-  // Manual activity-bar opens and already-open panes are unaffected.
   useEffect(() => {
     syncPlugins(
       webSettings.autoOpenPluginPanes ? pluginPanes.map((p) => ({ id: p.id, defaultDock: p.defaultDock })) : [],
     );
   }, [pluginPanes, syncPlugins, webSettings.autoOpenPluginPanes]);
 
-  // One-shot lookup from plugin id to its manifest identity (icon name +
-  // icon_asset URL), so a pane gets a real identity glyph, up to the plugin's
-  // actual logo, even when it doesn't set its own per-pane icon. Fetched once
-  // on mount rather than polled: the installed-plugin list itself has no live
-  // sync anywhere else in the app today (Settings > Plugins only reloads on
-  // mount and after its own mutations), so this matches existing staleness
-  // tolerance rather than introducing a new one.
   const [pluginIdentityById, setPluginIdentityById] = useState<
     Record<string, { icon?: string; iconAssetUrl?: string }>
   >({});
@@ -561,8 +452,6 @@ function AppContent({
       if (plugin) {
         const identity = pluginIdentityById[plugin.entry.plugin_id];
         const icon = resolvePaneIcon(plugin.icon, identity?.icon) ?? Puzzle;
-        // A plugin's real logo outranks any lucide glyph, including a
-        // per-pane runtime icon a worker chose before icon_asset existed.
         return { title: plugin.title, icon, iconAssetUrl: identity?.iconAssetUrl };
       }
       if (isTerminalTabId(id)) {
@@ -576,15 +465,10 @@ function AppContent({
     [pluginPaneById, pluginIdentityById],
   );
 
-  // A persisted tab is visible only if its backing pane currently exists: diff
-  // and terminals always do; a plugin tab does only while its plugin is loaded.
   const tabAvailable = useCallback(
     (id: string) => !id.startsWith("plugin:") || pluginPaneById.has(id),
     [pluginPaneById],
   );
-  // A dock's groups reduced to what's actually shown: each surviving group keeps
-  // its persisted index (so a drop addresses the right group) and a valid active
-  // tab. Groups with no visible tab (only unloaded plugins) are not rendered.
   const renderGroups = useCallback(
     (dock: DockLocation): DockGroupView[] =>
       dockGroups(paneLayout, dock)
@@ -616,8 +500,6 @@ function AppContent({
     (d) => !isDockCollapsed(paneLayout, d) && dockTabs(paneLayout, d).some(isTerminalTabId),
   );
 
-  // Activity-bar entries are pane KINDS (diff, terminal, each plugin), not
-  // individual tabs; the strip's +/x manage terminal instances.
   const isPaneOpen = (kind: string): boolean => {
     if (kind === "terminal") return terminalOpen;
     const dock = dockOf(paneLayout, kind);
@@ -632,8 +514,6 @@ function AppContent({
     },
     [toggleKind, togglePlugin, pluginPaneById],
   );
-  // Open (or focus) the Sub agents pane. Used by an inline async
-  // sub-agent card to jump to its panel entry.
   const openAgentsPane = useCallback(() => {
     const dock = dockOf(paneLayout, "agents");
     if (dock) activateTab(dock, "agents");
@@ -641,15 +521,9 @@ function AppContent({
   }, [paneLayout, activateTab, toggleKind]);
   const closePaneAny = useCallback(
     (id: string) => {
-      // Closing an extra terminal tab kills its tmux shell so it does not leak;
-      // terminal 0 (shared with the native TUI) only hides. Diff/plugin tabs
-      // have no backend shell to reap.
       if (isTerminalTabId(id)) {
         const idx = terminalIndexOf(id);
         if (idx >= 1) {
-          // Remove the tab only once the shell is actually killed; if the
-          // DELETE fails, keep the tab so the user can retry instead of
-          // silently leaking the shell with no way to close it.
           if (activeSessionId) {
             void killTerminal(activeSessionId, idx).then((ok) => {
               if (ok) closeTab(id);
@@ -663,10 +537,6 @@ function AppContent({
     [closeTab, activeSessionId],
   );
   const movePaneAny = useCallback((id: string, dock: DockLocation) => moveTab(id, dock), [moveTab]);
-  // The dnd controller works in visible-tab space; map a drop index back to the
-  // target group's full persisted tab list, since a hidden (unloaded) plugin tab
-  // still holds a slot the visible index does not count. A split target carries
-  // no index (the new group starts with just the dragged tab).
   const placeVisibleTab = useCallback(
     (id: string, target: DropTarget) => {
       if (target.newGroup) {
@@ -679,55 +549,23 @@ function AppContent({
     },
     [paneLayout, placeTab, tabAvailable],
   );
-  // Layout topology is width-driven so it stays aligned with the `md:`
-  // Tailwind classes the rest of the layout uses. At md and up the
-  // side-by-side ContentSplit renders; below md a single full-viewport
-  // pane shows one of agent / diff / paired, chosen via the picker (#1452).
   const isMdUp = useIsWideViewport();
   const singlePane = !isMdUp;
   const [rightPanelView, setRightPanelView] = useState<RightPanelView>("agent");
   const [pickerOpen, setPickerOpen] = useState(false);
-  // Reading mode for the phone conversation view: the top bar folds away so the
-  // transcript gets its 48px back (the composer has its own, independent
-  // handle inside StructuredView). Kept here rather than in the structured view
-  // because the top bar is the App shell's own child. State is App-level, so it
-  // survives switching sessions; the collapse only *applies* on the mobile
-  // conversation view, so leaving it on and navigating to settings or the
-  // dashboard shows the bar again.
   const [headerCollapsed, setHeaderCollapsed] = useState(false);
-  // The paired shell mounts lazily on first activation, then stays mounted
-  // (kept alive but hidden) so its PTY, scrollback, and focus survive view
-  // switches. Mounting it eagerly would spawn a shell for every mobile
-  // session the user never opens the shell on.
   const [pairedMounted, setPairedMounted] = useState(false);
   const [showSessionWizard, setShowSessionWizard] = useState(false);
   const [showHelp, setShowHelp] = useState(false);
   const tipsAutoPoppedRef = useRef(false);
-  // Pending `requestAnimationFrame` id for the tips auto-pop, cancelled only on
-  // unmount so a dep-change re-render cannot orphan a committed open.
   const tipsAutoPopFrameRef = useRef<number | null>(null);
-  // Whether the tour was already seen when this page loaded (set in the settings
-  // fetch below). Auto-pop keys off this, not the live tourSeen, so finishing
-  // the tour this session does not then pop tips on top of the first-run flow.
   const tourSeenAtLoadRef = useRef<boolean | null>(null);
-  // All tips orchestration (open state, mark-seen, the show toggle, the auto-pop
-  // decision) lives in the hook / lib so it stays out of this component and is
-  // unit-tested directly.
   const tips = useTips();
   const [showPalette, setShowPalette] = useState(false);
-  // Palette content-search query (#2515); declared here so the keyboard
-  // handlers below can clear it on close/toggle. Consumed lower down by
-  // useConversationSearch.
   const [paletteQuery, setPaletteQuery] = useState("");
-  // Session id awaiting a snooze duration from the palette's "Snooze…" action;
-  // drives the shared SnoozeModal. Null when no snooze is in flight.
   const [snoozeTargetId, setSnoozeTargetId] = useState<string | null>(null);
   const [showAbout, setShowAbout] = useState(false);
   const [telemetryConsentNeeded, setTelemetryConsentNeeded] = useState(false);
-  // Whether the telemetry status fetch has settled. `telemetryConsentNeeded`
-  // starts false, so before this is true "no consent needed" and "not resolved
-  // yet" look the same; the tips auto-pop waits on this so it can't slip in
-  // before a pending consent modal.
   const [telemetryConsentKnown, setTelemetryConsentKnown] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(() => window.innerWidth >= 768);
   const keyboardProxyRef = useRef<HTMLTextAreaElement>(null);
@@ -738,9 +576,6 @@ function AppContent({
   }, []);
 
   const [serverAbout, setServerAbout] = useState<ServerAbout | null>(null);
-  // CityHall client mode collapses the dashboard to a locked-down end-user
-  // client; the capability flags gate the terminal/diff panes, project
-  // management, the wizard, and settings from one place. See #7.
   const caps = useMemo(() => getClientCapabilities(serverAbout), [serverAbout]);
 
   const activeWorkspace = useMemo(() => {
@@ -749,19 +584,12 @@ function AppContent({
   }, [workspaces, activeSessionId]);
   const activeSession = activeWorkspace?.sessions.find((s) => s.id === activeSessionId);
   const allPaneIds: string[] = [
-    // CityHall client mode hides the code-inspection panes (diff, files) and
-    // the terminal (plus plugin panes below) so only the composer + structured
-    // view remain. See #7.
     ...(caps.canUseDiff ? ["diff", "files"] : []),
     ...(caps.canUseTerminal ? ["terminal"] : []),
-    // The background-agents panel only applies to structured-view (ACP)
-    // sessions; a plain terminal session never launches sub-agents.
     ...(activeSession?.view === "structured" ? ["agents"] : []),
     ...(caps.cityhall ? [] : pluginPanes.map((p) => p.id)),
   ];
 
-  // Fetch the diff when the panel is actually showing: on desktop when the
-  // split is expanded, on mobile when the diff view is the active pane.
   const diffPanelActive = isMdUp ? dockOf(paneLayout, "diff") !== null : rightPanelView === "diff";
   const {
     files: diffFiles,
@@ -772,20 +600,9 @@ function AppContent({
     refresh: refreshDiffFiles,
   } = useDiffFiles(activeSessionId, diffPanelActive);
 
-  // Diff-viewer comments (#928). Acp-only and session-scoped. The
-  // banner lives in the diff pane while the inline UI lives inside
-  // DiffFileViewer, so the store is lifted here and threaded to both.
   const diffComments = useDiffComments(activeSessionId);
   const commentsEnabled = activeSession?.view === "structured";
-  // Sending does not require a live worker: the diff-comments handler runs the
-  // same auto-wake as a plain composer prompt (touch_on_prompt_and_wake_if_sunk +
-  // trigger_resume_background, #1748), so an archived / snoozed / idle-dormant
-  // session respawns its worker on send instead of sinking the prompt. A
-  // trashed session is the one exception: the reconciler never resumes it, so
-  // there is nothing to drain into.
   const commentSendEnabled = commentsEnabled && !activeSession?.trashed_at;
-  // Every disabled state names its cause and what the user can do about it: a
-  // tooltip that only says "unavailable" leaves them staring at a dead button.
   const commentSendDisabledReason = !commentsEnabled
     ? "Diff comments can only be sent from the agent view. Switch this session to the agent view first."
     : "This session is in the trash. Restore it to send comments to the agent.";
@@ -807,11 +624,6 @@ function AppContent({
     return () => window.removeEventListener("keydown", onKey);
   }, [commentSendEnabled, diffComments.count]);
 
-  // Clear-on-view: opening a session (or having it open when its turn
-  // finishes) reads it, clearing the unread marker. Mirrors the TUI, where
-  // engaging with a session (open / live-send / dwell) clears it. The sidebar
-  // separately hides the chip for the active row, so there's no flash in the
-  // ~poll window before this lands.
   const unreadIndicatorEnabled = useUnreadIndicatorEnabled();
   useEffect(() => {
     if (unreadIndicatorEnabled && activeSessionId && activeSession?.unread) {
@@ -819,10 +631,6 @@ function AppContent({
     }
   }, [unreadIndicatorEnabled, activeSessionId, activeSession?.unread]);
 
-  // Derive selectedFile/rightPanelView/pickerOpen/pairedMounted resets
-  // during render to satisfy
-  // react-you-might-not-need-an-effect/no-adjust-state-on-prop-change
-  // and react-hooks/set-state-in-effect.
   const prevActiveSessionIdRef = useRef(activeSessionId);
   if (activeSessionId !== prevActiveSessionIdRef.current) {
     prevActiveSessionIdRef.current = activeSessionId;
@@ -832,29 +640,18 @@ function AppContent({
     setSelectedFile(null);
   }
 
-  // Inline derivation for diffFiles validation: clear a stale diff-list
-  // selection. The staleness rule (cited exemption, path+repo match) lives in
-  // diffSelectionStale so it can be unit-tested. See #1810.
   if (activeSessionId && diffSelectionStale(selectedFile, diffFilesLoading, diffFiles)) {
     setSelectedFile(null);
   }
 
-  // Mount the paired shell on first activation and keep it mounted after.
   if (rightPanelView === "paired" && !pairedMounted) {
     setPairedMounted(true);
   }
 
-  // A plugin pane promoted into the mobile main pane can vanish (plugin
-  // unloaded, or the new session has no such pane). Fall back to the agent
-  // view so the user is never stranded on a blank pane. Mirrors the diff /
-  // paired guards above; render-phase derivation per the block at the top.
   if (isPluginPaneId(rightPanelView) && !pluginPanes.some((p) => p.id === rightPanelView)) {
     setRightPanelView("agent");
   }
 
-  // Refit the newly active terminal after a single-pane view switch: the
-  // layers keep their geometry while hidden (visibility, not display:none),
-  // but a resize nudge re-runs the xterm fit so the grid matches exactly.
   useEffect(() => {
     if (!singlePane) return;
     const id = requestAnimationFrame(() => window.dispatchEvent(new Event("resize")));
@@ -873,8 +670,6 @@ function AppContent({
     }
   };
 
-  // Preserve the gesture-authorized proxy, but never carry its edits across
-  // sessions or mobile surfaces. Reselecting the same target keeps its receiver.
   const keyboardProxySessionIdRef = useRef(activeSessionId);
   const keyboardProxyViewRef = useRef<RightPanelView>(singlePane ? rightPanelView : "agent");
   const transitionKeyboardProxy = useCallback((nextSessionId: string | null, nextView: RightPanelView) => {
@@ -885,7 +680,6 @@ function AppContent({
     clearMobileKeyboardProxyInput();
   }, []);
 
-  // Cover history and programmatic switches before the next input event.
   useLayoutEffect(() => {
     transitionKeyboardProxy(activeSessionId, singlePane ? rightPanelView : "agent");
   }, [activeSessionId, singlePane, rightPanelView, transitionKeyboardProxy]);
@@ -898,10 +692,6 @@ function AppContent({
     return () => proxy.removeEventListener("beforeinput", onBeforeInput);
   }, [keyboardProxy]);
 
-  // Selecting a session in the sidebar should land focus on its canonical
-  // "type here" target so the user can start typing without a second click:
-  // the acp composer in acp mode, the xterm textarea otherwise. See
-  // requestSessionInputFocus for the dispatch/latch and coarse-pointer rules.
   const isCoarse = useIsCoarsePointer();
   const focusAgentInput = useCallback(
     (session: SessionResponse | undefined) => requestSessionInputFocus(session, isCoarse),
@@ -915,16 +705,7 @@ function AppContent({
         const picked = ws.sessions.find((s) => s.id === sessionId);
         transitionKeyboardProxy(sessionId, sessionId === activeSessionId && singlePane ? rightPanelView : "agent");
         navigate(`/session/${encodeURIComponent(sessionId)}`);
-        // iOS does not permit a session's asynchronously mounted terminal
-        // input to inherit this sidebar tap's keyboard authorization. The
-        // persistent keyboard input keeps the gesture-authorized focus while
-        // a terminal is starting; the terminal consumes its input directly
-        // rather than attempting a second, unreliable focus transfer.
         if (isCoarse) {
-          // Claude's alternate-screen startup still loses the first keyboard
-          // input on iOS (#3285). Start it as a monitoring view until that
-          // separate transport race is fixed; other terminal agents remain
-          // safe to auto-open.
           if (picked?.tool === "claude" && picked.view !== "structured") {
             closeKeyboardProxy();
           } else if (webSettings.autoOpenKeyboard) {
@@ -958,8 +739,6 @@ function AppContent({
       if (picked) {
         transitionKeyboardProxy(picked.id, picked.id === activeSessionId && singlePane ? rightPanelView : "agent");
         navigate(`/session/${encodeURIComponent(picked.id)}`);
-        // See handleSelectSession: keep focus on the persistent keyboard input
-        // until the selected surface can receive it.
         if (isCoarse) {
           if (picked.tool === "claude" && picked.view !== "structured") {
             closeKeyboardProxy();
@@ -981,8 +760,6 @@ function AppContent({
     }
   };
 
-  // In-app toast forwarded from the service worker sets this event when
-  // the user taps it; navigate to the session that triggered the push.
   useEffect(() => {
     const onOpen = (e: Event) => {
       const detail = (e as CustomEvent).detail as { sessionId?: string } | undefined;
@@ -998,8 +775,6 @@ function AppContent({
   const [deletingWorkspaceId, setDeletingWorkspaceId] = useState<string | null>(null);
   const [stoppingWorkspaceId, setStoppingWorkspaceId] = useState<string | null>(null);
   const [switchViewTarget, setSwitchViewTarget] = useState<{ sessionId: string; toStructured: boolean } | null>(null);
-  // `serverAbout === null` conflates "not fetched yet" with "fetch failed", so
-  // the tour gates auto-launch on an explicit loaded flag instead.
   const [serverAboutLoaded, setServerAboutLoaded] = useState(false);
 
   const refreshServerAbout = useCallback(async () => {
@@ -1011,21 +786,14 @@ function AppContent({
     }
   }, []);
 
-  // Kick off the initial server-about fetch on mount. The effect body only
-  // calls fetchAbout and schedules the telemetry consent check; neither runs
-  // setState synchronously, so set-state-in-effect is not triggered.
   useEffect(() => {
     let active = true;
     void fetchAbout()
       .then((about) => {
         if (!active) return;
         if (about) setServerAbout(about);
-        // Read-only servers can't persist an opt-in choice, so skip the ping.
         if (about && !about.read_only) reportTelemetrySeen("web");
       })
-      // `serverAboutLoaded` gates the shell render, so it must flip on a failed
-      // or missing /api/about too, not only on success. Otherwise the shell
-      // would hang on its placeholder.
       .finally(() => {
         if (active) setServerAboutLoaded(true);
       });
@@ -1044,14 +812,6 @@ function AppContent({
     };
   }, []);
 
-  // Telemetry: report that the acp web UI was opened, folded into the
-  // daemon's next opt-in snapshot under the `usage_seen` map's `acp` key.
-  // `activeSession` drives both the desktop and mobile acp mounts, so this
-  // single effect covers both layouts. Same guard as the `"web"` ping above:
-  // skip until `serverAbout` loads, skip read-only servers (which can't
-  // persist). The backend folds repeated pings into a monotonic open-count
-  // (decremented by exactly what each snapshot reported), so re-fires on
-  // session switch are harmless. See #1882.
   useEffect(() => {
     if (!serverAboutLoaded || serverAbout?.read_only) return;
     if (activeSession?.view !== "structured") return;
@@ -1084,14 +844,9 @@ function AppContent({
   const handleConfirmDelete = async (options: DeleteSessionOptions) => {
     if (!deletingWorkspace) return;
     const sessions = deletingWorkspace.sessions;
-    // Close the dialog immediately; the loop, ordering, and toast logic live
-    // in deleteWorkspaceSessions so they are unit-testable without the bundle.
     setDeletingWorkspaceId(null);
     await deleteWorkspaceSessions(sessions, options, activeSessionId, {
       setStatus: setSessionStatus,
-      // Drop a deleted session's local-only state (#1358 acp cache + draft,
-      // #1842 diff comments). Cross-tab / cross-device deletes fall to the
-      // startup sweep.
       purgeLocal: (id) => {
         clearAcpCache(id);
         clearDraft(id);
@@ -1102,16 +857,6 @@ function AppContent({
     });
   };
 
-  // Empty Trash (#3167): purge every trashed workspace in one action, mirroring
-  // the TUI's `empty_trash_all`. Reuses the atomic per-workspace delete loop, so
-  // partial failures stay consistent (each call flags only its own failed ids).
-  // Per-workspace toasts are suppressed for one summary; force_delete matches
-  // the TUI so a dirty worktree cannot block a bulk purge.
-  // Rows stay in `trashedWorkspaces` (as Deleting) until the next /api/sessions
-  // poll drops them, so the Trash panel and its Empty Trash button are still
-  // clickable while this loop runs. Without the guard a second confirm starts a
-  // concurrent loop that re-issues a DELETE for every workspace and fires a
-  // second summary toast.
   const emptyingTrashRef = useRef(false);
   const handleEmptyTrash = useCallback(async () => {
     if (trashedWorkspaces.length === 0 || emptyingTrashRef.current) return;
@@ -1123,11 +868,6 @@ function AppContent({
       },
       info: () => {},
     };
-    // Purge one workspace at a time, matching the CLI's sequential
-    // `for inst in &trashed` loop (src/cli/session.rs) and the TUI's single
-    // shared deletion poller. Running teardowns in series keeps the summary
-    // toast trivially ordered and stops N git worktree removals from racing on
-    // one source repo, the same sequential-await idiom trashActions.ts uses.
     try {
       for (const ws of trashedWorkspaces) {
         await deleteWorkspaceSessions(
@@ -1157,10 +897,6 @@ function AppContent({
     );
   }, [trashedWorkspaces, activeSessionId, setSessionStatus, navigate]);
 
-  // Move-to-trash path (#2489): the safe default. Unlike permanent delete it
-  // deliberately KEEPS the per-session acp cache, draft, and stored comments
-  // so a restore is faithful; only purge clears them. Trashes every session
-  // in the workspace so a multi-session workspace sinks as a whole.
   const handleConfirmTrash = async () => {
     if (!deletingWorkspace) return;
     const ids = deletingWorkspace.sessions.map((s) => s.id);
@@ -1173,8 +909,6 @@ function AppContent({
       navigate("/");
     }
 
-    // The returned snapshot re-buckets each row into Trash immediately
-    // instead of on the next poll. See trashSessions.
     await trashSessions(ids, {
       applySession,
       onError: (id) => setSessionStatus(id, "Error"),
@@ -1182,9 +916,6 @@ function AppContent({
     });
   };
 
-  // Restore a trashed workspace from the sidebar Trash section (#2489).
-  // Restores every session in the workspace (a workspace only lands in Trash
-  // when all of its sessions are trashed), not just the first.
   const handleRestoreSession = useCallback(
     (sessionIds: string[]) => restoreSessions(sessionIds, { applySession, notify: toastBus.handler }),
     [applySession],
@@ -1201,8 +932,6 @@ function AppContent({
     if (!stoppingSession) return;
     const sessionId = stoppingSession.id;
 
-    // Close the dialog and show "Stopped" immediately; the 2s status poller
-    // reconciles the true state and corrects this if the request fails.
     setStoppingWorkspaceId(null);
     setSessionStatus(sessionId, "Stopped");
 
@@ -1226,8 +955,6 @@ function AppContent({
   const handleConfirmSwitchView = useCallback(async () => {
     if (!switchViewTarget) return;
     const { sessionId, toStructured } = switchViewTarget;
-    // Keep the dialog mounted through the request so its "Switching..." spinner
-    // shows; close it once the switch resolves.
     const result = toStructured ? await acpEnable(sessionId) : await acpDisable(sessionId);
     setSwitchViewTarget(null);
     if (!result) {
@@ -1243,7 +970,6 @@ function AppContent({
       const session = ws?.sessions[0];
       if (!session) return;
 
-      // Optimistic Starting; the status poller reconciles to the real state.
       setSessionStatus(session.id, "Starting");
       const result = await startSession(session.id);
       if (!result) {
@@ -1276,10 +1002,6 @@ function AppContent({
     [sessions],
   );
 
-  // Pin a repo so its header persists with zero sessions. If the repo is
-  // already a saved project, just set its pin flag (PATCH); otherwise register
-  // it pinned (scope global, matching the TUI's global registry). Then refresh
-  // so the diamond / empty header reflects it. See #2047, #2208.
   const handlePinProject = useCallback(
     async (repoPath: string) => {
       const key = normalizeProjectPathKey(repoPath);
@@ -1301,10 +1023,6 @@ function AppContent({
     [projects, refreshProjects],
   );
 
-  // Unpin a repo: clear the pin flag on every pinned registry entry for its
-  // path (a path can be registered under both global and profile scope),
-  // keeping the saved project so it stays in the Projects view and the wizard.
-  // Only the Projects view's Remove deletes the entry. See #2208.
   const handleUnpinProject = useCallback(
     async (group: SidebarGroup) => {
       const pinned = group.registeredProjects.filter((p) => p.pinned);
@@ -1318,15 +1036,10 @@ function AppContent({
     [refreshProjects],
   );
 
-  // Add / edit a saved project from the sidebar Projects section. The modal is
-  // open for `add` (no editProject) or `edit` (a specific registration); both
-  // refresh the registry on save. See #2212.
   const [projectForm, setProjectForm] = useState<{ editProject: ProjectInfo | null } | null>(null);
   const handleAddProject = useCallback(() => setProjectForm({ editProject: null }), []);
   const handleEditProject = useCallback((project: ProjectInfo) => setProjectForm({ editProject: project }), []);
 
-  // Remove a saved project: delete every registration for its path, then
-  // refresh. Confirms first since it is not undoable. See #2212.
   const handleRemoveProject = useCallback(
     async (group: RepoGroup) => {
       if (!confirm(`Remove project '${group.displayName}' from the sidebar?`)) return;
@@ -1340,8 +1053,6 @@ function AppContent({
     [refreshProjects],
   );
 
-  // The right-panel control toggles the desktop split, but on mobile there
-  // is no split to collapse: it opens the view picker instead (#1452).
   const toggleDiff = useCallback(() => {
     if (isMdUp) {
       toggleKind("diff", "right");
@@ -1350,9 +1061,6 @@ function AppContent({
     }
   }, [isMdUp, toggleKind]);
 
-  // Collapse or restore the whole right dock (the "toggle right panel"
-  // shortcut). Collapse hides the dock without removing its tabs so expanding
-  // restores the active session's previous pane set.
   const toggleRightDock = useCallback(() => {
     if (!isMdUp) {
       setPickerOpen((o) => !o);
@@ -1382,21 +1090,10 @@ function AppContent({
     setSelectedFile({ path, repoName, line });
   }, []);
 
-  // Open a local file reference cited in an acp transcript (Codex
-  // `path:line` markdown links). Resolve the absolute path back to a
-  // repo-relative path for the active session and open it in the in-app
-  // diff/file viewer, keeping the current session route. A path outside
-  // the session's known repo roots surfaces a non-destructive toast
-  // rather than navigating away. The parsed line is threaded through so the
-  // viewer scrolls it into view. See #1718, #1809.
   const handleOpenFileRef = useCallback(
     (ref: FileRef) => {
       if (!activeSession) return;
       const resolved = resolveToRepoRelative(ref.path, activeSession);
-      // A git session with an in-repo path uses the diff viewer (#1718). A
-      // scratch (non-git) session has no diff endpoint, so it always uses the
-      // provenance-confined /file viewer, as does any out-of-repo absolute path
-      // the agent touched this session (a plan in /tmp, ~/.claude, etc.). #3088.
       if (resolved && !activeSession.scratch) {
         setSelectedFile({
           path: resolved.relativePath,

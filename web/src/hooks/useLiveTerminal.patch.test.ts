@@ -1,8 +1,4 @@
 // @vitest-environment jsdom
-//
-// Row patches: the server sends only changed rows once the client advertises
-// `caps.patch`. The hook must apply them against the frame it holds, keep the
-// rendered row array in step, and ask for a full frame when continuity breaks.
 
 import { act, renderHook } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -55,8 +51,6 @@ describe("useLiveTerminal row patches", () => {
     act(() => ws.onmessage?.({ data: frameMsg(1, "a\nb\nc\n") }));
     expect(result.current.state.frame?.lines).toEqual(["a", "b", "c"]);
 
-    // History grew by one and the new tail row differs: drop the top row,
-    // pad, then replace row 2.
     act(() =>
       ws.onmessage?.({
         data: JSON.stringify({
@@ -94,7 +88,6 @@ describe("useLiveTerminal row patches", () => {
     act(() => ws.onmessage?.({ data: frameMsg(10, "x\ny\nz\n") }));
     expect(result.current.state.frame?.lines).toEqual(["x", "y", "z"]);
     expect(result.current.state.stats.resyncs).toBe(1);
-    // Continuity restored: the next well-based patch applies.
     act(() =>
       ws.onmessage?.({
         data: JSON.stringify({ type: "patch", seq: 11, base: 10, shift: 0, lines: [[1, "Y"]], rows: 3, history: 5 }),

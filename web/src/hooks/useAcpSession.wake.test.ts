@@ -1,11 +1,4 @@
 // @vitest-environment jsdom
-//
-// Regression tests for #1581: sending a prompt to an archived or
-// snoozed structured view session must auto-clear that flag client-side
-// before enqueueing locally. Without the wake, the structured view
-// reconciler keeps skipping the session (its respawn predicate
-// excludes archived + actively-snoozed rows), the worker stays
-// down, and the queued prompt never drains.
 
 import { act, renderHook } from "@testing-library/react";
 import { createElement, type ReactNode } from "react";
@@ -46,9 +39,7 @@ class FakeWebSocket implements FakeSocket {
   close(): void {
     this.readyState = FakeWebSocket.CLOSED;
   }
-  send(): void {
-    /* no-op */
-  }
+  send(): void {}
 }
 
 async function flushAsync(): Promise<void> {
@@ -90,9 +81,6 @@ describe("useAcpSession auto-wake on sendPrompt (#1581)", () => {
         if (url.includes("/acp/replay")) {
           return new Response(JSON.stringify({ frames: [], lost: false, highest_seq: 0 }), { status: 200 });
         }
-        // These sessions have an absent worker, so a real daemon parks the
-        // prompt (`QueueReason::WorkerDown`) rather than starting a turn. The
-        // client no longer predicts that; it renders what this says.
         if (url.includes("/acp/prompt") && method === "POST") {
           return new Response(JSON.stringify({ disposition: "queued", queued_id: "srv-queued-1" }), { status: 202 });
         }
@@ -136,7 +124,6 @@ describe("useAcpSession auto-wake on sendPrompt (#1581)", () => {
       archived: false,
       kill_pane: true,
     });
-    // Worker is "absent", so the prompt enqueues rather than POSTs.
     expect(result.current.state.queuedPrompts).toHaveLength(1);
     expect(result.current.state.queuedPrompts[0]!.text).toBe("wake me up");
   });
@@ -175,13 +162,7 @@ describe("useAcpSession auto-wake on sendPrompt (#1581)", () => {
   });
 
   it("does NOT enqueue when the archive wake call fails", async () => {
-    // Regression: a failed wake PATCH used to fall through to the
-    // local enqueue, which left the prompt parked in a queue that
-    // never drains (the reconciler kept skipping the still-archived
-    // session). Surface an error instead so the user knows to retry
-    // or unarchive manually. See #1581 CodeRabbit review.
     const sessionId = "sess-wake-fail-arch";
-    // Override the default fetch to fail the archive PATCH.
     vi.stubGlobal(
       "fetch",
       vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -257,12 +238,6 @@ describe("useAcpSession auto-wake on sendPrompt (#1581)", () => {
   });
 
   it("prefers archive over snooze when both are somehow set (defensive)", async () => {
-    // The server's XOR rules prevent both flags from co-existing on
-    // the same session, but a defensive client should still do
-    // exactly one wake call rather than two. Archive wins because
-    // it is the stronger signal (no auto-wake) and clearing it
-    // implies snooze should also clear via touch_last_accessed in
-    // merge_user_action_diff on the server side.
     const sessionId = "sess-wake-both";
     const { result } = renderHook(
       () => useAcpSession(sessionId, "absent", "2026-01-01T00:00:00Z", "2099-01-01T00:00:00Z"),

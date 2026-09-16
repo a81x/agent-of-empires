@@ -3,10 +3,6 @@ import type { RepoGroup } from "../lib/types";
 import { safeGetItem, safeRemoveItem, safeSetItem } from "../lib/safeStorage";
 import { buildOrgGroups, type OrgNestedGroup } from "../lib/sidebarGroups";
 
-// Distinct from the repo prefix (`aoe-repo-collapsed-`) and the nested
-// subgroup prefix (`aoe-nested-group-collapsed-`): a repo's collapse state
-// under an org is independent of both, and an org header is a collapsible
-// element with no equivalent on any other axis. See #3283.
 const COLLAPSED_KEY_PREFIX = "aoe-org-group-collapsed-";
 
 function orgKey(orgId: string): string {
@@ -43,8 +39,6 @@ export function useOrgGroups(repoGroups: RepoGroup[]): {
     [repoGroups, collapsedMap],
   );
 
-  // The updater stays pure and persistence runs in an effect, for the same
-  // StrictMode double-invoke reason documented in `useSessionGroups`.
   const toggleOrgCollapsed = useCallback((orgId: string) => {
     const key = orgKey(orgId);
     setCollapsedMap((prev) => {

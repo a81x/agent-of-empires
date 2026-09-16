@@ -1,10 +1,4 @@
 // @vitest-environment jsdom
-//
-// The client half of #3417: `turnActive` is the daemon's `turn_active` OR'd
-// with prompts this client has POSTed but not yet seen acknowledged. Every
-// POST outcome has to settle its own id, or that id latches the spinner for
-// the life of the session. Before this landed, a non-503 5xx and a network
-// exception settled nothing at all.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -26,9 +20,6 @@ describe("acpHookReducer / in-flight prompt settlement", () => {
   });
 
   it("every failure action settles its own id and unlocks the composer", () => {
-    // One row per POST outcome that no `UserPromptSent` will follow. The
-    // rejection keeps its overlay row so the user still sees what they tried
-    // to send; the rollback drops it because the prompt moved to the queue.
     const cases: Array<
       [string, "prompt_send_rejected" | "settle_inflight_prompt" | "rollback_optimistic_prompt", boolean]
     > = [
@@ -60,8 +51,6 @@ describe("acpHookReducer / in-flight prompt settlement", () => {
       event: { UserPromptSent: { text: "hi", prompt_id: "p1" } },
     });
     expect(state.serverTurnActive).toBe(true);
-    // A late ambiguous-failure settlement for the same id must not win over
-    // the daemon's acknowledgement.
     state = acpHookReducer(state, { kind: "settle_inflight_prompt", id: "p1" });
     expect(state.turnActive).toBe(true);
   });

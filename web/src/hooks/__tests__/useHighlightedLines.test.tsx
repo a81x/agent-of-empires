@@ -1,17 +1,4 @@
 // @vitest-environment jsdom
-//
-// Direct unit tests for the `useHighlightedLines` hook. Mocks
-// `../../lib/snippetHighlighter` and `../useShikiTheme` so the hook can run
-// in jsdom without WASM. Covers:
-//
-// - No-language path: `langHintForPath` returns an empty hint, the effect
-//   bails before any async work and `tokens` stays null.
-// - Success path: the shared highlighter resolves, state settles with a
-//   grid for every hunk line.
-// - Catch path: `getSnippetHighlighter` / `codeToTokens` reject. The IIFE
-//   must catch and settle state with an empty grid rather than leaving the
-//   hook loading forever (PR #1355 root regression).
-// - Reqid guard: a stale request must not overwrite a newer one.
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { renderHook, waitFor } from "@testing-library/react";
@@ -29,7 +16,6 @@ vi.mock("../useShikiTheme", () => ({
   useShikiTheme: () => useShikiTheme(),
 }));
 
-// Imported AFTER the mocks so it picks up the stubs.
 import { useHighlightedLines } from "../useHighlightedLines";
 
 function hunkOf(content: string): RichDiffHunk {
@@ -92,9 +78,6 @@ describe("useHighlightedLines", () => {
 
   it("falls back to empty grid when the highlighter rejects", async () => {
     useShikiTheme.mockReturnValue({ theme: "github-dark", appearance: "dark" });
-    // Simulates the real-world CSP WASM block: getSharedHighlighter rejects
-    // with a CompileError, so the IIFE must enter the catch and settle
-    // state instead of leaving loading=true forever.
     getSnippetHighlighter.mockRejectedValue(new Error("call to WebAssembly.instantiate() blocked by CSP"));
     const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
 
@@ -129,8 +112,6 @@ describe("useHighlightedLines", () => {
     });
 
     rerender({ path: "second.tsx" });
-    // First render after the switch: `state.path` still says
-    // `first.tsx`, so tokens reads as null even though state is set.
     expect(result.current.tokens).toBeNull();
 
     await waitFor(() => {

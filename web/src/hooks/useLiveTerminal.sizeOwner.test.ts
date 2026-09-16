@@ -1,12 +1,4 @@
 // @vitest-environment jsdom
-//
-// Size-owner exclusivity for the mobile live view. Only one client at a
-// time may drive a session's size and type into it across every surface
-// (web PTY attach, mobile live, native TUI); a non-owner renders
-// best-effort and shows a "take over" affordance. These tests pin the
-// wire contract the server (src/server/live_ws.rs) relies on: the client
-// honors `{"type":"size_owner","is_owner":..}` frames, gates input on
-// ownership, and emits `{"type":"claim"}` on an explicit take-over.
 
 import { act, renderHook } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -101,8 +93,6 @@ describe("useLiveTerminal size-owner", () => {
     socket.sent.length = 0;
 
     deliver(socket, { type: "size_owner", is_owner: false });
-    // The return value is what tells a caller the pane never got these bytes,
-    // so nothing downstream may record them as delivered.
     let accepted: boolean | undefined;
     act(() => {
       accepted = result.current.sendData("x");
@@ -123,8 +113,6 @@ describe("useLiveTerminal size-owner", () => {
   it("queues the first typed bytes until a newly selected session owns the pane", () => {
     const { result } = renderHook(() => useLiveTerminal("s1"));
     const socket = sockets[0];
-    // Queued during the unresolved handshake still counts as accepted: the
-    // flush on ownership delivers it.
     let accepted: boolean | undefined;
     act(() => {
       accepted = result.current.sendData("first");

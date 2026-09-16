@@ -1,12 +1,3 @@
-// Regression for #2711: prepending an older history page must not emit a
-// duplicate `toolCallId`. The transcript is server-owned now (Tier 4): the
-// `?view=rows` replay folds each page in isolation, so a tool call split
-// across the page seam (its start in the older page, its completion in the
-// loaded tail) yields a synthesized placeholder start in the tail page's
-// rows; the older page's real start must merge into it, not append a second
-// tool_start row. Two assistant-ui `tool-call` parts sharing a toolCallId make
-// useResources throw "Duplicate key" and crash the structured view.
-
 import { describe, expect, it } from "vitest";
 
 import { reducer } from "./useAcpSession";
@@ -44,17 +35,12 @@ const toolStarts = (rows: ActivityRow[], id: string) =>
 
 describe("prepend seam dedupe (#2711)", () => {
   it("merges the older page's real start into the tail's synthesized start", () => {
-    // Tail rows: a synthesized placeholder start for call_X (its real start
-    // fell below the recent-first window) plus its completion.
     const synth = startRow(tc({ id: "call_X", name: "tool call", kind: "other", args_preview: "" }));
     const tail = withActivity([synth, doneRow("call_X", "2024-01-01T00:05:00Z")]);
 
-    // Older page rows carry the real ToolCallStarted for the same id.
     const real = startRow(tc({ id: "call_X", name: "Read", kind: "read", args_preview: '{"path":"/etc/hosts"}' }));
     const next = reducer(tail, { kind: "prepend", rows: [real], oldestSeq: 5 });
 
-    // Exactly one tool_start row survives for call_X, carrying the real
-    // tool name/kind and the real (earlier) start time.
     const merged = toolStarts(next.activity, "call_X");
     expect(merged).toHaveLength(1);
     expect(merged[0]!.tool?.name).toBe("Read");

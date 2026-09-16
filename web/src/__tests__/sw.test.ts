@@ -1,9 +1,3 @@
-// Unit coverage for the push/clear contract in web/public/sw.js (#2491).
-// The service worker is a plain classic worker file, not a module, so we
-// load its source into a fresh VM context with the small slice of the SW
-// global surface it touches (self, registration, clients) stubbed, then
-// dispatch synthetic push events and await their waitUntil promises.
-
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import vm from "node:vm";
@@ -31,8 +25,6 @@ function loadSw() {
     clients: { matchAll, claim: vi.fn(), openWindow: vi.fn() },
     registration: { showNotification, getNotifications },
   };
-  // install/activate handlers register here but only run if dispatched; we
-  // only dispatch "push", so caches/skipWaiting are never exercised.
   vm.runInNewContext(swSource, { self, caches: { keys: vi.fn(), delete: vi.fn() } });
   return { handlers, showNotification, getNotifications, matchAll };
 }
@@ -92,7 +84,6 @@ describe("service worker push handler (#2491)", () => {
     expect(closeA).toHaveBeenCalled();
     expect(closeB).toHaveBeenCalled();
     expect(showNotification).not.toHaveBeenCalled();
-    // clear is not focus-gated, so it never inspects clients.
     expect(matchAll).not.toHaveBeenCalled();
   });
 
@@ -126,9 +117,6 @@ describe("service worker push handler (#2491)", () => {
   });
 
   it("drops an older notify delivered after a newer clear for the same tag", async () => {
-    // Out-of-order delivery: the clear arrives first, so getNotifications sees
-    // nothing to close, then the stale notify lands. Without a high-water mark
-    // it would resurrect a handled request's notification. See #2491.
     const { handlers, showNotification } = loadSw();
     await dispatchPush(handlers, { kind: "clear", tag: APPROVAL_TAG, seq: 10 });
     await dispatchPush(handlers, {

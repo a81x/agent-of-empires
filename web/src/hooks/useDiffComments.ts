@@ -17,34 +17,22 @@ export interface UseDiffCommentsResult {
   clearComments(): void;
 }
 
-/** Session-scoped comments store backed by localStorage. Comments
- *  persist across page reloads inside the same session and are wiped
- *  when the user explicitly clears them or after a successful send
- *  (when `clearAfterSend` is true). State only switches when the
- *  session id changes; if the active session changes we reload from
- *  storage so each session sees its own list. See #928. */
 export function useDiffComments(sessionId: string | null): UseDiffCommentsResult {
   const [state, setState] = useState<DiffCommentsStorageV1>(() =>
     sessionId ? loadComments(sessionId) : { ...EMPTY_STORAGE },
   );
 
-  // Track the latest state in a ref so save operations always have
-  // the current data without depending on state in effect deps.
   const stateRef = useRef(state);
   useEffect(() => {
     stateRef.current = state;
   }, [state]);
   const [trackedSessionId, setTrackedSessionId] = useState(sessionId);
 
-  // Render-time sync: reload from storage when sessionId changes.
   if (sessionId !== trackedSessionId) {
     setTrackedSessionId(sessionId);
     setState(sessionId ? loadComments(sessionId) : { ...EMPTY_STORAGE });
   }
 
-  // Debounced save to localStorage. A counter drives the effect so
-  // it re-runs when state changes, but we read the latest state via
-  // stateRef to avoid a direct state dependency.
   const [saveCounter, setSaveCounter] = useState(0);
   const bumpSave = useCallback(() => setSaveCounter((c) => c + 1), []);
   const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -58,8 +46,6 @@ export function useDiffComments(sessionId: string | null): UseDiffCommentsResult
     };
   }, [sessionId, saveCounter]);
 
-  // Flush any pending debounced write before the tab closes / hides
-  // so the user doesn't lose the last keystrokes on a refresh.
   useEffect(() => {
     if (!sessionId) return;
     const flush = () => saveComments(sessionId, stateRef.current);

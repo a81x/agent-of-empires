@@ -1,13 +1,4 @@
 // @vitest-environment jsdom
-//
-// RTL coverage for the diff-comments empty-key fix (#1842). Renders the
-// real hook (debounce + pagehide flush included) and asserts the storage
-// hygiene contract that the storage-layer tests pin at the saveComments
-// boundary:
-//   - switching across sessions the user never commented on writes no key
-//   - a session with real, unsent comments survives a pagehide flush
-// Both fail on the pre-fix tree (empty state was written through, and the
-// pagehide flush wrote it again on every tab-away).
 
 import { renderHook, act } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";

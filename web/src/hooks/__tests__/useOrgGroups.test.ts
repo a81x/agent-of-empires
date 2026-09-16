@@ -1,11 +1,4 @@
 // @vitest-environment jsdom
-//
-// Coverage for useOrgGroups: the org axis (#3283), keyed by remote owner. Collapse state is
-// keyed on `org:${encodeURIComponent(orgId)}` for org headers and
-// `repo:${encodeURIComponent(orgId)}::${encodeURIComponent(repoId)}` for
-// member repos, both under the `aoe-org-group-collapsed-` prefix, distinct
-// from the repo and nested-subgroup axes. Persistence runs in an effect,
-// mirroring useNestedSidebarGroups.
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { renderHook, act } from "@testing-library/react";

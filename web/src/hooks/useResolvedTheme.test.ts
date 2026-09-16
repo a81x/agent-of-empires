@@ -137,14 +137,12 @@ describe("useResolvedTheme", () => {
 
     const { result } = renderHook(() => useResolvedTheme());
 
-    // Picker fetch (seq 2) resolves first and is applied.
     await act(async () => {
       dispatchThemePickerChanged("ocean");
       await Promise.resolve();
     });
     await waitFor(() => expect(result.current).toBe(pickerTheme));
 
-    // Slow mount fetch (seq 1) lands later and must be dropped.
     await act(async () => {
       resolveMount(mountTheme);
       await Promise.resolve();
@@ -168,7 +166,6 @@ describe("useResolvedTheme", () => {
 
     expect(removeSpy).toHaveBeenCalledWith(THEME_PICKER_CHANGED_EVENT, expect.any(Function));
 
-    // A picker event after unmount must not trigger any application.
     fetchResolvedThemeMock.mockResolvedValue(makeTheme("ocean", "light"));
     await act(async () => {
       dispatchThemePickerChanged("ocean");

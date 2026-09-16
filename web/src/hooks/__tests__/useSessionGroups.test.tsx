@@ -1,10 +1,4 @@
 // @vitest-environment jsdom
-//
-// Coverage for useSessionGroups: it adapts the user-group axis from
-// buildSessionGroups and owns the collapse toggle. The toggle updater stays
-// pure (no storage IO inside the setState callback, for the StrictMode
-// double-invoke reason documented on the hook); persistence runs in an effect
-// against the `aoe-group-collapsed-` key prefix.
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { renderHook, act } from "@testing-library/react";

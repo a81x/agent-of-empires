@@ -1,11 +1,4 @@
 // @vitest-environment jsdom
-//
-// Hook tests for the structured view config-option (model picker + reasoning
-// effort) feature (#1403). Covers the new internal reducer actions
-// that drive pending state and the dismissable failure notice, plus
-// the async setConfigOption hook callback wired up to a stubbed
-// fetch. End-to-end UI flows are exercised by the mocked Playwright
-// specs under web/tests/.
 
 import { act, renderHook } from "@testing-library/react";
 import { createElement, type ReactNode } from "react";
@@ -85,8 +78,6 @@ describe("acpHookReducer / config option actions", () => {
   });
 
   it("clear_pending_config_option_if_match leaves a newer pending intact when a stale request fails", () => {
-    // Request A for model=opus dispatched, then request B for
-    // model=sonnet replaced pending. A's failure must NOT wipe B.
     let state = acpHookReducer(emptyAcpState(), {
       kind: "set_pending_config_option",
       configId: "model",
@@ -117,8 +108,6 @@ describe("acpHookReducer / config option actions", () => {
     expect(next.pendingConfigOption).toBeNull();
   });
 });
-
-// ---- Hook async tests ---------------------------------------------------
 
 interface FakeSocket {
   url: string;
@@ -159,9 +148,7 @@ class FakeWebSocket implements FakeSocket {
       } as CloseEvent);
     }
   }
-  send(): void {
-    /* no-op */
-  }
+  send(): void {}
 }
 
 async function flushAsync(): Promise<void> {
@@ -280,11 +267,6 @@ describe("useAcpSession / setConfigOption", () => {
     });
     await flushAsync();
 
-    // Seed the notice through the WS broadcast path: drive a
-    // ConfigOptionSwitchFailed frame into the hook's reducer so the
-    // dismiss callback has something real to clear. The hook's
-    // onmessage handler expects the raw AcpFrame shape (session_id
-    // + seq + event); no kind/frame wrapper.
     const ws = sockets[0]!;
     await act(async () => {
       ws.readyState = FakeWebSocket.OPEN;
@@ -321,13 +303,9 @@ describe("useAcpSession / setConfigOption", () => {
       await result.current.setConfigOption("model", "claude-opus-4-7");
     });
     expect(postBodies).toHaveLength(0);
-    // No pending state set either, because the early return fires
-    // before the dispatch.
     expect(result.current.state.pendingConfigOption).toBeNull();
   });
 });
-
-// ---- normaliseTurnState backfill -------------------------------------
 
 describe("normaliseTurnState / config-option backfill", () => {
   it("backfills empty configOptions when the persisted entry pre-dates #1403", async () => {

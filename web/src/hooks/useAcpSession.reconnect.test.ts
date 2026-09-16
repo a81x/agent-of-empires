@@ -1,10 +1,4 @@
 // @vitest-environment jsdom
-//
-// Tests for the structured view WS auto-reconnect machinery added in #1130.
-// `acpRetryDelayMs` is unit-tested directly (pure function). The
-// full reconnect lifecycle is exercised end-to-end by mounting the
-// hook in jsdom with a fake WebSocket constructor that lets us drive
-// open/close/error events on a captured instance.
 
 import { act, renderHook } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -74,19 +68,12 @@ class FakeWebSocket implements FakeSocket {
       } as CloseEvent);
     }
   }
-  send(): void {
-    /* no-op */
-  }
+  send(): void {}
 }
 
 beforeEach(() => {
   vi.useFakeTimers();
   sockets.length = 0;
-  // Mock fetch so both the `fetchReplay` call AND the elevation
-  // pre-flight (`/api/login/status`) inside connect resolve without
-  // hitting a real network. The status response must look like
-  // `required: false` so preflight clears immediately and the
-  // FakeWebSocket dials.
   vi.stubGlobal(
     "fetch",
     vi.fn(async (input: RequestInfo | URL) => {
@@ -116,11 +103,6 @@ afterEach(() => {
 });
 
 async function flushAsync(): Promise<void> {
-  // Drain pending microtasks so the connect closure progresses past
-  // the awaited fetchReplay AND the elevation pre-flight (which also
-  // calls `fetch` internally via `loginStatus()`) and instantiates a
-  // FakeWebSocket. Each `await Promise.resolve()` advances exactly
-  // one microtask; we need several to cover the chain.
   await act(async () => {
     for (let i = 0; i < 6; i++) {
       await Promise.resolve();
@@ -135,8 +117,6 @@ describe("useAcpSession reconnect (#1130)", () => {
     expect(sockets).toHaveLength(1);
     const first = sockets[0]!;
 
-    // Close the socket; the hook should schedule a retry and surface
-    // reconnecting=true / retryCount=1 / retryCountdown >= 1.
     act(() => {
       first.readyState = FakeWebSocket.CLOSED;
       first.onclose?.({
@@ -149,8 +129,6 @@ describe("useAcpSession reconnect (#1130)", () => {
     expect(result.current.retryCount).toBe(1);
     expect(result.current.retryCountdown).toBeGreaterThanOrEqual(1);
 
-    // Advance past the first backoff window (1s) and let the connect
-    // closure run; a second FakeWebSocket should be instantiated.
     await act(async () => {
       await vi.advanceTimersByTimeAsync(acpRetryDelayMs(1));
     });
@@ -162,8 +140,6 @@ describe("useAcpSession reconnect (#1130)", () => {
     const { result } = renderHook(() => useAcpSession("sess-2"));
     await flushAsync();
 
-    // Repeatedly close each new socket so the retry envelope walks
-    // through all attempts up to MAX_RETRIES.
     for (let attempt = 1; attempt <= ACP_MAX_RETRIES_EXPORT; attempt++) {
       const sock = sockets[sockets.length - 1]!;
       act(() => {
@@ -181,7 +157,6 @@ describe("useAcpSession reconnect (#1130)", () => {
         await flushAsync();
       }
     }
-    // One more close to push past MAX_RETRIES.
     const lastSock = sockets[sockets.length - 1]!;
     act(() => {
       lastSock.readyState = FakeWebSocket.CLOSED;
@@ -195,7 +170,6 @@ describe("useAcpSession reconnect (#1130)", () => {
     expect(result.current.retryCount).toBe(ACP_MAX_RETRIES_EXPORT);
     expect(typeof result.current.manualReconnect).toBe("function");
 
-    // manualReconnect should reset the counter and dial a fresh socket.
     const socketsBefore = sockets.length;
     act(() => {
       result.current.manualReconnect();
@@ -206,11 +180,6 @@ describe("useAcpSession reconnect (#1130)", () => {
   });
 
   it("does not call /api/login/status before dialing (structured view WS is not elevation-gated)", async () => {
-    // Regression for #1137: the structured view WS upgrade no longer requires
-    // step-up elevation. The hook must NOT preflight `/api/login/status`
-    // before opening the socket, because (a) it adds latency every
-    // visibilitychange + reconnect, and (b) the elevation gate was
-    // narrowed to settings/profile writes only.
     const fetchSpy = vi.fn(async (input: RequestInfo | URL) => {
       const url = typeof input === "string" ? input : input.toString();
       if (url.includes("/api/login/status")) {
@@ -235,7 +204,6 @@ describe("useAcpSession reconnect (#1130)", () => {
     const { result } = renderHook(() => useAcpSession("sess-3"));
     await flushAsync();
     const first = sockets[0]!;
-    // Force a close to bump retryCount to 1.
     act(() => {
       first.readyState = FakeWebSocket.CLOSED;
       first.onclose?.({
@@ -246,7 +214,6 @@ describe("useAcpSession reconnect (#1130)", () => {
     });
     expect(result.current.retryCount).toBe(1);
 
-    // Run the scheduled retry; a second socket appears.
     await act(async () => {
       await vi.advanceTimersByTimeAsync(acpRetryDelayMs(1));
     });
@@ -262,7 +229,6 @@ describe("useAcpSession reconnect (#1130)", () => {
 });
 
 describe("useAcpSession liveness watchdog (#2287)", () => {
-  // Deliver a server heartbeat frame on the captured socket.
   function heartbeat(sock: FakeSocket): void {
     sock.onmessage?.({ data: JSON.stringify({ kind: "heartbeat" }) } as MessageEvent);
   }
@@ -277,10 +243,6 @@ describe("useAcpSession liveness watchdog (#2287)", () => {
       first.onopen?.({} as Event);
     });
 
-    // No frames or heartbeats arrive: the proxy reset the socket without
-    // the browser seeing onclose, so readyState stays OPEN forever. The
-    // watchdog must notice the silence and re-dial without any user
-    // action and WITHOUT depending on the dead socket firing onclose.
     await act(async () => {
       await vi.advanceTimersByTimeAsync(ACP_WS_STALE_MS + 15000);
     });
@@ -300,7 +262,6 @@ describe("useAcpSession liveness watchdog (#2287)", () => {
       first.onopen?.({} as Event);
     });
 
-    // Heartbeat every 30s for two minutes; the watchdog must never trip.
     for (let i = 0; i < 4; i++) {
       await act(async () => {
         await vi.advanceTimersByTimeAsync(30000);
@@ -314,12 +275,6 @@ describe("useAcpSession liveness watchdog (#2287)", () => {
   });
 
   it("watchdog never dials a socket that is not OPEN (no resurrection)", async () => {
-    // The watchdog redial is gated on readyState === OPEN precisely so it
-    // can't fire on a socket that is connecting, closed, or
-    // retry-exhausted (wsRef nulled) and step on the backoff / manual
-    // affordance that owns those states. Hold the dial in CONNECTING (the
-    // canonical non-OPEN state with no pending backoff timer) and prove
-    // the watchdog stays idle across several intervals.
     renderHook(() => useAcpSession("sess-connecting"));
     await flushAsync();
     expect(sockets).toHaveLength(1);

@@ -1,11 +1,4 @@
 // @vitest-environment jsdom
-//
-// Unit tests for useFocusTerminalTarget (#1454): the hook the structured view
-// Composer uses to receive sidebar-select focus. Covers the three paths:
-//  - a matching dispatch focuses the ref while mounted,
-//  - a dispatch with the ref missing stashes the pending latch,
-//  - a pending latch set before mount is consumed (and focused) on mount,
-//  - the listener is removed on unmount.
 
 import { afterEach, describe, expect, it } from "vitest";
 import { renderHook } from "@testing-library/react";
@@ -58,7 +51,6 @@ describe("useFocusTerminalTarget", () => {
     document.body.appendChild(el);
     try {
       renderWithElement("composer", el);
-      // A bare event (detail undefined) must not throw or focus.
       window.dispatchEvent(new CustomEvent("aoe:focus-terminal"));
       expect(document.activeElement).not.toBe(el);
     } finally {
@@ -68,8 +60,6 @@ describe("useFocusTerminalTarget", () => {
 
   it("consuming a latch with no element present is a no-op", () => {
     setPendingTerminalFocus("composer");
-    // ref.current is null on mount: the latch is consumed but focus() is
-    // skipped via optional chaining, with nothing left dangling.
     renderWithElement("composer", null);
     expect(consumePendingTerminalFocus("composer")).toBe(false);
   });
@@ -87,7 +77,6 @@ describe("useFocusTerminalTarget", () => {
       setPendingTerminalFocus("composer");
       renderWithElement("composer", el);
       expect(document.activeElement).toBe(el);
-      // Latch was consumed, not left dangling.
       expect(consumePendingTerminalFocus("composer")).toBe(false);
     } finally {
       el.remove();

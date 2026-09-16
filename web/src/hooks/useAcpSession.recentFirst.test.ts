@@ -1,11 +1,4 @@
 // @vitest-environment jsdom
-//
-// Exercises the recent-first cold open and scroll-up `loadOlder` network
-// path end-to-end in the hook (#2236): the tail fetch via `before`, the
-// long-session handshake-prefix backfill, and an older page prepended on
-// loadOlder. The mocked Playwright specs only cover transcripts that fit
-// in one page, so these branches need the hook mounted with scripted
-// replay responses.
 
 import { act, renderHook } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -44,9 +37,7 @@ class FakeWebSocket implements FakeSocket {
   close(): void {
     this.readyState = FakeWebSocket.CLOSED;
   }
-  send(): void {
-    /* no-op */
-  }
+  send(): void {}
 }
 
 const prompt = (seq: number, text: string) => ({ session_id: "sess-rf", seq, event: { UserPromptSent: { text } } });
@@ -56,8 +47,6 @@ const caps = (seq: number) => ({
   event: { PromptCapabilities: { image: true, audio: false, embedded_context: true } },
 });
 
-// Build the server-folded transcript rows (Tier 4) for the `?view=rows`
-// projection from the same UserPromptSent frames the page carries.
 function rowsFromFrames(frames: Array<{ seq: number; event: unknown }>) {
   return frames
     .filter((f) => typeof f.event === "object" && f.event !== null && "UserPromptSent" in (f.event as object))
@@ -72,10 +61,6 @@ function rowsFromFrames(frames: Array<{ seq: number; event: unknown }>) {
 
 function replayBody(frames: Array<{ seq: number; event: unknown }>, next: number | null, hasMore: boolean) {
   return JSON.stringify({
-    // The default projection returns `frames`; `?view=rows` returns `rows`
-    // (with `frames` empty). The hook reads `frames` from the default fetch and
-    // `rows` from the companion `view=rows` fetch, so returning both here (the
-    // mock ignores the query) exercises each path.
     frames,
     rows: rowsFromFrames(frames),
     lost: false,
@@ -88,8 +73,6 @@ function replayBody(frames: Array<{ seq: number; event: unknown }>, next: number
 
 beforeEach(() => {
   sockets.length = 0;
-  // The reduced-state cache is module-level; clear it so one test's
-  // session can't hydrate another's and skip the cold-open path.
   clearAcpCache();
   vi.stubGlobal(
     "fetch",
@@ -106,7 +89,6 @@ beforeEach(() => {
           q.get("before") !== null &&
           Number(q.get("before")) < 100
         ) {
-          // Older page requested via the loadOlder cursor (before=6).
           return new Response(
             replayBody([prompt(2, "p2"), prompt(3, "p3"), prompt(4, "p4"), prompt(5, "p5")], 2, false),
             {
@@ -115,7 +97,6 @@ beforeEach(() => {
           );
         }
         if (q.get("before")) {
-          // Tail (before = MAX): newest page, more history remains.
           return new Response(
             replayBody(
               [prompt(6, "p6"), prompt(7, "p7"), prompt(8, "p8"), prompt(9, "p9"), prompt(10, "p10")],
@@ -125,7 +106,6 @@ beforeEach(() => {
             { status: 200 },
           );
         }
-        // since=0 handshake prefix.
         return new Response(replayBody([caps(1)], 1, true), { status: 200 });
       }
       return new Response(JSON.stringify({ frames: [], lost: false, highest_seq: 0 }), { status: 200 });
@@ -151,9 +131,6 @@ describe("useAcpSession recent-first cold open + loadOlder (#2236)", () => {
     const { result } = renderHook(() => useAcpSession("sess-rf"));
     await flush();
 
-    // Tail rendered (prompts 6..10), more history flagged, handshake
-    // capabilities projected from the seq-0 prefix even though those rows
-    // are not in the transcript window.
     expect(result.current.state.activity.map((r) => r.id)).toEqual([
       "user-seq-6",
       "user-seq-7",
@@ -170,8 +147,6 @@ describe("useAcpSession recent-first cold open + loadOlder (#2236)", () => {
     });
     expect(result.current.state.oldestSeq).toBe(6);
 
-    // Scroll-up fetch: the older page prepends ahead of the tail and
-    // clears hasMoreOlder once the start is reached.
     await act(async () => {
       await result.current.loadOlder();
     });
@@ -225,12 +200,9 @@ describe("useAcpSession recent-first cold open + loadOlder (#2236)", () => {
     expect(result.current.hasMoreOlder).toBe(true);
 
     rerender({ id: "sess-rf-2" });
-    // The switch clears the flags synchronously before the new session's
-    // own recent-first load runs.
     expect(result.current.loadingOlder).toBe(false);
     await flush();
     await flush();
-    // The fresh session re-derives its own watermark from its tail.
     expect(result.current.hasMoreOlder).toBe(true);
   });
 });

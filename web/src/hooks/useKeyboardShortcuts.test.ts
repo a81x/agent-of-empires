@@ -1,15 +1,4 @@
 // @vitest-environment jsdom
-//
-// Contract test for useKeyboardShortcuts. We care most about a single
-// regression risk introduced when wterm was swapped for xterm.js:
-// xterm's helper textarea calls stopPropagation on a handful of
-// modifier-key combos, so the hook must attach the document listener
-// in capture phase to observe the keydown before xterm.js swallows it.
-//
-// Live Playwright tests in terminal-focus-shortcut.spec.ts cover the
-// full flow against a mounted terminal; this is the cheap unit-level
-// guard that catches "someone moved this back to bubble phase" before
-// the e2e suite ever runs.
 
 import { describe, expect, it, vi } from "vitest";
 import { renderHook } from "@testing-library/react";
@@ -51,11 +40,6 @@ describe("useKeyboardShortcuts", () => {
   });
 
   it("still fires when a child element calls stopPropagation in bubble phase", () => {
-    // Mirror what xterm.js's helper textarea does to Cmd/Ctrl + letter
-    // combos: handle them on its own element and stopPropagation so the
-    // event would normally never reach document. The capture-phase
-    // attachment installed by the hook means we see the keydown before
-    // the child's bubble-phase listener runs.
     const actions = makeActions();
     renderHook(() => useKeyboardShortcuts(() => actions));
 
@@ -85,10 +69,6 @@ describe("useKeyboardShortcuts", () => {
   });
 
   it("routes Cmd/Ctrl+Shift+N to onNewScratch (fast-create shortcut)", () => {
-    // Cmd+Shift+N (Mac) / Ctrl+Shift+N (other) is the
-    // wizard-pre-configured-for-scratch + skip-to-Review shortcut.
-    // Uses `e.code === "KeyN"` so Shift+layout-specific punctuation
-    // does not break the match.
     const actions = makeActions();
     renderHook(() => useKeyboardShortcuts(() => actions));
 
@@ -104,11 +84,6 @@ describe("useKeyboardShortcuts", () => {
   });
 
   it("does NOT fire onNewScratch for plain Shift+N (no modifier)", () => {
-    // Single-key shortcuts only fire when no input/textarea is
-    // focused AND no modifier is held; "n" with no modifier maps to
-    // `onNew`, but the Shift+N path needs both the meta/ctrl
-    // modifier AND Shift. Guard against a regression that drops the
-    // modifier check.
     const actions = makeActions();
     renderHook(() => useKeyboardShortcuts(() => actions));
 

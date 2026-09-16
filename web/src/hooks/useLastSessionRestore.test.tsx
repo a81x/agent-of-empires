@@ -28,8 +28,6 @@ function setup(initialEntry: string, initialProps: Params) {
   );
 }
 
-/** Drive the `(display-mode: standalone)` check `isStandalone()` reads.
- *  Defaults to not-standalone (a plain browser tab) when never called. */
 function stubStandalone(standalone: boolean) {
   vi.stubGlobal(
     "matchMedia",
@@ -92,7 +90,6 @@ describe("useLastSessionRestore", () => {
       sessions: [{ id: "s1" }],
       sessionsLoaded: true,
     });
-    // Give effects a tick; the dashboard stays put and no key is written.
     await waitFor(() => expect(result.current.location.pathname).toBe("/"));
     expect(localStorage.getItem(LAST_SESSION_KEY)).toBeNull();
   });
@@ -105,7 +102,6 @@ describe("useLastSessionRestore", () => {
       sessions: [],
       sessionsLoaded: false,
     });
-    // Not loaded yet: no redirect.
     expect(result.current.location.pathname).toBe("/");
     rerender({ activeSessionId: null, sessions: [{ id: "s1" }], sessionsLoaded: true });
     await waitFor(() => expect(result.current.location.pathname).toBe("/session/s1"));

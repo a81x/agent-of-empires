@@ -1,10 +1,3 @@
-// #1821: an approval card must clear when the resolve POST succeeds (204)
-// or the daemon reports the nonce already gone (404), without waiting on
-// the ApprovalResolved broadcast (which the seq dedupe can swallow). A
-// session-gone 404 stays a real error. These exercise the two pure pieces
-// the resolveApproval flow is built from: the response classifier and the
-// reducer action that drops the card.
-
 import { describe, expect, it } from "vitest";
 
 import {
@@ -44,8 +37,6 @@ describe("classifyApprovalResolveResponse", () => {
   });
 
   it("treats a 404 naming a different nonce as an error", () => {
-    // Guards the #1821 contract: a generic / wrong-nonce 404 must not
-    // silently clear the clicked card.
     const out = classifyApprovalResolveResponse(false, 404, "no pending approval with nonce other-99", "n-1");
     expect(out.kind).toBe("error");
   });
@@ -94,8 +85,6 @@ describe("reducer elicitation_resolved_locally", () => {
               title: "Proceed?",
               required: true,
               kind: "single_select",
-              // value != label so the test catches raw internal values
-              // leaking into the transcript instead of the display label.
               options: [
                 { value: "yes_internal", label: "Yes" },
                 { value: "no_internal", label: "No" },
@@ -133,8 +122,6 @@ describe("reducer elicitation_resolved_locally", () => {
       resolution: { action: "accept", answers: { question_0: "yes_internal" } },
     };
     const next = reducer(state, action);
-    // The answered row is an optimistic overlay now (Tier 4); the
-    // authoritative same-id row is server-owned and drops this once it lands.
     const row = next.optimisticRows.find((r) => r.kind === "elicitation_answered");
     expect(row?.id).toBe("elicitation-e-1");
     expect(row?.elicitationAnswers).toEqual([{ question: "Proceed?", answer: "Yes" }]);
@@ -142,9 +129,6 @@ describe("reducer elicitation_resolved_locally", () => {
   });
 
   it("adds no answer row when the pending card is already gone", () => {
-    // The broadcast may have cleared the card first; with no pending card to
-    // read questions from, the optimistic path records nothing and leaves the
-    // server-event row (if any) to stand.
     const next = reducer(emptyAcpState(), {
       kind: "elicitation_resolved_locally",
       nonce: "missing",
@@ -181,7 +165,6 @@ describe("reducer approval_resolved_locally", () => {
   });
 
   it("is a no-op for an unknown nonce and keeps the existing error", () => {
-    // A duplicate/stale action must not quietly clear an unrelated banner.
     const state = {
       ...emptyAcpState(),
       lastError: "unrelated error",

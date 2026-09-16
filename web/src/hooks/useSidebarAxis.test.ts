@@ -1,9 +1,4 @@
 // @vitest-environment jsdom
-//
-// Contract test for the useSidebarAxis hook (#1234). The hook is a thin
-// React wrapper around sidebarAxis's load/save helpers. These tests pin
-// the public contract: defaults to "repo" when localStorage is empty,
-// restores a stored "group", and the setter persists.
 
 import { renderHook, act } from "@testing-library/react";
 import { beforeEach, describe, expect, it } from "vitest";

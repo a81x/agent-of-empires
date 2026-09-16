@@ -1,9 +1,4 @@
 // @vitest-environment jsdom
-//
-// Unit coverage for useWorkspaces: the session -> workspace grouping. Worktree
-// sessions (non-null branch) collapse one-row-per-(repo, branch); plain
-// sessions each get their own row (#956). Display-name derivation and the
-// active/idle rollup are exercised here without mounting the sidebar.
 
 import { describe, expect, it } from "vitest";
 import { renderHook } from "@testing-library/react";
@@ -59,13 +54,10 @@ describe("useWorkspaces", () => {
     expect(result.current).toHaveLength(1);
     const ws = result.current[0]!;
     expect(ws.sessions.map((s) => s.id).sort()).toEqual(["a", "b"]);
-    // Trailing slash normalized so both sessions land in the same group.
     expect(ws.projectPath).toBe("/repo");
     expect(ws.branch).toBe("feat");
-    // Dedup of agents, primaryAgent is the first.
     expect(ws.agents).toEqual(["claude", "codex"]);
     expect(ws.primaryAgent).toBe("claude");
-    // Multi-session group uses branch as the display name, not the title.
     expect(ws.displayName).toBe("feat");
   });
 

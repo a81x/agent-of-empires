@@ -1,10 +1,4 @@
 // @vitest-environment jsdom
-//
-// Contract test for the useSidebarSortMode hook (#1418). The hook is a
-// thin React wrapper around sidebarSort's load/save helpers; the
-// helpers' edge cases are covered by sidebarSort.test.ts. These tests
-// pin the public hook contract: defaults to "manual" when localStorage
-// is empty, restores a stored "lastActivity", and the setter persists.
 
 import { renderHook, act } from "@testing-library/react";
 import { beforeEach, describe, expect, it } from "vitest";

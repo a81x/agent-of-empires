@@ -1,14 +1,4 @@
 // @vitest-environment jsdom
-//
-// Hook tests for useEdgeSwipe. The hook attaches window touch listeners and
-// fires onSwipe when a one-finger gesture crosses a horizontal threshold:
-//   - edge-zone start required by default (left <= 24px, right >= w-24px)
-//   - 60px threshold (90px in `anywhere` mode)
-//   - cancels if the gesture is dominantly vertical past 16px
-//   - mobile-only (window width < 768)
-// jsdom has no real touch, so TouchEvents are dispatched on window with a
-// hand-rolled `touches` array. Events fire ~1ms apart but the hook has no
-// velocity math, so back-to-back dispatch is fine.
 
 import { renderHook } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -21,8 +11,6 @@ function setWidth(px: number) {
   Object.defineProperty(window, "innerWidth", { value: px, configurable: true, writable: true });
 }
 
-// Build a touch-like list. jsdom's TouchEvent constructor ignores `touches`,
-// so dispatch a plain Event and attach the list ourselves.
 function dispatchTouch(type: string, points: Array<{ clientX: number; clientY: number }>) {
   const ev = new Event(type) as unknown as { touches: typeof points } & Event;
   ev.touches = points;
@@ -82,7 +70,6 @@ describe("useEdgeSwipe right edge", () => {
     const onSwipe = vi.fn();
     renderHook(() => useEdgeSwipe({ edge: "right", enabled: true, onSwipe }));
 
-    // start within w-24 = 376px..400px
     dispatchTouch("touchstart", [{ clientX: 390, clientY: 100 }]);
     dispatchTouch("touchmove", [{ clientX: 320, clientY: 100 }]); // dx = startX - x = 70 > 60
     expect(onSwipe).toHaveBeenCalledTimes(1);
@@ -104,9 +91,7 @@ describe("useEdgeSwipe vertical cancel", () => {
     renderHook(() => useEdgeSwipe({ edge: "left", enabled: true, onSwipe }));
 
     dispatchTouch("touchstart", [{ clientX: 5, clientY: 100 }]);
-    // dy dominant and > 16 -> tracking stops
     dispatchTouch("touchmove", [{ clientX: 10, clientY: 160 }]);
-    // even a subsequent big horizontal move must not fire
     dispatchTouch("touchmove", [{ clientX: 200, clientY: 160 }]);
     expect(onSwipe).not.toHaveBeenCalled();
   });

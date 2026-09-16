@@ -1,8 +1,3 @@
-// Auto-launch decision table for the first-run tutorial. The run -> engine
-// integration (rAF, lazy load, Joyride rendering, skip persistence) is covered
-// by the live Playwright smoke; this locks the pure gating logic that live
-// (desktop, first-run) cannot easily exercise: coarse-pointer and seen-flag
-// suppression, and scope gating.
 import { describe, expect, it } from "vitest";
 import { shouldAutoLaunch } from "../useTour";
 

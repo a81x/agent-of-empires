@@ -1,10 +1,4 @@
 // @vitest-environment jsdom
-//
-// Coverage for useNestedSidebarGroups: the (repo, subgroup) axis. Collapse
-// state is keyed on encodeURIComponent(repoId)::encodeURIComponent(groupPath)
-// under the `aoe-nested-group-collapsed-` prefix, distinct from both the repo
-// and flat-group axes (#1720). Persistence runs in an effect, mirroring
-// useSessionGroups.
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { renderHook, act } from "@testing-library/react";
@@ -87,7 +81,6 @@ describe("useNestedSidebarGroups", () => {
     expect(result.current.groups).toHaveLength(1);
     expect(result.current.groups[0]!.repo.id).toBe("repo-1");
     expect(result.current.groups[0]!.subgroups.length).toBeGreaterThan(0);
-    // Repo manual reorder is dropped on the nested axis.
     expect(result.current.groups[0]!.repo.capabilities.reorder).toBe(false);
   });
 

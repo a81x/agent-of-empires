@@ -7,7 +7,6 @@ import { useMobileKeyboard } from "./useMobileKeyboard";
 
 type Listener = (...args: unknown[]) => void;
 
-// A minimal matchMedia stub that lets a test flip `pointer: coarse`.
 function stubMatchMedia(initialCoarse: boolean) {
   let matches = initialCoarse;
   const listeners = new Set<Listener>();
@@ -29,8 +28,6 @@ function stubMatchMedia(initialCoarse: boolean) {
   };
 }
 
-// A controllable visualViewport. height is mutable; resize/scroll fire the
-// registered listeners synchronously.
 function stubVisualViewport(initialHeight: number) {
   const listeners = new Map<string, Set<Listener>>();
   const vv = {
@@ -65,13 +62,11 @@ let rafQueue: FrameRequestCallback[] = [];
 
 beforeEach(() => {
   rafQueue = [];
-  // Synchronous-but-controlled rAF so polling loops are drainable.
   vi.spyOn(window, "requestAnimationFrame").mockImplementation((cb: FrameRequestCallback) => {
     rafQueue.push(cb);
     return rafQueue.length;
   });
   vi.spyOn(window, "cancelAnimationFrame").mockImplementation(() => {});
-  // Tall layout viewport; keyboard shrinks the visual viewport below it.
   Object.defineProperty(window, "innerHeight", { configurable: true, value: 800, writable: true });
   window.scrollTo = vi.fn();
 });
@@ -82,7 +77,6 @@ afterEach(() => {
   delete window.visualViewport;
 });
 
-// Drain the rAF poll queue a bounded number of times.
 function drainRaf(rounds = 30) {
   for (let i = 0; i < rounds && rafQueue.length > 0; i++) {
     const next = rafQueue.shift()!;
@@ -105,7 +99,6 @@ describe("useMobileKeyboard", () => {
     const ctl = stubVisualViewport(800);
     const { result } = renderHook(() => useMobileKeyboard());
     expect(result.current.isMobile).toBe(false);
-    // The viewport effect early-returns, so no resize/scroll listeners are wired.
     expect(ctl.listenerCount("resize")).toBe(0);
     expect(ctl.listenerCount("scroll")).toBe(0);
   });
@@ -117,7 +110,6 @@ describe("useMobileKeyboard", () => {
     const { result } = renderHook(() => useMobileKeyboard());
     expect(result.current.keyboardOpen).toBe(false);
 
-    // Keyboard occludes 300px of the 800px viewport.
     act(() => {
       vp.setHeight(500);
       vp.fire("resize");
@@ -125,7 +117,6 @@ describe("useMobileKeyboard", () => {
     });
 
     expect(result.current.keyboardOpen).toBe(true);
-    // padding = innerHeight(800) - vvHeight(500) - safeBottom(0) = 300
     expect(result.current.keyboardHeight).toBe(300);
   });
 

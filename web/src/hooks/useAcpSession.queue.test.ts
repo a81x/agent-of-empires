@@ -7,8 +7,6 @@ import { emptyAcpState } from "../lib/acpTypes";
 import { reportAcpInteraction, type ServerQueuedPrompt } from "../lib/api";
 import { acpHookReducer, clearAcpCache, useAcpSession } from "./useAcpSession";
 
-// Spy on the telemetry ping while keeping the rest of the api module real
-// (the hook also calls setSessionArchive / setSessionSnooze through it).
 vi.mock("../lib/api", async (importActual) => {
   const actual = await importActual<typeof import("../lib/api")>();
   return { ...actual, reportAcpInteraction: vi.fn() };
@@ -70,8 +68,6 @@ describe("acpHookReducer / server-queue actions", () => {
 
     it("replaces the overlay with the server snapshot, dropping a confirmed local row the server no longer has", () => {
       const enqueued = acpHookReducer(emptyAcpState(), { kind: "enqueue_prompt", id: "old", text: "gone from server" });
-      // Confirm it (pending cleared), so a later hydrate that omits it means
-      // the server drained/removed it while we were away -> drop it locally.
       const confirmed = acpHookReducer(enqueued, { kind: "confirm_queued_prompt", id: "old" });
       const next = acpHookReducer(confirmed, {
         kind: "hydrate_server_queue",
@@ -100,7 +96,6 @@ describe("acpHookReducer / server-queue actions", () => {
           serverRow("q1", 0, "img", [{ id: "att1", kind: "image", mime_type: "image/png", name: "a.png", size: 9 }]),
         ],
       });
-      // Local bytes win so the strip can still render the thumbnail.
       expect(next.queuedPrompts[0]?.attachments?.[0]?.dataB64).toBe("REALBYTES");
     });
 
@@ -118,8 +113,6 @@ describe("acpHookReducer / server-queue actions", () => {
     });
   });
 });
-
-// --- Hook integration: optimistic overlay + server POSTs ---
 
 interface FakeSocket {
   url: string;
@@ -154,9 +147,7 @@ class FakeWebSocket implements FakeSocket {
     this.readyState = FakeWebSocket.CLOSED;
     this.onclose?.({ code: 1000, reason: "test", wasClean: true } as CloseEvent);
   }
-  send(): void {
-    /* no-op */
-  }
+  send(): void {}
 }
 
 async function flushAsync(): Promise<void> {
@@ -165,9 +156,6 @@ async function flushAsync(): Promise<void> {
   });
 }
 
-/** Records every fetch so tests can assert which endpoint was hit. Maintains a
- *  tiny in-memory server queue so GET /queue reflects prior POSTs (for the
- *  migration + hydrate paths). */
 interface Recorded {
   method: string;
   url: string;
@@ -177,9 +165,6 @@ interface Recorded {
 describe("useAcpSession server-queue integration", () => {
   let calls: Recorded[];
   let serverQueue: Map<string, ServerQueuedPrompt>;
-  /** Whether the fake daemon has a turn in flight. Since Tier 3 the daemon,
-   *  not the client, decides whether a prompt is sent or parked, so the fake
-   *  has to hold that state and answer `/acp/prompt` accordingly. */
   let serverBusy: boolean;
 
   const queueCalls = (suffix: string) => calls.filter((c) => c.url.includes(suffix));
@@ -201,7 +186,6 @@ describe("useAcpSession server-queue integration", () => {
         if (url.includes("/acp/replay")) {
           return new Response(JSON.stringify({ frames: [], lost: false, highest_seq: 0 }), { status: 200 });
         }
-        // /queue endpoints. Order matters: check the item path first.
         const queueItem = url.match(/\/queue\/([^/?]+)/);
         if (url.includes("/queue")) {
           if (method === "GET") {
@@ -221,8 +205,6 @@ describe("useAcpSession server-queue integration", () => {
           }
           if (method === "DELETE") {
             if (queueItem) {
-              // 404 on a row that is already gone, like the real handler: that
-              // is how the client learns the drain claimed it.
               const rid = decodeURIComponent(queueItem[1]!);
               if (!serverQueue.delete(rid)) return new Response("queued prompt not found", { status: 404 });
               return new Response(null, { status: 204 });
@@ -233,8 +215,6 @@ describe("useAcpSession server-queue integration", () => {
           if (method === "PATCH") return new Response(null, { status: 204 });
         }
         if (url.includes("/acp/prompt")) {
-          // The daemon's dispatch decision (Tier 3). Busy means it parks the
-          // prompt on its own queue and reports the row id back.
           if (method === "POST" && serverBusy) {
             const parsed = JSON.parse(body ?? "{}") as { prompt_id?: string; text?: string };
             const id = parsed.prompt_id ?? `srv-${serverQueue.size}`;
@@ -276,7 +256,6 @@ describe("useAcpSession server-queue integration", () => {
 
   it("renders the queue row the daemon reports when it parks a busy-turn prompt", async () => {
     const { result, ws } = await openSession("sess-busy");
-    // Kick a turn so the daemon is busy; a follow-up must come back `queued`.
     serverBusy = true;
     act(() => {
       ws.onmessage?.({
@@ -291,14 +270,10 @@ describe("useAcpSession server-queue integration", () => {
     });
     await flushAsync();
 
-    // Exactly one POST, to /acp/prompt. The client no longer decides to queue,
-    // so it must NOT also POST to /queue: the daemon already created the row
-    // and a second POST would be a duplicate.
     const prompts = queueCalls("/acp/prompt").filter((c) => c.method === "POST");
     expect(prompts).toHaveLength(1);
     expect(JSON.parse(prompts[0]!.body!)).toMatchObject({ text: "follow-up" });
     expect(queueCalls("/queue").filter((c) => c.method === "POST")).toHaveLength(0);
-    // And the row the daemon reported renders as confirmed, not pending.
     expect(result.current.state.queuedPrompts.map((q) => q.text)).toEqual(["follow-up"]);
     expect(result.current.state.queuedPrompts[0]?.pending).toBe(false);
     expect(reportAcpInteraction).toHaveBeenCalledWith("prompt_queued");
@@ -343,29 +318,18 @@ describe("useAcpSession server-queue integration", () => {
       result.current.clearQueue();
     });
     await flushAsync();
-    // A whole-queue clear is DELETE /queue (no id segment).
     expect(calls.some((c) => c.method === "DELETE" && /\/queue$/.test(c.url.split("?")[0]!))).toBe(true);
   });
 
   it("migrates local rows to the server and hydrates from the snapshot on connect", async () => {
-    // Pre-seed a local optimistic row (as a reload would restore), then connect.
-    // The migration POSTs it to the server; the hydrate list then reflects it.
     serverQueue.set("pre", { id: "pre", seq: 0, text: "migrated", created_at: "2026-01-01T00:00:00.000Z" });
     const { result } = await openSession("sess-migrate");
     await flushAsync();
-    // GET /queue ran on connect and hydrated the row.
     expect(queueCalls("/queue").some((c) => c.method === "GET")).toBe(true);
     expect(result.current.state.queuedPrompts.map((q) => q.text)).toEqual(["migrated"]);
   });
 
-  // Regression tests for `sendQueuedNow`, the "Send now" affordance on a
-  // queued row. It is the one queue path that bypasses the server drain and
-  // re-POSTs the prompt itself, so it is also the one that can destroy or
-  // duplicate a prompt.
   it("does not resend a queued row whose attachment bytes live only on the server", async () => {
-    // A row hydrated from the server (any reload, or a second device) carries
-    // attachment metadata with an empty `dataB64`: localStorage drops
-    // attachment-carrying rows and the server sends refs, not blobs.
     serverQueue.set("img", {
       id: "img",
       seq: 0,
@@ -384,10 +348,6 @@ describe("useAcpSession server-queue integration", () => {
     });
     await flushAsync();
 
-    // Neither destructive step ran: the row and its server-side bytes survive
-    // for the turn-end drain, which is the only path that still has them.
-    // Previously this deleted the row, POSTed empty base64, took a 400, and
-    // lost prompt and image with nothing sent.
     expect(calls.filter((c) => c.method === "DELETE")).toHaveLength(0);
     expect(calls.filter((c) => c.url.includes("/acp/prompt"))).toHaveLength(0);
     expect(serverQueue.has("img")).toBe(true);
@@ -395,7 +355,6 @@ describe("useAcpSession server-queue integration", () => {
   });
 
   it("sends a row it holds the bytes for, removing it server-side first", async () => {
-    // Text-only: no attachments at all, so nothing is missing its bytes.
     serverQueue.set("t1", { id: "t1", seq: 0, text: "text only", created_at: "2026-01-01T00:00:00.000Z" });
     const { result } = await openSession("sess-sendnow");
     await flushAsync();
@@ -407,7 +366,6 @@ describe("useAcpSession server-queue integration", () => {
     });
     await flushAsync();
 
-    // Remove first (so the drain cannot also deliver it), then send.
     expect(calls.filter((c) => c.method === "DELETE" && c.url.includes("/queue/"))).toHaveLength(1);
     expect(calls.filter((c) => c.method === "POST" && c.url.includes("/acp/prompt"))).toHaveLength(1);
     expect(serverQueue.has(row.id)).toBe(false);
@@ -418,8 +376,6 @@ describe("useAcpSession server-queue integration", () => {
     const { result } = await openSession("sess-raced");
     await flushAsync();
     const row = result.current.state.queuedPrompts[0]!;
-    // The drain retired it between the strip rendering and the tap, so the
-    // remove 404s. Sending anyway would deliver the same prompt twice.
     serverQueue.delete(row.id);
 
     calls.length = 0;

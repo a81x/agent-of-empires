@@ -1,9 +1,4 @@
 // @vitest-environment jsdom
-//
-// Covers the `loaded` sentinel added for #1351. Without `loaded` the
-// session-route gate in App.tsx cannot tell "first fetch still in
-// flight" apart from "server confirmed there is no such session,"
-// which is why refresh on /session/<id> used to flash the dashboard.
 
 import { renderHook, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -24,8 +19,6 @@ describe("useSessions / loaded sentinel", () => {
 
     expect(result.current.loaded).toBe(false);
     expect(result.current.sessions).toEqual([]);
-    // Resolve the pending promise so the polling effect's cleanup
-    // does not leak past this test.
     resolveFetch(null);
   });
 
@@ -47,9 +40,6 @@ describe("useSessions / loaded sentinel", () => {
     const { result } = renderHook(() => useSessions());
 
     await waitFor(() => expect(result.current.loaded).toBe(true));
-    // The null branch also flags error/serverDown surfaces; the
-    // important contract for #1351 is that `loaded` does not stay
-    // stuck at false, so the App.tsx gate can release the placeholder.
     expect(result.current.error).toBe(true);
   });
 });

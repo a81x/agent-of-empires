@@ -1,9 +1,4 @@
 // @vitest-environment jsdom
-//
-// Tests for useTips and shouldAutoPopTips (#2292): the hook fetches the
-// web-surface tips, derives unseen state, owns the modal open/close + the tip
-// it opens on, and persists mark-seen and the show-on-startup toggle through
-// the api module (mocked). shouldAutoPopTips is the pure startup-auto-pop gate.
 
 import { renderHook, act, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";

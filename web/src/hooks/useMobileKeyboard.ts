@@ -1,23 +1,5 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 
-// Tracks soft-keyboard state on touch devices via visualViewport.
-//
-// keyboardOpen flips as soon as the visual viewport is occluded enough to
-// be a keyboard (not a URL bar nudge). The structured-view composer uses
-// it for layout posture. (Terminal surfaces derive their open/closed
-// state from input focus instead, which is exact.)
-//
-// keyboardHeight is the bottom inset needed to keep content above the
-// keyboard on iOS regular Safari, the one platform where the layout
-// viewport does not shrink with the keyboard; it stays 0 on iOS PWA /
-// iOS 26 Safari / Android Chrome, where `100dvh` shrinks natively and
-// the flex layout already accounts for it.
-//
-// The PTY-era machinery (debounced keyboardOcclusion, the
-// stableViewportHeight root pin) is gone: every mobile terminal surface
-// renders the capture-snapshot live view now, so no PTY needs shielding
-// from keyboard-driven layout changes.
-
 interface MobileKeyboardSnapshot {
   isMobile: boolean;
   keyboardOpen: boolean;
@@ -63,8 +45,6 @@ export function useMobileKeyboard() {
       if (mql.matches) {
         store.update({ isMobile: true });
       } else {
-        // Leaving mobile mode: clear any keyboard metrics so stale padding
-        // from a prior keyboard session can't survive on a now-desktop layout.
         store.update({
           isMobile: false,
           keyboardOpen: false,

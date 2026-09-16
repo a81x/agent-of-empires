@@ -1,8 +1,4 @@
 // @vitest-environment jsdom
-//
-// Covers the live-view wheel forwarding the mobile component relies on:
-// `forwardWheel` emits the right bytes over the socket (SGR vs legacy),
-// and incoming frames surface the altScreen / mouse / mouseSgr flags.
 
 import { act, renderHook } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";

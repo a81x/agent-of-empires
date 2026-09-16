@@ -6,11 +6,6 @@ function isForeground(): boolean {
   return document.visibilityState === "visible" && document.hasFocus();
 }
 
-/**
- * Report only genuine foreground dashboard use to the server's push
- * suppression logic. Session polling continues in a backgrounded browser,
- * but that traffic must not make a phone miss a notification.
- */
 export function useDashboardPresence(): void {
   useEffect(() => {
     const report = (active: boolean, keepalive = false) => {
@@ -19,9 +14,7 @@ export function useDashboardPresence(): void {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ active }),
         keepalive,
-      }).catch(() => {
-        // Presence is best effort. A failed heartbeat naturally expires.
-      });
+      }).catch(() => {});
     };
     const update = () => {
       const active = isForeground();

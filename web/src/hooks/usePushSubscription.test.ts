@@ -1,11 +1,4 @@
 // @vitest-environment jsdom
-//
-// Coverage tests for usePushSubscription: the end-to-end Web Push hook
-// backing NotificationSettings. The hook leans entirely on browser
-// globals (navigator.serviceWorker, Notification, matchMedia,
-// isSecureContext, atob) and the /api/push/* endpoints, so each test
-// stubs those globals and a fetch router, then drives the returned
-// callbacks through act().
 
 import { act, renderHook } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -26,7 +19,6 @@ function makeSubscription(endpoint = "https://push.example/abc"): FakeSubscripti
   };
 }
 
-// Mutable handles the per-test setup configures.
 let currentSubscription: FakeSubscription | null;
 let subscribeImpl: () => Promise<FakeSubscription>;
 let getSubscriptionImpl: () => Promise<FakeSubscription | null>;
@@ -45,7 +37,6 @@ function installServiceWorker() {
   });
 }
 
-// Default fetch router: every /api/push/* endpoint returns ok.
 function installFetch(
   overrides: Partial<{
     status: { ok: boolean; body: unknown };
@@ -92,8 +83,6 @@ function installFetch(
 }
 
 function setNotificationPermission(perm: NotificationPermission) {
-  // The hook only reads Notification.permission and calls
-  // Notification.requestPermission; a minimal stub is enough.
   vi.stubGlobal(
     "Notification",
     Object.assign(vi.fn() as unknown as typeof Notification, {
@@ -128,7 +117,6 @@ beforeEach(() => {
   setNotificationPermission("granted");
   setUserAgent("Mozilla/5.0 (Macintosh)");
 
-  // PushManager + matchMedia on window for supportsPush / isStandalone.
   vi.stubGlobal("PushManager", function PushManager() {});
   vi.stubGlobal(
     "matchMedia",
@@ -138,7 +126,6 @@ beforeEach(() => {
     configurable: true,
     value: true,
   });
-  // atob for base64UrlToUint8Array (jsdom provides it, but be explicit).
   vi.stubGlobal("atob", (s: string) => Buffer.from(s, "base64").toString("binary"));
 });
 
@@ -153,9 +140,6 @@ afterEach(() => {
   }
 });
 
-// The mount effect schedules refresh() via setTimeout(0). Flush the
-// timer and the resulting microtasks under act so the initial state
-// settles deterministically.
 async function mountAndSettle() {
   const rendered = renderHook(() => usePushSubscription());
   await act(async () => {
@@ -172,9 +156,6 @@ describe("usePushSubscription initial refresh", () => {
   });
 
   it("auto-heals by re-registering the existing subscription with the server on open", async () => {
-    // On open with a live browser subscription, the hook re-POSTs it to
-    // /api/push/subscribe so the server re-binds ownership to the current
-    // token and re-inserts it if the record was dropped by a rotation.
     const calls = installFetch();
     const { result } = await mountAndSettle();
     expect(result.current.state).toEqual({ kind: "enabled" });
@@ -184,7 +165,6 @@ describe("usePushSubscription initial refresh", () => {
   it("stays enabled even if the auto-heal re-register call fails", async () => {
     installFetch({ subscribe: { ok: false, status: 500 } });
     const { result } = await mountAndSettle();
-    // Best-effort: a failed re-register must not knock the UI out of enabled.
     expect(result.current.state).toEqual({ kind: "enabled" });
   });
 
@@ -209,8 +189,6 @@ describe("usePushSubscription initial refresh", () => {
 
   it("resolves to error when serviceWorker.ready rejects", async () => {
     const rejected = Promise.reject(new Error("sw boom"));
-    // Pre-attach a noop catch so the rejection is never "unhandled" at
-    // the microtask level (the hook awaits it on a later tick).
     rejected.catch(() => {});
     Object.defineProperty(navigator, "serviceWorker", {
       configurable: true,
@@ -223,7 +201,6 @@ describe("usePushSubscription initial refresh", () => {
   it("tolerates a non-ok status response and still falls through to permission/sub check", async () => {
     installFetch({ status: { ok: false, body: {} } });
     const { result } = await mountAndSettle();
-    // status not ok -> skip disabled-by-server branch, granted + sub -> enabled.
     expect(result.current.state).toEqual({ kind: "enabled" });
   });
 });
@@ -259,8 +236,6 @@ describe("usePushSubscription unsupported / insecure paths", () => {
   });
 
   it("reports unsupported no-api when PushManager is absent", async () => {
-    // Remove PushManager so supportsPush() ("PushManager" in window) is
-    // false. Deleting the key, not setting it undefined. Non-iOS UA.
     delete (window as unknown as { PushManager?: unknown }).PushManager;
     const { result } = await mountAndSettle();
     expect(result.current.state).toEqual({
@@ -272,7 +247,6 @@ describe("usePushSubscription unsupported / insecure paths", () => {
   it("reports ios-not-standalone on iOS Safari tab without PushManager", async () => {
     delete (window as unknown as { PushManager?: unknown }).PushManager;
     setUserAgent("Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X)");
-    // matchMedia standalone = false and navigator.standalone unset.
     const { result } = await mountAndSettle();
     expect(result.current.state).toEqual({
       kind: "unsupported",
@@ -477,7 +451,6 @@ describe("usePushSubscription refresh() and resubscribe()", () => {
     const { result } = await mountAndSettle();
     expect(result.current.state).toEqual({ kind: "off" });
 
-    // Flip to having a subscription, then refresh.
     const sub = makeSubscription();
     currentSubscription = sub;
     getSubscriptionImpl = async () => sub;

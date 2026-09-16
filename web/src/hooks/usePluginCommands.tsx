@@ -11,12 +11,6 @@ import {
 } from "../lib/pluginCommands";
 import { PluginLinkPicker } from "../components/plugin/PluginLinkPicker";
 
-/** Surfaces active plugin commands as palette actions and binds their declared
- *  keybinds. An `open-ui-link` chord opens the active session's PR href (or a
- *  numbered picker overlay when the session has several), synchronously in the
- *  handler so a remote dashboard is not popup-blocked; an action-less chord
- *  dispatches `plugin.command.invoke` to the worker. Returns the palette actions
- *  plus the picker overlay element (null when closed) for the app to render. */
 export function usePluginCommands(
   entries: PluginUiEntry[],
   activeSessionId: string | null,
@@ -39,8 +33,6 @@ export function usePluginCommands(
     [commands, entries, activeSessionId],
   );
 
-  // The listener reads live state through a ref so it registers once rather than
-  // re-binding on every ui-state poll.
   const live = useRef({ commands, entries, activeSessionId });
   useEffect(() => {
     live.current = { commands, entries, activeSessionId };

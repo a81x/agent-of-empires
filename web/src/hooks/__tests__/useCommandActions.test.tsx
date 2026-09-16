@@ -1,10 +1,4 @@
 // @vitest-environment jsdom
-//
-// Contract test for the command-palette action list (#1643). Asserts the
-// "New scratch session" command is present with the right shape and dispatches
-// onNewScratch, and that both creation commands are hidden in read-only mode
-// (matching the sidebar / dashboard, which hide their "new" buttons rather than
-// offering a command that opens a wizard the server 403s on submit).
 
 import { describe, expect, it, vi } from "vitest";
 import { renderHook } from "@testing-library/react";

@@ -1,11 +1,4 @@
 // @vitest-environment jsdom
-//
-// Hook tests for useDiffFiles. The hook fetches the structured diff file
-// list for a session via getSessionDiffFiles, polls every 10s while the
-// panel is enabled, dedupes by fingerprint so unchanged responses don't
-// bump the revision, resets state on session change, and reports the
-// `diff_panel` telemetry signal once per session while enabled. The API
-// module is mocked so no real network is touched.
 
 import { renderHook, act, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -68,9 +61,6 @@ describe("useDiffFiles initial state", () => {
   it("enters the loading state synchronously when mounted with a session", () => {
     mockGetFiles.mockResolvedValue(resp());
     const { result } = renderHook(() => useDiffFiles("s1", false));
-    // The session change from null (initial trackedSessionId) -> "s1" never
-    // happens on first mount, so loading stays false here; the loading flag
-    // is exercised on the session-change test below.
     expect(result.current.files).toEqual([]);
   });
 });
@@ -102,7 +92,6 @@ describe("useDiffFiles success", () => {
     expect(mockReportSeen).toHaveBeenCalledTimes(1);
     expect(mockReportSeen).toHaveBeenCalledWith("diff_panel");
 
-    // A manual refresh of the same session must not re-fire the signal.
     await act(async () => {
       await result.current.refresh();
     });
@@ -124,7 +113,6 @@ describe("useDiffFiles empty / null response", () => {
     const { result } = renderHook(() => useDiffFiles("s1", true));
 
     await waitFor(() => expect(mockGetFiles).toHaveBeenCalled());
-    // Null response: no setFiles, no revision bump, no telemetry.
     expect(result.current.files).toEqual([]);
     expect(result.current.revision).toBe(0);
     expect(mockReportSeen).not.toHaveBeenCalled();
@@ -149,7 +137,6 @@ describe("useDiffFiles fingerprint dedupe", () => {
     await act(async () => {
       await result.current.refresh();
     });
-    // Same fingerprint -> revision stays at 1.
     expect(result.current.revision).toBe(1);
   });
 
@@ -166,9 +153,6 @@ describe("useDiffFiles fingerprint dedupe", () => {
     expect(result.current.files[0].path).toBe("two.ts");
   });
 
-  // The refetch after a base-branch change often returns the same file list,
-  // and two empty diffs are identical. Keying the fingerprint on files alone
-  // dropped the new bases, so the picker kept showing the old base. See #3329.
   it("applies changed per_repo_bases even when the file list is identical", async () => {
     const files = [file({ path: "same.ts" })];
     mockGetFiles.mockResolvedValueOnce(
@@ -216,7 +200,6 @@ describe("useDiffFiles polling", () => {
       initialProps: { enabled: true },
     });
 
-    // Flush the initial setTimeout(0) fetch.
     await act(async () => {
       await vi.advanceTimersByTimeAsync(0);
     });
@@ -227,7 +210,6 @@ describe("useDiffFiles polling", () => {
     });
     expect(mockGetFiles).toHaveBeenCalledTimes(2);
 
-    // Disable: the interval is cleared, so further time does not fetch.
     rerender({ enabled: false });
     await act(async () => {
       await vi.advanceTimersByTimeAsync(30_000);
@@ -262,7 +244,6 @@ describe("useDiffFiles session change", () => {
 
     mockGetFiles.mockResolvedValue(resp({ files: [file({ path: "b.ts" })] }));
     rerender({ id: "s2" });
-    // Switching sessions flips loading on at render time.
     expect(result.current.loading).toBe(true);
 
     await waitFor(() => expect(result.current.files[0].path).toBe("b.ts"));

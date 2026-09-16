@@ -1,9 +1,5 @@
 // @vitest-environment jsdom
 
-// Drives the useTour hook itself (run-state machine, auto-launch effect,
-// scope-change cancel, finish-with-markSeen persistence). The pure
-// shouldAutoLaunch truth table is covered by ./__tests__/useTour.test.ts; this
-// file does NOT duplicate it.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, render, renderHook, waitFor } from "@testing-library/react";
 
@@ -19,8 +15,6 @@ vi.mock("../lib/onboarding", () => ({
   isAutomatedSession: vi.fn(() => false),
 }));
 
-// Stub the lazy engine so tourElement renders deterministically and exposes an
-// onFinish handle, without pulling in react-joyride.
 let lastOnFinish: ((markSeen: boolean) => void) | null = null;
 vi.mock("../components/tour/TourRunner", () => ({
   default: ({ run, onFinish }: { run: boolean; onFinish: (m: boolean) => void }) => {
@@ -142,12 +136,9 @@ describe("useTour hook behavior", () => {
     expect(result.current.isTourActive).toBe(true);
     expect(resolveTourStepsMock).toHaveBeenCalledTimes(1);
 
-    // Finish, then re-render with the same gating props: no second auto-launch.
     act(() => result.current.startTour()); // ensure a runner is mounted
     rerender(opts({ autoLaunchReady: true }));
     act(() => drainRaf());
-    // resolveTourSteps may be called again by the explicit startTour above, but
-    // the auto-launch effect must not fire a fresh begin() on its own re-run.
     const callsAfter = resolveTourStepsMock.mock.calls.length;
     rerender(opts({ autoLaunchReady: true }));
     act(() => drainRaf());
@@ -173,7 +164,6 @@ describe("useTour hook behavior", () => {
 
     function Harness() {
       const tour = useTour(opts({ autoLaunchReady: false, onSeen }));
-      // Expose startTour through a button so we can render the tourElement too.
       return (
         <div>
           <button onClick={tour.startTour}>start</button>

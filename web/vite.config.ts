@@ -7,26 +7,13 @@ import { codecovVitePlugin } from "@codecov/vite-plugin";
 export const SESSION_WS_PROXY = "^/sessions/.+/(?:ws|live-ws)(?:\\?.*)?$";
 
 export default defineConfig(({ mode, command }) => {
-  // Load `.env*` files (empty prefix => all keys, not just `VITE_`), merged
-  // over shell env. Editing a `.env` file restarts the dev server, and the
-  // proxy below only intercepts `/api` + AoE `/sessions/*` WebSocket relays,
-  // so Vite's own HMR socket is untouched: live reload keeps working.
   const env = loadEnv(mode, process.cwd(), "");
 
   const collectCoverage = env.AOE_COVERAGE === "1";
 
-  // Codecov bundle analysis. Only on a real production build (`vite build`),
-  // never on the coverage build (inline sourcemaps inflate chunk sizes and
-  // would report bogus bundle stats) or in dev/test. Upload is gated on
-  // CODECOV_TOKEN, so a local `npm run build` without the token is a no-op
-  // rather than a failed upload.
   const enableBundleAnalysis = command === "build" && !collectCoverage && !!env.CODECOV_TOKEN;
 
-  // Point `npm run dev` at an arbitrary running `aoe serve` (e.g. a released
-  // binary on a non-default port) instead of a local cargo build. Set
-  // VITE_PROXY to the server's origin (`localhost:50106` or
-  // `http://localhost:50106`); unset means no proxy. Read only here (never
-  // via import.meta.env), so it isn't bundled into the client.
+  // VITE_PROXY points `npm run dev` at a running `aoe serve`; read here only so it isn't bundled.
   const httpTarget = (() => {
     const raw = env.VITE_PROXY?.trim();
     if (!raw) return null;

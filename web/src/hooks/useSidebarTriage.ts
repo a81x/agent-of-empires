@@ -11,20 +11,12 @@ import {
 } from "../lib/sidebarOptimistic";
 import type { Workspace } from "../lib/types";
 
-/** Outcome of one triage mutation, used to build the bulk summary toast. */
 export interface TriageResult {
   workspaceId: string;
   ok: boolean;
-  /** Set when the workspace had no session to act on. */
   skipped?: boolean;
 }
 
-/** Sidebar triage controller: owns the optimistic overlay (keyed by workspace
- *  id) and the single-id PATCH calls for pin / archive / snooze, for both
- *  single-row and bulk actions. Lifted out of `SessionRow` so a bulk action
- *  can drive many rows from one place rather than reaching into N independent
- *  row components. Triage always targets the workspace's primary session
- *  (`sessions[0]`), matching the prior row-level behavior. See #1724. */
 export function useSidebarTriage(workspaces: readonly Workspace[]) {
   const [overlay, setOverlay] = useState<Map<string, OptimisticTriage>>(() => new Map());
   const [trackedWorkspaces, setTrackedWorkspaces] = useState(workspaces);
@@ -96,7 +88,6 @@ export function useSidebarTriage(workspaces: readonly Workspace[]) {
     async (ws: Workspace, markUnread: boolean): Promise<TriageResult> => {
       const sessionId = ws.sessions[0]?.id;
       if (!sessionId) return { workspaceId: ws.id, ok: false, skipped: true };
-      // "Mark as unread" flags it; "Mark as read" clears it.
       setOverride(ws.id, { unread: markUnread });
       const result = await setSessionUnread(sessionId, markUnread);
       if (!result) {
@@ -108,8 +99,6 @@ export function useSidebarTriage(workspaces: readonly Workspace[]) {
     [setOverride],
   );
 
-  // Single-row handlers surface a toast on failure (the bulk path reports a
-  // single summary toast instead, so these don't).
   const pinToggle = useCallback(
     (ws: Workspace, pinned: boolean) => {
       void pin(ws, pinned).then((r) => {
@@ -154,14 +143,7 @@ export function useSidebarTriage(workspaces: readonly Workspace[]) {
     [unread],
   );
 
-  // Bulk fan-out. Serial on purpose: each single-id PATCH re-persists the
-  // whole profile's session list, so firing them concurrently could race on
-  // that write. For the handful of rows a user bulk-triages against a local
-  // server this is sub-second, and it keeps the per-session semantics
-  // (lock, persist-first, archive side effects) exactly as the single path.
-  // Best-effort, not atomic: a failure rolls back only its own row. See
-  // #1724. Swapping this loop for a real bulk endpoint later is a localized
-  // change.
+  // Serial: each PATCH rewrites the profile's session list, so concurrent calls would race.
   const runBulk = useCallback(
     async (
       workspaces: readonly Workspace[],

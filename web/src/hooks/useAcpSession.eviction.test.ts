@@ -1,18 +1,4 @@
 // @vitest-environment jsdom
-//
-// Tests for the persistState eviction-on-quota policy added for #1345.
-//
-// Contract (debated and locked):
-// - `acp:draft:*` keys are NEVER touched, even when older than the
-//   acp-state entries currently in storage. Drafts hold authoritative
-//   client-side data; silent destruction would be data loss.
-// - Eviction whitelist-filters by STORAGE_KEY_PREFIX
-//   (`aoe:acp-state:v1:`), not blacklist-filters.
-// - Corrupt entries (parse failure or missing savedAt) are evicted before
-//   well-formed ones.
-// - Retry depth is exactly 1: on a second failure, persistState gives up
-//   silently. Cache is best-effort; replay on next mount reconstructs the
-//   transcript.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -37,10 +23,6 @@ afterEach(() => {
 
 describe("loadPersistedState schema backfill", () => {
   it("backfills fields added after an entry was persisted (pendingElicitations)", () => {
-    // Simulate an entry written by an older bundle: a valid state that
-    // predates pendingElicitations. Without the merge-over-defaults on
-    // load, the new StructuredView reads `undefined` and crashes on
-    // `.pendingElicitations.map`.
     const legacy = { ...emptyAcpState() } as Record<string, unknown>;
     delete legacy.pendingElicitations;
     window.localStorage.setItem(
@@ -51,14 +33,10 @@ describe("loadPersistedState schema backfill", () => {
     const loaded = loadPersistedState("sess-legacy");
     expect(loaded).toBeDefined();
     expect(loaded?.pendingElicitations).toEqual([]);
-    // An existing field round-trips unchanged.
     expect(loaded?.pendingApprovals).toEqual([]);
   });
 
   it("backfills oldestSeq to 0 for a pre-#2236 entry and preserves a stored value", () => {
-    // A warm session persisted before recent-first paging lacks oldestSeq;
-    // it must hydrate as 0 (not undefined) so the `before=<oldestSeq>`
-    // paging contract holds on the first load-earlier.
     const legacy = { ...emptyAcpState() } as Record<string, unknown>;
     delete legacy.oldestSeq;
     window.localStorage.setItem(
@@ -97,7 +75,6 @@ describe("loadPersistedState schema backfill", () => {
 
 describe("structured view cache eviction (#1345)", () => {
   it("evicts the oldest acp-state entry when the write hits quota and retries", () => {
-    // Pre-populate: two existing cache entries, one old + one new.
     const now = Date.now();
     window.localStorage.setItem(
       `${STORAGE_KEY_PREFIX}sess-old`,
@@ -108,8 +85,6 @@ describe("structured view cache eviction (#1345)", () => {
       JSON.stringify({ savedAt: now, state: emptyAcpState() }),
     );
 
-    // First setItem call (the persistState write) throws; subsequent calls
-    // succeed so the retry after eviction lands.
     const setItem = vi.spyOn(Storage.prototype, "setItem").mockImplementationOnce(() => {
       throw quotaError();
     });
@@ -117,17 +92,12 @@ describe("structured view cache eviction (#1345)", () => {
     persistState("sess-current", emptyAcpState());
 
     expect(setItem).toHaveBeenCalled();
-    // Oldest entry was evicted.
     expect(window.localStorage.getItem(`${STORAGE_KEY_PREFIX}sess-old`)).toBeNull();
-    // Newer entry survives.
     expect(window.localStorage.getItem(`${STORAGE_KEY_PREFIX}sess-new`)).not.toBeNull();
-    // Retried write landed.
     expect(window.localStorage.getItem(`${STORAGE_KEY_PREFIX}sess-current`)).not.toBeNull();
   });
 
   it("never evicts acp:draft:* entries even when older than acp-state entries", () => {
-    // Older draft AND older acp-state. Eviction must pick the
-    // acp-state entry, not the draft.
     const now = Date.now();
     window.localStorage.setItem(`${DRAFT_KEY_PREFIX}sess-old`, "draft body");
     window.localStorage.setItem(
@@ -138,7 +108,6 @@ describe("structured view cache eviction (#1345)", () => {
     const removed = evictOldestPersistedAcpState(`${STORAGE_KEY_PREFIX}sess-current`);
     expect(removed).toBe(true);
     expect(window.localStorage.getItem(`${STORAGE_KEY_PREFIX}sess-old`)).toBeNull();
-    // Draft stays put.
     expect(window.localStorage.getItem(`${DRAFT_KEY_PREFIX}sess-old`)).toBe("draft body");
   });
 
@@ -160,25 +129,20 @@ describe("structured view cache eviction (#1345)", () => {
 
   it("prefers corrupt acp-state entries over older valid ones", () => {
     const now = Date.now();
-    // Valid older entry that would normally win on savedAt.
     window.localStorage.setItem(
       `${STORAGE_KEY_PREFIX}sess-valid-old`,
       JSON.stringify({ savedAt: now - 86_400_000, state: emptyAcpState() }),
     );
-    // Corrupt entry with newer-looking key (not even valid JSON).
     window.localStorage.setItem(`${STORAGE_KEY_PREFIX}sess-corrupt`, "not valid json{{{");
 
     evictOldestPersistedAcpState(`${STORAGE_KEY_PREFIX}sess-current`);
 
-    // Corrupt entry evicted first.
     expect(window.localStorage.getItem(`${STORAGE_KEY_PREFIX}sess-corrupt`)).toBeNull();
     expect(window.localStorage.getItem(`${STORAGE_KEY_PREFIX}sess-valid-old`)).not.toBeNull();
   });
 
   it("does not evict the current session's key (the one being written)", () => {
     const now = Date.now();
-    // Only the current session has an entry. Eviction should find no
-    // candidate and report false.
     window.localStorage.setItem(
       `${STORAGE_KEY_PREFIX}sess-current`,
       JSON.stringify({ savedAt: now - 86_400_000, state: emptyAcpState() }),
@@ -196,20 +160,15 @@ describe("structured view cache eviction (#1345)", () => {
       JSON.stringify({ savedAt: now - 86_400_000, state: emptyAcpState() }),
     );
 
-    // Every setItem call throws. The eviction's removeItem still works,
-    // but the retried write fails again. persistState must return silently
-    // without throwing or looping.
     const setItem = vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
       throw quotaError();
     });
 
     expect(() => persistState("sess-current", emptyAcpState())).not.toThrow();
-    // Original + retry = exactly two calls; no infinite loop.
     expect(setItem).toHaveBeenCalledTimes(2);
   });
 
   it("returns false silently when no acp-state candidate exists", () => {
-    // Only drafts and unrelated keys; nothing to evict.
     window.localStorage.setItem(`${DRAFT_KEY_PREFIX}sess-a`, "draft");
     window.localStorage.setItem("aoe-resolved-theme", "{}");
 
@@ -245,14 +204,11 @@ describe("persistState strips attachment-bearing queued rows (#1833)", () => {
 
     const raw = window.localStorage.getItem(`${STORAGE_KEY_PREFIX}sess-strip`);
     expect(raw).not.toBeNull();
-    // The base64 payload must never reach localStorage (quota invariant).
     expect(raw).not.toContain("QUJDREVG");
 
     const parsed = JSON.parse(raw!) as {
       state: { queuedPrompts: Array<{ id: string; attachments?: unknown }> };
     };
-    // Only the text-only row survives persistence; the attachment row is
-    // dropped entirely so reload never drains a degraded prompt.
     expect(parsed.state.queuedPrompts).toHaveLength(1);
     expect(parsed.state.queuedPrompts[0]?.id).toBe("q1");
   });
