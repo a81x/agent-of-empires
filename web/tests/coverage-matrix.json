@@ -3676,7 +3676,10 @@
         "web/src/components/settings/PluginUpdateConsentModal.tsx",
         "web/src/components/settings/PluginInstallConsentModal.tsx",
         "web/src/components/settings/PluginJobProgressModal.tsx",
-        "web/src/components/settings/PluginIdentityIcon.tsx"
+        "web/src/components/settings/PluginIdentityIcon.tsx",
+        "web/src/components/settings/PluginCard.tsx",
+        "web/src/components/settings/PluginMarketplace.tsx",
+        "web/src/components/settings/PluginModal.tsx"
       ]
     },
     {
