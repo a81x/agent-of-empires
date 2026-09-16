@@ -99,7 +99,8 @@ impl HttpClient {
         let url = crate::daemon::sessions_url(&endpoint.base_url)?;
         let token = endpoint.bearer_token();
         crate::daemon::authorization_header(token)?;
-        let http = crate::daemon::native_http_client(&url, token.is_some())?;
+        let authenticated = token.is_some() || endpoint.login().is_some();
+        let http = crate::daemon::native_http_client(&url, authenticated)?;
         Ok(Self { http, endpoint })
     }
 
@@ -645,6 +646,9 @@ impl HttpClient {
             request
                 .headers_mut()
                 .insert(header::AUTHORIZATION, authorization);
+        }
+        if let Some(login) = self.endpoint.login() {
+            crate::daemon::insert_login_headers(request.headers_mut(), login)?;
         }
         Ok(
             crate::daemon::transport::execute(&self.http, self.endpoint.unix_path(), request)

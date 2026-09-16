@@ -124,8 +124,8 @@ async fn main() -> Result<()> {
     }
 
     // If the user passed --daemon-url, mirror the value into the env
-    // var so the acp::client::discovery layer (used by both the
-    // remote TUI home and the `aoe acp *` verbs) picks it up
+    // var so the acp::client::discovery layer (used by the TUI's
+    // temporary remote and the `aoe acp *` verbs) picks it up
     // through the same code path the env-only path uses. This avoids a
     // second "is the flag set?" check in every callsite.
     if let Some(url) = &cli.daemon_url {
@@ -454,6 +454,7 @@ async fn run(
         Some(Commands::Killall(args)) => cli::killall::run(args).await,
         Some(Commands::Session { command }) => cli::session::run(&profile, command).await,
         Some(Commands::Group { command }) => cli::group::run(&profile, command).await,
+        Some(Commands::Remote { command }) => cli::remote::run(command).await,
         Some(Commands::Plugin { command }) => cli::plugin::run(command).await,
         Some(Commands::Profile { command }) => cli::profile::run(&profile, command).await,
         Some(Commands::Project { command }) => {

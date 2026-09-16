@@ -4,6 +4,8 @@ mod error;
 pub use error::{ApiErrorCode, ERROR_CODE_HEADER};
 
 pub(crate) mod lifecycle;
+pub mod login;
+pub mod remotes;
 mod runtime;
 mod runtime_connection;
 pub use runtime::{
@@ -41,7 +43,49 @@ pub use wire::{
     WorkspaceRepoSummary,
 };
 
+/// Header name carrying the device-binding secret on REST requests. The
+/// WebSocket form is an `aoe-device.<secret>` subprotocol instead.
+pub const DEVICE_BINDING_HEADER: &str = "x-aoe-device-binding";
+
+/// Session and device-binding pair minted by a passphrase login. Both halves
+/// travel together; one without the other is not a credential.
+#[derive(Clone, PartialEq, Eq)]
+pub struct SessionCredential {
+    pub session: String,
+    pub binding: String,
+}
+
+impl fmt::Debug for SessionCredential {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("SessionCredential(<redacted>)")
+    }
+}
+
+/// Present a login session on a REST request: the cookie plus its binding.
+pub(crate) fn insert_login_headers(
+    headers: &mut reqwest::header::HeaderMap,
+    login: &SessionCredential,
+) -> Result<(), DaemonClientError> {
+    let sensitive = |value: String| {
+        HeaderValue::from_str(&value)
+            .map(|mut value| {
+                value.set_sensitive(true);
+                value
+            })
+            .map_err(|_| DaemonClientError::InvalidBearerToken)
+    };
+    headers.insert(
+        reqwest::header::COOKIE,
+        sensitive(format!("aoe_session={}", login.session))?,
+    );
+    headers.insert(DEVICE_BINDING_HEADER, sensitive(login.binding.clone())?);
+    Ok(())
+}
+
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(15);
+/// Creating a session can clone a worktree, start a container and run hooks
+/// before the daemon answers.
+const CREATE_TIMEOUT: Duration = Duration::from_secs(180);
 const MAX_ERROR_BODY_BYTES: usize = 8 * 1024;
 const MAX_SUCCESS_BODY_BYTES: usize = 16 * 1024 * 1024;
 
@@ -54,11 +98,13 @@ pub struct DaemonClient {
     sessions_url: Url,
     authorization: Option<HeaderValue>,
     unix_path: Option<std::path::PathBuf>,
+    /// Passphrase-login credential, when the daemon has a login wall.
+    login: Option<SessionCredential>,
 }
 
 impl fmt::Debug for DaemonClient {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let authenticated = self.authorization.is_some();
+        let authenticated = self.is_authenticated();
         let mut debug = f.debug_struct("DaemonClient");
         if authenticated {
             debug.field("sessions_url", &"<redacted>");
@@ -80,7 +126,9 @@ pub enum DaemonClientError {
     /// The bearer token cannot be represented as an HTTP authorization header.
     #[error("invalid daemon bearer token")]
     InvalidBearerToken,
-    #[error("daemon bearer token requires HTTPS or a loopback HTTP URL")]
+    /// A bearer token or login session was configured for a non-loopback
+    /// plaintext URL.
+    #[error("daemon credentials require HTTPS or a loopback HTTP URL")]
     InsecureBearerTransport,
     #[error("daemon Unix transport failed")]
     UnixTransport,
@@ -128,7 +176,63 @@ impl DaemonClient {
             sessions_url,
             authorization,
             unix_path: None,
+            login: None,
         })
+    }
+
+    /// [`Self::new`] plus the session credential from a passphrase login, for
+    /// a daemon started with `--remote` (which mandates both factors).
+    pub fn with_login(
+        base_url: &str,
+        bearer_token: Option<&str>,
+        login: Option<&SessionCredential>,
+    ) -> Result<Self, DaemonClientError> {
+        let Some(login) = login else {
+            return Self::new(base_url, bearer_token);
+        };
+        let mut client = Self::new(base_url, bearer_token)?;
+        client.http = native_http_client(&client.sessions_url, true)?;
+        client.login = Some(login.clone());
+        Ok(client)
+    }
+
+    /// Authenticated GET of an `/api/*` endpoint beside the sessions list, such
+    /// as `"profiles"` or `"filesystem/browse"`.
+    pub async fn get_api<T: serde::de::DeserializeOwned>(
+        &self,
+        endpoint: &str,
+        query: &[(&str, &str)],
+    ) -> Result<T, DaemonClientError> {
+        self.request_json(self.http.get(self.api_url(endpoint)?).query(query))
+            .await
+    }
+
+    /// Authenticated JSON POST to an `/api/*` endpoint beside the sessions
+    /// list, allowed the long create timeout.
+    pub async fn post_api<B: serde::Serialize, T: serde::de::DeserializeOwned>(
+        &self,
+        endpoint: &str,
+        body: &B,
+    ) -> Result<T, DaemonClientError> {
+        let request = self.http.post(self.api_url(endpoint)?).json(body);
+        let mut response = self.send(request, CREATE_TIMEOUT).await?;
+        let body = read_bounded_body(&mut response, MAX_SUCCESS_BODY_BYTES).await?;
+        serde_json::from_slice(&body).map_err(|error| self.decode_error(error))
+    }
+
+    fn api_url(&self, endpoint: &str) -> Result<Url, DaemonClientError> {
+        // `sessions_url` ends in `api/sessions`, so a relative join lands on a
+        // sibling under the same base path.
+        self.sessions_url
+            .join(endpoint)
+            .map_err(|_| DaemonClientError::InvalidBaseUrl {
+                reason: "invalid API endpoint",
+            })
+    }
+
+    /// Either credential makes a request authenticated.
+    fn is_authenticated(&self) -> bool {
+        self.authorization.is_some() || self.login.is_some()
     }
 
     pub fn new_unix(path: impl Into<std::path::PathBuf>) -> Result<Self, DaemonClientError> {
@@ -540,13 +644,24 @@ impl DaemonClient {
 
     async fn request_response(
         &self,
-        mut request: reqwest::RequestBuilder,
+        request: reqwest::RequestBuilder,
     ) -> Result<reqwest::Response, DaemonClientError> {
-        request = request.timeout(DEFAULT_TIMEOUT);
+        self.send(request, DEFAULT_TIMEOUT).await
+    }
+
+    async fn send(
+        &self,
+        mut request: reqwest::RequestBuilder,
+        timeout: Duration,
+    ) -> Result<reqwest::Response, DaemonClientError> {
+        request = request.timeout(timeout);
         if let Some(authorization) = &self.authorization {
             request = request.header(AUTHORIZATION, authorization.clone());
         }
-        let request = request.build().map_err(|_| DaemonClientError::Transport)?;
+        let mut request = request.build().map_err(|_| DaemonClientError::Transport)?;
+        if let Some(login) = &self.login {
+            insert_login_headers(request.headers_mut(), login)?;
+        }
         let mut response =
             transport::execute(&self.http, self.unix_path.as_deref(), request).await?;
         let status = response.status();
@@ -563,7 +678,7 @@ impl DaemonClient {
                     truncated: false,
                 });
             }
-            if self.authorization.is_some() || self.unix_path.is_some() {
+            if self.is_authenticated() || self.unix_path.is_some() {
                 return Err(DaemonClientError::Status {
                     status,
                     code,
@@ -588,13 +703,15 @@ impl DaemonClient {
     ) -> Result<T, DaemonClientError> {
         let mut response = self.request_response(request).await?;
         let body = read_bounded_body(&mut response, MAX_SUCCESS_BODY_BYTES).await?;
-        serde_json::from_slice(&body).map_err(|error| {
-            if self.authorization.is_some() || self.unix_path.is_some() {
-                DaemonClientError::AuthenticatedDecode
-            } else {
-                DaemonClientError::Decode(error)
-            }
-        })
+        serde_json::from_slice(&body).map_err(|error| self.decode_error(error))
+    }
+
+    fn decode_error(&self, error: serde_json::Error) -> DaemonClientError {
+        if self.is_authenticated() || self.unix_path.is_some() {
+            DaemonClientError::AuthenticatedDecode
+        } else {
+            DaemonClientError::Decode(error)
+        }
     }
 
     async fn read_error_body(

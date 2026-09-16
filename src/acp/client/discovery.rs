@@ -14,13 +14,16 @@ pub struct DaemonEndpoint {
     token: Option<String>,
     pub source: Source,
     unix_path: Option<PathBuf>,
+    /// Passphrase-login session for a daemon behind a login wall. Travels
+    /// alongside the bearer token: `--remote` daemons require both.
+    login: Option<crate::daemon::SessionCredential>,
 }
 
 impl std::fmt::Debug for DaemonEndpoint {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("DaemonEndpoint")
             .field("source", &self.source)
-            .field("authenticated", &self.has_token())
+            .field("authenticated", &(self.has_token() || self.login.is_some()))
             .finish_non_exhaustive()
     }
 }
@@ -34,6 +37,7 @@ impl DaemonEndpoint {
             token: None,
             source: Source::LocalDaemon,
             unix_path: Some(path),
+            login: None,
         }
     }
 
@@ -47,14 +51,19 @@ impl DaemonEndpoint {
             token,
             source,
             unix_path: None,
+            login: None,
         }
+    }
+
+    pub(crate) fn login(&self) -> Option<&crate::daemon::SessionCredential> {
+        self.login.as_ref()
     }
 
     pub fn daemon_client(&self) -> Result<DaemonClient, DaemonClientError> {
         if let Some(path) = &self.unix_path {
             DaemonClient::new_unix(path)
         } else {
-            DaemonClient::new(&self.base_url, self.bearer_token())
+            DaemonClient::with_login(&self.base_url, self.bearer_token(), self.login.as_ref())
         }
     }
 
@@ -71,6 +80,8 @@ impl DaemonEndpoint {
 pub enum Source {
     Env,
     LocalDaemon,
+    /// An entry in the `aoe remote` registry.
+    Remote,
 }
 
 #[derive(Debug, Error)]

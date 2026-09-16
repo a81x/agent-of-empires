@@ -697,7 +697,7 @@ fn write_sessions(path: &Path, file: &PersistedFile) -> bool {
     // not just at load. `atomic_write` resolves symlinks and writes through
     // to the target, so an unguarded persist would hand the session secret
     // to whatever a planted link points at. See #1235, #3186.
-    if let Err(e) = check_path_security(path) {
+    if let Err(e) = crate::util::check_owner_only_file(path, "login sessions") {
         tracing::warn!(
             target: "auth.passphrase",
             error = %e,
@@ -727,49 +727,6 @@ fn write_sessions(path: &Path, file: &PersistedFile) -> bool {
     true
 }
 
-/// Fail-closed check that the sessions store is safe to read from or
-/// write to: the parent dir must exist, not be a symlink, and not be
-/// group/world writable; the file itself (when it exists) must be a
-/// regular, owner-only (0600) file, not a symlink. Shared by the load
-/// path and the startup rewrite so neither fails open on a tampered or
-/// misconfigured app dir. A missing file is fine, it has not been
-/// created yet. See #1235.
-fn check_path_security(path: &Path) -> anyhow::Result<()> {
-    use anyhow::{bail, Context};
-
-    if let Some(parent) = path.parent() {
-        let pmeta = std::fs::symlink_metadata(parent).context("stat login sessions parent dir")?;
-        if pmeta.file_type().is_symlink() {
-            bail!("login sessions parent dir is a symlink; refusing");
-        }
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            if pmeta.permissions().mode() & 0o022 != 0 {
-                bail!("login sessions parent dir is group/world writable; refusing");
-            }
-        }
-    }
-
-    match std::fs::symlink_metadata(path) {
-        Ok(meta) => {
-            if meta.file_type().is_symlink() {
-                bail!("login sessions path is a symlink; refusing");
-            }
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                if meta.permissions().mode() & 0o077 != 0 {
-                    bail!("login sessions file is group/world accessible; refusing");
-                }
-            }
-            Ok(())
-        }
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(e) => Err(e).context("stat login sessions file"),
-    }
-}
-
 /// Load and rehydrate persisted sessions. Returns an empty map (not an
 /// error) for the benign cases: file missing, schema mismatch, or
 /// passphrase changed. Returns `Err` only for states that warrant a
@@ -783,7 +740,7 @@ fn load_sessions(
     use base64::engine::general_purpose::URL_SAFE_NO_PAD;
     use base64::Engine;
 
-    check_path_security(path)?;
+    crate::util::check_owner_only_file(path, "login sessions")?;
 
     let raw = match std::fs::read_to_string(path) {
         Ok(r) => r,
@@ -1983,43 +1940,6 @@ mod tests {
             "untouched",
             "the symlink target must never receive the session store"
         );
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn check_path_security_rejects_symlink_and_loose_perms() {
-        use std::os::unix::fs::PermissionsExt;
-
-        let dir = tempfile::tempdir().unwrap();
-
-        // A symlink at the sessions path is rejected (no following).
-        let target = dir.path().join("real.toml");
-        std::fs::write(&target, "x").unwrap();
-        let link = dir.path().join("link.toml");
-        std::os::unix::fs::symlink(&target, &link).unwrap();
-        assert!(
-            check_path_security(&link).is_err(),
-            "symlink must be rejected"
-        );
-
-        // A world/group-accessible file is rejected.
-        let loose = dir.path().join("loose.toml");
-        std::fs::write(&loose, "x").unwrap();
-        std::fs::set_permissions(&loose, std::fs::Permissions::from_mode(0o644)).unwrap();
-        assert!(
-            check_path_security(&loose).is_err(),
-            "0644 file must be rejected"
-        );
-
-        // A 0600 file under a private dir passes.
-        let ok = dir.path().join("ok.toml");
-        std::fs::write(&ok, "x").unwrap();
-        std::fs::set_permissions(&ok, std::fs::Permissions::from_mode(0o600)).unwrap();
-        // tempfile dirs are 0700, so the parent check passes too.
-        assert!(check_path_security(&ok).is_ok(), "0600 file should pass");
-
-        // A missing file (not yet created) passes: the parent is fine.
-        assert!(check_path_security(&dir.path().join("missing.toml")).is_ok());
     }
 
     #[cfg(unix)]

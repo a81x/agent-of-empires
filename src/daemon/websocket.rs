@@ -55,7 +55,8 @@ pub(crate) async fn connect(
 ) -> Result<NativeSocket, WsError> {
     let token = endpoint.bearer_token();
     let base = super::native_url(&endpoint.base_url)?;
-    if token.is_some() && base.scheme() == "http" && !super::is_loopback_url(&base) {
+    let authenticated = token.is_some() || endpoint.login().is_some();
+    if authenticated && base.scheme() == "http" && !super::is_loopback_url(&base) {
         return Err(DaemonClientError::InsecureBearerTransport.into());
     }
     let mut url = base.clone();
@@ -75,6 +76,18 @@ pub(crate) async fn connect(
         request
             .headers_mut()
             .insert(reqwest::header::AUTHORIZATION, authorization);
+    }
+    if let Some(login) = endpoint.login() {
+        super::insert_login_headers(request.headers_mut(), login)?;
+        // The binding rides a subprotocol on upgrades; the server selects
+        // `aoe-auth` from the offered list.
+        let protocols = format!("aoe-auth, aoe-device.{}", login.binding);
+        let mut protocols = reqwest::header::HeaderValue::from_str(&protocols)
+            .map_err(|_| DaemonClientError::InvalidBearerToken)?;
+        protocols.set_sensitive(true);
+        request
+            .headers_mut()
+            .insert(reqwest::header::SEC_WEBSOCKET_PROTOCOL, protocols);
     }
     let config = tokio_tungstenite::tungstenite::protocol::WebSocketConfig::default()
         .max_message_size(Some(16 * 1024 * 1024))
