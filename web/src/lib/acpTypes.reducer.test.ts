@@ -11,7 +11,6 @@ import {
   summarizeAnswers,
   transcriptRowToActivity,
   type AcpEvent,
-  type AcpFrame,
   type AcpState,
   type Elicitation,
   type ReducedState,
@@ -226,162 +225,74 @@ describe("appendElicitationAnswerRow (#2209)", () => {
 });
 
 describe("applyEvent / PromptCapabilities", () => {
-  it("maps the wire snake_case fields onto camelCase capability flags", () => {
-    const next = ev(emptyAcpState(), 1, {
-      PromptCapabilities: { image: true, audio: false, embedded_context: true },
-    });
-    expect(next.promptCapabilities).toEqual({
+  it.each([undefined, true, false])("maps wire fields with steering=%s (#2805)", (steering) => {
+    const wire = { image: true, audio: false, embedded_context: true, ...(steering === undefined ? {} : { steering }) };
+    expect(ev(emptyAcpState(), 1, { PromptCapabilities: wire }).promptCapabilities).toEqual({
       image: true,
       audio: false,
       embeddedContext: true,
-      steering: false,
+      steering: steering ?? false,
     });
-  });
-
-  it("carries the steering flag through, both ways (#2805)", () => {
-    for (const steering of [true, false]) {
-      const next = ev(emptyAcpState(), 1, {
-        PromptCapabilities: {
-          image: false,
-          audio: false,
-          embedded_context: false,
-          steering,
-        },
-      });
-      expect(next.promptCapabilities?.steering).toBe(steering);
-    }
   });
 });
 
 describe("applyEvent / PromptRejected (#1196)", () => {
-  function rejectFrame(seq: number, text: string): AcpFrame {
-    return {
-      session_id: "s-1",
-      seq,
-      event: { PromptRejected: { reason: "another prompt in flight", text } },
-    };
-  }
+  const rejected = (text: string): AcpEvent => ({ PromptRejected: { reason: "another prompt in flight", text } });
 
   it("records a Retry pill and retires the spinner for that submission", () => {
-    let state = ev(emptyAcpState(), 1, { UserPromptSent: { text: "do thing" } });
-    expect(state.turnActive).toBe(true);
-    state = applyEvent(state, rejectFrame(2, "do thing"));
-    expect(state.rejectedPrompts).toHaveLength(1);
-    expect(state.rejectedPrompts[0]).toMatchObject({
-      id: "rejected-2",
-      text: "do thing",
-      reason: "another prompt in flight",
-    });
+    const state = ev(ev(emptyAcpState(), 1, { UserPromptSent: { text: "do thing" } }), 2, rejected("do thing"));
+    expect(state.rejectedPrompts).toEqual([
+      expect.objectContaining({ id: "rejected-2", text: "do thing", reason: "another prompt in flight" }),
+    ]);
     expect(state.turnActive).toBe(false);
   });
 
   it("caps the rejected-prompts FIFO at 5 entries", () => {
-    let state: AcpState = { ...emptyAcpState(), pendingUserPromptSeq: 10 };
-    for (let i = 0; i < 7; i++) {
-      state = applyEvent(state, rejectFrame(i + 1, `p${i}`));
-    }
-    expect(state.rejectedPrompts).toHaveLength(5);
-    expect(state.rejectedPrompts[0].text).toBe("p2");
-    expect(state.rejectedPrompts[4].text).toBe("p6");
+    let state = emptyAcpState();
+    for (let i = 0; i < 7; i++) state = ev(state, i + 1, rejected(`p${i}`));
+    expect(state.rejectedPrompts.map((r) => r.text)).toEqual(["p2", "p3", "p4", "p5", "p6"]);
   });
 });
 
 describe("applyEvent / background agents", () => {
-  it("builds, updates, and finalizes a background-agent record", () => {
-    let s = emptyAcpState();
-    s = ev(s, 1, {
-      BackgroundAgentLaunched: {
-        agent_id: "a1",
-        tool_call_id: "task-1",
-        description: "map backend",
-        prompt: "do it",
-        model: "claude-opus-4-8",
-        started_at: "2026-06-27T00:00:00Z",
-      },
-    });
-    expect(s.backgroundAgents).toHaveLength(1);
-    expect(s.backgroundAgents[0]!.status).toBe("running");
-    expect(s.backgroundAgents[0]!.toolCallId).toBe("task-1");
+  const launched: AcpEvent = {
+    BackgroundAgentLaunched: {
+      agent_id: "a1",
+      tool_call_id: "task-1",
+      description: "map backend",
+      prompt: "do it",
+      model: "claude-opus-4-8",
+      started_at: "2026-06-27T00:00:00Z",
+    },
+  };
+  const progress = (status: string, tool_count: number, at: string, over = {}): AcpEvent => ({
+    BackgroundAgentProgress: { agent_id: "a1", status, tool_count, at, ...over },
+  });
+  const completed: AcpEvent = {
+    BackgroundAgentCompleted: { agent_id: "a1", status: "completed", result: "done", ended_at: "2026-06-27T00:00:10Z" },
+  };
+  const agent = (...events: AcpEvent[]) =>
+    events.reduce((s, e, i) => ev(s, i + 1, e), emptyAcpState()).backgroundAgents;
 
-    s = ev(s, 2, {
-      BackgroundAgentProgress: {
-        agent_id: "a1",
-        status: "running",
-        tool_count: 4,
-        last_tool: "Read",
-        last_text: "scanning",
-        at: "2026-06-27T00:00:05Z",
-      },
-    });
-    expect(s.backgroundAgents[0]!.toolCount).toBe(4);
-    expect(s.backgroundAgents[0]!.lastTool).toBe("Read");
-
-    s = ev(s, 3, {
-      BackgroundAgentCompleted: {
-        agent_id: "a1",
-        status: "completed",
-        result: "done",
-        ended_at: "2026-06-27T00:00:10Z",
-      },
-    });
-    expect(s.backgroundAgents[0]!.status).toBe("completed");
-    expect(s.backgroundAgents[0]!.result).toBe("done");
+  it("builds, updates, and finalizes a record", () => {
+    expect(agent(launched)).toEqual([
+      expect.objectContaining({ status: "running", toolCallId: "task-1", endedAt: null }),
+    ]);
+    const running = progress("running", 4, "2026-06-27T00:00:05Z", { last_tool: "Read", last_text: "scanning" });
+    expect(agent(launched, running)[0]).toMatchObject({ toolCount: 4, lastTool: "Read" });
+    expect(agent(launched, running, completed)[0]).toMatchObject({ status: "completed", result: "done" });
   });
 
-  it("freezes the elapsed timer when an agent stalls and clears it if it resumes", () => {
-    let s = emptyAcpState();
-    s = ev(s, 1, {
-      BackgroundAgentLaunched: {
-        agent_id: "a1",
-        tool_call_id: "t1",
-        description: "x",
-        prompt: "y",
-        model: "m",
-        started_at: "2026-06-27T00:00:00Z",
-      },
-    });
-    expect(s.backgroundAgents[0]!.endedAt).toBeNull();
-    s = ev(s, 2, {
-      BackgroundAgentProgress: { agent_id: "a1", status: "stalled", tool_count: 1, at: "2026-06-27T00:01:30Z" },
-    });
-    expect(s.backgroundAgents[0]!.status).toBe("stalled");
-    expect(s.backgroundAgents[0]!.endedAt).toBe("2026-06-27T00:01:30Z");
-    s = ev(s, 3, {
-      BackgroundAgentProgress: { agent_id: "a1", status: "running", tool_count: 2, at: "2026-06-27T00:01:35Z" },
-    });
-    expect(s.backgroundAgents[0]!.status).toBe("running");
-    expect(s.backgroundAgents[0]!.endedAt).toBeNull();
+  it("freezes the elapsed timer while stalled and clears it on resume", () => {
+    const stalled = progress("stalled", 1, "2026-06-27T00:01:30Z");
+    expect(agent(launched, stalled)[0]).toMatchObject({ status: "stalled", endedAt: "2026-06-27T00:01:30Z" });
+    const resumed = agent(launched, stalled, progress("running", 2, "2026-06-27T00:01:35Z"))[0];
+    expect(resumed).toMatchObject({ status: "running", endedAt: null });
   });
 
   it("does not reopen a completed agent on a late progress event", () => {
-    let s = emptyAcpState();
-    s = ev(s, 1, {
-      BackgroundAgentLaunched: {
-        agent_id: "a1",
-        tool_call_id: "task-1",
-        description: "x",
-        prompt: "y",
-        model: "m",
-        started_at: "2026-06-27T00:00:00Z",
-      },
-    });
-    s = ev(s, 2, {
-      BackgroundAgentCompleted: {
-        agent_id: "a1",
-        status: "completed",
-        ended_at: "2026-06-27T00:00:10Z",
-      },
-    });
-    s = ev(s, 3, {
-      BackgroundAgentProgress: {
-        agent_id: "a1",
-        status: "running",
-        tool_count: 99,
-        at: "2026-06-27T00:00:20Z",
-      },
-    });
-    expect(s.backgroundAgents[0]!.status).toBe("completed");
-    expect(s.backgroundAgents[0]!.toolCount).toBe(0);
+    const late = agent(launched, completed, progress("running", 99, "2026-06-27T00:00:20Z"))[0];
+    expect(late).toMatchObject({ status: "completed", toolCount: 0 });
   });
 });
 
