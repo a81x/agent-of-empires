@@ -167,7 +167,7 @@
       "id": "terminal.live-grid-transport",
       "kind": "live-playwright",
       "risk": "high",
-      "specs": ["tests/live/live-grid-transport.spec.ts"],
+      "specs": ["tests/live/live-terminal.spec.ts"],
       "components": ["web/src/components/MobileLiveTerminal.tsx", "web/src/hooks/useLiveTerminal.ts"]
     },
     {
@@ -291,7 +291,7 @@
       "id": "terminal.live-scrollback-buffer",
       "kind": "live-playwright",
       "risk": "high",
-      "specs": ["tests/live/mobile-live-scrollback-buffer.spec.ts"],
+      "specs": ["tests/live/live-terminal.spec.ts"],
       "components": ["web/src/components/MobileLiveTerminal.tsx", "web/src/hooks/useLiveTerminal.ts"],
       "reason": "Covers the server-backed capture fallback when the requested browser history exceeds the VT cache."
     },
@@ -299,7 +299,7 @@
       "id": "terminal.live-size-owner",
       "kind": "live-playwright",
       "risk": "high",
-      "specs": ["tests/live/live-size-owner-takeover.spec.ts", "src/hooks/useLiveTerminal.sizeOwner.test.ts"],
+      "specs": ["tests/live/live-terminal.spec.ts", "src/hooks/useLiveTerminal.sizeOwner.test.ts"],
       "components": ["web/src/components/LiveTerminalView.tsx", "web/src/hooks/useLiveTerminal.ts"]
     },
     {
@@ -330,7 +330,7 @@
       "id": "terminal.live-frame-compression",
       "kind": "live-playwright",
       "risk": "high",
-      "specs": ["tests/live/live-frame-compression.spec.ts", "src/lib/frameStream.test.ts"],
+      "specs": ["tests/live/live-terminal.spec.ts", "src/lib/frameStream.test.ts"],
       "components": ["web/src/lib/frameStream.ts", "web/src/hooks/useLiveTerminal.ts"]
     },
     {

@@ -166,8 +166,10 @@ export function seedSessionViaAoeAdd(opts: {
   committed?: Record<string, string>;
   files?: Record<string, string>;
   prepare?: (projectDir: string, env: NodeJS.ProcessEnv) => void;
+  /** Bash script run as the agent via `--cmd-override`, by absolute path so no real agent is resolved. */
+  agentScript?: string;
 }): (seedEnv: { home: string; shimBin: string; env: NodeJS.ProcessEnv }) => void {
-  return ({ home, env }) => {
+  return ({ home, shimBin, env }) => {
     const projectDir = join(home, opts.subdir ?? "project");
     if (opts.git === false) mkdirSync(projectDir, { recursive: true });
     else initWorkingRepo(projectDir, env);
@@ -177,9 +179,13 @@ export function seedSessionViaAoeAdd(opts: {
     }
     if (opts.files) writeFiles(projectDir, opts.files);
     opts.prepare?.(projectDir, env);
-    const addRes = spawnSync(resolveAoeBinary(), ["add", projectDir, "-t", opts.title, "-c", opts.tool ?? "claude"], {
-      env,
-    });
+    const args = ["add", projectDir, "-t", opts.title, "-c", opts.tool ?? "claude"];
+    if (opts.agentScript) {
+      const script = join(shimBin, `${opts.title}-agent`);
+      writeFileSync(script, opts.agentScript, { mode: 0o755 });
+      args.push("--cmd-override", script);
+    }
+    const addRes = spawnSync(resolveAoeBinary(), args, { env });
     if (addRes.status !== 0) {
       throw new Error(`aoe add failed: status=${addRes.status} stderr=${addRes.stderr?.toString() ?? "<none>"}`);
     }
