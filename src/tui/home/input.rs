@@ -1250,10 +1250,11 @@ impl HomeView {
         // Project/Org mode groups by repo/owner, Manual mode by
         // user-assigned path; name the scope accordingly and show the full
         // path so nested groups that share a leaf segment aren't ambiguous.
-        let (title, scope) = match self.group_by {
+        let (title, scope) = match self.effective_group_by() {
             crate::session::config::GroupByMode::Project => ("Archive project", "project"),
             crate::session::config::GroupByMode::Org => ("Archive org", "org"),
-            crate::session::config::GroupByMode::Manual => ("Archive group", "group"),
+            crate::session::config::GroupByMode::Manual
+            | crate::session::config::GroupByMode::Remote => ("Archive group", "group"),
         };
         let noun = if count == 1 { "session" } else { "sessions" };
         self.confirm_dialog = Some(
@@ -1600,7 +1601,7 @@ impl HomeView {
                 }
                 DialogResult::Submit(mode) => {
                     self.group_picker_dialog = None;
-                    if mode != self.group_by {
+                    if mode != self.effective_group_by() || self.group_by_is_default {
                         self.apply_group_by(mode);
                     }
                 }
@@ -1767,6 +1768,10 @@ impl HomeView {
         // overlay, not the underlying tmux pane. Otherwise the user
         // sees the dialog but Esc / Enter / typed characters silently
         // get routed to the session behind it.
+        if self.remote_live.is_some() && !self.has_non_live_send_overlay() {
+            self.handle_remote_live_key(key);
+            return None;
+        }
         if self.live_send.is_some() && !self.has_non_live_send_overlay() {
             self.handle_live_send_key(key);
             return None;
@@ -2182,6 +2187,13 @@ impl HomeView {
                     }
                 }
                 DialogResult::Submit(data) => {
+                    // Hooks, volume globs and the creation poller all act on
+                    // this machine; a remote's daemon does its own.
+                    if let Some(remote) = data.remote.clone() {
+                        self.new_dialog = None;
+                        self.start_remote_create(remote, &data);
+                        return None;
+                    }
                     // Check if the tool uses hooks and user hasn't acknowledged yet
                     let tool_name = if data.tool.is_empty() {
                         "claude".to_string()
@@ -2409,7 +2421,7 @@ impl HomeView {
                 }
                 DialogResult::Submit(mode) => {
                     self.group_picker_dialog = None;
-                    if mode != self.group_by {
+                    if mode != self.effective_group_by() || self.group_by_is_default {
                         self.apply_group_by(mode);
                     }
                 }
@@ -2738,8 +2750,9 @@ impl HomeView {
             KeyCode::Char('<') => self.shrink_list(),
             KeyCode::Char('>') => self.grow_list(),
             KeyCode::Enter => {
-                if self.selected_session.is_some() {
+                if self.selected_session.is_some() || self.selected_remote.is_some() {
                     return self.activate_selected_session();
+                } else if self.toggle_machine_header_at_cursor() {
                 } else if let Some(Item::Group { path, .. }) = self.flat_items.get(self.cursor) {
                     let path = path.clone();
                     self.toggle_group_collapsed(&path);
@@ -2749,6 +2762,9 @@ impl HomeView {
             // (live-send, tmux attach) `Enter` doesn't. Only fires when
             // `live_send` is None (the live-send capture short-circuits above).
             KeyCode::Tab => {
+                if self.selected_remote.is_some() {
+                    return self.start_remote_live_send();
+                }
                 // A structured session has neither a tmux pane to attach
                 // nor one to live-send into; both Tab meanings are
                 // vacuous. Say so instead of silently ignoring the press.
@@ -2779,7 +2795,20 @@ impl HomeView {
                 }
             }
             KeyCode::Left | KeyCode::Char('h') => {
-                if let Some(Item::Group {
+                if matches!(
+                    self.flat_items.get(self.cursor),
+                    Some(
+                        Item::LocalGroup {
+                            collapsed: false,
+                            ..
+                        } | Item::RemoteGroup {
+                            collapsed: false,
+                            ..
+                        }
+                    )
+                ) {
+                    self.toggle_machine_header_at_cursor();
+                } else if let Some(Item::Group {
                     path, collapsed, ..
                 }) = self.flat_items.get(self.cursor)
                 {
@@ -2790,7 +2819,20 @@ impl HomeView {
                 }
             }
             KeyCode::Right | KeyCode::Char('l') => {
-                if let Some(Item::Group {
+                if matches!(
+                    self.flat_items.get(self.cursor),
+                    Some(
+                        Item::LocalGroup {
+                            collapsed: true,
+                            ..
+                        } | Item::RemoteGroup {
+                            collapsed: true,
+                            ..
+                        }
+                    )
+                ) {
+                    self.toggle_machine_header_at_cursor();
+                } else if let Some(Item::Group {
                     path, collapsed, ..
                 }) = self.flat_items.get(self.cursor)
                 {
@@ -3337,9 +3379,9 @@ impl HomeView {
         }
         self.instances
             .values()
-            .find(|inst| match self.group_by {
+            .find(|inst| match self.effective_group_by() {
                 GroupByMode::Project => super::project_group_key(inst) == group_path,
-                GroupByMode::Org => false,
+                GroupByMode::Org | GroupByMode::Remote => false,
                 GroupByMode::Manual => {
                     inst.group_path == group_path
                         || inst.group_path.starts_with(&format!("{group_path}/"))
@@ -3351,7 +3393,7 @@ impl HomeView {
                 // path from; fall back to the registered project's path so
                 // "New Session" can still launch under it (the point of pinning
                 // an empty project).
-                if self.group_by == GroupByMode::Project {
+                if self.effective_group_by() == GroupByMode::Project {
                     self.registered_projects
                         .iter()
                         .find(|p| crate::session::projects::repo_label(&p.path) == group_path)
@@ -3759,6 +3801,9 @@ impl HomeView {
         // Stop/Delete from the palette will be a no-op for those rows.
         for (idx, item) in self.flat_items.iter().enumerate() {
             match item {
+                Item::LocalGroup { .. } | Item::RemoteGroup { .. } | Item::RemoteSession { .. } => {
+                    continue
+                }
                 Item::Session { id, .. } => {
                     let Some(inst) = self.get_instance(id) else {
                         continue;
@@ -3929,7 +3974,7 @@ impl HomeView {
             .iter()
             .filter_map(|item| match item {
                 Item::Session { id, .. } => Some(id.clone()),
-                Item::Group { .. } => None,
+                _ => None,
             })
             .collect();
         let current_session = self.selected_session.clone();
@@ -4072,6 +4117,18 @@ impl HomeView {
     /// paths can't drift.
     pub(super) fn activate_selected_session(&mut self) -> Option<Action> {
         self.system_health_open = false;
+        if let Some((remote, id)) = self.selected_remote.clone() {
+            // No tmux attach across machines: a terminal row live-sends in the
+            // preview pane, a structured row opens against its daemon.
+            let structured = self.remote_session(&remote, &id).is_some_and(|row| {
+                row.view == crate::session::View::Structured
+                    && crate::tui::remote_feed::shelf_of(row) == crate::session::RemoteShelf::Live
+            });
+            if structured {
+                return Some(Action::OpenRemoteStructuredView { remote, id });
+            }
+            return self.start_remote_live_send();
+        }
         let id = self.selected_session.clone()?;
         if let Some(inst) = self.get_instance(&id) {
             if matches!(inst.status, Status::Deleting | Status::Creating) {
@@ -4195,8 +4252,25 @@ impl HomeView {
                     self.selected_session = Some(id.clone());
                     self.selected_group = None;
                     self.selected_group_profile = None;
+                    self.selected_remote = None;
+                }
+                // Remote rows disarm every local action the way the synthetic
+                // shelf headers do: nothing keyed on `selected_session` or
+                // `selected_group` can resolve a session this machine doesn't own.
+                Item::RemoteGroup { .. } | Item::LocalGroup { .. } => {
+                    self.selected_session = None;
+                    self.selected_group = None;
+                    self.selected_group_profile = None;
+                    self.selected_remote = None;
+                }
+                Item::RemoteSession { remote, id, .. } => {
+                    self.selected_session = None;
+                    self.selected_group = None;
+                    self.selected_group_profile = None;
+                    self.selected_remote = Some((remote.clone(), id.clone()));
                 }
                 Item::Group { path, .. } => {
+                    self.selected_remote = None;
                     self.selected_session = None;
                     if crate::session::is_within_archived_section(path)
                         || crate::session::is_within_trash_section(path)
@@ -4227,6 +4301,7 @@ impl HomeView {
                 self.unread_dwell = None;
             }
         }
+        self.sync_remote_preview();
     }
 
     /// Put the cursor back on `selected_session` after a `flat_items` rebuild
@@ -4264,7 +4339,7 @@ impl HomeView {
     pub(super) fn apply_sort_order(&mut self, new_order: SortOrder) {
         self.sort_order = new_order;
         if self.search_active && !self.search_query.value().is_empty() {
-            self.flat_items = self.build_flat_items();
+            self.flat_items = self.build_flat_items_with_remotes();
             self.update_search();
         } else {
             self.rebuild_flat_items();
@@ -4280,6 +4355,7 @@ impl HomeView {
 
     fn apply_group_by(&mut self, new_mode: GroupByMode) {
         self.group_by = new_mode;
+        self.group_by_is_default = false;
         self.rebuild_flat_items();
         self.reseat_cursor_after_rebuild();
         let group_by = self.group_by;
@@ -4296,10 +4372,11 @@ impl HomeView {
     /// where group membership is user-managed and the caller should proceed
     /// with its normal rename/delete flow instead.
     fn automatic_group_hint(&self) -> Option<(String, String)> {
-        let mode_label = match self.group_by {
+        let mode_label = match self.effective_group_by() {
             GroupByMode::Manual => return None,
             GroupByMode::Project => "Project",
             GroupByMode::Org => "Org",
+            GroupByMode::Remote => "Remote",
         };
         let toggle = if self.strict_hotkeys { "Ctrl+G" } else { "'g'" };
         Some((
@@ -4323,7 +4400,7 @@ impl HomeView {
             self.toggle_trashed_section();
             return;
         }
-        if self.group_by == GroupByMode::Project {
+        if self.effective_group_by() == GroupByMode::Project {
             let collapsed = self
                 .project_group_collapsed
                 .get(path)
@@ -4335,7 +4412,7 @@ impl HomeView {
             self.save_project_group_collapsed();
             return;
         }
-        if self.group_by == GroupByMode::Org {
+        if self.effective_group_by() == GroupByMode::Org {
             let collapsed = self.org_group_collapsed.get(path).copied().unwrap_or(false);
             self.org_group_collapsed
                 .insert(path.to_string(), !collapsed);
@@ -4807,6 +4884,15 @@ impl HomeView {
                     return true;
                 }
             }
+            // Every context-menu entry is a local action; a remote row has none.
+            if matches!(
+                self.flat_items[idx],
+                super::Item::LocalGroup { .. }
+                    | super::Item::RemoteGroup { .. }
+                    | super::Item::RemoteSession { .. }
+            ) {
+                return true;
+            }
             let is_group = matches!(self.flat_items[idx], super::Item::Group { .. });
             // A real project header in project view gets the pin menu; the
             // cursor was just moved onto this row, so `project_group_at_cursor`
@@ -4822,7 +4908,7 @@ impl HomeView {
                         .get_instance(id)
                         .map(|inst| (inst.is_archived(), inst.is_snoozed(), inst.is_unread()))
                         .unwrap_or((false, false, false)),
-                    super::Item::Group { .. } => (false, false, false),
+                    _ => (false, false, false),
                 };
                 // Snooze is an Attention-sort triage primitive: the `'h'`
                 // keybinding only fires in Attention sort, so the menu omits
@@ -4838,7 +4924,7 @@ impl HomeView {
                 // refuse. Matches the web sidebar's `acp_can_fork` gating.
                 let can_fork = match &self.flat_items[idx] {
                     super::Item::Session { id, .. } => self.session_can_fork(id),
-                    super::Item::Group { .. } => false,
+                    _ => false,
                 };
                 // View switching mirrors the web sidebar's per-session
                 // switch action: offered when a structured session can go
@@ -4846,7 +4932,7 @@ impl HomeView {
                 // ACP-capable. The swap runs through the daemon.
                 let switch_view = match &self.flat_items[idx] {
                     super::Item::Session { id, .. } => self.session_switch_view_target(id),
-                    super::Item::Group { .. } => None,
+                    _ => None,
                 };
                 ContextMenuDialog::for_session(
                     anchor,
@@ -5022,12 +5108,15 @@ impl HomeView {
         let current_profile = self.config_profile();
         let profiles =
             list_profiles_for_display().unwrap_or_else(|_| vec![current_profile.clone()]);
-        self.new_dialog = Some(NewSessionDialog::new(
-            self.available_tools.clone(),
-            existing_groups,
-            &current_profile,
-            profiles,
-        ));
+        self.new_dialog = Some(
+            NewSessionDialog::new(
+                self.available_tools.clone(),
+                existing_groups,
+                &current_profile,
+                profiles,
+            )
+            .with_remotes(self.remote_dialog_targets()),
+        );
     }
 
     /// Open the tips overlay (the browsable list from `crate::tips`). Shared by
@@ -5568,20 +5657,37 @@ impl HomeView {
             // which tracks `cursor`, not the click target; and we'd open
             // the wrong session.
             return match item {
-                Item::Session { .. } => {
+                Item::Session { .. } | Item::RemoteSession { .. } => {
                     if self.cursor != abs_idx {
                         self.cursor = abs_idx;
                         self.update_selected();
                     }
                     self.activate_selected_session()
                 }
-                Item::Group { .. } => None,
+                Item::Group { .. } | Item::LocalGroup { .. } | Item::RemoteGroup { .. } => None,
             };
         }
 
         match item {
             Item::Group { path, .. } => {
                 self.toggle_group_collapsed(&path);
+                None
+            }
+            // A single click only selects a remote row; opening it takes over
+            // the screen, so that stays on Enter or a double-click.
+            Item::RemoteSession { .. } => {
+                self.system_health_open = false;
+                if self.cursor != abs_idx {
+                    self.cursor = abs_idx;
+                    self.update_selected();
+                }
+                None
+            }
+            Item::LocalGroup { .. } | Item::RemoteGroup { .. } => {
+                self.system_health_open = false;
+                self.cursor = abs_idx;
+                self.update_selected();
+                self.toggle_machine_header_at_cursor();
                 None
             }
             Item::Session { id, .. } => {
@@ -5981,6 +6087,9 @@ impl HomeView {
         // highlight, since that path never goes through `handle_key`.
         self.clear_preview_selection();
         if !self.has_non_live_send_overlay() {
+            if self.paste_into_remote_live(text) {
+                return;
+            }
             if let Some(state) = self.live_send.clone() {
                 if let Some(worker) = &self.live_send_worker {
                     for key in split_paste_for_live_send(text) {
@@ -6673,7 +6782,7 @@ impl HomeView {
     /// to wrong sessions (row highlights follow the stale indices too).
     /// See #2676.
     pub(super) fn rebuild_flat_items(&mut self) {
-        self.flat_items = self.build_flat_items();
+        self.flat_items = self.build_flat_items_with_remotes();
         if !self.search_matches.is_empty() {
             self.refresh_search_matches();
         }
@@ -6714,6 +6823,12 @@ impl HomeView {
                 Item::Group { name, path, .. } => {
                     format!("{} {}", name, path)
                 }
+                Item::RemoteGroup { name, .. } => name.clone(),
+                Item::LocalGroup { .. } => "local".to_string(),
+                Item::RemoteSession { remote, id, .. } => match self.remote_session(remote, id) {
+                    Some(row) => format!("{} {} {}", row.title, remote, row.project_path),
+                    None => continue,
+                },
             };
 
             let haystack_utf32 = Utf32Str::new(&haystack, &mut buf);
@@ -6768,6 +6883,12 @@ impl HomeView {
                 Item::Group { name, path, .. } => {
                     format!("{} {}", name, path)
                 }
+                Item::RemoteGroup { name, .. } => name.clone(),
+                Item::LocalGroup { .. } => "local".to_string(),
+                Item::RemoteSession { remote, id, .. } => match self.remote_session(remote, id) {
+                    Some(row) => format!("{} {} {}", row.title, remote, row.project_path),
+                    None => continue,
+                },
             };
 
             let haystack_utf32 = Utf32Str::new(&haystack, &mut buf);
@@ -7506,6 +7627,7 @@ mod tests {
 
     fn glob_session_data(path: &str) -> NewSessionData {
         NewSessionData {
+            remote: None,
             profile: String::new(),
             title: String::new(),
             path: path.to_string(),

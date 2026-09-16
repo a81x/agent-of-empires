@@ -185,6 +185,8 @@ pub struct App {
     /// up and enter the acp view (which needs `event_stream` access
     /// the sync `execute_action` can't lend out).
     pending_structured_view_open: Option<String>,
+    /// `(remote, session id)` stashed by `Action::OpenRemoteStructuredView`.
+    pending_remote_structured_open: Option<(String, String)>,
     /// Set by `Action::SwitchSessionView` so the async main loop can run
     /// the daemon switch POST (awaited; the sync handler can't).
     pending_view_switch: Option<String>,
@@ -424,6 +426,15 @@ impl App {
             Some(profile.to_string())
         };
         let mut home = HomeView::new(active_profile, available_tools, file_watch)?;
+        // Tests never read the developer's real remote registry.
+        if !cfg!(test) {
+            let names = crate::tui::remote_feed::enabled_remotes()
+                .entries
+                .into_iter()
+                .map(|entry| entry.name)
+                .collect();
+            home.seed_remotes(names);
+        }
 
         // Check if we need to show welcome or changelog dialogs
         let config = Config::load_or_warn();
@@ -508,6 +519,7 @@ impl App {
             host_title: super::host_title::HostTitleTracker::default(),
             mosh_active,
             pending_structured_view_open: None,
+            pending_remote_structured_open: None,
             pending_daemon_start_open: None,
             preview_mount_pending: None,
             pending_view_switch: None,
@@ -859,6 +871,8 @@ impl App {
         const REFRESH_COOLDOWN: Duration = Duration::from_millis(15);
         let mut last_poller_repair = std::time::Instant::now();
         let mut last_metrics_sample = std::time::Instant::now();
+        let mut last_remote_feed_refresh = std::time::Instant::now();
+        self.home.request_remote_feed_refresh();
         let mut last_disk_refresh = std::time::Instant::now();
         let mut full_heartbeat_deferred = false;
         let mut last_spinner_redraw = std::time::Instant::now();
@@ -873,6 +887,9 @@ impl App {
         // terminal-row status: status/display fields are daemon-authoritative
         // and arrive via `apply_session_feed` -> `apply_daemon_status_update`.
         const SESSION_ID_POLLER_REPAIR_INTERVAL: Duration = Duration::from_millis(500);
+        // Remote session lists cross the network, often a WAN; the dashboard's
+        // own session poll runs at the same 3s.
+        const REMOTE_FEED_REFRESH_INTERVAL: Duration = Duration::from_secs(3);
         const DISK_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
         // Diagnostics-strip sampling. 1s keeps the sparkline responsive to a
         // fast memory climb; request_metrics_refresh is a no-op unless the strip
@@ -977,8 +994,8 @@ impl App {
                             // on) would otherwise deliver a Release for every press
                             // and double-fire every handler, so a toggle like `i`
                             // (hide the info header) nets to zero and "won't hide".
-                            // The acp and remote-home loops already filter this;
-                            // the home loop has to as well.
+                            // The acp loop already filters this; the home loop
+                            // has to as well.
                             if !matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat) {
                                 continue;
                             }
@@ -1335,6 +1352,7 @@ impl App {
                                 {
                                     self.open_structured_view(&session_id).await?;
                                 }
+                                self.open_pending_remote_structured(terminal).await?;
                                 self.sync_mouse_capture(terminal)?;
                                 if self.should_quit {
                                     break;
@@ -1630,6 +1648,7 @@ impl App {
                                 if let Some(session_id) = self.pending_structured_view_open.take() {
                                     self.open_structured_view(&session_id).await?;
                                 }
+                                self.open_pending_remote_structured(terminal).await?;
                             }
                             // Drain any Action stashed by a modal-dialog
                             // click (e.g. clicking `[Yes]` on a stop or
@@ -1917,6 +1936,20 @@ impl App {
                 refresh_needed = true;
                 needs_full_refresh = true;
             }
+            if last_remote_feed_refresh.elapsed() >= REMOTE_FEED_REFRESH_INTERVAL {
+                self.home.request_remote_feed_refresh();
+                last_remote_feed_refresh = std::time::Instant::now();
+            }
+            if self.home.apply_remote_feed() {
+                refresh_needed = true;
+                needs_full_refresh = true;
+            }
+            if self.home.apply_remote_preview() {
+                refresh_needed = true;
+            }
+            if self.home.apply_remote_create() {
+                refresh_needed = true;
+            }
             if self.home.apply_structured_approval_results() {
                 refresh_needed = true;
                 needs_full_refresh = true;
@@ -1976,6 +2009,7 @@ impl App {
                 if let Some(sid) = self.pending_structured_view_open.take() {
                     self.open_structured_view(&sid).await?;
                 }
+                self.open_pending_remote_structured(terminal).await?;
                 refresh_needed = true;
                 needs_full_refresh = true;
             }
@@ -3124,6 +3158,7 @@ impl App {
         if let Some(session_id) = self.pending_structured_view_open.take() {
             self.open_structured_view(&session_id).await?;
         }
+        self.open_pending_remote_structured(terminal).await?;
 
         if let Some(session_id) = self.pending_smart_rename.take() {
             self.perform_smart_rename(&session_id).await;
@@ -3139,7 +3174,7 @@ impl App {
     /// mutates no session state itself. A no-daemon state surfaces as a
     /// transient status rather than failing the loop (#3039).
     async fn perform_smart_rename(&mut self, session_id: &str) {
-        use crate::acp::client::{require_daemon, HttpClient, ManagerError};
+        use crate::acp::client::{require_local_daemon, HttpClient, ManagerError};
 
         let title = self
             .home
@@ -3147,7 +3182,7 @@ impl App {
             .map(|i| i.title.clone())
             .unwrap_or_default();
 
-        let endpoint = match require_daemon().await {
+        let endpoint = match require_local_daemon() {
             Ok(e) => e,
             Err(ManagerError::NoDaemonRunning(_)) => {
                 self.update_status = Some(UpdateStatus::transient(
@@ -3190,7 +3225,7 @@ impl App {
     /// than a hidden side effect. `terminal` is borrowed to paint the
     /// "Starting…" status before the (up to several seconds) wait.
     async fn perform_view_switch(&mut self, session_id: &str, terminal: &mut Terminal<TuiBackend>) {
-        use crate::acp::client::{require_daemon, HttpClient, ManagerError};
+        use crate::acp::client::{require_local_daemon, HttpClient, ManagerError};
 
         let Some(inst) = self.home.get_instance(session_id) else {
             return;
@@ -3198,7 +3233,7 @@ impl App {
         let to_structured = !inst.is_structured();
         let title = inst.title.clone();
 
-        let endpoint = match require_daemon().await {
+        let endpoint = match require_local_daemon() {
             Ok(e) => e,
             Err(ManagerError::NoDaemonRunning(_)) => {
                 self.update_status = Some(UpdateStatus::transient(
@@ -3252,7 +3287,7 @@ impl App {
     /// start a localhost one (the Yes path resumes through
     /// `start_daemon_then_open`).
     async fn open_structured_view(&mut self, session_id: &str) -> Result<()> {
-        use crate::acp::client::{require_daemon, ManagerError};
+        use crate::acp::client::{require_local_daemon, ManagerError};
 
         // An archived / trashed row renders its own placeholder page, so
         // an activated view here would capture the keyboard invisibly.
@@ -3279,7 +3314,7 @@ impl App {
                 .await;
             return Ok(());
         }
-        match require_daemon().await {
+        match require_local_daemon() {
             Ok(endpoint) => {
                 self.connect_embedded_structured(endpoint, session_id).await;
                 self.activate_embedded();
@@ -3343,6 +3378,48 @@ impl App {
                 self.update_status = Some(UpdateStatus::transient(format!("structured view: {e}")));
             }
         }
+    }
+
+    /// Run a stashed remote structured open: the full-screen view against the
+    /// remote's daemon, then back to the home view.
+    async fn open_pending_remote_structured(
+        &mut self,
+        terminal: &mut Terminal<TuiBackend>,
+    ) -> Result<()> {
+        let Some((remote, id)) = self.pending_remote_structured_open.take() else {
+            return Ok(());
+        };
+        let Some(entry) = crate::tui::remote_feed::enabled_remotes()
+            .entries
+            .into_iter()
+            .find(|entry| entry.name == remote)
+        else {
+            self.update_status = Some(UpdateStatus::transient(format!(
+                "{remote} is no longer configured"
+            )));
+            return Ok(());
+        };
+        let Some(event_stream) = self.event_stream.as_mut() else {
+            return Ok(());
+        };
+        self.home.exit_live_send_if_active();
+        self.home.exit_remote_live_send();
+        let result = crate::tui::structured_view::run_for_endpoint(
+            terminal,
+            event_stream,
+            &self.theme,
+            entry.endpoint,
+            &id,
+        )
+        .await;
+        crate::tui::clear_terminal(terminal)?;
+        self.needs_redraw = true;
+        if let Err(e) = result {
+            self.update_status = Some(UpdateStatus::transient(format!(
+                "{remote}: structured view: {e}"
+            )));
+        }
+        Ok(())
     }
 
     /// Drop the embedded structured view and hand the preview pane
@@ -3457,7 +3534,7 @@ impl App {
         // stale mount for a different session is dropped here too, so a
         // daemon that died mid-browse can't leave an orphaned view
         // pumping a dead socket behind the placeholder.
-        let Ok(endpoint) = crate::acp::client::discover() else {
+        let Ok(endpoint) = crate::acp::client::discovery::discover_local() else {
             self.preview_mount_pending = None;
             self.home.structured_preview_pending = false;
             return self.home.structured_preview.take().is_some();
@@ -3614,6 +3691,9 @@ impl App {
             }
             Action::RunBackgroundToolSession(id, tool_name) => {
                 self.run_background_tool_session(&id, &tool_name);
+            }
+            Action::OpenRemoteStructuredView { remote, id } => {
+                self.pending_remote_structured_open = Some((remote, id));
             }
             Action::OpenStructuredView(id) => {
                 // Stash for the async main loop. The acp view needs
@@ -4160,6 +4240,13 @@ pub enum Action {
     /// after `execute_action` returns and runs the async acp loop
     /// against the borrowed terminal + event stream.
     OpenStructuredView(String),
+    /// Open a remote structured session full screen against its daemon.
+    /// Stashed like `OpenStructuredView`, then run on the borrowed terminal
+    /// and event stream.
+    OpenRemoteStructuredView {
+        remote: String,
+        id: String,
+    },
     /// Flip a session's persisted view (structured ↔ terminal) through the
     /// daemon's switch endpoints. Stashed in `pending_view_switch` (the
     /// POST needs the async loop) and drained alongside

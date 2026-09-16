@@ -13,12 +13,15 @@ pub(crate) mod home;
 mod host_title;
 pub mod hyperlink;
 pub(crate) mod links;
+pub(crate) mod live_socket;
 pub(crate) mod markdown;
 mod metrics_poller;
 pub(crate) mod open_url;
 pub(crate) mod plugin_ui;
 mod reconcile_poller;
-pub(crate) mod remote_home;
+pub(crate) mod remote_create;
+pub(crate) mod remote_feed;
+pub(crate) mod remote_preview;
 pub(crate) mod responsive;
 mod session_feed;
 pub mod settings;
@@ -282,20 +285,8 @@ pub(crate) fn clear_terminal<B: Backend>(terminal: &mut Terminal<B>) -> Result<(
 }
 
 pub async fn run(profile: &str, startup_warning: Option<String>) -> Result<()> {
-    // Cross-machine entrypoint: when `AOE_DAEMON_URL` is set, swap the
-    // local home view for the remote structured view picker so the user never
-    // sees a session list that doesn't reflect the daemon they pointed
-    // us at. Tmux check + migrations are intentionally skipped here:
-    // the remote machine owns those, this side is a pure client.
-    if let Some(endpoint) = crate::acp::client::discovery::discover_env() {
-        let _ = startup_warning; // remote mode skips the local startup-warning channel
-        let _ = profile;
-        return remote_home::run_standalone(endpoint).await;
-    }
-
     // Opening the local session store creates the profile directory, so an
-    // unknown name is refused first (#148); the remote client above never
-    // touches local profiles.
+    // unknown name is refused first (#148).
     crate::session::require_known_profile(profile)?;
 
     // Run pending migrations with a spinner that names the migration, its

@@ -726,6 +726,8 @@ pub enum GroupByMode {
     Manual,
     Project,
     Org,
+    /// One section per machine: this one, then each `aoe remote`.
+    Remote,
 }
 
 impl GroupByMode {
@@ -733,7 +735,8 @@ impl GroupByMode {
         match self {
             GroupByMode::Manual => GroupByMode::Project,
             GroupByMode::Project => GroupByMode::Org,
-            GroupByMode::Org => GroupByMode::Manual,
+            GroupByMode::Org => GroupByMode::Remote,
+            GroupByMode::Remote => GroupByMode::Manual,
         }
     }
 
@@ -742,6 +745,7 @@ impl GroupByMode {
             GroupByMode::Manual => "Manual",
             GroupByMode::Project => "Project",
             GroupByMode::Org => "Org",
+            GroupByMode::Remote => "Remote",
         }
     }
 }

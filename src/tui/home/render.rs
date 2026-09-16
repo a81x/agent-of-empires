@@ -49,7 +49,8 @@ fn compose_list_title(
     match group_by {
         GroupByMode::Project => suffix.push_str(" · project"),
         GroupByMode::Org => suffix.push_str(" · org"),
-        GroupByMode::Manual => {}
+        // Remote is the default, and its machine headers already say so.
+        GroupByMode::Manual | GroupByMode::Remote => {}
     }
     if sort_order != SortOrder::default() {
         suffix.push_str(" · ");
@@ -1252,15 +1253,18 @@ impl HomeView {
         let profile = self.active_profile_display();
         let mut title = match &self.view_mode {
             ViewMode::Structured => {
-                compose_list_title("aoe", profile, self.group_by, self.sort_order)
+                compose_list_title("aoe", profile, self.effective_group_by(), self.sort_order)
             }
-            ViewMode::Terminal => {
-                compose_list_title("Terminals", profile, self.group_by, self.sort_order)
-            }
+            ViewMode::Terminal => compose_list_title(
+                "Terminals",
+                profile,
+                self.effective_group_by(),
+                self.sort_order,
+            ),
             ViewMode::Tool(name) => compose_list_title(
                 &format!("Tool: {}", name),
                 profile,
-                self.group_by,
+                self.effective_group_by(),
                 self.sort_order,
             ),
         };
@@ -1343,7 +1347,7 @@ impl HomeView {
             );
         }
 
-        if !self.has_instances() && !self.has_any_groups() {
+        if !self.has_instances() && !self.has_any_groups() && self.remote_snapshots.is_empty() {
             let empty_text = vec![
                 Line::from(""),
                 Line::from("No sessions yet").style(Style::default().fg(theme.dimmed)),
@@ -1665,7 +1669,7 @@ impl HomeView {
                 // empty (sessionless) pinned project still reads as deliberate
                 // rather than stale. Project view only; the registry lookup is
                 // keyed by the header label.
-                let pinned = self.group_by == GroupByMode::Project
+                let pinned = self.effective_group_by() == GroupByMode::Project
                     && !crate::session::is_synthetic_project_header(path)
                     && self.is_project_label_pinned(name);
                 // The top-level shelf section headers get a leading type glyph
@@ -1832,6 +1836,69 @@ impl HomeView {
                     )
                 }
             }
+            Item::LocalGroup {
+                session_count,
+                collapsed,
+                ..
+            } => (
+                if *collapsed {
+                    ICON_COLLAPSED
+                } else {
+                    ICON_EXPANDED
+                },
+                Cow::Owned(format!("local ({session_count})")),
+                Style::default().fg(theme.group).bold(),
+            ),
+            Item::RemoteGroup {
+                name,
+                session_count,
+                collapsed,
+                connecting,
+                error,
+                ..
+            } => {
+                let icon = if *collapsed {
+                    ICON_COLLAPSED
+                } else {
+                    ICON_EXPANDED
+                };
+                match error {
+                    Some(error) => (
+                        ICON_ERROR,
+                        Cow::Owned(format!("{name} (unreachable: {error})")),
+                        Style::default().fg(theme.error).bold(),
+                    ),
+                    None if *connecting => (
+                        icon,
+                        Cow::Owned(format!("{name} (connecting…)")),
+                        Style::default().fg(theme.dimmed).bold(),
+                    ),
+                    None => (
+                        icon,
+                        Cow::Owned(format!("{name} ({session_count})")),
+                        Style::default().fg(theme.group).bold(),
+                    ),
+                }
+            }
+            Item::RemoteSession { remote, id, .. } => match self.remote_session(remote, id) {
+                Some(row) => {
+                    let (icon, color) = match Status::from_api_str(&row.status) {
+                        Some(Status::Running) => (ICON_IDLE, theme.running),
+                        Some(Status::Waiting) => (ICON_IDLE, theme.waiting),
+                        Some(Status::Idle) => (ICON_IDLE, theme.idle),
+                        Some(Status::Error) => (ICON_ERROR, theme.error),
+                        Some(Status::Stopped) => (ICON_STOPPED, theme.dimmed),
+                        _ => (ICON_UNKNOWN, theme.dimmed),
+                    };
+                    let title = if row.title.is_empty() { id } else { &row.title };
+                    (icon, Cow::Owned(title.clone()), Style::default().fg(color))
+                }
+                None => (
+                    "?",
+                    Cow::Owned(id.clone()),
+                    Style::default().fg(theme.dimmed),
+                ),
+            },
         };
 
         let mut line_spans = Vec::with_capacity(5);
@@ -3182,6 +3249,8 @@ impl HomeView {
                                 self.show_preview_info,
                             );
                         }
+                    } else if self.selected_remote.is_some() {
+                        self.render_remote_preview(frame, inner, theme, compact);
                     } else {
                         let hint = Paragraph::new("Select a session to preview")
                             .style(Style::default().fg(theme.dimmed))
@@ -3918,6 +3987,30 @@ impl HomeView {
         // indicator (only present when the user has scrolled back from
         // the live edge) sits between the title and the exit chord
         // hint so it gets noticed when there's something to notice.
+        if let Some(state) = &self.remote_live {
+            let chip = " \u{25CF} LIVE \u{2192} ";
+            let exit = format!(
+                " {} to exit ",
+                live_send::display_chord_list(&state.exit_chords)
+            );
+            let budget = (area.width as usize)
+                .saturating_sub(unicode_width::UnicodeWidthStr::width(chip))
+                .saturating_sub(unicode_width::UnicodeWidthStr::width(exit.as_str()));
+            let title = truncate_to_width(&format!(" {} @ {} ", state.title, state.remote), budget);
+            let spans = vec![
+                Span::styled(
+                    chip,
+                    Style::default()
+                        .fg(theme.background)
+                        .bg(theme.running)
+                        .bold(),
+                ),
+                Span::styled(title, Style::default().fg(theme.accent).bold()),
+                Span::styled(exit, Style::default().fg(theme.dimmed)),
+            ];
+            frame.render_widget(Paragraph::new(Line::from(spans)), area);
+            return;
+        }
         if let Some(state) = &self.live_send {
             let base_title = if state.title.is_empty() {
                 "session"
@@ -4176,6 +4269,11 @@ impl HomeView {
             Some(Item::Group {
                 collapsed: false, ..
             }) => (Some("Collapse"), None),
+            Some(Item::RemoteSession { .. }) => (Some("Open"), None),
+            Some(Item::LocalGroup { collapsed, .. })
+            | Some(Item::RemoteGroup { collapsed, .. }) => {
+                (Some(if *collapsed { "Expand" } else { "Collapse" }), None)
+            }
             Some(Item::Session { id, .. }) => {
                 if self
                     .get_instance(id)

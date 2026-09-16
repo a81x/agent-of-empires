@@ -136,6 +136,9 @@ impl HomeView {
                         .get_instance(id.as_str())
                         .map(|i| i.source_profile.clone());
                 }
+                crate::session::Item::LocalGroup { .. }
+                | crate::session::Item::RemoteGroup { .. }
+                | crate::session::Item::RemoteSession { .. } => return None,
                 crate::session::Item::Group { profile, path, .. } => {
                     if let Some(p) = profile {
                         return Some(p.clone());

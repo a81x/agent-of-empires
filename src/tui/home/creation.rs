@@ -449,7 +449,7 @@ impl HomeView {
 /// wizard's own decision: `Some(true)` once the user approved the repository's
 /// hooks (the daemon then persists that approval before provisioning),
 /// `Some(false)` for a deliberate skip, `None` when there is nothing to approve.
-fn wizard_create_body(
+pub(crate) fn wizard_create_body(
     data: &NewSessionData,
     trust_hooks: Option<bool>,
 ) -> crate::daemon::CreateSessionBody {

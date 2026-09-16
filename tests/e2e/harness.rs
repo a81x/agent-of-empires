@@ -734,6 +734,11 @@ last_seen_version = "{}"
         self.synchronize_input();
     }
 
+    /// The TUI's own tmux session, for [`Self::send_session_keys`].
+    pub fn session_name(&self) -> &str {
+        &self.session_name
+    }
+
     /// Native terminal owners cannot receive an outer-TUI F12 fence.
     /// Observe their lifecycle before resuming ordinary TUI input.
     pub fn send_session_keys(&self, name: &str, keys: &str) {

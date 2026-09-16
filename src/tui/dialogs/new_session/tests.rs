@@ -1911,3 +1911,77 @@ fn branch_picker_mouse_selection_routes_to_the_focused_field() {
         dialog.worktree_branch.value()
     );
 }
+
+fn remote_target() -> RemoteTarget {
+    RemoteTarget {
+        name: "mini".into(),
+        home: Some("/Users/remote".into()),
+        profiles: vec!["default".into(), "work".into()],
+        tools: vec!["codex".into()],
+        docker_available: true,
+        client: crate::daemon::DaemonClient::new("https://mini.example.ts.net", Some("tok"))
+            .unwrap(),
+    }
+}
+
+fn remote_dialog() -> NewSessionDialog {
+    NewSessionDialog::new_with_tools(vec!["claude"], "/local/project".to_string())
+        .with_remotes(vec![remote_target()])
+}
+
+#[test]
+fn remote_profiles_follow_local_ones_and_pick_the_machine() {
+    let mut dialog = remote_dialog();
+    let local = dialog.available_profiles[0].clone();
+    assert_eq!(
+        &dialog.available_profiles[1..],
+        ["default@mini".to_string(), "work@mini".to_string()]
+    );
+    assert!(dialog.has_profile_selection());
+
+    dialog.focused_field = 0;
+    dialog.handle_key(key(KeyCode::Right));
+    assert_eq!(dialog.active_remote.as_deref(), Some("mini"));
+    assert_eq!(dialog.selected_profile(), "default");
+    assert_eq!(dialog.selected_profile_label(), "default@mini");
+    assert_eq!(dialog.available_tools, ["codex"]);
+    assert_eq!(dialog.path.value(), "/Users/remote");
+    assert!(
+        dialog.docker_available,
+        "sandboxing follows the remote's runtime"
+    );
+
+    dialog.handle_key(key(KeyCode::Left));
+    assert_eq!(dialog.active_remote, None);
+    assert_eq!(dialog.selected_profile(), local);
+    assert_eq!(dialog.available_tools, ["claude"]);
+    assert_eq!(dialog.path.value(), "/local/project");
+    assert!(!dialog.docker_available);
+}
+
+#[test]
+fn a_remote_submit_targets_the_remote_and_skips_local_disk_checks() {
+    let mut dialog = remote_dialog();
+    dialog.focused_field = 0;
+    dialog.handle_key(key(KeyCode::Right));
+    dialog.path = Input::new("~/does/not/exist/here".to_string());
+
+    match dialog.handle_key(key(KeyCode::Enter)) {
+        DialogResult::Submit(data) => {
+            assert_eq!(data.remote.as_deref(), Some("mini"));
+            assert_eq!(data.profile, "default");
+            assert_eq!(data.tool, "codex");
+            assert_eq!(data.path, "/Users/remote/does/not/exist/here");
+        }
+        _ => panic!("a remote submit must not stop on a local path check"),
+    }
+    assert!(dialog.confirm_create_dir.is_none());
+}
+
+#[test]
+fn a_dialog_without_remotes_is_unchanged() {
+    let dialog = NewSessionDialog::new_with_tools(vec!["claude"], TEST_PATH.to_string())
+        .with_remotes(Vec::new());
+    assert!(!dialog.has_profile_selection());
+    assert_eq!(dialog.active_remote, None);
+}

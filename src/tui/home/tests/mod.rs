@@ -35,6 +35,7 @@ mod post_create_attach_mode;
 mod preview_drag_select;
 mod preview_links;
 mod profile_duplicate_reconciliation;
+mod remote_rows;
 mod render_and_save;
 mod right_click_context_menu;
 mod save_field_merge;
@@ -568,6 +569,7 @@ fn setup_creation_test_env() -> CreationTestEnv {
 /// title/group and worktree fields per scenario.
 fn creation_data(project_dir: &std::path::Path, title: &str, group: &str) -> NewSessionData {
     NewSessionData {
+        remote: None,
         profile: "default".to_string(),
         title: title.to_string(),
         path: project_dir.to_str().unwrap().to_string(),

@@ -140,7 +140,7 @@ impl HomeView {
                 crate::session::is_within_archived_section(path)
                     || crate::session::is_within_trash_section(path)
             }
-            Item::Session { .. } => false,
+            _ => false,
         })
     }
 
@@ -151,10 +151,10 @@ impl HomeView {
         // by sort_groups + attention_group_key in flatten_tree). Check these
         // first so Project/Org + Attention doesn't fall through to the flat
         // Attention branch and lose the group headers.
-        if self.group_by == GroupByMode::Project {
+        if self.effective_group_by() == GroupByMode::Project {
             return self.build_flat_items_by_project();
         }
-        if self.group_by == GroupByMode::Org {
+        if self.effective_group_by() == GroupByMode::Org {
             return self.build_flat_items_by_org();
         }
 

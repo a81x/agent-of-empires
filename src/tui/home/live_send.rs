@@ -2420,9 +2420,35 @@ fn encode_action_bytes(action: &TmuxAction, app_cursor: bool) -> Vec<u8> {
     }
 }
 
+/// Raw bytes for one translated key, for transports that write into the pane
+/// directly instead of forking `tmux send-keys`.
+///
+/// The daemon's live socket re-encodes cursor keys for the pane's DECCKM state
+/// itself (`pane_input_bytes` in `src/server/live_ws.rs`), so callers on that
+/// path pass `app_cursor: false` and let the server apply the mode.
+///
+/// `Paste` is bracketed here because that socket forwards bytes verbatim. The
+/// local path instead hands the payload to `paste-buffer -p` so tmux brackets
+/// only panes that set DECSET 2004, which is why [`encode_action_bytes`]
+/// yields nothing for it.
+pub(super) fn encode_key_bytes(key: &TmuxKey, app_cursor: bool) -> Vec<u8> {
+    match key {
+        TmuxKey::Literal(s) => s.clone().into_bytes(),
+        TmuxKey::Named(name) => encode_named_key(name, app_cursor),
+        TmuxKey::NamedRepeat { name, count } => encode_named_key(name, app_cursor).repeat(*count),
+        TmuxKey::HexBytes(bytes) => bytes.clone(),
+        TmuxKey::Paste(text) => {
+            let mut out = Vec::with_capacity(text.len() + 12);
+            out.extend_from_slice(b"\x1b[200~");
+            out.extend_from_slice(text.as_bytes());
+            out.extend_from_slice(b"\x1b[201~");
+            out
+        }
+    }
+}
+
 /// Strip tmux modifier prefixes (`C-`, `M-`, `S-`, in any order) off a key
 /// name, returning `(ctrl, alt, shift, base)`.
-#[cfg(unix)]
 fn split_mods(name: &str) -> (bool, bool, bool, &str) {
     let (mut ctrl, mut alt, mut shift) = (false, false, false);
     let mut rest = name;
@@ -2446,7 +2472,6 @@ fn split_mods(name: &str) -> (bool, bool, bool, &str) {
 /// Encode one tmux key name (e.g. `Up`, `C-c`, `S-Up`, `M-x`, `F5`) to terminal
 /// bytes. Cursor/nav keys honor `app_cursor` (DECCKM) and the xterm modifier
 /// parameter (`1 + shift + alt*2 + ctrl*4`). Empty vec = unencodable.
-#[cfg(unix)]
 fn encode_named_key(name: &str, app_cursor: bool) -> Vec<u8> {
     let (ctrl, alt, shift, base) = split_mods(name);
     let modp = 1 + u8::from(shift) + 2 * u8::from(alt) + 4 * u8::from(ctrl);
@@ -4422,5 +4447,39 @@ mod tests {
             matches!(session.size_owner(), Some((id, _)) if id.starts_with("tui-")),
             "vacant lock must still be claimed on the retry path"
         );
+    }
+}
+
+#[cfg(test)]
+mod remote_input_tests {
+    use super::*;
+
+    #[test]
+    fn encode_key_bytes_leaves_cursor_mode_to_the_server() {
+        // The live socket applies DECCKM itself, so the client emits the CSI
+        // form and must not pre-translate to SS3.
+        assert_eq!(
+            encode_key_bytes(&TmuxKey::Named("Up".to_string()), false),
+            b"\x1b[A"
+        );
+    }
+
+    #[test]
+    fn encode_key_bytes_brackets_a_paste() {
+        let bytes = encode_key_bytes(&TmuxKey::Paste("a\nb".to_string()), false);
+        assert_eq!(bytes, b"\x1b[200~a\nb\x1b[201~");
+    }
+
+    #[test]
+    fn encode_key_bytes_repeats_a_named_run() {
+        let one = encode_key_bytes(&TmuxKey::Named("Down".to_string()), false);
+        let three = encode_key_bytes(
+            &TmuxKey::NamedRepeat {
+                name: "Down".to_string(),
+                count: 3,
+            },
+            false,
+        );
+        assert_eq!(three, one.repeat(3));
     }
 }

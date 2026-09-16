@@ -55,6 +55,12 @@ impl DaemonEndpoint {
         }
     }
 
+    /// Attach a passphrase-login credential read from the remote registry.
+    pub(crate) fn with_login(mut self, login: Option<crate::daemon::SessionCredential>) -> Self {
+        self.login = login;
+        self
+    }
+
     pub(crate) fn login(&self) -> Option<&crate::daemon::SessionCredential> {
         self.login.as_ref()
     }

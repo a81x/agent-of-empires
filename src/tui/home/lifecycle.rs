@@ -177,10 +177,11 @@ impl HomeView {
         } else {
             GroupByMode::Manual
         };
-        let group_by = user_config
-            .as_ref()
-            .and_then(|c| c.app_state.group_by)
-            .unwrap_or(default_group_by);
+        // "Group by remote" is the default. Until a remote is configured it
+        // would only wrap the list in a lone `local` header, so a default (not
+        // an explicit choice) renders as the pre-remote default meanwhile.
+        let saved_group_by = user_config.as_ref().and_then(|c| c.app_state.group_by);
+        let group_by = saved_group_by.unwrap_or(GroupByMode::Remote);
         let tips_unseen = user_config.as_ref().map_or_else(
             || tips_unseen_count(&crate::session::Config::default()),
             tips_unseen_count,
@@ -214,6 +215,20 @@ impl HomeView {
             view_mode,
             sort_order,
             group_by,
+            group_by_is_default: saved_group_by.is_none(),
+            fallback_group_by: default_group_by,
+            remotes_configured: false,
+            local_machine_collapsed: false,
+            collapsed_remotes: std::collections::HashSet::new(),
+            remote_preview: crate::tui::remote_preview::RemotePreview::new(),
+            remote_preview_key: None,
+            remote_preview_cache: Default::default(),
+            remote_preview_cursor: None,
+            remote_preview_error: None,
+            remote_live: None,
+            remote_live_size: (0, 0),
+            remote_create: crate::tui::remote_create::RemoteCreate::new(),
+            pending_remote_select: None,
             row_tag_mode: resolved.session.row_tag,
             agent_clipboard_forward: resolved.tmux.clipboard
                 != crate::session::config::TmuxSettingMode::Disabled,
@@ -352,6 +367,11 @@ impl HomeView {
             structured_approval_poller: crate::tui::approval_poller::StructuredApprovalPoller::new(
             ),
             session_feed: crate::tui::session_feed::SessionFeed::new(),
+            remote_feed: crate::tui::remote_feed::RemoteFeed::new(),
+            pending_remote_feed: false,
+            remote_snapshots: Vec::new(),
+            remote_fingerprint: Vec::new(),
+            selected_remote: None,
             sidebar_source: crate::tui::session_feed::SidebarSource::Disconnected,
             deletion_poller: DeletionPoller::new(),
             trash_poller: crate::tui::trash_poller::TrashPoller::new(),

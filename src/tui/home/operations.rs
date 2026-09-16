@@ -1880,7 +1880,9 @@ impl HomeView {
         let Some(group_path) = self.selected_group.as_deref() else {
             return Vec::new();
         };
-        match self.group_by {
+        match self.effective_group_by() {
+            // Machine headers are not groups, so nothing selects one here.
+            crate::session::config::GroupByMode::Remote => Vec::new(),
             // Project headers are derived from each session's repo name and
             // unified across profiles, narrowed only by the active profile
             // filter, exactly as `build_flat_items_by_project` builds them.

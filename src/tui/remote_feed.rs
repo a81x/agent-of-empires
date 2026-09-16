@@ -1,0 +1,789 @@
+//! Background read of every enabled remote daemon's session list, so the home
+//! view can list remote sessions inline with local ones.
+//!
+//! Remote rows are display and navigation only: they never enter the local
+//! instance map, so no local lifecycle action, poller, or storage write can
+//! reach a session this machine does not own.
+
+use std::sync::mpsc::TryRecvError;
+
+use crate::daemon::SessionResponse;
+use crate::session::{Item, RemoteShelf};
+use crate::tui::worker::Worker;
+
+/// One remote's contribution to the sidebar.
+#[derive(Debug, Clone)]
+pub(crate) struct RemoteSnapshot {
+    pub name: String,
+    /// The remote's sessions sorted by title, or why they could not be read.
+    /// `None` until the first read after it was configured finishes.
+    pub sessions: Option<Result<Vec<SessionResponse>, String>>,
+    /// What creating a session there needs: profiles, agents, home directory.
+    pub meta: Option<RemoteMeta>,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+pub(crate) struct RemoteProfile {
+    pub name: String,
+    #[serde(default)]
+    pub is_default: bool,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+pub(crate) struct RemoteAgent {
+    pub name: String,
+    #[serde(default)]
+    pub installed: bool,
+}
+
+#[derive(Debug, Clone, Default)]
+pub(crate) struct RemoteMeta {
+    pub home: Option<String>,
+    pub profiles: Vec<RemoteProfile>,
+    pub agents: Vec<RemoteAgent>,
+    /// The remote's `/api/docker/status`; an unread status counts as absent.
+    pub container_runtime_available: bool,
+}
+
+/// Profiles and agents change rarely; re-read them this often, not every poll.
+const META_TTL: std::time::Duration = std::time::Duration::from_secs(300);
+
+impl RemoteSnapshot {
+    /// Cheap change detector: id, title, status, and view per row. The sidebar
+    /// rebuilds only when this moves, so an idle remote costs no redraws.
+    fn fingerprint(&self) -> SnapshotPrint {
+        (
+            self.name.clone(),
+            self.sessions.as_ref().map(|read| {
+                read.as_ref().map_err(Clone::clone).map(|rows| {
+                    rows.iter()
+                        .map(|r| {
+                            (
+                                r.id.clone(),
+                                r.title.clone(),
+                                r.status.clone(),
+                                r.view == crate::session::View::Structured,
+                                shelf_of(r),
+                            )
+                        })
+                        .collect()
+                })
+            }),
+        )
+    }
+}
+
+/// `(id, title, status, structured, shelf)` for one row.
+type RowPrint = (String, String, String, bool, RemoteShelf);
+type SnapshotPrint = (String, Option<Result<Vec<RowPrint>, String>>);
+pub(crate) type RemoteFingerprint = Vec<SnapshotPrint>;
+
+/// Placeholder snapshots for configured remotes nothing has been read from yet,
+/// so their headers show at once instead of the list reshaping seconds later.
+pub(crate) fn pending(names: impl IntoIterator<Item = String>) -> Vec<RemoteSnapshot> {
+    names
+        .into_iter()
+        .map(|name| RemoteSnapshot {
+            name,
+            sessions: None,
+            meta: None,
+        })
+        .collect()
+}
+
+/// A remote row's place in the sidebar. `/api/sessions` with no `state`
+/// returns every session, so the split happens here.
+pub(crate) fn shelf_of(row: &SessionResponse) -> RemoteShelf {
+    if row.trashed_at.is_some() {
+        RemoteShelf::Trashed
+    } else if row.archived_at.is_some() {
+        RemoteShelf::Archived
+    } else {
+        RemoteShelf::Live
+    }
+}
+
+/// Remote-side collapse state, keyed by remote and which of its lists.
+pub(crate) type CollapsedRemotes = std::collections::HashSet<(String, RemoteShelf)>;
+
+pub(crate) fn fingerprint(snapshots: &[RemoteSnapshot]) -> RemoteFingerprint {
+    snapshots.iter().map(RemoteSnapshot::fingerprint).collect()
+}
+
+/// Live sidebar rows for the snapshots: a header per remote, then its live
+/// sessions. A remote that answered with nothing live still gets a header, so
+/// a reachable but idle daemon reads differently from an unconfigured one.
+pub(crate) fn remote_items(
+    snapshots: &[RemoteSnapshot],
+    collapsed: &CollapsedRemotes,
+) -> Vec<Item> {
+    let mut items = Vec::new();
+    for snapshot in snapshots {
+        let is_collapsed = collapsed.contains(&(snapshot.name.clone(), RemoteShelf::Live));
+        let header = |session_count, connecting, error| Item::RemoteGroup {
+            name: snapshot.name.clone(),
+            depth: 0,
+            session_count,
+            collapsed: is_collapsed,
+            connecting,
+            error,
+            shelf: RemoteShelf::Live,
+        };
+        match &snapshot.sessions {
+            None => items.push(header(0, true, None)),
+            Some(Ok(rows)) => {
+                let live: Vec<_> = rows
+                    .iter()
+                    .filter(|r| shelf_of(r) == RemoteShelf::Live)
+                    .collect();
+                items.push(header(live.len(), false, None));
+                if !is_collapsed {
+                    items.extend(live.into_iter().map(|row| Item::RemoteSession {
+                        remote: snapshot.name.clone(),
+                        id: row.id.clone(),
+                        depth: 1,
+                    }));
+                }
+            }
+            Some(Err(error)) => items.push(header(
+                0,
+                false,
+                Some(error.lines().next().unwrap_or_default().to_string()),
+            )),
+        }
+    }
+    items
+}
+
+/// Rows for one shelf (`Archived` or `Trashed`): a depth-1 sub-header per
+/// remote that has any, then those sessions most recent first, as the local
+/// shelf orders them. Returns the rows and the session total, which the
+/// caller adds to the local section header's count.
+pub(crate) fn remote_shelf_items(
+    snapshots: &[RemoteSnapshot],
+    shelf: RemoteShelf,
+    collapsed: &CollapsedRemotes,
+) -> (Vec<Item>, usize) {
+    let mut items = Vec::new();
+    let mut total = 0;
+    for snapshot in snapshots {
+        let Some(Ok(rows)) = &snapshot.sessions else {
+            continue;
+        };
+        let mut shelved: Vec<&SessionResponse> =
+            rows.iter().filter(|r| shelf_of(r) == shelf).collect();
+        if shelved.is_empty() {
+            continue;
+        }
+        shelved.sort_by(|a, b| {
+            let stamp = |r: &SessionResponse| match shelf {
+                RemoteShelf::Trashed => r.trashed_at.clone(),
+                _ => r.archived_at.clone(),
+            };
+            stamp(b).cmp(&stamp(a))
+        });
+        total += shelved.len();
+        let is_collapsed = collapsed.contains(&(snapshot.name.clone(), shelf));
+        items.push(Item::RemoteGroup {
+            name: snapshot.name.clone(),
+            depth: 1,
+            session_count: shelved.len(),
+            collapsed: is_collapsed,
+            connecting: false,
+            error: None,
+            shelf,
+        });
+        if !is_collapsed {
+            items.extend(shelved.into_iter().map(|row| Item::RemoteSession {
+                remote: snapshot.name.clone(),
+                id: row.id.clone(),
+                depth: 2,
+            }));
+        }
+    }
+    (items, total)
+}
+
+/// One line for a failed daemon call, built from the status and the
+/// `AoE-Error-Code` header, never from a response body.
+pub(crate) fn error_summary(error: &crate::daemon::DaemonClientError) -> String {
+    use crate::daemon::{ApiErrorCode, DaemonClientError};
+    use reqwest::StatusCode;
+    match error {
+        DaemonClientError::Status {
+            code: Some(code), ..
+        } => match code {
+            ApiErrorCode::ReadOnly => "the daemon is read-only",
+            ApiErrorCode::AccessPolicyDenied => "the daemon's access policy denied this",
+            ApiErrorCode::CityhallMode => "the daemon is in city hall mode",
+            ApiErrorCode::LifecycleLocked => "the session is busy with another operation",
+            ApiErrorCode::PendingTargetGone => "the target no longer exists",
+            ApiErrorCode::TlsRequired => "the daemon requires HTTPS",
+            ApiErrorCode::RuntimeEpochMismatch => "the daemon restarted; retry",
+            ApiErrorCode::ResumeFailed => "the session could not be resumed",
+            ApiErrorCode::CreationTrustChanged => "the repo's configuration changed; retry",
+            ApiErrorCode::CreationCancelled => "the create was cancelled",
+            ApiErrorCode::CreationNotPending => "the session is no longer being created",
+        }
+        .to_string(),
+        DaemonClientError::Status {
+            status: StatusCode::UNAUTHORIZED,
+            ..
+        } => "not authorized (HTTP 401); check the token, or re-add with --passphrase".to_string(),
+        DaemonClientError::Status { status, .. } => format!("daemon returned HTTP {status}"),
+        other => other.to_string(),
+    }
+}
+
+/// Endpoint for one registry entry.
+pub(crate) fn endpoint_for(
+    remote: &crate::daemon::remotes::Remote,
+) -> crate::acp::client::discovery::DaemonEndpoint {
+    use crate::acp::client::discovery::{DaemonEndpoint, Source};
+    let login = remote
+        .session
+        .clone()
+        .zip(remote.binding.clone())
+        .map(|(session, binding)| crate::daemon::SessionCredential { session, binding });
+    DaemonEndpoint::new(remote.url.clone(), remote.token.clone(), Source::Remote).with_login(login)
+}
+
+/// A remote the TUI can reach, by the name its rows carry.
+#[derive(Debug, Clone)]
+pub(crate) struct RemoteEntry {
+    pub name: String,
+    pub endpoint: crate::acp::client::discovery::DaemonEndpoint,
+}
+
+/// Every enabled remote, and why the registry could not be read if it could
+/// not. The one resolver for the feed, preview, live-send and create.
+#[derive(Debug, Default)]
+pub(crate) struct EnabledRemotes {
+    pub entries: Vec<RemoteEntry>,
+    pub registry_error: Option<String>,
+}
+
+impl EnabledRemotes {
+    pub(crate) fn get(&self, name: &str) -> Option<&RemoteEntry> {
+        self.entries.iter().find(|entry| entry.name == name)
+    }
+}
+
+/// Enabled registry entries, then the `AOE_DAEMON_URL` daemon as a temporary
+/// remote that is never saved.
+pub(crate) fn enabled_remotes() -> EnabledRemotes {
+    let mut remotes = match crate::daemon::remotes::load() {
+        Ok(registry) => EnabledRemotes {
+            entries: registry
+                .enabled()
+                .map(|remote| RemoteEntry {
+                    name: remote.name.clone(),
+                    endpoint: endpoint_for(remote),
+                })
+                .collect(),
+            registry_error: None,
+        },
+        Err(e) => EnabledRemotes {
+            entries: Vec::new(),
+            registry_error: Some(format!("{e:#}")),
+        },
+    };
+    if let Some(endpoint) = crate::acp::client::discovery::discover_env() {
+        add_env_remote(&mut remotes.entries, endpoint);
+    }
+    remotes
+}
+
+/// Name the env daemon after its host (and port), skip it when a registered
+/// remote already points at the same URL, and suffix ` (env)` when only the
+/// name collides, so a registered remote keeps its name and rows.
+fn add_env_remote(
+    entries: &mut Vec<RemoteEntry>,
+    endpoint: crate::acp::client::discovery::DaemonEndpoint,
+) {
+    let url = endpoint.base_url.trim_end_matches('/');
+    if entries
+        .iter()
+        .any(|entry| entry.endpoint.base_url.trim_end_matches('/') == url)
+    {
+        return;
+    }
+    let host = reqwest::Url::parse(url)
+        .ok()
+        .and_then(|parsed| {
+            let host = parsed.host_str()?.to_string();
+            Some(match parsed.port() {
+                Some(port) => format!("{host}:{port}"),
+                None => host,
+            })
+        })
+        .unwrap_or_else(|| url.to_string());
+    let name = if entries.iter().any(|entry| entry.name == host) {
+        format!("{host} (env)")
+    } else {
+        host
+    };
+    entries.push(RemoteEntry { name, endpoint });
+}
+
+/// Header name for an unreadable registry, listed where its remotes were.
+pub(crate) const REGISTRY_ERROR_ROW: &str = "remotes.toml";
+
+async fn fetch_meta(client: &crate::daemon::DaemonClient) -> Option<RemoteMeta> {
+    #[derive(serde::Deserialize)]
+    struct Home {
+        path: String,
+    }
+    #[derive(serde::Deserialize)]
+    struct DockerStatus {
+        available: bool,
+    }
+    let (home, profiles, agents, docker) = tokio::join!(
+        client.get_api::<Home>("filesystem/home", &[]),
+        client.get_api::<Vec<RemoteProfile>>("profiles", &[]),
+        client.get_api::<Vec<RemoteAgent>>("agents", &[]),
+        client.get_api::<DockerStatus>("docker/status", &[]),
+    );
+    Some(RemoteMeta {
+        home: home.ok().map(|h| h.path),
+        profiles: profiles.ok()?,
+        agents: agents.unwrap_or_default(),
+        container_runtime_available: docker.is_ok_and(|status| status.available),
+    })
+}
+
+async fn fetch_one(remote: RemoteEntry, cached: Option<RemoteMeta>) -> RemoteSnapshot {
+    let name = remote.name;
+    let client = match remote.endpoint.daemon_client() {
+        Ok(client) => client,
+        Err(e) => {
+            return RemoteSnapshot {
+                name,
+                sessions: Some(Err(error_summary(&e))),
+                meta: cached,
+            }
+        }
+    };
+    let sessions = client
+        .list_sessions(None)
+        .await
+        .map(|envelope| {
+            let mut rows = envelope.sessions;
+            rows.sort_by_key(|row| row.title.to_lowercase());
+            rows
+        })
+        .map_err(|e| error_summary(&e));
+    let meta = match cached {
+        Some(meta) => Some(meta),
+        None if sessions.is_ok() => fetch_meta(&client).await,
+        None => None,
+    };
+    RemoteSnapshot {
+        name,
+        sessions: Some(sessions),
+        meta,
+    }
+}
+
+type MetaCache = std::collections::HashMap<String, (std::time::Instant, RemoteMeta)>;
+
+/// One finished read of every enabled remote.
+#[derive(Debug)]
+pub(crate) struct FeedRead {
+    pub snapshots: Vec<RemoteSnapshot>,
+    pub registry_error: Option<String>,
+}
+
+/// Every enabled remote, concurrently, so one dead daemon cannot stall the
+/// rest behind its request timeout.
+async fn fetch_all(cache: &mut MetaCache) -> FeedRead {
+    let remotes = enabled_remotes();
+    let fresh = |name: &str| {
+        cache
+            .get(name)
+            .filter(|(at, _)| at.elapsed() < META_TTL)
+            .map(|(_, meta)| meta.clone())
+    };
+    let requests: Vec<_> = remotes
+        .entries
+        .into_iter()
+        .map(|remote| {
+            let cached = fresh(&remote.name);
+            let refetch = cached.is_none();
+            (refetch, fetch_one(remote, cached))
+        })
+        .collect();
+    let refetched: Vec<bool> = requests.iter().map(|(refetch, _)| *refetch).collect();
+    let snapshots = futures_util::future::join_all(requests.into_iter().map(|(_, f)| f)).await;
+    for (snapshot, refetch) in snapshots.iter().zip(refetched) {
+        if let (true, Some(meta)) = (refetch, &snapshot.meta) {
+            cache.insert(
+                snapshot.name.clone(),
+                (std::time::Instant::now(), meta.clone()),
+            );
+        }
+    }
+    FeedRead {
+        snapshots,
+        registry_error: remotes.registry_error,
+    }
+}
+
+/// The snapshots to show after `read`. An unreadable registry becomes one
+/// error header, and the remotes listed before it stay rather than vanish.
+pub(crate) fn merge_read(previous: &[RemoteSnapshot], read: FeedRead) -> Vec<RemoteSnapshot> {
+    let Some(error) = read.registry_error else {
+        return read.snapshots;
+    };
+    let mut snapshots = vec![RemoteSnapshot {
+        name: REGISTRY_ERROR_ROW.to_string(),
+        sessions: Some(Err(error)),
+        meta: None,
+    }];
+    snapshots.extend(read.snapshots);
+    for kept in previous {
+        if !snapshots.iter().any(|s| s.name == kept.name) {
+            snapshots.push(kept.clone());
+        }
+    }
+    snapshots
+}
+
+/// Worker thread that reads every enabled remote's session list on request.
+pub struct RemoteFeed {
+    worker: Worker<(), FeedRead>,
+}
+
+impl RemoteFeed {
+    pub fn new() -> Self {
+        // One current-thread runtime for the worker's lifetime, as in
+        // `SessionFeed`: the TUI's own runtime is not reachable from here.
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build();
+        if let Err(e) = &runtime {
+            tracing::warn!(target: "tui.remote_feed", "runtime build failed; remotes stay hidden: {e}");
+        }
+        Self {
+            worker: {
+                let mut cache = MetaCache::new();
+                Worker::spawn("aoe-remote-feed", move |()| match runtime.as_ref() {
+                    Ok(rt) => rt.block_on(fetch_all(&mut cache)),
+                    Err(e) => FeedRead {
+                        snapshots: Vec::new(),
+                        registry_error: Some(format!("no runtime: {e}")),
+                    },
+                })
+            },
+        }
+    }
+
+    pub fn request_refresh(&self) {
+        self.worker.request(());
+    }
+
+    pub(crate) fn try_recv(&self) -> Result<FeedRead, TryRecvError> {
+        self.worker.try_recv()
+    }
+}
+
+impl Default for RemoteFeed {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn row(id: &str, title: &str) -> SessionResponse {
+        serde_json::from_value(serde_json::json!({"id": id, "title": title})).unwrap()
+    }
+
+    fn snap(name: &str, sessions: Option<Result<Vec<SessionResponse>, String>>) -> RemoteSnapshot {
+        RemoteSnapshot {
+            name: name.into(),
+            sessions,
+            meta: None,
+        }
+    }
+
+    #[test]
+    fn a_reachable_remote_lists_a_header_then_its_sessions_one_level_in() {
+        let items = remote_items(
+            &[snap(
+                "mini",
+                Some(Ok(vec![row("a", "alpha"), row("b", "beta")])),
+            )],
+            &CollapsedRemotes::new(),
+        );
+        assert!(matches!(
+            &items[0],
+            Item::RemoteGroup { name, session_count: 2, error: None, connecting: false, depth: 0, collapsed: false, shelf: RemoteShelf::Live } if name == "mini"
+        ));
+        let ids: Vec<_> = items[1..]
+            .iter()
+            .map(|i| match i {
+                Item::RemoteSession {
+                    remote,
+                    id,
+                    depth: 1,
+                } if remote == "mini" => id.as_str(),
+                other => panic!("unexpected row {other:?}"),
+            })
+            .collect();
+        assert_eq!(ids, ["a", "b"]);
+    }
+
+    #[test]
+    fn a_collapsed_remote_keeps_its_header_and_count_but_hides_rows() {
+        let collapsed: CollapsedRemotes = [("mini".to_string(), RemoteShelf::Live)].into();
+        let items = remote_items(
+            &[snap("mini", Some(Ok(vec![row("a", "alpha")])))],
+            &collapsed,
+        );
+        assert_eq!(items.len(), 1);
+        assert!(matches!(
+            &items[0],
+            Item::RemoteGroup {
+                session_count: 1,
+                collapsed: true,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn an_unread_remote_is_connecting_and_an_unreachable_one_carries_its_first_error_line() {
+        let items = remote_items(
+            &[
+                snap("new", None),
+                snap(
+                    "down",
+                    Some(Err("connection refused\ncaused by: tcp".into())),
+                ),
+            ],
+            &CollapsedRemotes::new(),
+        );
+        assert!(matches!(
+            &items[0],
+            Item::RemoteGroup {
+                connecting: true,
+                error: None,
+                ..
+            }
+        ));
+        assert!(matches!(
+            &items[1],
+            Item::RemoteGroup { connecting: false, error: Some(e), .. } if e == "connection refused"
+        ));
+    }
+
+    #[test]
+    fn an_unreadable_registry_shows_one_error_row_and_keeps_listed_remotes() {
+        let previous = [
+            snap("mini", Some(Ok(vec![row("a", "alpha")]))),
+            snap(REGISTRY_ERROR_ROW, Some(Err("old".into()))),
+        ];
+        let merged = merge_read(
+            &previous,
+            FeedRead {
+                snapshots: Vec::new(),
+                registry_error: Some("remotes registry file is group/world accessible".into()),
+            },
+        );
+        let names: Vec<_> = merged.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(names, [REGISTRY_ERROR_ROW, "mini"]);
+        assert!(matches!(&merged[0].sessions, Some(Err(e)) if e.contains("accessible")));
+
+        let healthy = merge_read(
+            &merged,
+            FeedRead {
+                snapshots: vec![snap("mini", None)],
+                registry_error: None,
+            },
+        );
+        assert_eq!(healthy.len(), 1, "a readable registry replaces the list");
+    }
+
+    #[test]
+    fn fingerprint_ignores_fields_the_sidebar_does_not_show() {
+        let mut a = row("a", "alpha");
+        let before = fingerprint(&[snap("m", Some(Ok(vec![a.clone()])))]);
+        a.project_path = "/elsewhere".into();
+        assert_eq!(before, fingerprint(&[snap("m", Some(Ok(vec![a.clone()])))]));
+        a.status = "Running".into();
+        assert_ne!(before, fingerprint(&[snap("m", Some(Ok(vec![a])))]));
+        assert_ne!(
+            fingerprint(&[snap("m", None)]),
+            fingerprint(&[snap("m", Some(Ok(vec![])))])
+        );
+    }
+
+    fn shelved(id: &str, archived: Option<&str>, trashed: Option<&str>) -> SessionResponse {
+        serde_json::from_value(serde_json::json!({
+            "id": id,
+            "title": id,
+            "archived_at": archived,
+            "trashed_at": trashed,
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn the_live_section_leaves_archived_and_trashed_rows_to_the_shelf() {
+        let rows = vec![
+            row("live", "live"),
+            shelved("old", Some("2026-01-01T00:00:00Z"), None),
+            shelved("gone", None, Some("2026-02-01T00:00:00Z")),
+            // Trash wins over archive, as for local rows.
+            shelved(
+                "both",
+                Some("2026-01-01T00:00:00Z"),
+                Some("2026-03-01T00:00:00Z"),
+            ),
+        ];
+        let snaps = [snap("mini", Some(Ok(rows)))];
+        let collapsed = CollapsedRemotes::new();
+
+        let live = remote_items(&snaps, &collapsed);
+        assert!(matches!(
+            &live[0],
+            Item::RemoteGroup {
+                session_count: 1,
+                ..
+            }
+        ));
+        assert_eq!(live.len(), 2);
+
+        let (archived, archived_total) =
+            remote_shelf_items(&snaps, RemoteShelf::Archived, &collapsed);
+        assert_eq!(archived_total, 1);
+        assert!(matches!(
+            &archived[0],
+            Item::RemoteGroup {
+                depth: 1,
+                shelf: RemoteShelf::Archived,
+                ..
+            }
+        ));
+        assert!(matches!(&archived[1], Item::RemoteSession { id, depth: 2, .. } if id == "old"));
+
+        let (trashed, trashed_total) = remote_shelf_items(&snaps, RemoteShelf::Trashed, &collapsed);
+        assert_eq!(trashed_total, 2);
+        let ids: Vec<_> = trashed[1..]
+            .iter()
+            .map(|i| match i {
+                Item::RemoteSession { id, .. } => id.as_str(),
+                other => panic!("unexpected {other:?}"),
+            })
+            .collect();
+        assert_eq!(ids, ["both", "gone"], "most recently trashed first");
+    }
+
+    #[test]
+    fn a_remote_with_nothing_shelved_adds_no_shelf_rows() {
+        let snaps = [snap("mini", Some(Ok(vec![row("live", "live")])))];
+        let (items, total) =
+            remote_shelf_items(&snaps, RemoteShelf::Trashed, &CollapsedRemotes::new());
+        assert!(items.is_empty());
+        assert_eq!(total, 0);
+    }
+
+    fn registered(session: Option<&str>, binding: Option<&str>) -> crate::daemon::remotes::Remote {
+        crate::daemon::remotes::Remote {
+            name: "mini".into(),
+            url: "https://mini.example.ts.net".into(),
+            enabled: true,
+            token: Some("tok-secret".into()),
+            session: session.map(str::to_string),
+            binding: binding.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn an_endpoint_carries_a_login_only_when_both_halves_are_present() {
+        assert!(endpoint_for(&registered(None, None)).login().is_none());
+        assert!(endpoint_for(&registered(Some("s"), None)).login().is_none());
+        let endpoint = endpoint_for(&registered(Some("s"), Some("b")));
+        let login = endpoint.login().expect("login present");
+        assert_eq!((login.session.as_str(), login.binding.as_str()), ("s", "b"));
+    }
+
+    #[test]
+    fn debug_output_never_carries_credentials() {
+        let remote = registered(Some("sess-secret"), Some("bind-secret"));
+        let endpoint = endpoint_for(&remote);
+        for rendered in [
+            format!("{remote:?}"),
+            format!("{endpoint:?}"),
+            format!("{:?}", endpoint.login()),
+        ] {
+            for secret in ["tok-secret", "sess-secret", "bind-secret"] {
+                assert!(!rendered.contains(secret), "{secret} leaked: {rendered}");
+            }
+        }
+    }
+
+    #[test]
+    fn the_env_daemon_joins_the_registry_without_shadowing_it() {
+        use crate::acp::client::discovery::{DaemonEndpoint, Source};
+        let env = |url: &str| DaemonEndpoint::new(url.into(), Some("t".into()), Source::Env);
+        let registered = |name: &str, url: &str| RemoteEntry {
+            name: name.into(),
+            endpoint: DaemonEndpoint::new(url.into(), None, Source::Remote),
+        };
+
+        for (existing, url, expected) in [
+            (
+                vec![],
+                "https://box.tailnet.ts.net/",
+                Some("box.tailnet.ts.net"),
+            ),
+            (vec![], "http://127.0.0.1:8080", Some("127.0.0.1:8080")),
+            (
+                vec![registered("mini", "https://box.tailnet.ts.net")],
+                "https://box.tailnet.ts.net/",
+                None,
+            ),
+            (
+                vec![registered("box.tailnet.ts.net", "https://other.example")],
+                "https://box.tailnet.ts.net",
+                Some("box.tailnet.ts.net (env)"),
+            ),
+        ] {
+            let mut entries = existing;
+            let before = entries.len();
+            add_env_remote(&mut entries, env(url));
+            let added = (entries.len() > before).then(|| entries.last().unwrap().name.as_str());
+            assert_eq!(added, expected, "{url}");
+            if let Some(entry) = entries.get(before) {
+                assert_eq!(entry.endpoint.source, Source::Env);
+            }
+        }
+    }
+
+    #[test]
+    fn profiles_and_agents_decode_from_the_daemon_shapes() {
+        let profiles: Vec<RemoteProfile> = serde_json::from_value(serde_json::json!([
+            {"name": "main", "is_default": true, "description": "day job"},
+            {"name": "side"}
+        ]))
+        .unwrap();
+        assert!(profiles[0].is_default && !profiles[1].is_default);
+        let agents: Vec<RemoteAgent> = serde_json::from_value(serde_json::json!([
+            {"kind": "builtin", "name": "codex", "installed": true, "acp_capable": true},
+            {"kind": "builtin", "name": "gemini", "installed": false}
+        ]))
+        .unwrap();
+        assert_eq!(
+            agents
+                .iter()
+                .filter(|a| a.installed)
+                .map(|a| a.name.as_str())
+                .collect::<Vec<_>>(),
+            ["codex"]
+        );
+    }
+}

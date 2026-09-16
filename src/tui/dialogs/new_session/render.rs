@@ -569,7 +569,7 @@ impl NewSessionDialog {
     fn render_profile_field(&self, frame: &mut Frame, area: Rect, theme: &Theme) {
         let spans = profile_cycler_spans(
             "Profile:",
-            self.selected_profile(),
+            self.selected_profile_label(),
             self.available_profiles.len(),
             self.focused_field == 0,
             theme,

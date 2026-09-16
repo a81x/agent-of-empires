@@ -1089,7 +1089,7 @@ impl ServeView {
 /// recovery; remote modes stay behind the full serve dialog.
 pub(crate) async fn start_local_daemon_and_wait(
 ) -> Result<crate::acp::client::DaemonEndpoint, String> {
-    use crate::acp::client::{discovery::discover, HttpClient};
+    use crate::acp::client::{discovery::discover_local, HttpClient};
 
     spawn_daemon(ServeMode::Local, None, None)?;
     // The daemonized child double-forks, binds, then writes serve.url;
@@ -1097,7 +1097,7 @@ pub(crate) async fn start_local_daemon_and_wait(
     // without wedging the UI forever if the daemon dies mid-boot.
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
     loop {
-        let ready = match discover() {
+        let ready = match discover_local() {
             Ok(endpoint) => match HttpClient::new(endpoint.clone()) {
                 Ok(client) => client.health_check().await.is_ok().then_some(endpoint),
                 Err(_) => None,

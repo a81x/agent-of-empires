@@ -17,7 +17,17 @@ pub enum DirPickerResult {
     Selected(String),
 }
 
+/// Where the picker lists directories from.
+#[derive(Clone, Default)]
+enum DirSource {
+    #[default]
+    Local,
+    /// A remote daemon's home-scoped `/api/filesystem/browse`.
+    Remote(Box<crate::daemon::DaemonClient>),
+}
+
 pub struct DirPicker {
+    source: DirSource,
     active: bool,
     filter: Input,
     selected: usize,
@@ -27,6 +37,72 @@ pub struct DirPicker {
     read_error: bool,
     show_hidden: bool,
     show_help: bool,
+    /// The remote listing in flight, if any. Replacing it drops the receiver,
+    /// so a listing for a directory the user already left is discarded.
+    remote_listing: Option<RemoteListing>,
+}
+
+type ListingResult = Result<Vec<String>, String>;
+
+struct RemoteListing {
+    dir: PathBuf,
+    show_hidden: bool,
+    rx: std::sync::mpsc::Receiver<ListingResult>,
+}
+
+/// Start listing a remote directory's subdirectories on a background thread
+/// with a private runtime, so a slow daemon never stalls the TUI.
+fn browse_remote(
+    client: &crate::daemon::DaemonClient,
+    dir: &std::path::Path,
+    show_hidden: bool,
+) -> std::sync::mpsc::Receiver<ListingResult> {
+    #[derive(serde::Deserialize)]
+    struct Entry {
+        name: String,
+        #[serde(default)]
+        is_dir: bool,
+    }
+    #[derive(serde::Deserialize)]
+    struct Listing {
+        entries: Vec<Entry>,
+    }
+    let (tx, rx) = std::sync::mpsc::channel();
+    let client = client.clone();
+    let path = dir.to_string_lossy().to_string();
+    let spawned = std::thread::Builder::new()
+        .name("aoe-remote-browse".into())
+        .spawn(move || {
+            let result = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .map_err(|e| e.to_string())
+                .and_then(|runtime| {
+                    runtime
+                        .block_on(client.get_api::<Listing>(
+                            "filesystem/browse",
+                            &[
+                                ("path", path.as_str()),
+                                ("limit", "1000"),
+                                ("show_hidden", if show_hidden { "true" } else { "false" }),
+                            ],
+                        ))
+                        .map(|listing| {
+                            listing
+                                .entries
+                                .into_iter()
+                                .filter(|entry| entry.is_dir)
+                                .map(|entry| entry.name)
+                                .collect()
+                        })
+                        .map_err(|e| crate::tui::remote_feed::error_summary(&e))
+                });
+            let _ = tx.send(result);
+        });
+    if let Err(e) = spawned {
+        tracing::debug!(target: "tui.dir_picker", "remote browse thread failed: {e}");
+    }
+    rx
 }
 
 impl Default for DirPicker {
@@ -38,6 +114,7 @@ impl Default for DirPicker {
 impl DirPicker {
     pub fn new() -> Self {
         Self {
+            source: DirSource::Local,
             active: false,
             filter: Input::default(),
             selected: 0,
@@ -46,6 +123,7 @@ impl DirPicker {
             read_error: false,
             show_hidden: false,
             show_help: false,
+            remote_listing: None,
         }
     }
 
@@ -53,7 +131,24 @@ impl DirPicker {
         self.active
     }
 
+    /// Browse a remote daemon's filesystem instead of this machine's. The
+    /// daemon confines browsing to its home directory.
+    pub fn activate_remote(&mut self, client: crate::daemon::DaemonClient, initial_path: &str) {
+        self.source = DirSource::Remote(Box::new(client));
+        self.cwd = PathBuf::from(if initial_path.is_empty() {
+            "/"
+        } else {
+            initial_path
+        });
+        self.filter = Input::default();
+        self.selected = 0;
+        self.show_help = false;
+        self.refresh_dirs();
+        self.active = true;
+    }
+
     pub fn activate(&mut self, initial_path: &str) {
+        self.source = DirSource::Local;
         let path = if initial_path.is_empty() {
             std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/"))
         } else {
@@ -74,7 +169,65 @@ impl DirPicker {
         self.active = true;
     }
 
+    /// Whether a remote listing is still in flight.
+    pub fn is_loading(&self) -> bool {
+        self.remote_listing.is_some()
+    }
+
+    /// Land a finished remote listing. Returns whether the picker changed.
+    pub fn poll(&mut self) -> bool {
+        let Some(listing) = &self.remote_listing else {
+            return false;
+        };
+        let result = match listing.rx.try_recv() {
+            Ok(result) => result,
+            Err(std::sync::mpsc::TryRecvError::Empty) => return false,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                Err("remote browse ended without a listing".to_string())
+            }
+        };
+        let (dir, show_hidden) = (listing.dir.clone(), listing.show_hidden);
+        self.remote_listing = None;
+        self.apply_listing(&dir, show_hidden, result)
+    }
+
+    fn apply_listing(
+        &mut self,
+        dir: &std::path::Path,
+        show_hidden: bool,
+        result: ListingResult,
+    ) -> bool {
+        if dir != self.cwd || show_hidden != self.show_hidden {
+            return false;
+        }
+        match result {
+            Ok(mut dirs) => {
+                self.read_error = false;
+                dirs.sort_by_key(|a| a.to_lowercase());
+                self.dirs = dirs;
+            }
+            Err(e) => {
+                tracing::debug!(target: "tui.dir_picker", "remote browse failed: {e}");
+                self.read_error = true;
+                self.dirs = Vec::new();
+            }
+        }
+        true
+    }
+
     fn refresh_dirs(&mut self) {
+        if let DirSource::Remote(client) = &self.source {
+            let rx = browse_remote(client, &self.cwd, self.show_hidden);
+            self.remote_listing = Some(RemoteListing {
+                dir: self.cwd.clone(),
+                show_hidden: self.show_hidden,
+                rx,
+            });
+            self.read_error = false;
+            self.dirs = Vec::new();
+            return;
+        }
+        self.remote_listing = None;
         let mut dirs = Vec::new();
         match std::fs::read_dir(&self.cwd) {
             Ok(entries) => {
@@ -145,6 +298,7 @@ impl DirPicker {
     }
 
     pub fn handle_key(&mut self, key: KeyEvent) -> DirPickerResult {
+        self.poll();
         if self.show_help {
             if matches!(key.code, KeyCode::Esc | KeyCode::Char('?')) {
                 self.show_help = false;
@@ -296,9 +450,19 @@ impl DirPicker {
         let scroll = super::scroll::calculate_scroll(filtered.len(), self.selected, visible_height);
 
         let mut lines: Vec<Line> = Vec::new();
+        let remote = matches!(self.source, DirSource::Remote(_));
         if self.read_error {
             lines.push(Line::from(Span::styled(
-                "  (permission denied)",
+                if remote {
+                    "  (could not list this directory on the remote)"
+                } else {
+                    "  (permission denied)"
+                },
+                Style::default().fg(theme.dimmed),
+            )));
+        } else if self.is_loading() && self.dirs.is_empty() {
+            lines.push(Line::from(Span::styled(
+                "  (loading…)",
                 Style::default().fg(theme.dimmed),
             )));
         } else if filtered.is_empty() {
@@ -428,6 +592,40 @@ impl DirPicker {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_remote_listing_loads_in_the_background_and_a_failure_is_a_read_error() {
+        let client = crate::daemon::DaemonClient::new("http://127.0.0.1:9", None).unwrap();
+        let mut picker = DirPicker::new();
+        picker.activate_remote(client, "/Users/remote");
+        assert!(picker.is_active());
+        assert!(
+            picker.is_loading(),
+            "activation must not wait on the daemon"
+        );
+        assert_eq!(picker.cwd, PathBuf::from("/Users/remote"));
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        while !picker.poll() {
+            assert!(std::time::Instant::now() < deadline, "listing never landed");
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(!picker.is_loading());
+        assert!(picker.read_error);
+        assert!(picker.dirs.is_empty());
+    }
+
+    #[test]
+    fn a_listing_for_a_directory_the_user_left_is_dropped() {
+        let mut picker = DirPicker::new();
+        picker.cwd = PathBuf::from("/Users/remote/b");
+        let stale = Ok(vec!["from-a".to_string()]);
+        assert!(!picker.apply_listing(std::path::Path::new("/Users/remote/a"), false, stale));
+        assert!(picker.dirs.is_empty());
+        assert!(!picker.apply_listing(&picker.cwd.clone(), true, Ok(vec!["hidden".into()])));
+        assert!(picker.apply_listing(&picker.cwd.clone(), false, Ok(vec!["b1".into()])));
+        assert_eq!(picker.dirs, ["b1"]);
+    }
     use crossterm::event::{KeyEvent, KeyModifiers};
 
     fn key(code: KeyCode) -> KeyEvent {

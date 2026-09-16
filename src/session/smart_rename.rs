@@ -981,13 +981,14 @@ pub async fn run_smart_rename_now(
     }
 }
 
-/// Ask the running daemon to (re-)run the smart-rename one-shot for a
+/// Ask this machine's daemon (never `AOE_DAEMON_URL`: the session was read
+/// from local storage) to (re-)run the smart-rename one-shot for a
 /// structured session via `POST /api/sessions/{id}/smart-rename`. The endpoint
 /// already forces past the disabled-setting gate. Best-effort: no daemon, or a
 /// non-2xx response, just leaves the generated name in place.
 async fn rename_structured_via_daemon(session_id: &str) -> anyhow::Result<()> {
     use crate::acp::client::{discovery, HttpClient};
-    let endpoint = match discovery::discover() {
+    let endpoint = match discovery::discover_local() {
         Ok(e) => e,
         Err(e) => {
             tracing::debug!(target: "smart_rename", session = %session_id, "no daemon for structured rename: {e}");

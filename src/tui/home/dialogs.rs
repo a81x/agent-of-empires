@@ -78,7 +78,7 @@ impl HomeView {
 
     /// Show the group-by picker dialog seeded with the current mode.
     pub(in crate::tui) fn show_group_picker(&mut self) {
-        self.group_picker_dialog = Some(GroupPickerDialog::new(self.group_by));
+        self.group_picker_dialog = Some(GroupPickerDialog::new(self.effective_group_by()));
     }
 
     /// Open the saved-project picker that starts a new session pre-filled with

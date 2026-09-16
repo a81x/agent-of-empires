@@ -3,6 +3,7 @@
 pub(crate) mod bindings;
 mod config_refresh;
 mod creation;
+pub(crate) use creation::wizard_create_body;
 mod dialogs;
 #[cfg(test)]
 mod file_watch_tests;
@@ -20,6 +21,8 @@ mod pollers;
 mod preview;
 mod profiles;
 mod projects;
+mod remote_pane;
+mod remote_rows;
 pub(crate) mod render;
 mod rows;
 mod selection;
@@ -559,6 +562,37 @@ pub struct HomeView {
 
     // Canonical subscription and native command lane.
     pub(super) session_feed: super::session_feed::SessionFeed,
+    /// Session lists of the enabled `aoe remote` endpoints, rendered as
+    /// sections above the shelf. Never merged into `instances`.
+    pub(super) remote_feed: super::remote_feed::RemoteFeed,
+    pub(super) pending_remote_feed: bool,
+    pub(super) remote_snapshots: Vec<super::remote_feed::RemoteSnapshot>,
+    pub(super) remote_fingerprint: super::remote_feed::RemoteFingerprint,
+    /// `(remote, session id)` of the selected remote row. Kept apart from
+    /// `selected_session` so no local action can resolve a remote id.
+    pub(super) selected_remote: Option<(String, String)>,
+    /// `group_by` came from the default rather than a saved choice; see
+    /// [`Self::effective_group_by`].
+    pub(super) group_by_is_default: bool,
+    /// What a defaulted "group by remote" renders as while no remote exists.
+    pub(super) fallback_group_by: crate::session::config::GroupByMode,
+    pub(super) remotes_configured: bool,
+    pub(super) local_machine_collapsed: bool,
+    pub(super) collapsed_remotes: super::remote_feed::CollapsedRemotes,
+    /// Live socket for the selected remote row's preview.
+    pub(super) remote_preview: super::remote_preview::RemotePreview,
+    /// The row that socket is watching.
+    pub(super) remote_preview_key: Option<super::remote_preview::RemoteKey>,
+    pub(super) remote_preview_cache: preview::PreviewCache,
+    pub(super) remote_preview_cursor: Option<(u16, u16)>,
+    pub(super) remote_preview_error: Option<String>,
+    /// Live-send into the watched remote row, when active.
+    pub(super) remote_live: Option<remote_pane::RemoteLiveSend>,
+    /// Pane size last sent to the remote while live-sending.
+    pub(super) remote_live_size: (u16, u16),
+    pub(super) remote_create: super::remote_create::RemoteCreate,
+    /// A session just created on a remote, selected once the feed lists it.
+    pub(super) pending_remote_select: Option<(String, String)>,
     pub(super) sidebar_source: super::session_feed::SidebarSource,
     // Structured (ACP) rows also surface their pending approval nonces from
     // the daemon; the home permission dialog resolves them. See

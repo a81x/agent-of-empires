@@ -19,6 +19,12 @@ pub enum ManagerError {
     NoDaemonRunning(#[from] DiscoveryError),
 }
 
+/// This machine's own daemon, ignoring `AOE_DAEMON_URL`. The TUI home view
+/// acts on local sessions and lists the env daemon as a remote instead.
+pub fn require_local_daemon() -> Result<DaemonEndpoint, ManagerError> {
+    super::discovery::discover_local().map_err(ManagerError::NoDaemonRunning)
+}
+
 /// Check the selected endpoint without spawning or changing exposure.
 pub async fn require_daemon() -> Result<DaemonEndpoint, ManagerError> {
     if discover_env().is_some() {
@@ -41,10 +47,8 @@ pub async fn require_daemon() -> Result<DaemonEndpoint, ManagerError> {
     Ok(endpoint)
 }
 
-/// Called once at local TUI bootstrap, never by a reconnect timer.
-pub async fn ensure_daemon(profile: &str) -> anyhow::Result<DaemonEndpoint> {
-    if discover_env().is_some() {
-        return require_daemon().await.map_err(Into::into);
-    }
+/// Called once at local TUI bootstrap, never by a reconnect timer. Always this
+/// machine's core: the TUI lists `AOE_DAEMON_URL` as a remote instead.
+pub async fn ensure_local_daemon(profile: &str) -> anyhow::Result<DaemonEndpoint> {
     crate::cli::serve::ensure_core_daemon(profile).await
 }
