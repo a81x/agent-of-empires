@@ -75,11 +75,8 @@ export interface SpawnOptions {
   acp?: boolean;
   /** FAKE_ACP_SCRIPT path, or a script object written into the isolated HOME. */
   fakeAcpScript?: string | object;
-  /** Extra environment variables exported in the fake-ACP shim. Lets
-   *  structured view tests toggle behavior on the fake agent (e.g. force a
-   *  rejection of session/set_config_option) without writing a full
-   *  scripted turn file. */
-  extraEnv?: Record<string, string>;
+  /** Extra env exported in the fake-ACP shim; a function receives the isolated HOME. */
+  extraEnv?: Record<string, string> | ((home: string) => Record<string, string>);
   /**
    * Runs after the isolated $HOME tree is set up and the fake shim is on
    * PATH, but BEFORE `aoe serve` spawns. Use to call `aoe add` so the
@@ -742,7 +739,12 @@ export async function spawnAoeServe(opts: SpawnOptions): Promise<ServeHandle> {
       writeFileSync(path, JSON.stringify(script));
       script = path;
     }
-    writeFakeAcpShim(shimBin, script, fakeAcpDebugLog, opts.extraEnv);
+    writeFakeAcpShim(
+      shimBin,
+      script,
+      fakeAcpDebugLog,
+      typeof opts.extraEnv === "function" ? opts.extraEnv(home) : opts.extraEnv,
+    );
   } else {
     writeFakeClaudeShim(shimBin);
   }

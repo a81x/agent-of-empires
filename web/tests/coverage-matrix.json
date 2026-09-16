@@ -2592,10 +2592,7 @@
       "id": "acp.startup-error-banner-live",
       "kind": "live-playwright",
       "risk": "high",
-      "specs": [
-        "tests/live/acp-worker-log.spec.ts",
-        "tests/live/acp-stories/startup-error-banner-native-binary.spec.ts"
-      ],
+      "specs": ["tests/live/acp-worker-log.spec.ts", "tests/live/acp-stories/agent-status.spec.ts"],
       "components": ["web/src/components/acp/StructuredView.tsx", "src/server/api/acp.rs", "src/acp/acp_client/"]
     },
     {
@@ -2662,7 +2659,7 @@
       "id": "story.profile-settings-isolation",
       "kind": "live-playwright",
       "risk": "high",
-      "specs": ["tests/live/acp-stories/profile-settings-isolation.spec.ts"],
+      "specs": ["tests/live/acp-stories/settings-theme.spec.ts"],
       "components": ["web/src/components/SettingsView.tsx", "web/src/components/settings/ProfileSelector.tsx"]
     },
     {
@@ -2768,7 +2765,7 @@
       "id": "story.palette-session-switch",
       "kind": "live-playwright",
       "risk": "medium",
-      "specs": ["tests/live/acp-stories/palette-session-switch.spec.ts"],
+      "specs": ["tests/live/acp-stories/navigation.spec.ts"],
       "components": ["web/src/components/command-palette/CommandPalette.tsx", "web/src/hooks/useCommandActions.ts"]
     },
     {
@@ -2789,7 +2786,7 @@
       "id": "story.shortcut-terminal-focus",
       "kind": "live-playwright",
       "risk": "low",
-      "specs": ["tests/live/acp-stories/shortcut-terminal-focus.spec.ts"],
+      "specs": ["tests/live/acp-stories/navigation.spec.ts"],
       "components": ["web/src/hooks/useKeyboardShortcuts.ts"]
     },
     {
@@ -2803,7 +2800,7 @@
       "id": "story.sidebar-plan-progress",
       "kind": "live-playwright",
       "risk": "high",
-      "specs": ["tests/live/acp-stories/sidebar-plan-progress.spec.ts"],
+      "specs": ["tests/live/acp-stories/agent-status.spec.ts"],
       "components": ["web/src/components/WorkspaceSidebar.tsx"]
     },
     {
@@ -2824,21 +2821,21 @@
       "id": "story.sidebar-rate-limit",
       "kind": "live-playwright",
       "risk": "medium",
-      "specs": ["tests/live/acp-stories/sidebar-rate-limit.spec.ts"],
+      "specs": ["tests/live/acp-stories/agent-status.spec.ts"],
       "components": ["web/src/components/WorkspaceSidebar.tsx"]
     },
     {
       "id": "story.rate-limit-resume-continuation",
       "kind": "live-playwright",
       "risk": "high",
-      "specs": ["tests/live/acp-stories/rate-limit-resume-continuation.spec.ts"],
+      "specs": ["tests/live/acp-stories/agent-status.spec.ts"],
       "components": ["web/src/components/acp/StructuredView.tsx", "web/src/hooks/useRespawnSession.ts"]
     },
     {
       "id": "story.rate-limit-reset-across-turns",
       "kind": "live-playwright",
       "risk": "high",
-      "specs": ["tests/live/acp-stories/rate-limit-reset-across-turns.spec.ts"],
+      "specs": ["tests/live/acp-stories/agent-status.spec.ts"],
       "components": ["web/src/components/acp/StructuredView.tsx", "web/src/lib/acpTypes.ts"]
     },
     {
@@ -2852,10 +2849,7 @@
       "id": "story.sidebar-select-focuses-input",
       "kind": "live-playwright",
       "risk": "medium",
-      "specs": [
-        "tests/live/acp-stories/sidebar-select-focuses-terminal.spec.ts",
-        "tests/live/acp-stories/sidebar-select-focuses-composer.spec.ts"
-      ],
+      "specs": ["tests/live/acp-stories/navigation.spec.ts"],
       "components": ["web/src/App.tsx", "web/src/lib/terminalFocus.ts", "web/src/components/acp/Composer.tsx"]
     },
     {
@@ -2890,21 +2884,21 @@
       "id": "story.projects-add",
       "kind": "live-playwright",
       "risk": "medium",
-      "specs": ["tests/live/acp-stories/projects-add.spec.ts"],
+      "specs": ["tests/live/acp-stories/projects.spec.ts"],
       "components": ["web/src/components/ProjectsSection.tsx", "web/src/components/ProjectFormModal.tsx"]
     },
     {
       "id": "story.projects-edit",
       "kind": "live-playwright",
       "risk": "medium",
-      "specs": ["tests/live/acp-stories/projects-edit.spec.ts"],
+      "specs": ["tests/live/acp-stories/projects.spec.ts"],
       "components": ["web/src/components/ProjectsSection.tsx", "web/src/components/ProjectFormModal.tsx"]
     },
     {
       "id": "story.projects-remove",
       "kind": "live-playwright",
       "risk": "medium",
-      "specs": ["tests/live/acp-stories/projects-remove.spec.ts"],
+      "specs": ["tests/live/acp-stories/projects.spec.ts"],
       "components": ["web/src/components/ProjectsSection.tsx"]
     },
     {
@@ -2918,21 +2912,21 @@
       "id": "story.settings-theme-select",
       "kind": "live-playwright",
       "risk": "medium",
-      "specs": ["tests/live/acp-stories/settings-theme-select.spec.ts"],
+      "specs": ["tests/live/acp-stories/settings-theme.spec.ts"],
       "components": ["web/src/components/settings/SchemaSection.tsx"]
     },
     {
       "id": "story.settings-theme-custom",
       "kind": "live-playwright",
       "risk": "medium",
-      "specs": ["tests/live/acp-stories/settings-theme-custom.spec.ts"],
+      "specs": ["tests/live/acp-stories/settings-theme.spec.ts"],
       "components": ["web/src/components/settings/SchemaSection.tsx", "web/src/lib/theme.ts"]
     },
     {
       "id": "story.settings-theme-custom-malformed",
       "kind": "live-playwright",
       "risk": "low",
-      "specs": ["tests/live/acp-stories/settings-theme-custom-malformed.spec.ts"],
+      "specs": ["tests/live/acp-stories/settings-theme.spec.ts"],
       "components": ["web/src/components/settings/SchemaSection.tsx"]
     },
     {
@@ -2946,7 +2940,7 @@
       "id": "story.settings-theme-failure-revert",
       "kind": "live-playwright",
       "risk": "medium",
-      "specs": ["tests/live/acp-stories/settings-theme-failure-revert.spec.ts"],
+      "specs": ["tests/live/acp-stories/settings-theme.spec.ts"],
       "components": [
         "web/src/components/settings/SchemaSection.tsx",
         "web/src/components/SettingsView.tsx",
@@ -3093,7 +3087,7 @@
       "id": "acp.story.plan-strip",
       "kind": "live-playwright",
       "risk": "high",
-      "specs": ["tests/live/acp-stories/acp-plan-strip.spec.ts"],
+      "specs": ["tests/live/acp-stories/agent-status.spec.ts"],
       "components": ["web/src/components/acp/StructuredView.tsx"]
     },
     {
@@ -3382,7 +3376,7 @@
       "id": "story.wizard-launch-button",
       "kind": "live-playwright",
       "risk": "high",
-      "specs": ["tests/live/acp-stories/wizard-launch-button.spec.ts"],
+      "specs": ["tests/live/acp-stories/navigation.spec.ts"],
       "components": ["web/src/components/session-wizard/LaunchFooter.tsx"]
     },
     {
