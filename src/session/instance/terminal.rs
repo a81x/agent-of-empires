@@ -290,6 +290,23 @@ impl Instance {
         Ok(())
     }
 
+    /// Kill the paired terminal tmux session if its pane is dead (shell
+    /// exited while `remain-on-exit on` kept the session as a tombstone).
+    /// Returns true if a kill happened so the caller knows to re-spawn.
+    /// A missing session or a live pane both return Ok(false).
+    pub fn kill_terminal_if_dead(&self) -> Result<bool> {
+        self.kill_terminal_if_dead_indexed(0)
+    }
+
+    pub fn kill_terminal_if_dead_indexed(&self, index: u32) -> Result<bool> {
+        let session = self.terminal_tmux_session_indexed(index)?;
+        if session.exists() && session.is_pane_dead() {
+            let _ = session.kill();
+            return Ok(true);
+        }
+        Ok(false)
+    }
+
     pub fn container_terminal_tmux_session(&self) -> Result<tmux::ContainerTerminalSession> {
         self.container_terminal_tmux_session_indexed(0)
     }
@@ -481,9 +498,13 @@ impl Instance {
 mod tests {
     use super::*;
     use std::io::Write;
+    #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
     use std::process::{Command, Stdio};
 
+    /// Writes from a child `sh` so this binary never holds the writable
+    /// descriptor: a concurrent spawn forking inside that window would make
+    /// the later execve fail with ETXTBSY (#3861).
     fn write_executable(path: &std::path::Path, contents: &str) {
         // Sibling test forks must not inherit a writable executable descriptor.
         let status = Command::new("/bin/sh")
@@ -830,7 +851,7 @@ exec /usr/bin/env -i PATH="$TARGET_PATH" SHELL="$FALLBACK_SHELL" "$@"
             .args([
                 "display-message",
                 "-t",
-                &format!("={name}:^.0"),
+                &format!("={name}:^"),
                 "-p",
                 "#{pane_current_path}",
             ])
@@ -849,7 +870,7 @@ exec /usr/bin/env -i PATH="$TARGET_PATH" SHELL="$FALLBACK_SHELL" "$@"
             "ensuring a live auxiliary must not replace it"
         );
         assert!(crate::tmux::tmux_command()
-            .args(["send-keys", "-t", &format!("={name}:^.0"), "exit", "Enter"])
+            .args(["send-keys", "-t", &format!("={name}:^"), "exit", "Enter"])
             .status()
             .unwrap()
             .success());
@@ -897,6 +918,127 @@ exec /usr/bin/env -i PATH="$TARGET_PATH" SHELL="$FALLBACK_SHELL" "$@"
                 "{state} row admitted an auxiliary"
             );
             assert!(!stale.terminal_tmux_session_indexed(13).unwrap().exists());
+        }
+    }
+
+    mod kill_terminal_if_dead {
+        use super::*;
+
+        fn tmux_available() -> bool {
+            crate::tmux::tmux_command()
+                .arg("-V")
+                .output()
+                .map(|o| o.status.success())
+                .unwrap_or(false)
+        }
+
+        /// Manually create a tmux session under `name` with `remain-on-exit on`
+        /// so the session survives the inner command's exit. Used to simulate
+        /// the dead-pane state without going through `start_terminal`, which
+        /// would also apply unrelated tmux options.
+        fn spawn_remain_on_exit(name: &str, cmd: &str) {
+            let output = crate::tmux::tmux_command()
+                .args([
+                    "new-session",
+                    "-d",
+                    "-s",
+                    name,
+                    "-x",
+                    "80",
+                    "-y",
+                    "24",
+                    cmd,
+                    ";",
+                    "set-option",
+                    "-p",
+                    "-t",
+                    name,
+                    "remain-on-exit",
+                    "on",
+                ])
+                .output()
+                .expect("tmux new-session");
+            assert!(
+                output.status.success(),
+                "tmux new-session failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            crate::tmux::refresh_session_cache();
+        }
+
+        #[test]
+        #[serial_test::serial]
+        fn returns_false_when_no_session() {
+            if !tmux_available() {
+                eprintln!("Skipping: tmux not available");
+                return;
+            }
+            let inst = Instance::new("ktid_missing", "/tmp");
+            crate::tmux::refresh_session_cache();
+            assert!(!inst.kill_terminal_if_dead().unwrap());
+        }
+
+        #[test]
+        #[serial_test::serial]
+        fn returns_false_when_pane_alive() {
+            if !tmux_available() {
+                eprintln!("Skipping: tmux not available");
+                return;
+            }
+            let inst = Instance::new("ktid_alive", "/tmp");
+            let name = crate::tmux::TerminalSession::generate_name(&inst.id, &inst.title);
+            let _guard = crate::tmux::test_helpers::TmuxTestSession::from_name(name.clone());
+            spawn_remain_on_exit(&name, "sleep 30");
+            let pane = crate::tmux::test_helpers::only_pane_id(&name);
+            let session = inst.terminal_tmux_session().unwrap();
+            assert!(session.exists());
+            assert!(!session.is_pane_dead());
+
+            assert!(
+                !inst.kill_terminal_if_dead().unwrap(),
+                "live pane should not trigger a kill"
+            );
+            assert_eq!(crate::tmux::test_helpers::only_pane_id(&name), pane);
+            assert!(session.exists());
+            assert!(!session.is_pane_dead());
+        }
+        #[test]
+        #[serial_test::serial]
+        fn kills_dead_pane_session() {
+            use crate::tmux::test_helpers::{only_pane_id, wait_for_pane_dead, TmuxTestSession};
+            if !tmux_available() {
+                eprintln!("Skipping: tmux not available");
+                return;
+            }
+            let inst = Instance::new("ktid_dead", "/tmp");
+            let name = crate::tmux::TerminalSession::generate_name(&inst.id, &inst.title);
+            let _guard = TmuxTestSession::from_name(name.clone());
+            // `true` exits immediately; remain-on-exit keeps the session alive
+            // with a dead pane (matches the production failure mode: shell
+            // exited via Ctrl+D / `exit` / SIGHUP, session still listed).
+            spawn_remain_on_exit(&name, "true");
+            wait_for_pane_dead(&only_pane_id(&name));
+            let session = inst.terminal_tmux_session().unwrap();
+            assert!(
+                session.exists(),
+                "session should still exist via remain-on-exit"
+            );
+            assert!(
+                session.is_pane_dead(),
+                "pane should be dead after `true` exits"
+            );
+            let killed = inst.kill_terminal_if_dead().unwrap();
+            assert!(
+                killed,
+                "kill_terminal_if_dead should return true for dead pane"
+            );
+            let session = inst.terminal_tmux_session().unwrap();
+            assert!(!session.exists(), "session should be gone after kill");
+            // Idempotent: second call on now-missing session returns false.
+            assert!(
+                !inst.kill_terminal_if_dead().unwrap(),
+                "second call on missing session should return false"
+            );
         }
     }
 }

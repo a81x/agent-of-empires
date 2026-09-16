@@ -568,6 +568,7 @@ impl SessionFeed {
         );
         Ok(())
     }
+
     pub(crate) fn applied_session(&self, id: &str) -> Option<&crate::daemon::SessionResponse> {
         self.applied
             .as_ref()?
@@ -764,7 +765,6 @@ impl SessionFeed {
     pub(crate) fn publish_for_test(&self, result: SessionFeedResult) {
         self.sender.send_replace(Some(result));
     }
-
     #[cfg(test)]
     pub(crate) fn seeded_for_test(result: SessionFeedResult) -> Self {
         let feed = Self::new();

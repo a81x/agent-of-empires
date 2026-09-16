@@ -9,6 +9,35 @@ impl HomeView {
         available_tools: AvailableTools,
         file_watch: std::sync::Arc<crate::file_watch::FileWatchService>,
     ) -> anyhow::Result<Self> {
+        Self::new_with_reconcile(
+            active_profile,
+            available_tools,
+            file_watch,
+            crate::tui::reconcile_poller::ReconcilePoller::new,
+        )
+    }
+
+    #[cfg(test)]
+    pub(crate) fn new_for_test(
+        active_profile: Option<String>,
+        available_tools: AvailableTools,
+        file_watch: std::sync::Arc<crate::file_watch::FileWatchService>,
+    ) -> anyhow::Result<Self> {
+        let mut view =
+            Self::new_with_reconcile(active_profile, available_tools, file_watch, || {
+                crate::tui::reconcile_poller::ReconcilePoller::with_result_for_test(false)
+            })?;
+        // Unit fixtures do not own background disk healing or agent recovery.
+        view.startup_recovery_gate = None;
+        Ok(view)
+    }
+
+    fn new_with_reconcile(
+        active_profile: Option<String>,
+        available_tools: AvailableTools,
+        file_watch: std::sync::Arc<crate::file_watch::FileWatchService>,
+        make_reconcile: impl FnOnce() -> crate::tui::reconcile_poller::ReconcilePoller,
+    ) -> anyhow::Result<Self> {
         use crate::session::list_profiles;
 
         let mut storages = HashMap::new();
@@ -125,6 +154,7 @@ impl HomeView {
         let sound_config = resolved.sound.clone();
         let strict_hotkeys = resolved.session.strict_hotkeys;
         let confirm_before_quit = resolved.session.confirm_before_quit;
+        let host_tab_title = resolved.session.host_tab_title;
         let idle_decay_window =
             crate::tui::styles::idle_decay_window(resolved.theme.idle_decay_minutes);
         crate::session::set_unread_enabled(resolved.session.unread_indicator);
@@ -324,12 +354,14 @@ impl HomeView {
             sidebar_source: crate::tui::session_feed::SidebarSource::Disconnected,
             deletion_poller: DeletionPoller::new(),
             trash_poller: crate::tui::trash_poller::TrashPoller::new(),
-            reconcile_poller: crate::tui::reconcile_poller::ReconcilePoller::new(),
+            reconcile_poller: make_reconcile(),
             startup_recovery_gate: None,
             pending_reconcile_reload: false,
             reconcile_reload_retry_at: None,
             restart_poller: RestartPoller::new(),
             restart_in_flight: std::collections::HashSet::new(),
+            attach_after_restart: std::collections::HashSet::new(),
+            restarted_attaches: Vec::new(),
             store_move_poller: crate::tui::store_move_poller::StoreMovePoller::new(),
             store_move_in_flight: None,
             store_move_bypass: None,
@@ -364,6 +396,7 @@ impl HomeView {
             sound_config,
             strict_hotkeys,
             confirm_before_quit,
+            host_tab_title,
             active_tui_count: 1,
             idle_decay_window,
             settings_view: None,

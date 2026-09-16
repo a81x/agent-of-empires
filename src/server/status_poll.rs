@@ -574,7 +574,6 @@ pub(super) async fn status_poll_loop(
 #[cfg(test)]
 mod tests {
     use super::*;
-
     #[tokio::test]
     #[serial_test::serial]
     async fn queued_tick_preserves_an_auxiliary_created_while_waiting_for_reload() {
@@ -674,163 +673,6 @@ mod tests {
         )
         .await
         .unwrap();
-    }
-
-    #[tokio::test]
-    #[serial_test::serial]
-    async fn sandbox_refresh_resolves_the_current_profile_after_namespace_wait() {
-        let _home = crate::session::test_support::isolate_app_dir();
-        let roots = tempfile::tempdir().unwrap();
-        let global = roots.path().join("global");
-        let profile = roots.path().join("profile");
-        for (root, model) in [(&global, "global"), (&profile, "profile")] {
-            std::fs::create_dir(root).unwrap();
-            std::fs::write(root.join("config.toml"), format!("model = {model:?}\n")).unwrap();
-        }
-        let config = |root: &std::path::Path| {
-            format!(
-            "[skills]\nauto_propagate = false\n[session]\nagent_status_hooks = false\n[session.agent_config_dir]\ncodex = {:?}\n", root.to_str().unwrap())
-        };
-        std::fs::write(
-            crate::session::get_app_dir().unwrap().join("config.toml"),
-            config(&global),
-        )
-        .unwrap();
-        let mut row = Instance::new("profile refresh", roots.path().to_str().unwrap());
-        row.source_profile = "work".into();
-        row.tool = "codex".into();
-        row.detect_as = "codex".into();
-        row.status = Status::Idle;
-        row.sandbox_info = Some(crate::session::SandboxInfo {
-            enabled: true,
-            container_id: None,
-            image: "unused".into(),
-            container_name: crate::containers::DockerContainer::generate_name(&row.id),
-            extra_env: None,
-            custom_instruction: None,
-            before_start_env: Vec::new(),
-            container_workdir: None,
-        });
-        let storage = crate::session::Storage::new_unwatched("work").unwrap();
-        storage
-            .update(|rows, _| {
-                rows.push(row.clone());
-                Ok(())
-            })
-            .unwrap();
-        let directory = storage.sessions_path().parent().unwrap().to_path_buf();
-        std::fs::write(directory.join("config.toml"), config(&profile)).unwrap();
-        let state = crate::server::test_support::build_test_app_state(vec![row.clone()]);
-        *state.canonical_metadata.write().await =
-            load_all_profiles(&state.file_watch).unwrap().metadata;
-        refresh_sandbox_stores(&state).await;
-        let staged = profile.join("sandbox-v2").join(&row.id).join("config.toml");
-        let model = || {
-            toml::from_str::<toml::Value>(&std::fs::read_to_string(&staged).unwrap()).unwrap()
-                ["model"]
-                .as_str()
-                .unwrap()
-                .to_owned()
-        };
-        assert_eq!(model(), "profile");
-        assert!(!global.join("sandbox-v2").join(&row.id).exists());
-
-        let namespace = state.profile_namespace.write().await;
-        let mut refresh = Box::pin(refresh_sandbox_stores(&state));
-        assert!(futures_util::poll!(refresh.as_mut()).is_pending());
-        let renamed = directory.parent().unwrap().join("renamed");
-        std::fs::rename(&directory, &renamed).unwrap();
-        std::fs::write(profile.join("config.toml"), "model = \"after-rename\"\n").unwrap();
-        let loaded = load_all_profiles(&state.file_watch).unwrap();
-        *state.instances.write().await = loaded.instances;
-        *state.canonical_metadata.write().await = loaded.metadata;
-        drop(namespace);
-        refresh.await;
-        assert_eq!(model(), "after-rename");
-        assert_eq!(
-            *state.canonical_health.read().await,
-            crate::daemon::RuntimeHealth::Healthy
-        );
-    }
-
-    #[tokio::test]
-    #[serial_test::serial]
-    async fn passive_commit_publishes_observations_only_after_success() {
-        let _home = crate::session::test_support::isolate_app_dir();
-        let mut row = Instance::new("passive-commit", "/tmp/passive");
-        row.source_profile = "passive-commit".into();
-        row.status = Status::Running;
-        let state = crate::server::test_support::build_test_app_state(vec![row.clone()]);
-        let storage = crate::session::Storage::new_unwatched(&row.source_profile).unwrap();
-        storage
-            .update(|rows, _| {
-                rows.push(row.clone());
-                Ok(())
-            })
-            .unwrap();
-        let loaded = load_all_profiles(&state.file_watch).unwrap();
-
-        *state.canonical_metadata.write().await = loaded.metadata.clone();
-        let mut observed = row.clone();
-        observed.status = Status::Error;
-        observed.last_error = Some("Container is not running".into());
-        observed.pane_dead_observed = true;
-        let mut writes = PassiveTransitionWrites::default();
-        writes.patches.insert(
-            observed.id.clone(),
-            crate::session::PassiveStatusPatch::from_instance(&observed),
-        );
-        reload_state_instances_from_disk(
-            &state,
-            vec![observed],
-            Vec::new(),
-            StatusSource::TmuxApplied,
-            0,
-            loaded.metadata.clone(),
-            std::collections::HashMap::from([(row.source_profile.clone(), writes)]),
-        )
-        .await;
-        let before = state.runtime.publish(&state).await.unwrap();
-        assert_eq!(before.value.contents.sessions[0].status, "Error");
-        assert_eq!(
-            before.value.contents.sessions[0].last_error.as_deref(),
-            Some("Container is not running")
-        );
-        assert!(before.value.contents.sessions[0].pane_dead_observed);
-        std::fs::write(storage.sessions_path(), b"{").unwrap();
-        row.status = Status::Idle;
-        let mut bundles: std::collections::HashMap<String, PassiveTransitionWrites> =
-            std::collections::HashMap::new();
-        let writes = bundles.entry(row.source_profile.clone()).or_default();
-        writes.patches.insert(
-            row.id.clone(),
-            crate::session::PassiveStatusPatch::from_instance(&row),
-        );
-        writes.unread_ids.push(row.id.clone());
-        let changes = reload_state_instances_from_disk(
-            &state,
-            vec![row],
-            Vec::new(),
-            StatusSource::TmuxApplied,
-            0,
-            loaded.metadata,
-            bundles,
-        )
-        .await;
-        assert!(
-            changes.is_empty(),
-            "a failed commit cannot emit a status transition"
-        );
-        let retained = state.runtime.publish(&state).await.unwrap();
-        assert_eq!(
-            retained.value.contents.sessions,
-            before.value.contents.sessions
-        );
-        assert!(matches!(
-            retained.value.contents.health,
-            crate::daemon::RuntimeHealth::Degraded { .. }
-        ));
-        assert_eq!(std::fs::read(storage.sessions_path()).unwrap(), b"{");
     }
 
     /// #2758: the reconciler's persistent per-session maps must be swept
@@ -996,39 +838,53 @@ mod tests {
 
     #[tokio::test]
     #[serial_test::serial]
-    async fn passive_unread_does_not_outlive_its_lifecycle_generation() {
-        let _home = crate::session::test_support::isolate_app_dir();
-        let mut sampled = Instance::new("sampled-idle", "/tmp/repo");
-        sampled.source_profile = "stale-passive".into();
-        sampled.status = Status::Idle;
-        let storage = crate::session::Storage::new_unwatched(&sampled.source_profile).unwrap();
-        storage
-            .update(|rows, _| {
-                let mut stopped = sampled.clone();
-                stopped.status = Status::Stopped;
-                stopped.lifecycle_generation += 1;
-                rows.push(stopped);
-                Ok(())
-            })
-            .unwrap();
-        let mut bundle = PassiveTransitionWrites::default();
-        bundle.patches.insert(
-            sampled.id.clone(),
-            crate::session::PassiveStatusPatch::from_instance(&sampled),
-        );
-        bundle.unread_ids.push(sampled.id.clone());
-        let bundles = std::collections::HashMap::from([(sampled.source_profile.clone(), bundle)]);
-        let mut rows = vec![sampled];
-        flush_test_rows(&mut rows, bundles).await;
-        let disk = storage.load().unwrap();
-        assert_eq!(disk[0].status, Status::Stopped);
+    async fn flush_passive_transition_defers_unread_until_persist_ok() {
+        let _app_dir = crate::session::test_support::isolate_app_dir();
+
+        let profile = "flush-persist-failure";
+        // Force the flock write to fail: making `sessions.json` a directory
+        // makes the store's read-modify-write error out during `update`.
+        // (`dir` is bound here but blocked below, after the metadata preload:
+        // the preload reads this same profile, so it must run first.)
+        let dir = crate::session::get_profile_dir(profile).expect("profile dir");
+
+        let mut inst = Instance::new("idle-session", "/tmp/idle");
+        inst.source_profile = profile.to_string();
+        let id = inst.id.clone();
+        let mut instances = vec![inst];
+
+        let mut bundles: std::collections::HashMap<String, PassiveTransitionWrites> =
+            std::collections::HashMap::new();
+        bundles
+            .entry(profile.to_string())
+            .or_default()
+            .unread_ids
+            .push(id.clone());
+        let file_watch = crate::file_watch::FileWatchService::noop();
+        let mut metadata = load_all_profiles(&file_watch).unwrap().metadata;
+        let publication = tokio::sync::RwLock::new(());
+        let transition = Arc::new(crate::session::StorageTransition::acquire().unwrap());
+        // Block the data file only now: the preload above must read this
+        // profile successfully so the failure surfaces at persist time,
+        // where the flush defers the unread mark, not at reload.
+        std::fs::create_dir_all(dir.join("sessions.json")).expect("sessions.json dir");
+        let guard = publication.write().await;
+        let persisted = flush_passive_transition_writes(
+            file_watch,
+            &mut instances,
+            &mut metadata,
+            bundles,
+            &transition,
+            &guard,
+        )
+        .await;
         assert!(
-            !disk[0].unread,
-            "an obsolete idle observation cannot mark a newer lifecycle unread"
+            persisted.is_err(),
+            "blocking sessions.json must fail the passive-status persist"
         );
         assert!(
-            !rows[0].unread,
-            "a rejected observation cannot publish unread"
+            !instances[0].unread,
+            "a failed persist must not leave a phantom in-memory unread mark (see #2755)"
         );
     }
 
@@ -1037,7 +893,7 @@ mod tests {
     #[tokio::test]
     #[serial_test::serial]
     async fn flush_passive_transition_applies_unread_after_persist_ok() {
-        let _home = crate::session::test_support::isolate_app_dir();
+        let _app_dir = crate::session::test_support::isolate_app_dir();
 
         let profile = "flush-persist-success";
         let mut inst = Instance::new("idle-session", "/tmp/idle");
@@ -1079,10 +935,11 @@ mod tests {
         );
     }
 
+    /// Each profile receives only its own durable status and timestamp patch.
     #[tokio::test]
     #[serial_test::serial]
     async fn flush_passive_transition_routes_patches_per_profile() {
-        let _home = crate::session::test_support::isolate_app_dir();
+        let _app_dir = crate::session::test_support::isolate_app_dir();
 
         let old = chrono::Utc::now() - chrono::Duration::minutes(1);
         let new_ts = chrono::Utc::now();

@@ -304,7 +304,16 @@ hotkey = "Alt+t"
 
     h.wait_for("Tool: echotool");
 
+    // Pressing Enter triggers AttachToolSession, which (a) creates the
+    // tool tmux session via `tmux new-session` running our command, then
+    // (b) tries to switch-client / attach-session. Both attach paths
+    // return errors when invoked from inside the harness's existing
+    // tmux session ("sessions should be nested with care"), but that
+    // error is swallowed and the tool tmux session itself is created.
+    // Observe the recreated outer EventStream before sending its render fence.
+    let resume = h.terminal_resume_sequence();
     h.send_keys("Enter");
+    h.wait_for_terminal_resume(resume);
 
     h.wait_for(MARKER);
 

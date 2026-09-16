@@ -572,7 +572,7 @@ pub(crate) async fn spawn_structured_session(
             } else {
                 None
             };
-            let response_instance = instance;
+            let response_instance = instance.clone();
 
             // Count the create for the opt-in telemetry trend counter. Bounded
             // accumulator, read-and-decremented by the snapshot loop; no-op for

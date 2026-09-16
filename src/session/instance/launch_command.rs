@@ -40,8 +40,8 @@ fn apply_yolo_mode(cmd: &mut String, yolo: &crate::agents::YoloMode, is_sandboxe
 /// Write the Pi session-id extension into the app dir and return its path.
 ///
 /// Rewritten when the content differs so an upgrade ships its own version.
-pub(super) fn pi_extension_path() -> Result<PathBuf> {
-    const SOURCE: &str = crate::session::instance::PI_SESSION_EXTENSION;
+pub(super) fn session_identity_extension_path() -> Result<PathBuf> {
+    const SOURCE: &str = crate::session::instance::SESSION_IDENTITY_EXTENSION;
     let root = crate::session::get_app_dir()?;
     let rel = Path::new("agent-extensions").join("pi-aoe-session-id.js");
     let path = root.join(&rel);
@@ -388,6 +388,24 @@ impl Instance {
         })
     }
 
+    /// Refresh after pane teardown; Prime resident workers may still be running.
+    pub(super) fn refresh_prepared_prime_launch_after_pane_stop(
+        &mut self,
+        mut prepared: PreparedLaunch,
+        stores: CaptureStorage<'_>,
+    ) -> Result<PreparedLaunch> {
+        if self.absorb_published_prime_session(stores) {
+            // Refresh launch data without changing the durable CAS baseline.
+            (
+                prepared.command,
+                prepared.is_existing,
+                prepared.omp_capture_plan,
+                prepared.launch_env,
+            ) = self.build_launch_command(stores)?;
+        }
+        Ok(prepared)
+    }
+
     /// Construct the command only after hook execution has completed. Keeping
     /// this phase hook-free prevents a revalidation retry from replaying user
     /// code while the lifecycle lock is held.
@@ -474,16 +492,13 @@ impl Instance {
                 }
             }
 
-            // Pi publishes its conversation from inside the container through
-            // the same extension, reaching the instance dir and the extension
-            // file by bind-mount (see `container_config`).
-            self.pi_extension_launched = false;
-            let pi_extension = self.pi_extension_launch(&launch_config);
-            if let Some((ref flag, _)) = pi_extension {
-                // Empty for a container: the extension is discovered there
-                // rather than named on the command line.
+            let extension_backend = self.resolved_capture_backend();
+            let identity_extension = self.identity_extension_launch(&launch_config);
+            let extension_configured = identity_extension.is_some();
+            self.pi_extension_launched = extension_configured
+                && extension_backend == Some(crate::agents::SessionCaptureBackend::Pi);
+            if let Some((ref flag, _)) = identity_extension {
                 tool_cmd.push_str(flag);
-                self.pi_extension_launched = true;
             }
             let is_existing = self.apply_session_flags(&mut tool_cmd, "sandboxed", stores)?;
             apply_agent_launch_env(&mut tool_cmd, agent);
@@ -512,11 +527,37 @@ impl Instance {
                 shell_escape(&profile),
                 shell_escape(&self.id)
             ));
-            if let Some((_, ref env)) = pi_extension {
+            if let Some(agent) = agent {
+                env_info
+                    .docker_args
+                    .push_str(&format!(" -e AOE_AGENT_BIN={}", shell_escape(agent.binary)));
+            }
+            if let Some(&(key, expected)) = agent.and_then(|agent| {
+                agent
+                    .container_env
+                    .iter()
+                    .find(|(key, _)| *key == "PRIME_AGENT_CODING_AGENT_DIR")
+            }) {
+                env_info
+                    .docker_args
+                    .push_str(&format!(" -e {key}={}", shell_escape(expected)));
+            }
+            if let Some((_, ref env)) = identity_extension {
                 // `KEY=VALUE ` from the host form, passed as a docker `-e`.
                 env_info
                     .docker_args
                     .push_str(&format!(" -e {}", shell_escape(env.trim())));
+            }
+            if extension_configured {
+                let root_only = matches!(
+                    extension_backend.and_then(|backend| backend.identity_publisher()),
+                    Some(crate::agents::SessionIdentityPublisher::Extension { root_only: true })
+                );
+                env_info.docker_args.push_str(if root_only {
+                    " -e AOE_SESSION_ROOT_ONLY=1"
+                } else {
+                    " -e AOE_SESSION_ROOT_ONLY=0"
+                });
             }
             let env_part = format!("{} ", env_info.docker_args);
             let raw_command = container.exec_command(Some(&env_part), &tool_cmd);
@@ -584,14 +625,14 @@ impl Instance {
         stores: CaptureStorage<'_>,
         config: &crate::session::LaunchConfig,
     ) -> Result<(Option<String>, bool, Option<OmpCapturePlan>)> {
-        let pi_extension = self.pi_extension_launch(config);
-        self.build_host_command_with_pi_extension(agent, pi_extension, stores)
+        let identity_extension = self.identity_extension_launch(config);
+        self.build_host_command_with_identity_extension(agent, identity_extension, stores)
     }
 
-    fn build_host_command_with_pi_extension(
+    fn build_host_command_with_identity_extension(
         &mut self,
         agent: Option<&'static crate::agents::AgentDef>,
-        pi_extension: Option<(String, String)>,
+        identity_extension: Option<(String, String)>,
         stores: CaptureStorage<'_>,
     ) -> Result<(Option<String>, bool, Option<OmpCapturePlan>)> {
         // Resolve after `on_launch`. The snapshot is checked inside the
@@ -606,9 +647,10 @@ impl Instance {
         // A verified direct Pi command publishes through the same extension
         // whether it came from the built-in command or an exact alias.
         self.pi_extension_launched = false;
-        if let Some((_, ref env)) = pi_extension {
+        if let Some((_, ref env)) = identity_extension {
             env_prefix.push_str(env);
             self.pi_extension_launched = true;
+            env_prefix.push_str("AOE_SESSION_ROOT_ONLY=0 ");
         }
         let env_prefix = env_prefix;
 
@@ -616,7 +658,7 @@ impl Instance {
             match crate::agents::get_agent(&self.tool) {
                 Some(a) => {
                     let mut cmd = a.launch_base_command();
-                    if let Some((ref flag, _)) = pi_extension {
+                    if let Some((ref flag, _)) = identity_extension {
                         cmd.push_str(flag);
                     }
                     if !self.extra_args.is_empty() {
@@ -653,7 +695,7 @@ impl Instance {
             }
         } else {
             let mut cmd = self.command.clone();
-            if let Some((ref flag, _)) = pi_extension {
+            if let Some((ref flag, _)) = identity_extension {
                 cmd.push_str(flag);
             }
             if !self.extra_args.is_empty() {
@@ -683,7 +725,31 @@ impl Instance {
 }
 
 #[cfg(test)]
+impl Instance {
+    /// Test-only `prepare_launch_command` without a store: the prime-agent
+    /// session-id tests only need the command line, never the pi sidecar path.
+    pub(super) fn prepare_launch_command_for_test(&mut self) -> Result<PreparedLaunch> {
+        let expected_prior_sid = self.agent_session_id.clone();
+        let expected_prior_intent = self.resume_intent.clone();
+        let expected_prior_omp_generation = self.omp_capture_generation.clone();
+        let (command, is_existing, omp_capture_plan, launch_env) = self.build_launch_command(
+            CaptureStorage::Profiles(&crate::file_watch::FileWatchService::noop()),
+        )?;
+        Ok(PreparedLaunch {
+            command,
+            is_existing,
+            omp_capture_plan,
+            launch_env,
+            expected_prior_sid,
+            expected_prior_intent,
+            expected_prior_omp_generation,
+        })
+    }
+}
+
+#[cfg(test)]
 mod tests {
+    use super::*;
 
     // The sidecar env var has to survive into the docker argv, not just be
     // computed: nothing in CI runs a container to catch it going missing.
@@ -692,7 +758,7 @@ mod tests {
     fn sandboxed_pi_launch_line_carries_the_sidecar_env() {
         let (_guard, _base, _tmp) = crate::hooks::test_support::BaseGuard::ready();
         let temp_home = tempfile::tempdir().unwrap();
-        let _home = crate::session::test_support::EnvGuard::set(&[("HOME", temp_home.path())]);
+        let _home = crate::session::test_support::isolate_home(temp_home.path());
 
         let project = temp_home.path().join("proj");
         std::fs::create_dir_all(&project).unwrap();
@@ -703,7 +769,7 @@ mod tests {
             container_id: None,
             image: "test:latest".to_string(),
             container_name: "aoe-pi-argv".to_string(),
-            extra_env: None,
+            extra_env: Some(vec!["AOE_SESSION_ROOT_ONLY=1".to_string()]),
             custom_instruction: None,
             container_workdir: Some("/workspace".to_string()),
             before_start_env: Vec::new(),
@@ -717,7 +783,7 @@ mod tests {
         let cmd = cmd.expect("a command");
         assert!(
             cmd.contains(&format!(
-                "AOE_PI_SESSION_ID_FILE={}/{}/session_id",
+                "AOE_SESSION_ID_FILE={}/{}/session_id",
                 crate::session::config::container_config::PI_SIDECAR_DIR_IN_CONTAINER,
                 inst.id
             )),
@@ -726,6 +792,10 @@ mod tests {
         assert!(
             !cmd.contains(" -e /") || !cmd.contains("aoe-session-id.js"),
             "no `-e` path may reach a container launch: {cmd}"
+        );
+        assert!(
+            cmd.contains(" -e AOE_SESSION_ROOT_ONLY=0"),
+            "the launch override must keep Pi out of Prime-only mode: {cmd}"
         );
     }
 
@@ -740,7 +810,7 @@ mod tests {
         // The extension is written under `HOME`, so this owns one: the
         // global lock keeps it from racing another test's `HOME` swap.
         let temp_home = tempfile::tempdir().unwrap();
-        let _home = crate::session::test_support::EnvGuard::set(&[("HOME", temp_home.path())]);
+        let _home = crate::session::test_support::isolate_home(temp_home.path());
 
         let mut inst = Instance::new("pi-sandbox", "/tmp/pi-sandbox");
         inst.tool = "pi".to_string();
@@ -756,7 +826,7 @@ mod tests {
         });
 
         let (flag, env) = inst
-            .pi_extension_launch(&crate::session::storage::local_launch_configuration(
+            .identity_extension_launch(&crate::session::storage::local_launch_configuration(
                 &inst.effective_profile(),
                 std::path::Path::new(&inst.project_path),
             ))
@@ -765,7 +835,7 @@ mod tests {
         assert_eq!(
             env.trim(),
             format!(
-                "AOE_PI_SESSION_ID_FILE={}/{}/session_id",
+                "AOE_SESSION_ID_FILE={}/{}/session_id",
                 crate::session::config::container_config::PI_SIDECAR_DIR_IN_CONTAINER,
                 inst.id
             )
@@ -783,11 +853,11 @@ mod tests {
         let agent = inst.resolved_agent();
 
         let (command, _, _) = inst
-            .build_host_command_with_pi_extension(
+            .build_host_command_with_identity_extension(
                 agent,
                 Some((
                     " -e '/tmp/pi-aoe-session-id.js'".to_string(),
-                    "AOE_PI_SESSION_ID_FILE='/tmp/pi-session-id' ".to_string(),
+                    "AOE_SESSION_ID_FILE='/tmp/pi-session-id' ".to_string(),
                 )),
                 CaptureStorage::Profiles(&crate::file_watch::FileWatchService::noop()),
             )
@@ -795,7 +865,8 @@ mod tests {
         let command = command.unwrap();
 
         assert!(command.contains(" -e "), "missing Pi extension: {command}");
-        assert!(command.contains("AOE_PI_SESSION_ID_FILE="));
+        assert!(command.contains("AOE_SESSION_ID_FILE="));
+        assert!(command.contains("AOE_SESSION_ROOT_ONLY=0"));
         assert!(inst.pi_extension_launched);
     }
 
@@ -814,7 +885,7 @@ mod tests {
             &inst.effective_profile(),
             std::path::Path::new(&inst.project_path),
         );
-        assert!(inst.pi_extension_launch(&config).is_none());
+        assert!(inst.identity_extension_launch(&config).is_none());
         let (command, _, _) = inst
             .build_host_command(
                 agent,
@@ -828,7 +899,7 @@ mod tests {
         let command = command.unwrap();
 
         assert!(!command.contains("pi-aoe-session-id.js"));
-        assert!(!command.contains("AOE_PI_SESSION_ID_FILE="));
+        assert!(!command.contains("AOE_SESSION_ID_FILE="));
         assert!(!inst.pi_extension_launched);
     }
 
@@ -857,8 +928,6 @@ mod tests {
         assert!(!command.contains(" -e "), "extension follows --: {command}");
         assert!(!inst.pi_extension_launched);
     }
-
-    use super::*;
 
     use crate::session::test_support::EnvGuard;
 
@@ -1009,9 +1078,12 @@ mod tests {
             "wrapped command failed: {}",
             String::from_utf8_lossy(&output.stderr),
         );
+        // `pwd` prints the logical path on BSD and the physical one under GNU
+        // coreutils, so compare the directories rather than their spellings.
+        let printed = String::from_utf8_lossy(&output.stdout);
         assert_eq!(
-            String::from_utf8_lossy(&output.stdout).trim(),
-            working_dir.to_string_lossy(),
+            std::path::Path::new(printed.trim()).canonicalize().unwrap(),
+            working_dir.canonicalize().unwrap(),
         );
     }
 

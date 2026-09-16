@@ -2897,13 +2897,12 @@ mod tests {
         inst.agent_name = Some("aoe-no-such-agent-1027".to_string());
         inst
     }
-
-    /// Keep worker-registry reads isolated for the fixture’s entire lifetime.
+    /// entries. The returned guard owns environment restoration.
     async fn capacity_test_state(
         id: &str,
     ) -> (
-        Arc<crate::server::AppState>,
         crate::session::test_support::AppDirGuard,
+        Arc<crate::server::AppState>,
         tempfile::TempDir,
     ) {
         use crate::server::test_support::build_test_app_state;
@@ -2911,7 +2910,7 @@ mod tests {
         let project = tempfile::TempDir::new().unwrap();
         let inst = structured_instance(id, &project.path().to_string_lossy());
         let state = build_test_app_state(vec![inst]);
-        (state, home, project)
+        (home, state, project)
     }
 
     async fn run_tick(
@@ -2962,7 +2961,7 @@ mod tests {
     #[tokio::test]
     #[serial_test::serial]
     async fn a_late_restart_marker_clears_the_budget_and_is_consumed() {
-        let (state, _home, _project) = capacity_test_state("s-late-marker").await;
+        let (_home, state, _project) = capacity_test_state("s-late-marker").await;
 
         let mut attempted = HashSet::new();
         let mut respawn_history: HashMap<String, Vec<Instant>> = HashMap::new();
@@ -3007,7 +3006,7 @@ mod tests {
     #[tokio::test]
     #[serial_test::serial]
     async fn a_drained_stale_respawn_keeps_the_restart_marker_of_its_generation() {
-        let (state, _home, _project) = capacity_test_state("s-drain").await;
+        let (_home, state, _project) = capacity_test_state("s-drain").await;
         state
             .acp_supervisor
             .test_install_attached(
@@ -3042,7 +3041,7 @@ mod tests {
     #[tokio::test]
     #[serial_test::serial]
     async fn a_startup_failure_rearms_the_pinned_session_under_budget() {
-        let (state, _home, _project) = capacity_test_state("s-startup-failed").await;
+        let (_home, state, _project) = capacity_test_state("s-startup-failed").await;
 
         let mut attempted = HashSet::new();
         let mut respawn_history: HashMap<String, Vec<Instant>> = HashMap::new();
@@ -3091,7 +3090,7 @@ mod tests {
     #[serial_test::serial]
     async fn rate_limit_resume_backs_off_after_a_failed_attempt() {
         let id = "sess-3514-backoff";
-        let (state, _home, _project) = parked_at_streak(id, 0).await;
+        let (_home, state, _project) = parked_at_streak(id, 0).await;
         state
             .acp_supervisor
             .publish_rate_limit_auto_resumed(id, chrono::Utc::now(), false);
@@ -3115,7 +3114,7 @@ mod tests {
     #[serial_test::serial]
     async fn resume_loop_holds_a_parked_session_behind_a_startup_error() {
         let id = "sess-3514-hold";
-        let (state, _home, _project) = parked_at_streak(id, 0).await;
+        let (_home, state, _project) = parked_at_streak(id, 0).await;
         let app_dir = crate::session::get_app_dir().expect("isolated app dir");
         std::fs::write(
             app_dir.join("config.toml"),
@@ -3161,7 +3160,7 @@ mod tests {
     #[serial_test::serial]
     async fn prompt_wake_closes_an_orphaned_turn_before_resuming() {
         let id = "sess-3686-orphan";
-        let (state, _home, _project) = capacity_test_state(id).await;
+        let (_home, state, _project) = capacity_test_state(id).await;
         state
             .acp_event_store
             .record(
@@ -3207,7 +3206,7 @@ mod tests {
     #[tokio::test]
     #[serial_test::serial]
     async fn resume_one_rechecks_eligibility_under_the_lease() {
-        let (state, _home, _project) = capacity_test_state("s-archived-late").await;
+        let (_home, state, _project) = capacity_test_state("s-archived-late").await;
         let target = super::ResumeTarget {
             id: "s-archived-late".into(),
             tool: "claude".into(),
@@ -3260,7 +3259,7 @@ mod tests {
     #[tokio::test]
     #[serial_test::serial]
     async fn no_marker_leaves_an_attempted_id_skipped() {
-        let (state, _home, _project) = capacity_test_state("s-no-marker").await;
+        let (_home, state, _project) = capacity_test_state("s-no-marker").await;
 
         let mut attempted = HashSet::new();
         let mut respawn_history: HashMap<String, Vec<Instant>> = HashMap::new();
@@ -3298,7 +3297,7 @@ mod tests {
     #[tokio::test]
     #[serial_test::serial]
     async fn capacity_deferred_rearms_attempted_and_retries_next_tick() {
-        let (state, _home, _project) = capacity_test_state("s-cap").await;
+        let (_home, state, _project) = capacity_test_state("s-cap").await;
         state.acp_supervisor.test_insert_worker("occupant").await;
 
         let mut attempted = HashSet::new();
@@ -3348,7 +3347,7 @@ mod tests {
     #[tokio::test]
     #[serial_test::serial]
     async fn capacity_deferred_publishes_once_across_ticks() {
-        let (state, _home, _project) = capacity_test_state("s-once").await;
+        let (_home, state, _project) = capacity_test_state("s-once").await;
         state.acp_supervisor.test_insert_worker("occupant").await;
 
         let mut attempted = HashSet::new();
@@ -3380,7 +3379,7 @@ mod tests {
     #[tokio::test]
     #[serial_test::serial]
     async fn capacity_deferred_pop_preserves_prior_crash_history() {
-        let (state, _home, _project) = capacity_test_state("s-hist").await;
+        let (_home, state, _project) = capacity_test_state("s-hist").await;
         state.acp_supervisor.test_insert_worker("occupant").await;
 
         let mut attempted = HashSet::new();
@@ -3417,7 +3416,7 @@ mod tests {
     #[tokio::test]
     #[serial_test::serial]
     async fn capacity_deferred_clears_marker_when_slot_frees() {
-        let (state, _home, _project) = capacity_test_state("s-free").await;
+        let (_home, state, _project) = capacity_test_state("s-free").await;
         state.acp_supervisor.test_insert_worker("occupant").await;
 
         let mut attempted = HashSet::new();
@@ -3466,7 +3465,7 @@ mod tests {
     #[tokio::test]
     #[serial_test::serial]
     async fn capacity_deferred_cleared_by_is_running_branch() {
-        let (state, _home, _project) = capacity_test_state("s-oob").await;
+        let (_home, state, _project) = capacity_test_state("s-oob").await;
         state.acp_supervisor.test_insert_worker("occupant").await;
 
         let mut attempted = HashSet::new();
@@ -3544,6 +3543,7 @@ mod tests {
     /// a worker the resume pass deliberately never respawns while dormant.
     #[tokio::test]
     async fn drain_queued_prompts_wakes_a_dormant_session_with_a_queue() {
+        let _app_dir = crate::session::test_support::isolate_app_dir();
         use super::drain_queued_prompts;
         use crate::daemon::QueuedPromptEntry;
         use crate::server::test_support::build_test_app_state;
@@ -3603,12 +3603,12 @@ mod tests {
         id: &str,
         redeliveries: usize,
     ) -> (
-        Arc<crate::server::AppState>,
         crate::session::test_support::AppDirGuard,
+        Arc<crate::server::AppState>,
         tempfile::TempDir,
     ) {
         use crate::acp::Event;
-        let (state, home, project) = capacity_test_state(id).await;
+        let (home, state, project) = capacity_test_state(id).await;
         // The pass is a no-op for a profile that did not opt in, and these
         // instances carry the default (empty) profile, so the opt-in goes in
         // the global config the isolated HOME above now owns.
@@ -3667,7 +3667,7 @@ mod tests {
             .session_service
             .set_pending_initial_turn(id, "run the nightly task".into(), Vec::new())
             .await;
-        (state, home, project)
+        (home, state, project)
     }
 
     async fn pending_turn(state: &Arc<crate::server::AppState>, id: &str) -> Option<String> {
@@ -3713,7 +3713,7 @@ mod tests {
             } else {
                 "sess-3688-unqueued"
             };
-            let (state, _home, _project) = capacity_test_state(id).await;
+            let (_home, state, _project) = capacity_test_state(id).await;
             let app_dir = crate::session::get_app_dir().expect("isolated app dir");
             std::fs::write(
                 app_dir.join("config.toml"),
@@ -3781,7 +3781,7 @@ mod tests {
     #[serial_test::serial]
     async fn rate_limit_reap_resumes_below_the_cap() {
         let id = "sess-3688-under";
-        let (state, _home, _project) =
+        let (_home, state, _project) =
             parked_at_streak(id, RATE_LIMIT_AUTO_RESUME_MAX_REDELIVERIES as usize - 1).await;
         let mut attempted: HashSet<String> = [id.to_string()].into();
 
@@ -3808,7 +3808,7 @@ mod tests {
     #[serial_test::serial]
     async fn rate_limit_reap_parks_at_the_cap() {
         let id = "sess-3688-cap";
-        let (state, _home, _project) =
+        let (_home, state, _project) =
             parked_at_streak(id, RATE_LIMIT_AUTO_RESUME_MAX_REDELIVERIES as usize).await;
         let mut attempted: HashSet<String> = [id.to_string()].into();
 
@@ -3836,7 +3836,7 @@ mod tests {
     #[serial_test::serial]
     async fn rate_limit_reap_keeps_the_continuation_when_the_cas_refuses() {
         let id = "sess-3688-cas";
-        let (state, _home, _project) =
+        let (_home, state, _project) =
             parked_at_streak(id, RATE_LIMIT_AUTO_RESUME_MAX_REDELIVERIES as usize).await;
         // Stand in for a publish landing between the probe and the CAS: the
         // counter has moved on from the log's newest seq.
@@ -3864,7 +3864,7 @@ mod tests {
     #[serial_test::serial]
     async fn rate_limit_reap_yields_to_a_manual_resume_holding_the_instance_lock() {
         let id = "sess-3688-lock";
-        let (state, _home, _project) =
+        let (_home, state, _project) =
             parked_at_streak(id, RATE_LIMIT_AUTO_RESUME_MAX_REDELIVERIES as usize).await;
         let held = state.instance_lock(id).await;
         let _guard = held.lock().await;

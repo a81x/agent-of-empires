@@ -44,7 +44,7 @@ import {
   Trash2,
 } from "lucide-react";
 
-import { ensureThemeLoaded, getHighlighter, langKeyForExt, loadLanguage } from "../../lib/highlighter";
+import { highlightSnippet } from "../../lib/snippetHighlighter";
 import { useShikiTheme } from "../../hooks/useShikiTheme";
 import { hasAnsi, parseAnsi, type AnsiStyle } from "../../lib/ansi";
 import { parseJsonObject, pickFirst, pickStr, todoItemsFromArgs } from "../../lib/acpArgs";
@@ -654,13 +654,17 @@ function unwrapMarkdownFence(text: string): {
 }
 
 function HighlightedBlock({ text, language, maxLines = 20 }: { text: string; language?: string; maxLines?: number }) {
-  const [html, setHtml] = useState<string | null>(null);
+  // Keyed by the inputs that produced it, so a superseded request resolving
+  // before its effect cleanup renders nothing. Theme is left out of the key
+  // so a theme switch keeps the old palette until the re-highlight lands.
+  const [result, setResult] = useState<{ key: string; html: string } | null>(null);
   const [showAll, setShowAll] = useState(false);
   const shiki = useShikiTheme();
   const unwrapped = unwrapMarkdownFence(text);
   const effectiveText = unwrapped.text;
   const effectiveLang = unwrapped.lang ?? language;
   const { shown, truncated } = truncateLines(effectiveText, showAll ? 1_000_000 : maxLines);
+  const inputKey = `${effectiveLang ?? ""} ${shown}`;
 
   // ANSI fast path: when the text carries SGR escape sequences (e.g.
   // `gls --color=always`, `git status --color=always`), Shiki's bash
@@ -675,24 +679,23 @@ function HighlightedBlock({ text, language, maxLines = 20 }: { text: string; lan
     if (!effectiveLang) return;
     (async () => {
       try {
-        const langKey = langKeyForExt(effectiveLang) ?? effectiveLang;
-        await loadLanguage(langKey);
-        const resolvedTheme = await ensureThemeLoaded(shiki.theme, shiki.appearance);
-        const hl = await getHighlighter();
-        if (cancelled) return;
-        const out = hl.codeToHtml(shown, {
-          lang: langKey,
-          theme: resolvedTheme,
+        const out = await highlightSnippet(shown, {
+          langHint: effectiveLang,
+          theme: shiki.theme,
+          appearance: shiki.appearance,
         });
-        setHtml(out);
+        if (cancelled || !out) return;
+        setResult({ key: inputKey, html: out });
       } catch {
-        // unknown language; fall back to plain
+        // Unknown language → fall back to plain.
       }
     })();
     return () => {
       cancelled = true;
     };
-  }, [effectiveLang, shown, shiki.theme, shiki.appearance, ansi]);
+  }, [effectiveLang, shown, inputKey, shiki.theme, shiki.appearance, ansi]);
+
+  const html = result && result.key === inputKey ? result.html : null;
 
   return (
     <div className="border-t border-surface-800 bg-surface-950">
@@ -729,11 +732,28 @@ function AnsiBlock({ text }: { text: string }) {
   const segments = useMemo(() => parseAnsi(text), [text]);
   return (
     <pre className="overflow-x-auto px-3 py-2 text-xs font-mono text-text-primary whitespace-pre">
-      {segments.map((seg, i) => (
-        <span key={i} style={ansiSegmentStyle(seg.style)}>
-          {seg.text}
-        </span>
-      ))}
+      {segments.map((seg, i) => {
+        // Tool output is agent-controlled, so a hyperlink target answers to
+        // the same scheme policy as every other link on this card; a rejected
+        // target keeps its visible text and loses only the anchor.
+        const href = seg.url ? safeUri(seg.url, SAFE_LINK_SCHEMES) : null;
+        return href ? (
+          <a
+            key={i}
+            href={href}
+            target="_blank"
+            rel="noopener noreferrer"
+            style={ansiSegmentStyle(seg.style)}
+            className="underline"
+          >
+            {seg.text}
+          </a>
+        ) : (
+          <span key={i} style={ansiSegmentStyle(seg.style)}>
+            {seg.text}
+          </span>
+        );
+      })}
     </pre>
   );
 }

@@ -59,7 +59,7 @@ impl ToolSession {
             &crate::tmux::NameShape {
                 prefix: &prefix,
                 suffix: &suffix,
-                excluded_prefixes: &[],
+                kind: crate::tmux::SessionKind::Tool,
             },
         )
     }
@@ -194,10 +194,11 @@ impl ToolSession {
             ";".into(),
             "set-option".into(),
             "-t".into(),
-            target,
+            target.clone(),
             "@aoe_tool_owner".into(),
             serde_json::to_string(&(instance_id, tool_name))?,
         ]);
+        crate::tmux::append_session_kind_args(&mut args, &target, crate::tmux::SessionKind::Tool);
 
         let output = crate::tmux::tmux_command().args(&args).output()?;
 
@@ -381,6 +382,7 @@ mod tests {
     #[test]
     #[serial_test::serial]
     fn wait_until_ready_errs_with_pane_tail_when_pane_dies_immediately() {
+        let _env = crate::session::test_support::EnvGuard::read_lock();
         if !tmux_available() {
             eprintln!("Skipping test: tmux not available");
             return;
@@ -401,6 +403,8 @@ mod tests {
         )
         .expect("create_with_size");
 
+        let pane_id = crate::tmux::test_helpers::only_pane_id(tool.session_name());
+        crate::tmux::test_helpers::wait_for_pane_dead(&pane_id);
         let result = tool.wait_until_ready();
 
         assert!(

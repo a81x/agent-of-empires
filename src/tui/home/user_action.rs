@@ -188,32 +188,4 @@ impl HomeView {
         }
         Ok(())
     }
-
-    /// Like `try_mutate_instance`, but writes the mutated clone back even
-    /// when `f` returns `Err`.
-    ///
-    /// Required for callers of `Instance::restart_with_size_opts` /
-    /// `ensure_pane_ready`, because the resume path can mutate
-    /// `agent_session_id`, `resume_probe_failed_sid`, and
-    /// `retroactive_capture_excludes` before returning `Err`. The default
-    /// `try_mutate_instance` drops the mutated clone on `Err`, leaving live
-    /// state inconsistent with disk until a later reload. This helper keeps
-    /// the live state consistent with the attempted restart.
-    pub(in crate::tui) fn try_mutate_instance_writeback_on_err<T>(
-        &mut self,
-        id: &str,
-        f: impl FnOnce(&mut Instance) -> anyhow::Result<T>,
-    ) -> anyhow::Result<Option<T>> {
-        if let Some(inst) = self.instances.get_mut(id) {
-            let mut updated = inst.clone();
-            let result = f(&mut updated);
-            *inst = updated;
-            return result.map(Some);
-        }
-        Ok(None)
-    }
-
-    pub fn set_instance_error(&mut self, id: &str, error: Option<String>) {
-        self.mutate_instance(id, |inst| inst.last_error = error);
-    }
 }

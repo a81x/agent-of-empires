@@ -3,8 +3,12 @@ use crate::session::Status;
 use chrono::Utc;
 
 fn boot_view_with_one_session(title: &str, path: &str) -> (TempDir, AppDirGuard, HomeView, String) {
+    // The daemon-ownership purge path reads the pending-purge journal during
+    // teardown (`protection`), which real startup creates via migration. Seed
+    // it here so the queued deletion can complete once the flock releases.
     let temp = TempDir::new().unwrap();
     let guard = setup_test_home(&temp);
+    crate::session::purge_owners::initialize(&crate::session::get_app_dir().unwrap()).unwrap();
     let storage = Storage::new_unwatched("test").unwrap();
     let inst = Instance::new(title, path);
     let id = inst.id.clone();
@@ -17,7 +21,7 @@ fn boot_view_with_one_session(title: &str, path: &str) -> (TempDir, AppDirGuard,
         .unwrap();
 
     let tools = AvailableTools::with_tools(&["claude"]);
-    let view = HomeView::new(
+    let view = HomeView::new_for_test(
         Some("test".to_string()),
         tools,
         crate::file_watch::FileWatchService::noop(),
@@ -35,17 +39,25 @@ fn delete_action_does_not_wait_for_lifecycle_flock() {
     let storage = Storage::new_unwatched("test").unwrap();
     let lifecycle_lock = storage.acquire_instance_lifecycle_lock(&id).unwrap();
 
-    let started = std::time::Instant::now();
+    // Returning with the flock still held proves this action only enqueues.
     view.delete_selected(&DeleteOptions::default()).unwrap();
-    assert!(
-        started.elapsed() < std::time::Duration::from_millis(100),
-        "the event-loop action must only enqueue deletion"
-    );
     assert_eq!(
         view.get_instance(&id).map(|instance| instance.status),
         Some(crate::session::Status::Deleting)
     );
     drop(lifecycle_lock);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    while !view.apply_deletion_results() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "deletion did not complete"
+        );
+        std::thread::yield_now();
+    }
+    assert!(
+        view.get_instance(&id).is_none(),
+        "queued deletion removed the row"
+    );
 }
 
 #[test]
@@ -519,7 +531,8 @@ fn group_profile_move_reloads_members_and_registers_fallback_source() {
         .unwrap();
     let target = Storage::new_unwatched("beta").unwrap();
     let tools = AvailableTools::with_tools(&["claude"]);
-    let mut view = HomeView::new(None, tools, crate::file_watch::FileWatchService::noop()).unwrap();
+    let mut view =
+        HomeView::new_for_test(None, tools, crate::file_watch::FileWatchService::noop()).unwrap();
     view.mutate_instance(&id, |instance| {
         instance.title = "stale-memory-title".to_string();
         instance.lifecycle_generation = 3;

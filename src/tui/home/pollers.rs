@@ -508,6 +508,11 @@ impl HomeView {
                     } = result;
 
                     self.restart_in_flight.remove(&session_id);
+                    if self.attach_after_restart.remove(&session_id)
+                        && crate::session::restart::launched_agent(&outcome)
+                    {
+                        self.restarted_attaches.push(session_id.clone());
+                    }
 
                     match outcome {
                         Ok(crate::session::StartOutcome::ResumeFailed { sid }) => {
@@ -584,6 +589,7 @@ impl HomeView {
                             "restart poller worker gone; clearing in-flight set",
                         );
                         self.restart_in_flight.clear();
+                        self.attach_after_restart.clear();
                         touched = true;
                     }
                     break;
@@ -598,6 +604,12 @@ impl HomeView {
             }
         }
         touched
+    }
+
+    /// Sessions whose `restart_then_attach` restart launched the agent, for
+    /// the event loop to attach.
+    pub fn take_restarted_attaches(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.restarted_attaches)
     }
 
     /// Identify recovery candidates and spawn a worker pool. Sets

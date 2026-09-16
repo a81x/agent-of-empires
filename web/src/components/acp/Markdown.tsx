@@ -20,7 +20,7 @@ import { useEffect, useMemo, useState } from "react";
 import remarkBreaks from "remark-breaks";
 import remarkGfm from "remark-gfm";
 
-import { ensureThemeLoaded, getHighlighter, langKeyForExt, loadLanguage } from "../../lib/highlighter";
+import { highlightSnippet } from "../../lib/snippetHighlighter";
 import { useShikiTheme } from "../../hooks/useShikiTheme";
 import { parseFileRef, resolveArtifactUrl, resolveToRepoRelative } from "../../lib/fileRef";
 import { useAcpFileRef } from "./AcpFileRefContext";
@@ -226,19 +226,25 @@ function TableWithScroll({ children, ...rest }: React.ComponentPropsWithoutRef<"
  * language is loading or for unknown languages.
  */
 function ShikiSyntaxHighlighter({ language, code }: SyntaxHighlighterProps) {
-  const [html, setHtml] = useState<string | null>(null);
+  // Keyed by the inputs that produced it, so a superseded request resolving
+  // before its effect cleanup renders nothing. Theme is left out of the key
+  // so a theme switch keeps the old palette until the re-highlight lands.
+  const inputKey = `${language ?? ""} ${code}`;
+  const [result, setResult] = useState<{ key: string; html: string } | null>(null);
   const shiki = useShikiTheme();
+
   useEffect(() => {
     let cancelled = false;
     if (!language) return;
     (async () => {
       try {
-        const langKey = langKeyForExt(language) ?? language;
-        await loadLanguage(langKey);
-        const resolvedTheme = await ensureThemeLoaded(shiki.theme, shiki.appearance);
-        const hl = await getHighlighter();
-        if (cancelled) return;
-        setHtml(hl.codeToHtml(code, { lang: langKey, theme: resolvedTheme }));
+        const out = await highlightSnippet(code, {
+          langHint: language,
+          theme: shiki.theme,
+          appearance: shiki.appearance,
+        });
+        if (cancelled || !out) return;
+        setResult({ key: inputKey, html: out });
       } catch {
         // Unknown lang → fall through to plain rendering.
       }
@@ -246,7 +252,9 @@ function ShikiSyntaxHighlighter({ language, code }: SyntaxHighlighterProps) {
     return () => {
       cancelled = true;
     };
-  }, [language, code, shiki.theme, shiki.appearance]);
+  }, [language, code, inputKey, shiki.theme, shiki.appearance]);
+
+  const html = result && result.key === inputKey ? result.html : null;
 
   // `leading-[1.3333]` restores what `text-xs` used to supply here: Tailwind
   // registers `--tw-leading` as `inherits: false`, so the old `text-xs` fell

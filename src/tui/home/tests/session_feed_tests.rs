@@ -500,6 +500,48 @@ fn canonical_favorite_reorder_keeps_cursor_on_selected_session() {
     );
 }
 
+/// A published result is applied exactly once: a tick with no new publication
+/// is a no-op, and a fresh publication after a completed apply is picked up.
+#[test]
+#[serial]
+fn applied_feed_result_is_consumed_exactly_once() {
+    let mut env = create_test_env_empty();
+    let id = structured_row(&mut env, Status::Idle);
+
+    // No publication yet: nothing to apply, no redraw.
+    assert!(!env.view.apply_session_feed());
+    assert!(!env.view.apply_session_feed());
+
+    env.view
+        .session_feed
+        .publish_for_test(daemon_snapshot(&id, "Running"));
+    assert!(
+        env.view.apply_session_feed(),
+        "a fresh publication asks for a redraw"
+    );
+    assert_eq!(
+        env.view.get_instance(&id).map(|i| i.status),
+        Some(Status::Running)
+    );
+    assert_eq!(env.view.sidebar_source, SidebarSource::Daemon);
+
+    // The completed apply is consumed: a tick with no new publication is a no-op.
+    assert!(
+        !env.view.apply_session_feed(),
+        "a consumed result must not re-apply on the next tick"
+    );
+
+    // A new publication after the completed apply is picked up again.
+    env.view
+        .session_feed
+        .publish_for_test(daemon_snapshot(&id, "Stopped"));
+    assert!(env.view.apply_session_feed());
+    assert_eq!(
+        env.view.get_instance(&id).map(|i| i.status),
+        Some(Status::Stopped)
+    );
+}
+
 /// The regression that made this producer necessary in the first place,
 /// surviving in a reachable path: stopping a structured session persists
 /// `Stopped`, `open_structured_view` does not clear it, and

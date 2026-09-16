@@ -19,10 +19,8 @@ use crate::session::Status;
 #[cfg(not(test))]
 const DEFAULT_DEBOUNCE_MS: u64 = 100;
 
-/// Test-only debounce override so unit tests can exercise the synchronous
-/// path (0) or a short debounce window without real 100ms sleeps. Tests
-/// touching it are `#[serial]` because it is process-global, like the
-/// recorded-launches buffer.
+/// Test-only override selecting synchronous dispatch or gated debounce workers.
+/// Mutating tests share the serial group with the recorded-launches buffer.
 #[cfg(test)]
 static TEST_DEBOUNCE_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
@@ -407,7 +405,6 @@ pub fn take_recorded_launches() -> Vec<RecordedLaunch> {
 mod tests {
     use super::*;
     use serial_test::serial;
-
     /// RAII guard restoring the test debounce override to 0 (the synchronous
     /// path other tests rely on) even when an assertion panics.
     struct DebounceOverride;

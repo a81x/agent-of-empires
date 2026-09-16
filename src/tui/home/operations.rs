@@ -406,6 +406,8 @@ impl HomeView {
             }
         }
 
+        let tool_swapped = new_tool.is_some_and(|tool| tool != restart_edit_authoritative.tool);
+
         // A cross-profile restart is staged entirely on a detached candidate.
         // In particular, do not persist a tool swap into the source row before
         // the target transaction has accepted the complete candidate.
@@ -512,6 +514,9 @@ impl HomeView {
             instance,
             size,
             wake_message,
+            skip_on_launch: false,
+            bound_hooks: true,
+            discard_sandbox_container: tool_swapped,
         });
         Ok(())
     }

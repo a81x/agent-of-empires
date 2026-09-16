@@ -6,6 +6,11 @@ import { useShikiTheme } from "../../../hooks/useShikiTheme";
  * Provides a shared off-main-thread highlighter worker pool for the diff
  * renderer, so syntax highlighting of large diffs doesn't block the UI.
  *
+ * The non-diff panes highlight through the shared main-thread highlighter in
+ * `lib/snippetHighlighter.ts` instead, since a worker round-trip isn't worth
+ * it for short snippets; both paths resolve languages/themes through the
+ * same `@pierre/diffs` registry.
+ *
  * Keyed by the active Shiki theme so a theme switch re-initializes the pool
  * with the new theme. When `Worker` is unavailable (SSR / jsdom tests) it
  * renders children directly; the diff components then highlight on the main

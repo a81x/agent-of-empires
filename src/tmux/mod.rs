@@ -5,6 +5,7 @@ pub(crate) mod detect;
 pub(crate) mod env;
 pub(crate) mod osc8;
 mod session;
+mod session_kind;
 pub mod status_bar;
 pub(crate) mod status_detection;
 pub(crate) mod status_rules;
@@ -26,6 +27,8 @@ pub use status_detection::{
 pub use terminal_session::{ContainerTerminalSession, TerminalSession};
 pub use tool_session::ToolSession;
 pub use utils::{attach_return_hint, tmux_prefix_display};
+
+pub(crate) use session_kind::{append_session_kind_args, SessionKind};
 
 /// OSC 8 hyperlinks the live VT channel for `session` has seen, oldest first.
 /// Always empty off unix, where there is no channel and the capture fallback
@@ -365,8 +368,30 @@ static SESSION_CACHE: RwLock<SessionCache> = RwLock::new(SessionCache {
     outcome: SessionCacheRefresh::Unknown,
 });
 
+/// One live tmux session, as the shared `list-sessions` scan sees it.
+#[derive(Debug, Clone)]
+pub(crate) struct LiveSession {
+    /// tmux's `#{session_activity}` epoch seconds.
+    activity: i64,
+    /// The kind this session was stamped with at creation, absent for a
+    /// session created before [`session_kind::KIND_OPTION`] existed.
+    kind: Option<SessionKind>,
+}
+
+#[cfg(test)]
+impl LiveSession {
+    /// A session as an older build (or a tmux that never answered the option)
+    /// leaves it: present, with nothing recorded about its kind.
+    fn unmarked() -> Self {
+        Self {
+            activity: 0,
+            kind: None,
+        }
+    }
+}
+
 struct SessionCache {
-    data: Option<HashMap<String, i64>>,
+    data: Option<HashMap<String, LiveSession>>,
     time: Option<Instant>,
     refresh_id: u64,
     outcome: SessionCacheRefresh,
@@ -451,10 +476,17 @@ impl TmuxCommandDeadline {
         run_tmux_command_with_timeout_inner(cmd, remaining)
     }
 }
+#[cfg(test)]
+thread_local! {
+    static TMUX_COMMAND_EXECUTIONS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
 fn run_tmux_command_with_timeout_inner(
     cmd: &mut Command,
     timeout: Duration,
 ) -> std::io::Result<Output> {
+    #[cfg(test)]
+    TMUX_COMMAND_EXECUTIONS.with(|count| count.set(count.get() + 1));
     cmd.stdin(Stdio::null());
     match crate::process::run_with_timeout(cmd, timeout)? {
         Some(output) => Ok(output),
@@ -530,7 +562,7 @@ fn next_refresh_id(counter: &std::sync::atomic::AtomicU64) -> u64 {
 
 fn publish_session_cache(
     refresh_id: u64,
-    data: Option<HashMap<String, i64>>,
+    data: Option<HashMap<String, LiveSession>>,
     outcome: SessionCacheRefresh,
     respect_forced_guard: bool,
 ) -> SessionCacheRefresh {
@@ -555,23 +587,134 @@ fn publish_session_cache(
     cache.outcome = outcome;
     outcome
 }
+/// One authoritative scan, parsed: the same command and parser the shared
+/// cache uses, for a caller that needs a fresh answer rather than the cache's.
+/// `None` when the tmux server could not be reached, which is not evidence
+/// that anything is absent.
+pub(crate) fn probe_live_sessions() -> Option<HashMap<String, LiveSession>> {
+    let output = run_tmux_command_with_timeout(&mut session_scan_command()).ok()?;
+    output
+        .status
+        .success()
+        .then(|| parse_session_scan(&String::from_utf8_lossy(&output.stdout)))
+}
+
+/// Every live session as `(name, kind marker)` pairs, the shape the id
+/// lookups take.
+pub(crate) fn marked_names(
+    sessions: &HashMap<String, LiveSession>,
+) -> impl Iterator<Item = (&str, Option<&str>)> {
+    sessions
+        .iter()
+        .map(|(name, session)| (name.as_str(), session.kind.map(SessionKind::as_marker)))
+}
+
+/// The one scan every kind-aware lookup reads: the inheritable `@aoe_kind`
+/// scopes (see [`parse_session_scan`]) followed by one line per live session.
+fn session_scan_command() -> Command {
+    let mut command = tmux_query_command();
+    for flags in INHERITABLE_KIND_SCOPES {
+        command.args(["show-options", flags, session_kind::KIND_OPTION, ";"]);
+    }
+    command.args(["list-sessions", "-F", SESSION_SCAN_FORMAT]);
+    command
+}
+
+/// The server-wide option scopes a `list-sessions` `#{@aoe_kind}` reads, as
+/// `show-options` flag sets, each read back so [`parse_session_scan`] can
+/// subtract it.
+///
+/// Measured on tmux 3.6, highest first: `-s` > `-gw` > `-w` > a session's own
+/// value > `-g`. Only `-g` is a fall-through; the rest OVERRIDE the mark aoe
+/// wrote, so a user who sets one does not shadow aoe's answer selectively,
+/// they hide every mark on the server and put the whole fleet back on the
+/// name-shape guess. Subtracting them is therefore never able to discard a
+/// legitimate mark: when they are set, no legitimate mark is visible anyway.
+///
+/// `-w` and `-p` reach the format too but are per-window and per-pane, so a
+/// single subtracted value cannot cover them. Setting `@aoe_kind` yourself
+/// stays unsupported (`docs/guides/tmux-status-bar.md`).
+const INHERITABLE_KIND_SCOPES: [&str; 3] = ["-gqv", "-sqv", "-gwqv"];
+
+const SESSION_SCAN_FORMAT: &str = "#{session_name}|#{session_activity}|#{@aoe_kind}";
+
+/// Whether a scan line is a session rather than one of the leading
+/// [`INHERITABLE_KIND_SCOPES`] values.
+///
+/// A session line is `<name>|<activity>|<marker>`, so its second field is
+/// always `#{session_activity}`'s integer. Testing that rather than the mere
+/// presence of a [`FIELD_SEP`] keeps a scope value that happens to contain one
+/// from ending the scope block early, which would leave every later scope
+/// unsubtracted and hand a paired terminal the agent's kind.
+fn is_session_line(line: &str) -> bool {
+    let mut fields = line.split(FIELD_SEP);
+    fields.next();
+    fields
+        .next()
+        .is_some_and(|activity| activity.parse::<i64>().is_ok())
+}
+
+/// Parse the [`session_scan_command`] output.
+///
+/// A session line is `<name>|<activity>|<kind marker>`, the marker empty for a
+/// session with no mark, so a line that is short or empty there is an unmarked
+/// session and not a parse failure.
+///
+/// The leading lines are the [`INHERITABLE_KIND_SCOPES`] values, printed only
+/// for a scope the user set one in and told apart by [`is_session_line`].
+/// They have to be subtracted: a session that sets none of its own reads the
+/// broadest scope that is set, so a user who sets one would otherwise mark
+/// their whole server as agents and a paired terminal would pass as an agent
+/// pane. A session whose value merely equals one of them is treated as
+/// unmarked, which is the name-shape fallback rather than a wrong answer.
+///
+/// aoe-created names are sanitized to `[A-Za-z0-9_-]`, but the shared server
+/// also carries foreign sessions, whose names tmux does allow `|` in. Such a
+/// name splits into a nonsense key that no `_<id8>` lookup can match, which is
+/// the same outcome it had before the kind field existed.
+fn parse_session_scan(stdout: &str) -> HashMap<String, LiveSession> {
+    let mut lines = stdout.lines().peekable();
+    let mut inherited: Vec<&str> = Vec::new();
+    while let Some(line) = lines.next_if(|line| !is_session_line(line)) {
+        if !line.is_empty() {
+            inherited.push(line);
+        }
+    }
+
+    let mut map = HashMap::new();
+    for line in lines {
+        let Some((name, rest)) = line.split_once(FIELD_SEP) else {
+            continue;
+        };
+        let (activity, marker) = match rest.split_once(FIELD_SEP) {
+            Some((activity, marker)) => (activity, Some(marker)),
+            None => (rest, None),
+        };
+        map.insert(
+            name.to_string(),
+            LiveSession {
+                activity: activity.parse().unwrap_or(0),
+                kind: marker
+                    .filter(|marker| !inherited.contains(marker))
+                    .and_then(SessionKind::from_marker),
+            },
+        );
+    }
+    map
+}
+
 pub fn refresh_session_cache() -> SessionCacheRefresh {
     let refresh_id = next_refresh_id(&SESSION_REFRESH_ID);
     let start = Instant::now();
-    let mut command = tmux_query_command();
-    command.args(["list-sessions", "-F", "#{session_name}|#{session_activity}"]);
+    let mut command = session_scan_command();
     let output = run_tmux_command_with_timeout(&mut command);
     let (new_data, outcome) = match output {
         Ok(out) if out.status.success() => {
             let stdout = String::from_utf8_lossy(&out.stdout);
-            let mut map = HashMap::new();
-            for line in stdout.lines() {
-                if let Some((name, activity)) = line.split_once(FIELD_SEP) {
-                    let activity: i64 = activity.parse().unwrap_or(0);
-                    map.insert(name.to_string(), activity);
-                }
-            }
-            (Some(map), SessionCacheRefresh::Populated)
+            (
+                Some(parse_session_scan(&stdout)),
+                SessionCacheRefresh::Populated,
+            )
         }
         Ok(out) if tmux_no_server_running(&out.stderr) => {
             tracing::trace!(target: "tmux.cache", "no tmux server running; cache cleared");
@@ -731,10 +874,6 @@ fn id_suffix(session_id: &str) -> String {
     format!("_{}", crate::cli::truncate_id(session_id, 8))
 }
 
-/// Auxiliary kinds whose prefixes nest under `SESSION_PREFIX`, so the agent
-/// shape has to exclude them explicitly.
-const AGENT_EXCLUDED_PREFIXES: &[&str] = &[TERMINAL_PREFIX, CONTAINER_TERMINAL_PREFIX, TOOL_PREFIX];
-
 /// How one kind of aoe tmux session's name is shaped for one session id, so a
 /// live session can still be found after the title embedded in the name has
 /// gone stale. Every name of a given kind is
@@ -747,9 +886,12 @@ const AGENT_EXCLUDED_PREFIXES: &[&str] = &[TERMINAL_PREFIX, CONTAINER_TERMINAL_P
 pub(crate) struct NameShape<'a> {
     pub prefix: &'a str,
     pub suffix: &'a str,
-    /// Prefixes nesting under `prefix` that must never be adopted. Empty for
-    /// every kind but the agent, whose `aoe_` prefixes all the others.
-    pub excluded_prefixes: &'a [&'a str],
+    /// The kind a name of this shape belongs to. A live session is matched
+    /// against this rather than against the prefix alone: the auxiliary
+    /// prefixes nest under `SESSION_PREFIX`, and a sanitized title can carry
+    /// a name into another kind's shape, so only [`SessionKind`] separates
+    /// them (see [`session_kind`]).
+    pub kind: SessionKind,
 }
 
 impl NameShape<'_> {
@@ -759,38 +901,42 @@ impl NameShape<'_> {
         NameShape {
             prefix: SESSION_PREFIX,
             suffix,
-            excluded_prefixes: AGENT_EXCLUDED_PREFIXES,
+            kind: SessionKind::Agent,
         }
     }
 
-    /// The paired-terminal shape for a session id. `TERMINAL_PREFIX` does not
-    /// nest under any other kind's prefix, so nothing is excluded.
+    /// The paired-terminal shape for a session id.
     pub(crate) fn terminal<'a>(suffix: &'a str) -> NameShape<'a> {
         NameShape {
             prefix: TERMINAL_PREFIX,
             suffix,
-            excluded_prefixes: &[],
+            kind: SessionKind::Terminal,
         }
     }
 
-    /// The container-terminal shape for a session id. `CONTAINER_TERMINAL_PREFIX`
-    /// does not nest under any other kind's prefix, so nothing is excluded.
+    /// The container-terminal shape for a session id.
     pub(crate) fn container<'a>(suffix: &'a str) -> NameShape<'a> {
         NameShape {
             prefix: CONTAINER_TERMINAL_PREFIX,
             suffix,
-            excluded_prefixes: &[],
+            kind: SessionKind::ContainerTerminal,
         }
     }
 
-    /// True when `name` has this shape. A name whose sanitized title pushes it
-    /// under an excluded prefix fails here, so it never resolves and callers
-    /// keep their title-derived name: mistaking a paired terminal for the agent
-    /// pane would be worse than not resolving at all.
-    fn matches(&self, name: &str) -> bool {
+    /// True when the live session `name`, stamped with kind marker `marker`,
+    /// is this shape's session for this id. `marker` is `None` for a session
+    /// created before [`session_kind::KIND_OPTION`] existed, which classifies
+    /// by name shape and so cannot tell an agent titled `term Foo` from the
+    /// paired terminal of a row titled `Foo`.
+    fn matches_marked(&self, name: &str, marker: Option<&str>) -> bool {
         name.starts_with(self.prefix)
             && name.ends_with(self.suffix)
-            && !self.excluded_prefixes.iter().any(|p| name.starts_with(p))
+            && SessionKind::of(name, marker) == Some(self.kind)
+    }
+
+    /// [`Self::matches_marked`] for a caller holding only the name.
+    fn matches(&self, name: &str) -> bool {
+        self.matches_marked(name, None)
     }
 }
 
@@ -803,6 +949,10 @@ impl NameShape<'_> {
 pub fn agent_session_belongs_to(tmux_name: &str, session_id: &str) -> bool {
     NameShape::agent(&id_suffix(session_id)).matches(tmux_name)
 }
+
+/// A live session's name paired with the kind marker the scan read for it,
+/// absent for a session created before the marker existed.
+pub(crate) type MarkedSessionName = (String, Option<SessionKind>);
 
 /// One tmux observation shared by a batch of per-instance liveness lookups.
 ///
@@ -826,12 +976,12 @@ pub fn agent_session_belongs_to(tmux_name: &str, session_id: &str) -> bool {
 /// that only needs session names never forks `list-panes`.
 ///
 /// An unreachable server is preserved rather than collapsed into "absent":
-/// [`Self::names`] returns `None`, so a one-shot caller that cannot retry can
-/// tell Unknown from Absent and probe per row instead (see
+/// [`LiveSessionSnapshot::sessions`] returns `None`, so a one-shot caller that
+/// cannot retry can tell Unknown from Absent and probe per row instead (see
 /// `Instance::tmux_env_session_name_in_or_probe`).
 #[derive(Default)]
 pub(crate) struct LiveSessionSnapshot {
-    names: OnceLock<Option<Vec<String>>>,
+    sessions: OnceLock<Option<Vec<MarkedSessionName>>>,
     panes: OnceLock<Option<HashMap<String, PaneMetadata>>>,
 }
 
@@ -849,29 +999,50 @@ impl LiveSessionSnapshot {
         names: Option<Vec<String>>,
         panes: Option<HashMap<String, PaneMetadata>>,
     ) -> Self {
+        Self::from_marked_parts(
+            names.map(|names| names.into_iter().map(|name| (name, None)).collect()),
+            panes,
+        )
+    }
+
+    /// [`Self::from_parts`] for a test that needs the sessions stamped with
+    /// the kind marker a live scan would have read.
+    #[cfg(test)]
+    pub(crate) fn from_marked_parts(
+        names: Option<Vec<MarkedSessionName>>,
+        panes: Option<HashMap<String, PaneMetadata>>,
+    ) -> Self {
         let snapshot = Self::new();
-        let _ = snapshot.names.set(names);
+        let _ = snapshot.sessions.set(names);
         let _ = snapshot.panes.set(panes);
         snapshot
     }
 
-    /// Live session names, or None when the tmux server could not be reached.
-    /// The fresh observation also warms the display cache, so TUI startup can
-    /// reuse this pass instead of issuing another list-sessions command.
-    pub(crate) fn names(&self) -> Option<&[String]> {
-        self.names
+    /// Live session names paired with the kind each was stamped with, or
+    /// `None` when the tmux server could not be reached. The fresh
+    /// observation also warms the display cache, so TUI startup can reuse
+    /// this pass instead of issuing another list-sessions command.
+    pub(crate) fn sessions(&self) -> Option<&[MarkedSessionName]> {
+        self.sessions
             .get_or_init(|| {
                 if refresh_session_cache() != SessionCacheRefresh::Populated {
                     return None;
                 }
                 SESSION_CACHE.read().ok().and_then(|cache| {
-                    cache
-                        .data
-                        .as_ref()
-                        .map(|sessions| sessions.keys().cloned().collect())
+                    cache.data.as_ref().map(|sessions| {
+                        sessions
+                            .iter()
+                            .map(|(name, session)| (name.clone(), session.kind))
+                            .collect()
+                    })
                 })
             })
             .as_deref()
+    }
+
+    /// [`Self::sessions`] for a caller that only needs the names.
+    pub(crate) fn names(&self) -> Option<impl Iterator<Item = &str>> {
+        Some(self.sessions()?.iter().map(|(name, _)| name.as_str()))
     }
 
     /// Whether `name`'s first pane is dead, mirroring `utils::is_pane_dead`
@@ -890,31 +1061,37 @@ impl LiveSessionSnapshot {
     }
 }
 
-/// The live AGENT session name for `session_id`, ignoring a paired terminal or
-/// container pane. The session-id poller needs this rather than
-/// [`live_any_kind_name_for_id_in`]: seeded with a terminal name, it probes
-/// that pane as alive and holds a budget slot for an agent that is gone.
-///
-/// Fails closed on one case, deliberately. A title sanitizing under
-/// [`AGENT_EXCLUDED_PREFIXES`] gives an agent name `NameShape::agent` refuses,
-/// so that session gets no poller repair. Accepting the instance's own derived
-/// name instead would reopen the leak: `aoe_term_Foo_<id>` is both the agent
-/// name for title `term_Foo` and the paired-terminal name for title `Foo`, so a
-/// smart rename across that boundary makes the surviving terminal
-/// indistinguishable from the agent by name alone, and nothing durable on the
-/// pane records which kind it is.
+/// The unique live agent pane for a poller seed. Marked panes use their durable
+/// kind; legacy unmarked panes retain name-shape filtering. Multiple live
+/// matches are ambiguous and cannot safely seed a poller.
 pub(crate) fn live_agent_name_for_id_in(
     snapshot: &LiveSessionSnapshot,
     session_id: &str,
 ) -> Option<String> {
-    let names = snapshot.names()?;
+    live_agent_name_for_id(
+        snapshot
+            .sessions()?
+            .iter()
+            .map(|(name, kind)| (name.as_str(), kind.map(SessionKind::as_marker))),
+        session_id,
+        |name| snapshot.pane_dead(name),
+    )
+}
+
+/// [`live_agent_name_for_id_in`] against a scan the caller has just taken,
+/// as `(name, kind marker)` pairs.
+pub(crate) fn live_agent_name_for_id<'a>(
+    live: impl IntoIterator<Item = (&'a str, Option<&'a str>)>,
+    session_id: &str,
+    pane_dead: impl Fn(&str) -> bool,
+) -> Option<String> {
     let suffix = id_suffix(session_id);
     let agent = NameShape::agent(&suffix);
-    names
-        .iter()
-        .map(String::as_str)
-        .find(|name| agent.matches(name) && !snapshot.pane_dead(name))
-        .map(str::to_string)
+    let mut matches = live
+        .into_iter()
+        .filter(|(name, marker)| agent.matches_marked(name, *marker) && !pane_dead(name));
+    let (name, _) = matches.next()?;
+    matches.next().is_none().then(|| name.to_owned())
 }
 
 /// [`live_any_kind_name_for_id`] against an already-taken snapshot, so a batch
@@ -923,28 +1100,14 @@ pub(crate) fn live_any_kind_name_for_id_in(
     snapshot: &LiveSessionSnapshot,
     session_id: &str,
 ) -> Option<String> {
-    let names = snapshot.names()?;
-    let suffix = id_suffix(session_id);
-    let agent = NameShape::agent(&suffix);
-    let terminal = NameShape::terminal(&suffix);
-    let container = NameShape::container(&suffix);
-    let (mut agent_hit, mut terminal_hit, mut container_hit) = (None, None, None);
-    for name in names {
-        let name = name.as_str();
-        let bucket = if agent.matches(name) {
-            &mut agent_hit
-        } else if terminal.matches(name) {
-            &mut terminal_hit
-        } else if container.matches(name) {
-            &mut container_hit
-        } else {
-            continue;
-        };
-        if bucket.is_none() && !snapshot.pane_dead(name) {
-            *bucket = Some(name.to_string());
-        }
-    }
-    agent_hit.or(terminal_hit).or(container_hit)
+    let sessions = snapshot.sessions()?;
+    live_any_kind_name_for_id(
+        sessions
+            .iter()
+            .map(|(name, kind)| (name.as_str(), kind.map(SessionKind::as_marker))),
+        session_id,
+        |name| snapshot.pane_dead(name),
+    )
 }
 
 /// The live tmux session name carrying `session_id`'s `_<id8>` tail, preferring
@@ -955,29 +1118,38 @@ pub(crate) fn live_any_kind_name_for_id_in(
 /// where any live pane for the id is evidence the session exists. Matching runs
 /// through [`NameShape`] so the name shapes stay the single source of truth.
 pub(crate) fn live_any_kind_name_for_id<'a>(
-    live_names: impl IntoIterator<Item = &'a str>,
+    live: impl IntoIterator<Item = (&'a str, Option<&'a str>)>,
     session_id: &str,
+    pane_dead: impl Fn(&str) -> bool,
 ) -> Option<String> {
     let suffix = id_suffix(session_id);
     let agent = NameShape::agent(&suffix);
     let terminal = NameShape::terminal(&suffix);
     let container = NameShape::container(&suffix);
     let (mut agent_hit, mut terminal_hit, mut container_hit) = (None, None, None);
-    for name in live_names {
-        let bucket = if agent.matches(name) {
+    for (name, marker) in live {
+        let bucket = if agent.matches_marked(name, marker) {
             &mut agent_hit
-        } else if terminal.matches(name) {
+        } else if terminal.matches_marked(name, marker) {
             &mut terminal_hit
-        } else if container.matches(name) {
+        } else if container.matches_marked(name, marker) {
             &mut container_hit
         } else {
             continue;
         };
-        if bucket.is_none() && !utils::is_pane_dead(name) {
+        if bucket.is_none() && !pane_dead(name) {
             *bucket = Some(name.to_string());
         }
     }
     agent_hit.or(terminal_hit).or(container_hit)
+}
+
+/// Name-only pairs for a caller with no kind markers to offer.
+#[cfg(test)]
+fn unmarked<'a>(
+    names: impl IntoIterator<Item = &'a str>,
+) -> impl Iterator<Item = (&'a str, Option<&'a str>)> {
+    names.into_iter().map(|name| (name, None))
 }
 
 /// The tmux session name to act on for one of a session's panes, resolved
@@ -991,23 +1163,28 @@ pub(crate) fn live_any_kind_name_for_id<'a>(
 /// and keeps `create` from spawning a second pane beside it. Two candidates are
 /// ambiguous, so `derived` wins there as well.
 pub(crate) fn resolve_session_name<'a>(
-    live_names: impl IntoIterator<Item = &'a str>,
+    live: impl IntoIterator<Item = (&'a str, Option<&'a str>)>,
     derived: &'a str,
     shape: &NameShape,
 ) -> &'a str {
     let mut adopted: Option<&str> = None;
     let mut ambiguous = false;
     let mut derived_is_live = false;
-    for name in live_names {
-        // Test `derived` on its own rather than through the shape: a title that
-        // sanitizes under an excluded prefix makes the derived name fail
-        // `matches`, and a live derived name must still win over an older
-        // session rather than be filtered out of its own match.
+    for (name, marker) in live {
+        // Test `derived` on its own rather than through the shape: an
+        // unmarked session whose sanitized title lands under another kind's
+        // prefix fails the shape, and a live derived name must still win over
+        // an older session rather than be filtered out of its own match. A
+        // session that SAYS it is another kind is the exception: a title moved
+        // across an auxiliary prefix leaves a paired terminal holding what is
+        // now the agent's derived name, and adopting it points the operation
+        // at the wrong pane.
         if name == derived {
-            derived_is_live = true;
+            derived_is_live = SessionKind::from_marker(marker.unwrap_or_default())
+                .is_none_or(|kind| kind == shape.kind);
             continue;
         }
-        if !shape.matches(name) {
+        if !shape.matches_marked(name, marker) {
             continue;
         }
         if adopted.replace(name).is_some() {
@@ -1043,14 +1220,22 @@ pub(crate) fn agent_pane_metadata_in<'a>(
     pane_metadata_for_shape(panes, &derived, &NameShape::agent(&id_suffix(id)))
 }
 
-/// `resolve_session_name` for the agent pane, against `live_names`.
+/// `resolve_session_name` for the agent pane, against names alone: with no
+/// kind marker every name falls back to its shape, which cannot separate an
+/// agent titled `term Foo` from a paired terminal. Callers reading the shared
+/// scan resolve through `live_session_name`, which does have the markers.
 pub fn resolve_agent_session_name<'a>(
     live_names: impl IntoIterator<Item = &'a str>,
     session_id: &str,
     derived: &'a str,
 ) -> String {
     let suffix = id_suffix(session_id);
-    resolve_session_name(live_names, derived, &NameShape::agent(&suffix)).to_owned()
+    resolve_session_name(
+        live_names.into_iter().map(|name| (name, None)),
+        derived,
+        &NameShape::agent(&suffix),
+    )
+    .to_owned()
 }
 
 /// [`resolve_agent_session_name`] against a [`batch_pane_metadata`] snapshot
@@ -1113,17 +1298,30 @@ pub fn live_agent_session_name(session_id: &str, derived: &str) -> String {
 }
 
 fn resolve_session_name_from_snapshot(
-    names: Option<&HashMap<String, i64>>,
+    sessions: Option<&HashMap<String, LiveSession>>,
     derived: &str,
     shape: &NameShape,
 ) -> String {
-    let Some(names) = names else {
+    let Some(sessions) = sessions else {
         return derived.to_string();
     };
-    if names.contains_key(derived) {
+    // Fast path only when the live derived name is also this kind: a session
+    // marked as another kind has to go through the scan, which looks for the
+    // one this shape is actually asking for.
+    if sessions
+        .get(derived)
+        .is_some_and(|session| session.kind.is_none_or(|kind| kind == shape.kind))
+    {
         return derived.to_string();
     }
-    resolve_session_name(names.keys().map(String::as_str), derived, shape).to_owned()
+    resolve_session_name(
+        sessions
+            .iter()
+            .map(|(name, session)| (name.as_str(), session.kind.map(SessionKind::as_marker))),
+        derived,
+        shape,
+    )
+    .to_owned()
 }
 
 /// Resolve from the current authoritative cache snapshot without spawning.
@@ -1468,7 +1666,7 @@ pub(crate) fn observed_window_size_from_cache(session_name: &str) -> Option<((u1
 pub fn test_inject_session_into_cache(name: &str) {
     if let Ok(mut cache) = SESSION_CACHE.write() {
         let map = cache.data.get_or_insert_with(HashMap::new);
-        map.insert(name.to_string(), 0);
+        map.insert(name.to_string(), LiveSession::unmarked());
         cache.time = Some(Instant::now());
     }
 }
@@ -1567,7 +1765,7 @@ pub(crate) mod fork_probe {
 /// cache is process-global.
 #[cfg(test)]
 pub(crate) struct SessionCacheGuard {
-    prev_data: Option<HashMap<String, i64>>,
+    prev_data: Option<HashMap<String, LiveSession>>,
     prev_time: Option<Instant>,
     prev_refresh_id: u64,
     prev_outcome: SessionCacheRefresh,
@@ -1614,7 +1812,12 @@ impl SessionCacheGuard {
     /// Force a fresh "server reachable" snapshot containing exactly `names`.
     pub(crate) fn force_present(&self, names: &[&str]) {
         if let Ok(mut cache) = SESSION_CACHE.write() {
-            cache.data = Some(names.iter().map(|n| (n.to_string(), 0)).collect());
+            cache.data = Some(
+                names
+                    .iter()
+                    .map(|n| (n.to_string(), LiveSession::unmarked()))
+                    .collect(),
+            );
             cache.time = Some(Instant::now());
             cache.outcome = SessionCacheRefresh::Populated;
         }
@@ -1831,7 +2034,11 @@ pub fn session_exists_from_cache(name: &str) -> Option<bool> {
 /// `aoe ps`, not a liveness decision.
 pub fn session_activity(name: &str) -> Option<i64> {
     let cache = SESSION_CACHE.read().ok()?;
-    cache.data.as_ref()?.get(name).copied()
+    cache
+        .data
+        .as_ref()?
+        .get(name)
+        .map(|session| session.activity)
 }
 
 /// Tri-state result of probing whether an aoe tmux session exists, per
@@ -2406,12 +2613,32 @@ pub(crate) fn is_binary_on_path(binary: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// Cheap availability probe without a login shell. `Some(_)` is definitive:
-/// an explicit path either exists or it doesn't, and a direct `which` /
-/// version-run hit proves the agent is present. `None` means "not found on
-/// the inherited PATH", which is inconclusive because version-manager PATHs
-/// (NVM, etc.) only materialize inside a login shell; the caller decides
-/// whether to pay for that fallback.
+const AGENT_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+const LOGIN_SHELL_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+
+fn agent_probe_output(
+    command: &mut Command,
+    timeout: std::time::Duration,
+) -> Option<std::process::Output> {
+    match crate::process::run_with_timeout_process_group(
+        command.stdin(std::process::Stdio::null()),
+        timeout,
+    ) {
+        Ok(output) => {
+            if output.is_none() {
+                tracing::warn!(
+                    program = ?command.get_program(),
+                    timeout_s = timeout.as_secs(),
+                    "agent availability probe timed out; process group terminated"
+                );
+            }
+            output
+        }
+        Err(_) => None,
+    }
+}
+
+/// A direct miss or timeout permits a login-shell fallback; a missing explicit path does not.
 fn agent_available_direct(agent: &crate::agents::AgentDef) -> Option<bool> {
     use crate::agents::DetectionMethod;
     match &agent.detection {
@@ -2419,11 +2646,8 @@ fn agent_available_direct(agent: &crate::agents::AgentDef) -> Option<bool> {
             if binary.contains('/') || binary.contains('\\') {
                 return Some(std::path::Path::new(binary).exists());
             }
-            let found = Command::new("which")
-                .arg(binary)
-                .output()
-                .map(|o| o.status.success())
-                .unwrap_or(false);
+            let found = agent_probe_output(Command::new("which").arg(binary), AGENT_PROBE_TIMEOUT)
+                .is_some_and(|output| output.status.success());
             if found {
                 Some(true)
             } else {
@@ -2431,11 +2655,8 @@ fn agent_available_direct(agent: &crate::agents::AgentDef) -> Option<bool> {
             }
         }
         DetectionMethod::RunWithArg(binary, arg) => {
-            let ok = Command::new(binary)
-                .arg(arg)
-                .output()
-                .map(|o| o.status.success())
-                .unwrap_or(false);
+            let ok = agent_probe_output(Command::new(binary).arg(arg), AGENT_PROBE_TIMEOUT)
+                .is_some_and(|output| output.status.success());
             if ok {
                 Some(true)
             } else {
@@ -2484,74 +2705,55 @@ fn parse_login_shell_probe(stdout: &str) -> std::collections::HashSet<String> {
         .collect()
 }
 
-/// Probe every agent in `agents` inside ONE login shell, returning the agent
-/// names that resolved. The login shell itself is the expensive part (it
-/// re-runs the user's whole profile: nvm, rbenv, ...; 0.5-2.5s is common),
-/// so the cost must stay one shell per call regardless of how many agents
-/// need the fallback. Probing each missing agent in its own login shell made
-/// TUI startup hang for 5-10s once the built-in agent roster grew.
+/// One shell amortizes 0.5–2.5s profile startup, avoiding measured 5–10s startup stalls
+/// from per-agent shells. Its longer deadline accommodates slow profiles such as nvm.
 fn login_shell_probe(agents: &[&crate::agents::AgentDef]) -> std::collections::HashSet<String> {
     if agents.is_empty() {
         return std::collections::HashSet::new();
     }
     let shell = crate::session::user_shell();
-    Command::new(&shell)
-        .args(["-lc", &login_shell_probe_script(agents)])
-        .output()
-        .map(|o| parse_login_shell_probe(&String::from_utf8_lossy(&o.stdout)))
-        .unwrap_or_default()
+    agent_probe_output(
+        Command::new(&shell).args(["-lc", &login_shell_probe_script(agents)]),
+        LOGIN_SHELL_PROBE_TIMEOUT,
+    )
+    .map(|o| parse_login_shell_probe(&String::from_utf8_lossy(&o.stdout)))
+    .unwrap_or_default()
 }
 
-/// Process-wide memo of agent availability, keyed by agent name with the
-/// publication instant. A probe costs a `which` fork and, when that misses, a
-/// share of a login shell (0.5-2.5s), so re-probing on every settings field
-/// rebuild made `Settings > Agents` and every keystroke in
-/// `Settings > Search` pay seconds. Startup's `AvailableTools::detect` warms
-/// every built-in agent, so later callers hit the memo. The Recheck action
-/// clears it via [`invalidate_agent_availability`].
-///
-/// Entries expire after [`AGENT_AVAILABILITY_TTL`]: only the TUI Recheck
-/// paths can clear the memo on demand, and a long-running daemon serves
-/// `/api/agents` from this same process-wide memo with no Recheck path at
-/// all, so a user who installs or removes an agent in another terminal would
-/// otherwise see the stale answer for the daemon's lifetime.
+/// Process-wide positive and negative availability cache. Startup warms it for
+/// settings and API callers; TTL expiry and Recheck refresh external installations.
 static AGENT_AVAILABILITY: RwLock<Option<HashMap<String, (bool, std::time::Instant)>>> =
     RwLock::new(None);
 
-/// How long a memoized availability answer stays authoritative. Long enough
-/// to absorb a settings keystroke storm without a second login shell; short
-/// enough that a daemon's `/api/agents` reflects an agent installed or
-/// removed elsewhere within a minute.
+/// Refresh external installations without charging every settings keystroke for a probe.
 const AGENT_AVAILABILITY_TTL: std::time::Duration = std::time::Duration::from_secs(60);
 
-/// Serializes cache population so a set of concurrent cold callers costs one
-/// login shell between them rather than one each. `GET /api/agents` runs
-/// `AvailableTools::detect` in `spawn_blocking`, so a dashboard with several
-/// tabs open can issue simultaneous probes; the TUI's settings rebuild can
-/// land in the same window. Held only around the probe, never around a read.
+/// Serialize population across concurrent cold callers, without blocking fresh cache hits.
 static AGENT_PROBE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-/// Number of per-agent availability resolutions actually attempted, for the
-/// contract test: the memo read, memo write, and post-lock re-read are all
-/// observable only through whether a probe ran.
 #[cfg(test)]
-static AGENT_PROBE_CALLS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+thread_local! {
+    static AGENT_PROBE_MISS_GATE: std::cell::RefCell<Option<(
+        std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>,
+    )>> = const { std::cell::RefCell::new(None) };
+    static AGENT_PROBE_LOCK_CONTENDED: std::cell::RefCell<Option<std::sync::mpsc::Sender<()>>> = const { std::cell::RefCell::new(None) };
+}
 
-/// Drop the memoized availability results so the next probe re-runs. Called
-/// when the user explicitly asks for a recheck (they just installed an agent).
-///
-/// Takes `AGENT_PROBE_LOCK` first so an in-flight probe cannot republish its
-/// pre-install results after the clear. Without that, Recheck
-/// (`invalidate` then `detect`) could observe a probe that started before the
-/// install finish writing in between, find the memo populated, skip its own
-/// probe, and report the freshly installed agent as still unavailable, which
-/// is the one thing Recheck exists to prevent. The wait is bounded by the
-/// probe already running, and the caller is about to pay for a probe anyway.
-///
-/// Lock order matches `probe_agents_available` (probe lock, then the memo), so
-/// the two cannot deadlock.
-pub fn invalidate_agent_availability() {
-    let _probe_guard = AGENT_PROBE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+fn lock_agent_probe() -> std::sync::MutexGuard<'static, ()> {
+    #[cfg(test)]
+    if let Some(contended) = AGENT_PROBE_LOCK_CONTENDED.with(|slot| slot.borrow_mut().take()) {
+        return crate::session::test_support::lock_reporting_contention(&AGENT_PROBE_LOCK, || {
+            contended.send(()).expect("contention observer alive")
+        })
+        .unwrap_or_else(|e| e.into_inner());
+    }
+    AGENT_PROBE_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// Clear the memo after any in-flight probe finishes, so it cannot republish stale results.
+/// Lock order matches population: probe lock, then memo.
+pub(crate) fn invalidate_agent_availability() {
+    let _probe_guard = lock_agent_probe();
     if let Ok(mut cache) = AGENT_AVAILABILITY.write() {
         *cache = None;
     }
@@ -2591,10 +2793,13 @@ pub(crate) fn probe_agents_available(
         return found;
     }
 
-    // Serialize the probe itself, then re-read the memo: a caller that queued
-    // behind another's login shell wants that shell's answer, not a second
-    // shell of its own. A poisoned lock is not a reason to skip the probe, so
-    // take the guard either way.
+    #[cfg(test)]
+    if let Some((entered, resume)) = AGENT_PROBE_MISS_GATE.with(|gate| gate.borrow_mut().take()) {
+        let _ = entered.send(());
+        let _ = resume.recv();
+    }
+
+    // A queued caller must consume the preceding probe's publication before starting another.
     let _probe_guard = AGENT_PROBE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let (already_found, uncached) = partition_cached_agents(&uncached);
     found.extend(already_found);
@@ -2607,8 +2812,6 @@ pub(crate) fn probe_agents_available(
     let mut results: Vec<(&str, bool)> = Vec::new();
     let mut needs_shell: Vec<&crate::agents::AgentDef> = Vec::new();
     for agent in uncached {
-        #[cfg(test)]
-        AGENT_PROBE_CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         match agent_available_direct(agent) {
             Some(ok) => results.push((agent.name, ok)),
             None => needs_shell.push(agent),
@@ -2694,95 +2897,146 @@ impl AvailableTools {
 
 #[cfg(test)]
 mod tests {
-    /// Recheck must not race an in-flight probe. `invalidate` has to wait for
-    /// the probe holding `AGENT_PROBE_LOCK` to publish and then clear, or that
-    /// probe's pre-install results survive the clear, the following `detect`
-    /// finds the memo populated, skips its own probe, and reports a freshly
-    /// installed agent as still missing.
-    ///
-    /// Ordering is asserted through a channel rather than a sleep loop, so the
-    /// thread is known to have reached the call before anything is claimed
-    /// about it: an unscheduled thread blocks the first `recv` instead of
-    /// silently satisfying a "still populated" poll.
+    /// Invalidation must clear after an in-flight probe publishes, not before.
     #[test]
     #[serial_test::serial]
     fn invalidate_agent_availability_waits_for_an_in_flight_probe() {
         let memo = AgentAvailabilityGuard::capture();
         memo.seed(crate::agents::AGENTS[0].name, false);
-        assert!(memo.is_populated(), "seeded memo");
-
-        // Stand in for a probe mid-login-shell: holds the probe lock, has not
-        // written its results yet. Declared after `memo` so it drops first,
-        // joining the worker before the memo is restored even on a panic.
-        let (tx, rx) = std::sync::mpsc::channel::<&'static str>();
+        let (contended_tx, contended_rx) = std::sync::mpsc::channel();
+        let (returned_tx, returned_rx) = std::sync::mpsc::channel();
         let mut worker = BlockedProbeWorker::new(
             AGENT_PROBE_LOCK.lock().unwrap_or_else(|e| e.into_inner()),
             std::thread::spawn(move || {
-                tx.send("entered").expect("test receiver alive");
+                AGENT_PROBE_LOCK_CONTENDED.with(|slot| *slot.borrow_mut() = Some(contended_tx));
                 invalidate_agent_availability();
-                tx.send("returned").expect("test receiver alive");
+                returned_tx.send(()).expect("test receiver alive");
             }),
         );
 
-        // Blocks until the thread is definitely running, so the assertion
-        // below cannot pass merely because it never got scheduled.
-        assert_eq!(rx.recv().expect("thread started"), "entered");
-
-        // The probe still holds the lock, so invalidation cannot complete.
-        // This is the assertion: without the lock acquisition it returns
-        // immediately and "returned" arrives well inside the window.
-        assert!(
-            matches!(
-                rx.recv_timeout(std::time::Duration::from_millis(200)),
-                Err(std::sync::mpsc::RecvTimeoutError::Timeout)
-            ),
-            "invalidate completed without waiting for the in-flight probe"
-        );
+        contended_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("invalidator must observe the held probe lock");
+        assert!(matches!(
+            returned_rx.try_recv(),
+            Err(std::sync::mpsc::TryRecvError::Empty)
+        ));
         assert!(
             memo.is_populated(),
-            "and the memo still stands while it waits"
+            "memo survives the contested lock decision"
         );
 
         worker.release_and_join();
-        assert_eq!(rx.recv().expect("invalidate completes"), "returned");
+        returned_rx.recv().expect("invalidate completes");
         assert!(
             !memo.is_populated(),
-            "invalidate must clear once the in-flight probe releases the lock"
+            "invalidate clears after the probe releases its lock"
         );
     }
 
-    /// The memo re-read that makes queueing behind another caller's login
-    /// shell free. `probe_agents_available` partitions once before taking
-    /// `AGENT_PROBE_LOCK` and again after; without the second partition a
-    /// waiter would run its own shell for agents the holder just resolved.
-    #[test]
-    #[serial_test::serial]
-    fn partition_cached_agents_reads_the_memo_so_a_queued_prober_reprobes_nothing() {
-        // Two real built-ins, so the names line up with what the memo keys on.
-        let defs: Vec<&crate::agents::AgentDef> = crate::agents::AGENTS.iter().take(2).collect();
-        let (a, b) = (defs[0].name, defs[1].name);
+    // Unrelated tests can launch tools without holding EnvGuard's process-wide lock.
+    #[cfg(unix)]
+    fn run_probe_test_in_subprocess() -> bool {
+        const CHILD_ENV: &str = "AOE_AGENT_PROBE_TEST_CHILD";
+        let thread = std::thread::current();
+        let test = thread.name().expect("named test thread");
+        if std::env::var_os(CHILD_ENV).as_deref() == Some(std::ffi::OsStr::new(test)) {
+            return false;
+        }
+        let home = tempfile::tempdir().unwrap();
+        let mut command = Command::new(std::env::current_exe().unwrap());
+        command
+            .args(["--exact", test, "--nocapture"])
+            .env_clear()
+            .env(CHILD_ENV, test)
+            .env("HOME", home.path())
+            .env("PATH", "/usr/bin:/bin")
+            .stdin(std::process::Stdio::null());
+        let output = crate::process::run_with_timeout_process_group(
+            &mut command,
+            std::time::Duration::from_secs(60),
+        )
+        .unwrap()
+        .expect("isolated probe test timed out");
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        true
+    }
 
+    #[cfg(unix)]
+    fn probe_environment(home: &std::path::Path) -> crate::session::test_support::EnvGuard {
+        use std::os::unix::fs::PermissionsExt;
+        let bin = home.join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let log = shell_words::quote(home.join("probes").to_str().unwrap()).into_owned();
+        for (name, script) in [
+            (
+                "which",
+                format!("#!/bin/sh\nprintf 'which:%s\\n' \"$1\" >> {log}\n[ \"$1\" = claude ]\n"),
+            ),
+            (
+                "vibe",
+                format!("#!/bin/sh\nprintf 'version\\n' >> {log}\nexit 1\n"),
+            ),
+            (
+                "login-shell",
+                format!("#!/bin/sh\nprintf 'login\\n' >> {log}\nexit 0\n"),
+            ),
+        ] {
+            let path = bin.join(name);
+            std::fs::write(&path, script).unwrap();
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        crate::session::test_support::EnvGuard::set(&[
+            ("HOME", home.to_path_buf()),
+            ("XDG_CONFIG_HOME", home.join(".config")),
+            ("XDG_DATA_HOME", home.join(".local/share")),
+            ("PATH", bin.clone()),
+            ("SHELL", bin.join("login-shell")),
+        ])
+    }
+
+    #[test]
+    #[cfg(unix)]
+    #[serial_test::serial]
+    fn queued_agent_probe_reuses_results_published_after_its_cache_miss() {
+        if run_probe_test_in_subprocess() {
+            return;
+        }
+        let home = tempfile::tempdir().unwrap();
+        let _env = probe_environment(home.path());
         let memo = AgentAvailabilityGuard::capture();
         memo.clear();
-
-        // Empty memo: nothing is answered, everything needs a probe.
-        let (found, uncached) = partition_cached_agents(&defs);
-        assert!(found.is_empty());
-        assert_eq!(uncached.len(), 2);
-
-        // Stand in for the lock holder having just published its results, one
-        // available and one not, so both polarities are covered.
-        memo.seed(a, true);
-        memo.seed(b, false);
-
-        let (found, uncached) = partition_cached_agents(&defs);
-        assert!(
-            uncached.is_empty(),
-            "a memoized answer, either polarity, must not be re-probed"
-        );
-        assert_eq!(found.len(), 1);
-        assert!(found.contains(a), "an available agent is reported found");
-        assert!(!found.contains(b), "an absent agent is answered, not found");
+        let agents = [
+            crate::agents::get_agent("claude").unwrap(),
+            crate::agents::get_agent("vibe").unwrap(),
+        ];
+        std::thread::scope(|scope| {
+            let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+            let (resume_tx, resume_rx) = std::sync::mpsc::channel();
+            let queued = scope.spawn(move || {
+                AGENT_PROBE_MISS_GATE
+                    .with(|gate| *gate.borrow_mut() = Some((entered_tx, resume_rx)));
+                probe_agents_available(&agents)
+            });
+            entered_rx
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .unwrap();
+            let found = probe_agents_available(&agents);
+            assert_eq!(found, HashSet::from(["claude".to_owned()]));
+            let completed_probes = std::fs::read_to_string(home.path().join("probes")).unwrap();
+            drop(resume_tx);
+            assert_eq!(queued.join().unwrap(), found);
+            assert_eq!(
+                std::fs::read_to_string(home.path().join("probes")).unwrap(),
+                completed_probes,
+                "the queued caller must start no redundant external probes"
+            );
+        });
     }
 
     use super::test_helpers::TmuxTestSession;
@@ -2793,53 +3047,153 @@ mod tests {
     // test bodies cover both.
     const P: &str = SESSION_PREFIX;
 
-    /// The contract test the review asked for: it exercises
-    /// `probe_agents_available` itself, so removing the memo read (the warm
-    /// call would probe again), the memo write (the warm call would probe
-    /// again), or the post-lock re-read (a queued prober would probe what the
-    /// holder published) makes this fail. Agents are real built-ins; the
-    /// probe counter counts attempts, so runner-dependent outcomes do not
-    /// matter to the assertions.
     #[test]
+    #[cfg(unix)]
     #[serial_test::serial]
-    fn probe_agents_available_contract_is_mutation_sensitive() {
-        use std::sync::atomic::Ordering;
-
-        // Two real built-ins, so the names line up with what the memo keys on
-        // (same fixture as the partition test above). Outcomes on the runner
-        // do not matter to the assertions: the probe counter counts attempts.
-        let defs: Vec<&crate::agents::AgentDef> = crate::agents::AGENTS.iter().take(2).collect();
-
+    fn agent_availability_reuses_warm_results_and_expires_both_polarities() {
+        if run_probe_test_in_subprocess() {
+            return;
+        }
+        let home = tempfile::tempdir().unwrap();
+        let _env = probe_environment(home.path());
         let memo = AgentAvailabilityGuard::capture();
         memo.clear();
-        AGENT_PROBE_CALLS.store(0, Ordering::Relaxed);
-
-        // Cold: every agent is uncached, so each one is probed once and the
-        // results are published to the memo.
-        let _ = probe_agents_available(&defs);
-        let cold_probes = AGENT_PROBE_CALLS.load(Ordering::Relaxed);
-        assert_eq!(cold_probes, 2, "a cold caller probes each uncached agent");
-        assert!(memo.is_populated(), "results must be published to the memo");
-
-        // Warm: the memo read answers everything; no probe may run.
-        let _ = probe_agents_available(&defs);
+        let agents = [
+            crate::agents::get_agent("claude").unwrap(),
+            crate::agents::get_agent("vibe").unwrap(),
+        ];
+        let expected = HashSet::from(["claude".to_owned()]);
+        assert_eq!(probe_agents_available(&agents), expected);
+        let mut probes = std::fs::read_to_string(home.path().join("probes")).unwrap();
+        assert_eq!(probes, "which:claude\nversion\nlogin\n");
+        assert_eq!(probe_agents_available(&agents), expected);
         assert_eq!(
-            AGENT_PROBE_CALLS.load(Ordering::Relaxed),
-            cold_probes,
-            "a fully-cached call must be answered by the memo read alone"
+            std::fs::read_to_string(home.path().join("probes")).unwrap(),
+            probes
         );
+        for (name, added) in [("vibe", "version\nlogin\n"), ("claude", "which:claude\n")] {
+            memo.age_past_ttl(name);
+            assert_eq!(probe_agents_available(&agents), expected);
+            probes.push_str(added);
+            assert_eq!(
+                std::fs::read_to_string(home.path().join("probes")).unwrap(),
+                probes
+            );
+        }
+    }
 
-        // Aged past the TTL: the entry is as good as absent, so the caller
-        // re-probes and republishes.
-        memo.age_past_ttl(defs[0].name);
-        AGENT_PROBE_CALLS.store(0, Ordering::Relaxed);
-        let _ = probe_agents_available(&defs);
-        assert_eq!(
-            AGENT_PROBE_CALLS.load(Ordering::Relaxed),
-            1,
-            "an expired entry must be re-probed, not trusted"
-        );
-        assert!(memo.is_populated(), "the re-probe republishes");
+    #[test]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[serial_test::serial]
+    fn timed_out_agent_probes_release_waiters_and_invalidation() {
+        if run_probe_test_in_subprocess() {
+            return;
+        }
+        use std::time::{Duration, Instant};
+        let diagnostics = tempfile::tempdir().unwrap();
+        let diagnostics_path = diagnostics.path().join("timeouts.log");
+        tracing_subscriber::fmt()
+            .with_ansi(false)
+            .with_max_level(tracing::Level::WARN)
+            .with_writer(std::fs::File::create(&diagnostics_path).unwrap())
+            .try_init()
+            .unwrap();
+        struct ReleaseProbe(std::path::PathBuf);
+        impl Drop for ReleaseProbe {
+            fn drop(&mut self) {
+                let _ = std::fs::write(&self.0, "release");
+            }
+        }
+        for (executable, timeout) in [
+            ("vibe", AGENT_PROBE_TIMEOUT),
+            ("login-shell", LOGIN_SHELL_PROBE_TIMEOUT),
+        ] {
+            let home = tempfile::tempdir().unwrap();
+            let _env = probe_environment(home.path());
+            let memo = AgentAvailabilityGuard::capture();
+            memo.clear();
+            let release = home.path().join("release");
+            let ready = home.path().join("ready");
+            let wait = format!(
+                "while [ ! -e {} ]; do /bin/sleep 0.02; done",
+                shell_words::quote(release.to_str().unwrap())
+            );
+            let script = format!(
+                "#!/bin/sh\n/bin/sh -c {} &\nchild=$!\ntrap 'kill \"$child\" 2>/dev/null; wait \"$child\" 2>/dev/null; exit 1' TERM\nprintf '%s %s\\n' \"$$\" \"$child\" > {}\nwait \"$child\"\nexit 1\n",
+                shell_words::quote(&wait), shell_words::quote(ready.to_str().unwrap()),
+            );
+            std::fs::write(home.path().join("bin").join(executable), script).unwrap();
+            std::thread::scope(|scope| {
+                let _release = ReleaseProbe(release);
+                let (done_tx, done_rx) = std::sync::mpsc::channel();
+                let holder_tx = done_tx.clone();
+                scope.spawn(move || {
+                    let found =
+                        probe_agents_available(&[crate::agents::get_agent("vibe").unwrap()]);
+                    let _ = holder_tx.send(("holder", Some(found)));
+                });
+                let deadline = Instant::now() + Duration::from_secs(5);
+                while !ready.exists() {
+                    assert!(Instant::now() < deadline, "probe child never started");
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+                let waiter_tx = done_tx.clone();
+                scope.spawn(move || {
+                    let found =
+                        probe_agents_available(&[crate::agents::get_agent("claude").unwrap()]);
+                    let _ = waiter_tx.send(("waiter", Some(found)));
+                });
+                scope.spawn(move || {
+                    invalidate_agent_availability();
+                    let _ = done_tx.send(("invalidator", None));
+                });
+                let deadline = Instant::now() + timeout * 2 + Duration::from_secs(2);
+                let mut completed = Vec::new();
+                for _ in 0..3 {
+                    let (name, found) = done_rx
+                        .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+                        .expect("a hung probe must not indefinitely hold callers or Recheck");
+                    match name {
+                        "holder" => assert!(found.unwrap().is_empty()),
+                        "waiter" => {
+                            assert_eq!(found.unwrap(), HashSet::from(["claude".to_owned()]))
+                        }
+                        "invalidator" => {}
+                        _ => unreachable!(),
+                    }
+                    completed.push(name);
+                }
+                completed.sort_unstable();
+                assert_eq!(completed, ["holder", "invalidator", "waiter"]);
+                for (index, pid) in std::fs::read_to_string(&ready)
+                    .unwrap()
+                    .split_whitespace()
+                    .enumerate()
+                {
+                    let output = Command::new("/bin/ps")
+                        .args(["-o", "stat=", "-p", pid])
+                        .output()
+                        .unwrap();
+                    let state = String::from_utf8_lossy(&output.stdout);
+                    assert!(
+                        state.trim().is_empty()
+                            || (index > 0 && state.trim_start().starts_with('Z')),
+                        "probe process {pid} remains alive: {state}"
+                    );
+                }
+            });
+        }
+        let diagnostics = std::fs::read_to_string(diagnostics_path).unwrap();
+        for timeout in [AGENT_PROBE_TIMEOUT, LOGIN_SHELL_PROBE_TIMEOUT] {
+            assert!(
+                diagnostics.lines().any(|line| {
+                    line.contains("WARN")
+                        && line.contains("program=")
+                        && line.contains(&format!("timeout_s={}", timeout.as_secs()))
+                }),
+                "missing timeout diagnostic: {diagnostics}"
+            );
+        }
     }
 
     #[test]
@@ -3040,7 +3394,10 @@ mod tests {
         assert_eq!(
             publish_session_cache(
                 session_newer,
-                Some(HashMap::from([("new-session".to_string(), 0)])),
+                Some(HashMap::from([(
+                    "new-session".to_string(),
+                    LiveSession::unmarked(),
+                )])),
                 SessionCacheRefresh::Populated,
                 false,
             ),
@@ -3149,11 +3506,68 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn tmux_command_timeout_kills_a_stalled_client() {
-        let mut command = Command::new("sh");
-        command.args(["-c", "sleep 5"]);
-        let error = run_tmux_command_with_timeout_inner(&mut command, Duration::from_millis(10))
-            .expect_err("stalled client must time out");
+        use std::io::Read;
+        use std::os::fd::AsRawFd;
+        use std::os::unix::net::UnixStream;
+        use std::os::unix::process::CommandExt;
+
+        struct ClientCleanup(libc::pid_t);
+        impl Drop for ClientCleanup {
+            fn drop(&mut self) {
+                // Only signal a process that is still our unreaped child.
+                unsafe {
+                    if libc::waitpid(self.0, std::ptr::null_mut(), libc::WNOHANG) == 0 {
+                        libc::kill(self.0, libc::SIGKILL);
+                        libc::waitpid(self.0, std::ptr::null_mut(), 0);
+                    }
+                }
+            }
+        }
+
+        let _env = crate::session::test_support::EnvGuard::read_lock();
+        let (mut reader, writer) = UnixStream::pair().unwrap();
+        reader
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        let mut command = Command::new("/bin/sleep");
+        command.arg("30");
+        // pre_exec runs before spawn returns, so even a descheduled exec has an identity.
+        unsafe {
+            command.pre_exec(move || {
+                let pid = libc::getpid().to_ne_bytes();
+                if libc::write(writer.as_raw_fd(), pid.as_ptr().cast(), pid.len())
+                    != pid.len() as isize
+                {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+        let result = run_tmux_command_with_timeout_inner(&mut command, Duration::from_millis(10));
+        let mut pid = [0; std::mem::size_of::<libc::pid_t>()];
+        reader
+            .read_exact(&mut pid)
+            .expect("spawned client's identity");
+        let client = ClientCleanup(libc::pid_t::from_ne_bytes(pid));
+        let error = result.expect_err("stalled client must time out");
         assert_eq!(error.kind(), std::io::ErrorKind::TimedOut);
+        assert_eq!(
+            unsafe { libc::kill(client.0, 0) },
+            -1,
+            "timed-out client is still alive or a zombie"
+        );
+        assert_eq!(
+            std::io::Error::last_os_error().raw_os_error(),
+            Some(libc::ESRCH)
+        );
+        assert_eq!(
+            unsafe { libc::waitpid(client.0, std::ptr::null_mut(), libc::WNOHANG) },
+            -1
+        );
+        assert_eq!(
+            std::io::Error::last_os_error().raw_os_error(),
+            Some(libc::ECHILD)
+        );
     }
 
     #[test]
@@ -3485,17 +3899,23 @@ mod tests {
 
         let all = [agent.as_str(), terminal.as_str(), container.as_str()];
         assert_eq!(
-            live_any_kind_name_for_id(all, ID).as_deref(),
+            live_any_kind_name_for_id(unmarked(all), ID, utils::is_pane_dead).as_deref(),
             Some(agent.as_str()),
             "the agent pane wins when present"
         );
         assert_eq!(
-            live_any_kind_name_for_id([terminal.as_str(), container.as_str()], ID).as_deref(),
+            live_any_kind_name_for_id(
+                unmarked([terminal.as_str(), container.as_str()]),
+                ID,
+                utils::is_pane_dead
+            )
+            .as_deref(),
             Some(terminal.as_str()),
             "the paired terminal is preferred over the container terminal"
         );
         assert_eq!(
-            live_any_kind_name_for_id([container.as_str()], ID).as_deref(),
+            live_any_kind_name_for_id(unmarked([container.as_str()]), ID, utils::is_pane_dead)
+                .as_deref(),
             Some(container.as_str()),
         );
     }
@@ -3531,7 +3951,12 @@ mod tests {
         // And the any-kind lookup still answers it, since peer exclusion and
         // the TUI reload legitimately want any live pane for the id.
         assert_eq!(
-            live_any_kind_name_for_id([terminal.as_str(), container.as_str()], ID).as_deref(),
+            live_any_kind_name_for_id(
+                unmarked([terminal.as_str(), container.as_str()]),
+                ID,
+                utils::is_pane_dead
+            )
+            .as_deref(),
             Some(terminal.as_str()),
         );
 
@@ -3545,6 +3970,229 @@ mod tests {
         assert_eq!(live_agent_name_for_id_in(&snapshot, ID), None);
     }
 
+    /// The scan is where a marker becomes usable at all: a wrong split
+    /// silently unmarks every session and puts the whole fleet back on the
+    /// ambiguous name-shape guess.
+    #[test]
+    fn session_scan_reads_the_kind_field_and_tolerates_its_absence() {
+        let parsed = parse_session_scan(
+            "aoe_Vikings_abcd1234|1789065184|agent\n\
+             aoe_term_Vikings_abcd1234|1789065184|term\n\
+             unmarked_session|1789065184|\n\
+             short_line|1789065184\n\
+             aoe_Weird_abcd1234|1789065184|from-a-newer-build\n\
+             garbage-with-no-separator",
+        );
+
+        assert_eq!(
+            parsed.get("aoe_Vikings_abcd1234").unwrap().kind,
+            Some(SessionKind::Agent)
+        );
+        assert_eq!(
+            parsed.get("aoe_term_Vikings_abcd1234").unwrap().kind,
+            Some(SessionKind::Terminal)
+        );
+        assert_eq!(
+            parsed.get("unmarked_session").unwrap().activity,
+            1789065184,
+            "an empty kind field still carries the session and its activity"
+        );
+        assert_eq!(parsed.get("unmarked_session").unwrap().kind, None);
+        assert_eq!(parsed.get("short_line").unwrap().kind, None);
+        assert_eq!(
+            parsed.get("aoe_Weird_abcd1234").unwrap().kind,
+            None,
+            "a marker this build does not know is not evidence of a kind"
+        );
+        assert!(!parsed.contains_key("garbage-with-no-separator"));
+    }
+
+    /// `#{@aoe_kind}` falls through to the server, global-window and
+    /// global-session options, so a user who sets one would otherwise have
+    /// every unmarked session on their server claim that kind, which is how a
+    /// paired terminal would pass as an agent pane again. The scan prints
+    /// those scopes first so they can be subtracted.
+    #[test]
+    fn an_inherited_kind_option_marks_nothing() {
+        let agent = format!("{P}Vikings{ID8}");
+        let terminal = format!("{TERMINAL_PREFIX}Vikings{ID8}");
+        let scan = format!(
+            "agent\n\
+             {agent}|1789065184|agent\n\
+             {terminal}|1789065184|agent\n\
+             {terminal}_t1|1789065184|term"
+        );
+
+        let parsed = parse_session_scan(&scan);
+        assert_eq!(
+            parsed.get(&terminal).unwrap().kind,
+            None,
+            "a value the global could have produced is not a mark"
+        );
+        assert_eq!(
+            parsed.get(&agent).unwrap().kind,
+            None,
+            "including on a session that really is an agent: unmarked falls \
+             back to the name shape, which is right for it"
+        );
+        assert_eq!(
+            parsed.get(&format!("{terminal}_t1")).unwrap().kind,
+            Some(SessionKind::Terminal),
+            "a value the global cannot explain is still a mark"
+        );
+
+        // Without a global line every mark stands.
+        let parsed = parse_session_scan(&format!("{terminal}|1789065184|agent"));
+        assert_eq!(
+            parsed.get(&terminal).unwrap().kind,
+            Some(SessionKind::Agent)
+        );
+
+        // `#{@aoe_kind}` inherits from the server and global-window scopes as
+        // well, so the scan reads back one line per scope and every value has
+        // to be subtracted, not just the first.
+        let parsed = parse_session_scan(&format!(
+            "term\n\
+             agent\n\
+             {agent}|1789065184|agent\n\
+             {terminal}|1789065184|term\n\
+             {terminal}_t1|1789065184|tool"
+        ));
+        assert_eq!(parsed.get(&agent).unwrap().kind, None);
+        assert_eq!(parsed.get(&terminal).unwrap().kind, None);
+        assert_eq!(
+            parsed.get(&format!("{terminal}_t1")).unwrap().kind,
+            Some(SessionKind::Tool),
+            "a value no scope could have produced is still a mark"
+        );
+
+        // A separator inside one scope's value must not end the scope block:
+        // the scopes are printed in a fixed order, so a `|` in the first one
+        // would otherwise leave the rest unsubtracted and hand this terminal
+        // the agent kind.
+        let parsed = parse_session_scan(&format!(
+            "a|b\n\
+             agent\n\
+             {terminal}|1789065184|agent"
+        ));
+        assert_eq!(
+            parsed.get(&terminal).unwrap().kind,
+            None,
+            "a later scope is still subtracted when an earlier one holds a separator"
+        );
+        assert!(!parsed.contains_key("a"), "a scope value is not a session");
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn live_agent_lookup_rejects_multiple_live_matches() {
+        let first = format!("{P}first_{ID8}");
+        let second = format!("{TERMINAL_PREFIX}second_{ID8}");
+        let names = vec![
+            (first.clone(), Some(SessionKind::Agent)),
+            (second.clone(), Some(SessionKind::Agent)),
+        ];
+        let snapshot =
+            LiveSessionSnapshot::from_marked_parts(Some(names.clone()), Some(HashMap::new()));
+        assert_eq!(live_agent_name_for_id_in(&snapshot, ID), None);
+        assert_eq!(
+            live_agent_name_for_id(
+                names
+                    .iter()
+                    .map(|(name, kind)| (name.as_str(), kind.map(SessionKind::as_marker))),
+                ID,
+                |name| name == second,
+            ),
+            Some(first),
+            "a dead duplicate must not disqualify the only live agent",
+        );
+    }
+
+    /// The kind marker is what name shape cannot say, in both directions: an
+    /// agent whose title sanitizes into a terminal's shape is still the agent
+    /// pane (#3888), and a paired terminal is never one however its name
+    /// reads (#3880).
+    #[test]
+    #[serial_test::serial]
+    fn live_agent_lookup_follows_the_marker_over_the_name_shape() {
+        // `aoe_term_rewriting_<id8>`: the agent name for title `term
+        // rewriting`, and the paired-terminal name for title `rewriting`.
+        let ambiguous = format!("{TERMINAL_PREFIX}rewriting_{ID8}");
+
+        let as_agent = LiveSessionSnapshot::from_marked_parts(
+            Some(vec![(ambiguous.clone(), Some(SessionKind::Agent))]),
+            Some(HashMap::new()),
+        );
+        assert_eq!(
+            live_agent_name_for_id_in(&as_agent, ID).as_deref(),
+            Some(ambiguous.as_str()),
+            "a marked agent is the row's agent pane whatever its title sanitized to"
+        );
+
+        let as_terminal = LiveSessionSnapshot::from_marked_parts(
+            Some(vec![(ambiguous.clone(), Some(SessionKind::Terminal))]),
+            Some(HashMap::new()),
+        );
+        assert_eq!(
+            live_agent_name_for_id_in(&as_terminal, ID),
+            None,
+            "a marked terminal never passes as the agent pane"
+        );
+
+        let unmarked_snapshot =
+            LiveSessionSnapshot::from_parts(Some(vec![ambiguous.clone()]), Some(HashMap::new()));
+        assert_eq!(
+            live_agent_name_for_id_in(&unmarked_snapshot, ID),
+            None,
+            "a session created before the marker keeps the old, ambiguous guess"
+        );
+
+        // The any-kind lookup buckets by the same classifier, so the marked
+        // agent is preferred over a terminal rather than mistaken for one.
+        let terminal = format!("{TERMINAL_PREFIX}other_{ID8}");
+        assert_eq!(
+            live_any_kind_name_for_id(
+                [
+                    (terminal.as_str(), Some("term")),
+                    (ambiguous.as_str(), Some("agent")),
+                ],
+                ID,
+                |_| false
+            )
+            .as_deref(),
+            Some(ambiguous.as_str()),
+        );
+    }
+
+    /// The collision a smart rename creates: a row titled `Foo` gets the
+    /// paired terminal `aoe_term_Foo_<id8>`, is retitled to `term Foo`, and
+    /// that terminal now holds the agent's derived name. Adopting it would
+    /// point every lifecycle operation, and the session-id poller, at the
+    /// wrong pane.
+    #[test]
+    fn a_session_marked_another_kind_is_not_the_live_derived_name() {
+        let derived = format!("{TERMINAL_PREFIX}Foo_{ID8}");
+        let agent = format!("{P}Foo_{ID8}");
+
+        assert_eq!(
+            resolve_session_name(
+                [
+                    (derived.as_str(), Some("term")),
+                    (agent.as_str(), Some("agent")),
+                ],
+                &derived,
+                &NameShape::agent(&id_suffix(ID))
+            ),
+            agent,
+            "the marked agent wins over a terminal wearing the derived name"
+        );
+        assert_eq!(
+            resolve_agent_session_name([derived.as_str(), agent.as_str()], ID, &derived),
+            derived,
+            "unmarked keeps the pre-marker answer: a live derived name wins"
+        );
+    }
+
     #[test]
     #[serial_test::serial]
     fn live_any_kind_name_for_id_excludes_tool_subsessions_and_other_ids() {
@@ -3555,7 +4203,11 @@ mod tests {
             "vim".to_string(),
         ];
         assert_eq!(
-            live_any_kind_name_for_id(names.iter().map(String::as_str), ID),
+            live_any_kind_name_for_id(
+                unmarked(names.iter().map(String::as_str)),
+                ID,
+                utils::is_pane_dead
+            ),
             None,
             "a tool sub-session and other ids are never this session's pane"
         );
@@ -4221,7 +4873,7 @@ mod tests {
                 .args([
                     "capture-pane",
                     "-t",
-                    &format!("{}:^.0", session_name),
+                    &format!("={}:^", session_name),
                     "-p",
                     "-S",
                     "-10",
@@ -4258,118 +4910,29 @@ mod tests {
         );
     }
 
-    /// Verify that after `exec` replaces the outer shell, the secret
-    /// values from export statements are NOT visible in `ps` output.
-    ///
-    /// Note: the tmux server must already be running before this test.
-    /// If the test session is the FIRST tmux process, the `tmux new-session`
-    /// process becomes the server and its argv (which contains the command
-    /// string with the secret) persists. In real aoe usage the server is
-    /// always already running. We start a dummy session first to ensure this.
     #[test]
+    #[cfg(unix)]
     #[serial_test::serial]
-    fn test_export_exec_secrets_not_in_ps_after_exec() {
-        if !tmux_available() {
-            eprintln!("Skipping test: tmux not available");
+    fn login_shell_probe_batches_agents_and_continues_after_a_miss() {
+        if run_probe_test_in_subprocess() {
             return;
         }
-
-        // Ensure the tmux server is already running so our test session's
-        // command string doesn't end up in the server process's argv.
-        let dummy_guard = TmuxTestSession::new("aoe_test_ps_dummy");
-        let dummy = dummy_guard.name().to_string();
-        let _ = tmux_command()
-            .args([
-                "new-session",
-                "-d",
-                "-s",
-                &dummy,
-                "-x",
-                "80",
-                "-y",
-                "24",
-                "sleep 120",
-            ])
-            .output();
-        std::thread::sleep(std::time::Duration::from_millis(200));
-
-        let session_guard = TmuxTestSession::new("aoe_test_ps");
-        let session_name = session_guard.name().to_string();
-        let secret_value = format!("UNIQUE_SECRET_{}_xyzzy", std::process::id());
-
-        // Simulate: export SECRET='val'; exec sleep 30
-        // After exec, the shell process (whose argv contained the export) is
-        // replaced by sleep, whose argv is just "sleep 30" (no secret).
-        let compound_cmd = format!("export AOE_PS_TEST='{}'; exec sleep 30", secret_value);
-
-        let output = tmux_command()
-            .args([
-                "new-session",
-                "-d",
-                "-s",
-                &session_name,
-                "-x",
-                "80",
-                "-y",
-                "24",
-                &compound_cmd,
-            ])
-            .output()
-            .expect("tmux new-session");
-        assert!(output.status.success());
-
-        // Wait for exec to complete
-        std::thread::sleep(std::time::Duration::from_millis(500));
-
-        // Check ps output for the secret value
-        let ps_output = Command::new("ps")
-            .args(["auxww"])
-            .output()
-            .expect("ps auxww");
-        let ps_text = String::from_utf8_lossy(&ps_output.stdout);
-
-        assert!(
-            !ps_text.contains(&secret_value),
-            "Secret value must NOT appear in ps output after exec.\nFound '{}' in ps:\n{}",
-            secret_value,
-            ps_text
-                .lines()
-                .filter(|l| l.contains(&secret_value))
-                .collect::<Vec<_>>()
-                .join("\n")
-        );
-    }
-
-    /// Regression guard for the 5-10s TUI startup hang: the login-shell
-    /// fallback for agent detection must batch every pending agent into a
-    /// single script (one login shell), not one shell per agent. A login
-    /// shell re-runs the user's whole profile (nvm etc., 0.5-2.5s), so the
-    /// per-launch cost has to stay O(1) in the number of missing agents.
-    #[test]
-    fn login_shell_probe_script_batches_all_probes_into_one_script() {
-        let claude = crate::agents::get_agent("claude").unwrap();
-        let vibe = crate::agents::get_agent("vibe").unwrap();
-        assert!(
-            matches!(
-                vibe.detection,
-                crate::agents::DetectionMethod::RunWithArg(_, _)
-            ),
-            "test premise: vibe uses RunWithArg so both detection arms are covered"
-        );
-
-        let script = login_shell_probe_script(&[claude, vibe]);
-
-        assert!(script.contains("which claude"));
-        assert!(script.contains("vibe --version"));
+        let home = tempfile::tempdir().unwrap();
+        let _env = probe_environment(home.path());
+        let log = shell_words::quote(home.path().join("probes").to_str().unwrap()).into_owned();
+        std::fs::write(
+            home.path().join("bin/login-shell"),
+            format!("#!/bin/sh\nprintf 'login\n' >> {log}\n/bin/sleep 6\nexec /bin/sh -c \"$2\"\n"),
+        )
+        .unwrap();
+        let found = login_shell_probe(&[
+            crate::agents::get_agent("vibe").unwrap(),
+            crate::agents::get_agent("claude").unwrap(),
+        ]);
+        assert_eq!(found, HashSet::from(["claude".to_owned()]));
         assert_eq!(
-            script.matches(LOGIN_PROBE_MARKER).count(),
-            2,
-            "one marker echo per agent, all inside the one script: {script}"
-        );
-        // Chained with `;` so a failed probe never short-circuits the rest.
-        assert!(
-            script.contains("; "),
-            "probes must be `;`-chained: {script}"
+            std::fs::read_to_string(home.path().join("probes")).unwrap(),
+            "login\nversion\nwhich:claude\n"
         );
     }
 

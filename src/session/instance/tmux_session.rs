@@ -3,15 +3,46 @@
 use super::*;
 
 pub(super) fn tmux_env_session_name_for_instance_id(instance_id: &str) -> Option<String> {
-    let output = crate::tmux::tmux_query_command()
-        .args(["list-sessions", "-F", "#{session_name}"])
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
+    let live = crate::tmux::probe_live_sessions()?;
+    crate::tmux::live_any_kind_name_for_id(
+        crate::tmux::marked_names(&live),
+        instance_id,
+        crate::tmux::utils::is_pane_dead,
+    )
+}
+
+/// Live-scan result for seeding a session-id poller.
+/// Only an empty or unavailable scan permits a title-derived fallback.
+pub(crate) enum AgentSeed {
+    /// The unique live agent session for the id.
+    Agent(String),
+    /// Live panes exist, but no unique eligible agent can be selected.
+    NoUniqueAgent,
+    /// Nothing live for the id, or the tmux server could not be reached.
+    NothingLive,
+}
+
+pub(super) fn live_agent_seed_for_instance_id(instance_id: &str) -> AgentSeed {
+    let Some(live) = crate::tmux::probe_live_sessions() else {
+        return AgentSeed::NothingLive;
+    };
+    if let Some(name) = crate::tmux::live_agent_name_for_id(
+        crate::tmux::marked_names(&live),
+        instance_id,
+        crate::tmux::utils::is_pane_dead,
+    ) {
+        return AgentSeed::Agent(name);
     }
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    crate::tmux::live_any_kind_name_for_id(stdout.lines(), instance_id)
+    if crate::tmux::live_any_kind_name_for_id(
+        crate::tmux::marked_names(&live),
+        instance_id,
+        crate::tmux::utils::is_pane_dead,
+    )
+    .is_some()
+    {
+        return AgentSeed::NoUniqueAgent;
+    }
+    AgentSeed::NothingLive
 }
 
 /// Find another session that owns the exact title and normalized path.
@@ -55,6 +86,11 @@ impl Instance {
 
     pub(crate) fn tmux_env_session_name(&self) -> Option<String> {
         tmux_env_session_name_for_instance_id(&self.id)
+    }
+
+    /// Fresh agent-seed classification, including live panes with no unique eligible agent.
+    pub(crate) fn live_agent_seed(&self) -> AgentSeed {
+        live_agent_seed_for_instance_id(&self.id)
     }
 
     /// [`Self::tmux_env_session_name`] answered from a snapshot the caller
@@ -185,6 +221,7 @@ mod tests {
     #[serial_test::serial]
     #[cfg(unix)]
     fn one_shot_name_probes_when_the_snapshot_missed_tmux() {
+        let _env_read = crate::session::test_support::EnvGuard::read_lock();
         use std::os::unix::fs::PermissionsExt;
 
         let temp = tempfile::tempdir().unwrap();
@@ -193,10 +230,16 @@ mod tests {
 
         // A `tmux` that answers with one live session name, standing in for the
         // probe that succeeds after the snapshot's own `list-sessions` failed.
-        // The pane-liveness check reads the same output and parses it as "not
-        // dead", which is what the real probe does for any answer but `1`.
+        // The session scan's own format, so the shim exercises the parser the
+        // probe really uses. The pane-liveness check reads the same output and
+        // parses it as "not dead", which is what the real probe does for any
+        // answer but `1`.
         let shim = temp.path().join("tmux");
-        std::fs::write(&shim, format!("#!/bin/sh\necho '{live_name}'\n")).unwrap();
+        std::fs::write(
+            &shim,
+            format!("#!/bin/sh\necho '{live_name}|1789065184|agent'\n"),
+        )
+        .unwrap();
         std::fs::set_permissions(&shim, std::fs::Permissions::from_mode(0o755)).unwrap();
         let path = format!(
             "{}:{}",

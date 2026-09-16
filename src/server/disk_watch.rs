@@ -339,6 +339,48 @@ mod tests {
     use crate::server::test_support;
     use crate::session::Instance;
 
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn init_disk_watch_subscriptions_bootstraps_one_reload_after_wiring() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let _app_dir = crate::session::test_support::isolate_app_dir_at(temp.path());
+
+        let storage = crate::session::Storage::new_unwatched("startup-gap").expect("storage");
+        storage
+            .update(|instances, _groups| {
+                *instances = vec![Instance::new("seed", "/tmp/seed")];
+                Ok(())
+            })
+            .expect("seed write");
+
+        let state = test_support::build_test_app_state(Vec::new());
+        let live = FileWatchService::new().expect("live svc");
+        let mut state_mut = Arc::try_unwrap(state)
+            .map_err(|_| ())
+            .expect("unique state");
+        state_mut.file_watch = live;
+        let state = Arc::new(state_mut);
+
+        let wake = {
+            let signal = state.disk_changed.clone();
+            tokio::spawn(async move {
+                tokio::time::timeout(std::time::Duration::from_secs(2), signal.notified()).await
+            })
+        };
+
+        init_disk_watch_subscriptions(state.clone()).await;
+
+        let woke = wake.await.expect("join");
+        assert!(
+            woke.is_ok(),
+            "startup wiring must bootstrap one disk_changed wake after subscriptions are installed"
+        );
+        assert_eq!(
+            state.file_watch.subscriber_count(),
+            1,
+            "startup wiring must leave exactly one live subscription for the single profile"
+        );
+    }
     // Concurrent same-profile rewires must converge to a single
     // consistent map entry and matching live subscription count. The
     // unified helper holds `disk_watch_handles` through the full
@@ -350,7 +392,7 @@ mod tests {
     #[serial_test::serial]
     async fn add_remove_profile_disk_watch_serializes_concurrent_add_and_remove() {
         let temp = tempfile::tempdir().expect("tempdir");
-        let _home = crate::session::test_support::isolate_app_dir_at(temp.path());
+        let _app_dir = crate::session::test_support::isolate_app_dir_at(temp.path());
         let _ = crate::session::get_profile_dir("rewire-race").expect("profile dir");
 
         let live = FileWatchService::new().expect("live svc");
@@ -411,7 +453,7 @@ mod tests {
     #[serial_test::serial]
     async fn add_profile_disk_watch_resists_resurrection_under_concurrent_remove() {
         let temp = tempfile::tempdir().expect("tempdir");
-        let _home = crate::session::test_support::isolate_app_dir_at(temp.path());
+        let _app_dir = crate::session::test_support::isolate_app_dir_at(temp.path());
         let _ = crate::session::get_profile_dir("race-fix").expect("profile dir");
 
         let live = FileWatchService::new().expect("live svc");
@@ -488,7 +530,7 @@ mod tests {
     #[serial_test::serial]
     async fn init_disk_watch_subscriptions_reconciles_writes_landing_during_iteration() {
         let temp = tempfile::tempdir().expect("tempdir");
-        let _home = crate::session::test_support::isolate_app_dir_at(temp.path());
+        let _app_dir = crate::session::test_support::isolate_app_dir_at(temp.path());
 
         let storage_p1 = crate::session::Storage::new_unwatched("init-gap-p1").expect("p1");
         storage_p1
@@ -706,8 +748,7 @@ mod tests {
     // This drives that exact interleaving. The test holds the write lock so
     // the spawned reload is guaranteed to be parked on it, bumps the epoch
     // while it waits (standing in for the delete), then releases. On a
-    // current-thread runtime the ordering is deterministic, not timing
-    // dependent.
+    // first-Pending observation makes the ordering independent of scheduling.
     #[tokio::test]
     async fn a_reload_parked_on_the_instances_lock_still_sees_a_delete_that_won_the_race() {
         let doomed = Instance::new("doomed", "/tmp/doomed");
@@ -723,7 +764,7 @@ mod tests {
         let guard = state.instances.write().await;
 
         let reload_state = Arc::clone(&state);
-        let reload = tokio::spawn(async move {
+        let reload = async move {
             reload_state_instances_from_disk(
                 &reload_state,
                 stale_snapshot,
@@ -737,10 +778,9 @@ mod tests {
                 Default::default(),
             )
             .await;
-        });
-
-        // Let the spawned task run until it parks on the write lock.
-        tokio::task::yield_now().await;
+        };
+        tokio::pin!(reload);
+        assert!(futures_util::poll!(&mut reload).is_pending());
 
         // The delete commits while the reload is parked: row out, epoch up.
         // Both happen before the lock is released, mirroring the real purge.
@@ -749,7 +789,7 @@ mod tests {
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         drop(guard);
 
-        reload.await.expect("reload task");
+        reload.await;
 
         let titles: Vec<String> = state
             .instances
@@ -811,7 +851,7 @@ mod tests {
     #[serial_test::serial]
     async fn bootstrap_wake_makes_pre_init_writes_reachable_via_reload() {
         let temp = tempfile::tempdir().expect("tempdir");
-        let _home = crate::session::test_support::isolate_app_dir_at(temp.path());
+        let _app_dir = crate::session::test_support::isolate_app_dir_at(temp.path());
 
         let storage = crate::session::Storage::new_unwatched("startup-reload").expect("storage");
         storage

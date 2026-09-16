@@ -34,7 +34,15 @@ const NON_SUFFIX_HOST_STATE: Record<string, string> = {
   AOE_DEFER_SANDBOX_MIGRATION: "1",
   AOE_DAEMON_TOKEN: "host-token",
   AOE_DAEMON_URL: "http://a-real-daemon.internal:8080",
+  AOE_E2E_INPUT_BARRIER: `${HOST}/input-barrier`,
+  AOE_E2E_PARTIAL_FRAME_FILE: `${HOST}/partial-frame`,
+  AOE_E2E_PROMPT_COMPLETED_FILE: `${HOST}/prompt-completed`,
+  AOE_E2E_STORAGE_LOCK_CONTENDED: `${HOST}/lock-contended`,
+  AOE_TUI_TEST_CHILD: "host-test-child",
+  AOE_TUI_TEST_ENTERED: `${HOST}/test-entered`,
   AOE_GITHUB_CLONE_BASE: `file://${HOST}/plugins`,
+  AOE_AGENT_BIN: "host-session",
+  AOE_AGENT_PID: "host-session",
   AOE_INSTANCE_ID: "host-session",
   AOE_OMP_CAPTURE_META: "host-meta",
   AOE_OMP_CAPTURE_READY: "1",
@@ -54,12 +62,7 @@ const NON_SUFFIX_HOST_STATE: Record<string, string> = {
   TMUX_PANE: "%7",
 };
 
-/**
- * Variables `src/` reads that the daemon inherits on purpose, grouped by why.
- * A name that is neither here nor neutralized fails the contract test below,
- * which is the point: classifying a new variable stays a decision someone
- * makes, instead of one the suffix rule makes for them.
- */
+/** Every src/ environment read must be neutralized or explicitly safe to inherit. */
 const INHERITED_BY_CONTRACT = new Set([
   ...INHERITED_PATH_VARS,
   // Timing, tracing, and test switches. Their values are numbers or flags, so
@@ -87,6 +90,8 @@ const INHERITED_BY_CONTRACT = new Set([
   "AOE_TERMINAL_TRACE",
   "AOE_TEST_TOKEN_GRACE_SECS",
   "AOE_TEST_TOKEN_LIFETIME_SECS",
+  // Rust test-binary re-entry marker, compiled out of aoe serve.
+  "AOE_AGENT_PROBE_TEST_CHILD",
   // A marker `aoe` echoes into a pane to probe a login shell, not a variable
   // the daemon resolves anything from.
   "AOE_AGENT_OK",

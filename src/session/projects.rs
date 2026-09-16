@@ -579,6 +579,7 @@ pub fn resolve_names(profile: &str, names: &[String]) -> Result<Vec<Project>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::session::test_support::isolate_app_dir_at;
     use serial_test::serial;
     use tempfile::tempdir;
 
@@ -819,7 +820,7 @@ mod tests {
     #[serial]
     fn default_base_branch_persists_through_add_and_load() -> Result<()> {
         let temp = tempdir()?;
-        let _guard = crate::session::test_support::isolate_app_dir_at(temp.path());
+        let _app_dir = isolate_app_dir_at(temp.path());
         let repo = temp.path().join("repoBase");
         let _ = git2::Repository::init(&repo);
 
@@ -841,7 +842,7 @@ mod tests {
     #[serial]
     fn update_base_branch_sets_clears_and_reports_not_found() -> Result<()> {
         let temp = tempdir()?;
-        let _guard = crate::session::test_support::isolate_app_dir_at(temp.path());
+        let _app_dir = isolate_app_dir_at(temp.path());
         let repo = temp.path().join("repoUpd");
         let _ = git2::Repository::init(&repo);
 
@@ -912,7 +913,7 @@ mod tests {
     #[serial]
     fn set_pinned_toggles_without_removing_entry() -> Result<()> {
         let temp = tempdir()?;
-        let _guard = crate::session::test_support::isolate_app_dir_at(temp.path());
+        let _app_dir = isolate_app_dir_at(temp.path());
         let repo = temp.path().join("repoPin");
         let _ = git2::Repository::init(&repo);
 
@@ -980,7 +981,7 @@ mod tests {
     #[serial]
     fn add_then_load_global() -> Result<()> {
         let temp = tempdir()?;
-        let _guard = crate::session::test_support::isolate_app_dir_at(temp.path());
+        let _app_dir = isolate_app_dir_at(temp.path());
         let repo = temp.path().join("repoA");
         let _ = git2::Repository::init(&repo);
 
@@ -1002,7 +1003,7 @@ mod tests {
     #[serial]
     fn profile_shadows_global_on_path_collision() -> Result<()> {
         let temp = tempdir()?;
-        let _guard = crate::session::test_support::isolate_app_dir_at(temp.path());
+        let _app_dir = isolate_app_dir_at(temp.path());
         fs::create_dir_all(profile_path("default")?.parent().unwrap())?;
         let repo = temp.path().join("repoX");
         let _ = git2::Repository::init(&repo);
@@ -1035,7 +1036,7 @@ mod tests {
     #[serial]
     fn duplicate_name_rejected_within_scope() -> Result<()> {
         let temp = tempdir()?;
-        let _guard = crate::session::test_support::isolate_app_dir_at(temp.path());
+        let _app_dir = isolate_app_dir_at(temp.path());
         let repo1 = temp.path().join("r1");
         let repo2 = temp.path().join("r2");
         let _ = git2::Repository::init(&repo1);
@@ -1061,7 +1062,7 @@ mod tests {
     #[serial]
     fn name_matching_is_case_insensitive() -> Result<()> {
         let temp = tempdir()?;
-        let _guard = crate::session::test_support::isolate_app_dir_at(temp.path());
+        let _app_dir = isolate_app_dir_at(temp.path());
         let repo1 = temp.path().join("Mixed");
         let repo2 = temp.path().join("Other");
         let _ = git2::Repository::init(&repo1);
@@ -1098,7 +1099,7 @@ mod tests {
     #[serial]
     fn cross_scope_path_collision_blocked_by_default() -> Result<()> {
         let temp = tempdir()?;
-        let _guard = crate::session::test_support::isolate_app_dir_at(temp.path());
+        let _app_dir = isolate_app_dir_at(temp.path());
         fs::create_dir_all(profile_path("default")?.parent().unwrap())?;
         let repo = temp.path().join("repoZ");
         let _ = git2::Repository::init(&repo);
@@ -1131,7 +1132,7 @@ mod tests {
     #[serial]
     fn resolve_names_errors_on_unknown() -> Result<()> {
         let temp = tempdir()?;
-        let _guard = crate::session::test_support::isolate_app_dir_at(temp.path());
+        let _app_dir = isolate_app_dir_at(temp.path());
         let err = resolve_names("default", &["nonesuch".to_string()]);
         assert!(err.is_err());
         Ok(())
@@ -1141,7 +1142,7 @@ mod tests {
     #[serial]
     fn remove_round_trip() -> Result<()> {
         let temp = tempdir()?;
-        let _guard = crate::session::test_support::isolate_app_dir_at(temp.path());
+        let _app_dir = isolate_app_dir_at(temp.path());
         let repo = temp.path().join("repoR");
         let _ = git2::Repository::init(&repo);
 

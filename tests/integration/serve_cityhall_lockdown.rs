@@ -83,6 +83,7 @@ async fn assert_cityhall_blocked(method: Method, uri: &str, body: Body) {
 /// distinct seeded state (the workspace-delete owner-vs-sibling discrimination,
 /// the positive allow-list check) stay as their own tests below.
 #[tokio::test]
+#[serial_test::parallel]
 async fn sensitive_routes_are_blocked() {
     let cases: &[(Method, &str, &str)] = &[
         // Git clone plus the two path probes: write $HOME, fetch the network,
@@ -206,6 +207,7 @@ async fn creation_cancellation_is_limited_to_structured_targets() {
 // owner-vs-sibling discrimination: an owner-only gate would let this through
 // (the owner is structured), so this test fails on a revert to `first()`.
 #[tokio::test]
+#[serial_test::parallel]
 async fn delete_workspace_with_structured_owner_and_foreign_sibling_is_blocked() {
     let state =
         build_test_app_state_cityhall(vec![structured_session("own"), plain_session("foreign")]);
@@ -232,6 +234,7 @@ async fn delete_workspace_with_structured_owner_and_foreign_sibling_is_blocked()
 // mode owns clears the CityHall gate (it may fail later for unrelated reasons in
 // the test harness, but not with the cityhall_mode 403).
 #[tokio::test]
+#[serial_test::parallel]
 async fn delete_workspace_all_structured_is_not_cityhall_blocked() {
     let state =
         build_test_app_state_cityhall(vec![structured_session("own"), structured_session("sib")]);
@@ -258,6 +261,7 @@ async fn delete_workspace_all_structured_is_not_cityhall_blocked() {
 // accidental deletion of its allow entry is caught by a direct assertion, not
 // only the classification audit.
 #[tokio::test]
+#[serial_test::parallel]
 async fn allowlisted_route_stays_reachable() {
     let state = build_test_app_state_cityhall(Vec::new());
     let app = build_router_for_test(state);
@@ -283,6 +287,7 @@ async fn allowlisted_route_stays_reachable() {
 // structured target: a plain/terminal session's worktree is foreign state a
 // locked-down client must not write into.
 #[tokio::test]
+#[serial_test::parallel]
 async fn paste_image_against_plain_session_is_blocked() {
     let state = build_test_app_state_cityhall(vec![plain_session("foreign")]);
     let app = build_router_for_test(state);

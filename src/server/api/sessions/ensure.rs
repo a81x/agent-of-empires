@@ -475,10 +475,18 @@ pub async fn ensure_container_terminal(
         Ok(body) => body.map(|Json(body)| body).unwrap_or_default(),
         Err(error) => return error.into_response(),
     };
+    let namespace = state.profile_namespace.read().await;
+    if *state.canonical_health.read().await != crate::daemon::RuntimeHealth::Healthy {
+        return StatusCode::SERVICE_UNAVAILABLE.into_response();
+    }
+    let lock = state.instance_lock(&id).await;
+    let guard = lock.lock().await;
     if !state.instances.read().await.iter().any(|row| row.id == id) {
         return crate::server::api::session_not_found();
     }
     let size = body.size.map(|size| (size.cols.get(), size.rows.get()));
+    drop(guard);
+    drop(namespace);
     match crate::server::pane::ensure_native_container_terminal(&state, &id, q.index, size).await {
         Ok((target, cursor)) => {
             let status = if matches!(&target.status, crate::daemon::TerminalTargetStatus::Created) {
@@ -525,6 +533,17 @@ pub async fn kill_terminal(
         )
             .into_response();
     }
+    let namespace = state.profile_namespace.read().await;
+    if *state.canonical_health.read().await != crate::daemon::RuntimeHealth::Healthy {
+        return StatusCode::SERVICE_UNAVAILABLE.into_response();
+    }
+    let lock = state.instance_lock(&id).await;
+    let guard = lock.lock().await;
+    if !state.instances.read().await.iter().any(|row| row.id == id) {
+        return crate::server::api::session_not_found();
+    }
+    drop(guard);
+    drop(namespace);
     match crate::server::pane::stop_native_auxiliary(
         &state,
         &id,

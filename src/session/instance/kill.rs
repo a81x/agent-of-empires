@@ -18,6 +18,27 @@ impl PiSidecarUpdate {
 }
 
 impl Instance {
+    /// Call [`Self::flush_pi_sidecar_conversation`] using this session's storage.
+    pub(super) fn flush_pi_sidecar_if_published(&mut self) {
+        if self.resolved_capture_backend() != Some(crate::agents::SessionCaptureBackend::Pi) {
+            return;
+        }
+        let profile = self.effective_profile();
+        let Ok(storage) =
+            crate::session::storage::Storage::new(&profile, self.resolve_file_watch())
+        else {
+            return;
+        };
+        let _ = self.flush_pi_sidecar_conversation(&storage);
+        // Keep the in-memory row with disk: a restart reads it moments later.
+        if let Ok(instances) = storage.load() {
+            if let Some(row) = instances.iter().find(|i| i.id == self.id) {
+                self.agent_session_id = row.agent_session_id.clone();
+                self.pi_session_path = row.pi_session_path.clone();
+            }
+        }
+    }
+
     pub(crate) fn read_pi_sidecar_update(&self) -> Option<PiSidecarUpdate> {
         if !self.uses_pi_session_sidecar() {
             return None;
@@ -330,7 +351,7 @@ impl Instance {
                     generation,
                     Status::Stopped,
                 )?;
-                lifecycle.flush_pi_sidecar_conversation(&storage)?;
+                lifecycle.flush_pi_sidecar_if_published();
                 crate::hooks::cleanup_hook_status_dir(&self.id);
                 Ok(())
             }

@@ -183,6 +183,9 @@ pub struct App {
     /// effect without a restart. When false, `sync_mouse_capture` keeps xterm
     /// tracking off entirely.
     mouse_capture_allowed: bool,
+    /// Last OSC 0 host-tab title written. Dedups unchanged selections and
+    /// is invalidated after `tmux attach` so the dashboard title is restored.
+    host_title: super::host_title::HostTitleTracker,
     /// True when running under Mosh (`MOSH_CONNECTION` set). Mosh mangles
     /// xterm mouse-tracking escapes, so `tui::run` skips the startup
     /// `EnableMouseCapture` and `sync_mouse_capture` must not re-enable
@@ -512,6 +515,7 @@ impl App {
             // `mouse_capture_allowed` is permission only and ignores Mosh.
             mouse_captured: crate::tui::mouse_capture_requested(&config.session) && !mosh_active,
             mouse_capture_allowed: crate::tui::mouse_capture_requested(&config.session),
+            host_title: super::host_title::HostTitleTracker::default(),
             mosh_active,
             pending_structured_view_open: None,
             pending_daemon_start_open: None,
@@ -551,6 +555,24 @@ impl App {
             crossterm::execute!(terminal.backend_mut(), DisableMouseCapture)?;
         }
         self.mouse_captured = desired;
+        Ok(())
+    }
+
+    /// Write OSC 0 when the dashboard selection (or its title) changes.
+    ///
+    /// Emitted after the frame so it does not interleave with OSC 8 runs
+    /// inside `HyperlinkBackend::draw`. No-ops when the setting is off
+    /// and we have never written, so opt-out users keep the terminal's
+    /// own naming.
+    fn sync_host_title(&mut self, terminal: &mut Terminal<TuiBackend>) -> Result<()> {
+        let Some(title) = self
+            .host_title
+            .sync(self.home.host_tab_title, self.home.selected_session_title())
+        else {
+            return Ok(());
+        };
+        crossterm::execute!(terminal.backend_mut(), crossterm::terminal::SetTitle(title))?;
+        super::host_title::note_emitted();
         Ok(())
     }
 
@@ -610,6 +632,7 @@ impl App {
         );
         draw_result?;
         end_result?;
+        self.sync_host_title(terminal)?;
         Ok(())
     }
 
@@ -682,6 +705,9 @@ impl App {
         // to the serve view. sync_mouse_capture itself respects the Mouse
         // Capture setting and the AOE_MOUSE_CAPTURE opt-out.
         self.sync_mouse_capture(terminal)?;
+        // Attach may have overwritten the host tab via the pane's OSC 0.
+        self.host_title.invalidate();
+        self.sync_host_title(terminal)?;
         std::io::Write::flush(terminal.backend_mut())?;
 
         // Recreate the event stream with a fresh reader before re-entering the
@@ -690,6 +716,16 @@ impl App {
         // born into raw mode rather than attached to a briefly-cooked tty.
         self.event_stream = Some(EventStream::new());
         crate::tui::clear_terminal(terminal)?;
+        #[cfg(feature = "e2e-tests")]
+        if let Some(path) = std::env::var_os("AOE_E2E_INPUT_BARRIER") {
+            let path = std::path::PathBuf::from(path).with_extension("resumed");
+            let previous = match std::fs::read_to_string(&path) {
+                Ok(value) => value.parse::<u64>()?,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => 0,
+                Err(error) => return Err(error.into()),
+            };
+            std::fs::write(path, (previous + 1).to_string())?;
+        }
 
         Ok(result)
     }
@@ -750,6 +786,8 @@ impl App {
         // Otherwise the user would have to press a key first.
         self.sync_mouse_capture(terminal)?;
         self.draw(terminal)?;
+        #[cfg(feature = "e2e-tests")]
+        e2e_render_ack(true)?;
 
         // Spawn async update check at startup. The periodic re-check below
         // covers long-running sessions (#1471). `last_update_check` stays
@@ -1890,6 +1928,11 @@ impl App {
                 refresh_needed = true;
                 needs_full_refresh = true;
             }
+            for session_id in self.home.take_restarted_attaches() {
+                self.attach_live_session(&session_id, terminal)?;
+                refresh_needed = true;
+                needs_full_refresh = true;
+            }
 
             if self.home.apply_attach_project_results() {
                 refresh_needed = true;
@@ -2888,12 +2931,36 @@ fn quit_intent(
     QuitIntent::Quit
 }
 
+#[cfg(feature = "e2e-tests")]
+pub(crate) fn e2e_render_ack(initial: bool) -> Result<()> {
+    let Some(path) = std::env::var_os("AOE_E2E_INPUT_BARRIER") else {
+        return Ok(());
+    };
+    let sequence = if initial {
+        0
+    } else {
+        std::fs::read_to_string(&path)?.parse::<u64>()? + 1
+    };
+    std::fs::write(path, sequence.to_string())?;
+    crossterm::execute!(
+        std::io::stdout(),
+        crossterm::terminal::SetTitle(format!("aoe-e2e-{sequence}"))
+    )?;
+    Ok(())
+}
+
 impl App {
     async fn handle_key(
         &mut self,
         key: KeyEvent,
         terminal: &mut Terminal<TuiBackend>,
     ) -> Result<()> {
+        #[cfg(feature = "e2e-tests")]
+        if key.code == KeyCode::F(12) && std::env::var_os("AOE_E2E_INPUT_BARRIER").is_some() {
+            self.draw(terminal)?;
+            e2e_render_ack(false)?;
+            return Ok(());
+        }
         // An ACTIVE embedded structured view owns the keyboard, just as
         // the full-screen view owned the whole event stream: letters must
         // reach the composer, not home-view shortcuts (q, n, d…). A merely
@@ -3190,14 +3257,16 @@ impl App {
             .is_some_and(|v| v.session_id() == session_id)
         {
             self.activate_embedded();
-            self.drain_pending_paste_for_structured_view().await;
+            self.drain_pending_paste_for_structured_view(session_id)
+                .await;
             return Ok(());
         }
         match require_daemon().await {
             Ok(endpoint) => {
                 self.connect_embedded_structured(endpoint, session_id).await;
                 self.activate_embedded();
-                self.drain_pending_paste_for_structured_view().await;
+                self.drain_pending_paste_for_structured_view(session_id)
+                    .await;
             }
             Err(ManagerError::NoDaemonRunning(_)) => {
                 self.home.prompt_start_daemon_for_structured(session_id);
@@ -3218,24 +3287,21 @@ impl App {
         }
     }
 
-    /// Drain buffered paste text into the structured composer after the view
-    /// activates. Drafts are keyed by their captured session: the mounted
-    /// view consumes its own entry on success, and entries for other targets
-    /// stay put, so a failed activation is recoverable by returning to that
-    /// session ('m' again).
-    async fn drain_pending_paste_for_structured_view(&mut self) {
-        let Some(mounted) = self
+    /// Consume the requested session's draft only if that session mounted.
+    async fn drain_pending_paste_for_structured_view(&mut self, session_id: &str) {
+        let Some(view) = self
             .home
             .structured_preview
-            .as_ref()
-            .map(|v| v.session_id().to_string())
+            .as_mut()
+            .filter(|view| view.session_id() == session_id)
         else {
             return;
         };
-        let Some(buf) = self.home.pending_paste_for_structured_view.remove(&mounted) else {
-            return;
-        };
-        if let Some(view) = self.home.structured_preview.as_mut() {
+        if let Some(buf) = self
+            .home
+            .pending_paste_for_structured_view
+            .remove(session_id)
+        {
             view.paste_text_with_file_load(&buf).await;
         }
     }
@@ -3289,11 +3355,9 @@ impl App {
                 self.update_status = None;
                 self.connect_embedded_structured(endpoint, session_id).await;
                 self.activate_embedded();
-                // Same target-checked handoff as the reachable-daemon
-                // activations: a paste captured before accepting the
-                // daemon startup must reach the composer now that the
-                // view is mounted.
-                self.drain_pending_paste_for_structured_view().await;
+                // Preserve the captured draft until its requested view mounts.
+                self.drain_pending_paste_for_structured_view(session_id)
+                    .await;
             }
             Err(e) => {
                 let first = e.lines().next().unwrap_or("unknown error");
@@ -3703,51 +3767,26 @@ impl App {
                 return Ok(());
             }
 
-            // Get terminal size to pass to tmux session creation
-            // This ensures the session starts at the correct size instead of 80x24 default
-            let size = crate::terminal::get_size();
+            // The terminal size is read inside `restart_then_attach`, which
+            // sizes the tmux session at creation instead of 80x24 default.
 
             // The daemon runs on_launch on every start, matching the CLI, so a
             // TUI start never suppresses them.
             let skip_on_launch = false;
-
             self.home
-                .set_instance_status(session_id, crate::session::Status::Starting);
-            match self
-                .home
-                .restart_instance_with_size_opts(session_id, size, skip_on_launch)
-            {
-                Err(e) => {
-                    let err_str = e.to_string();
-                    self.home
-                        .set_instance_error(session_id, Some(err_str.clone()));
-                    self.home
-                        .set_instance_status(session_id, crate::session::Status::Error);
-                    // Without a toast, set_instance_error + Status::Error are
-                    // invisible to the user: the TUI redraws on home as if Enter
-                    // did nothing. Toast text is single-line; the bar truncates
-                    // at terminal width without us needing to pre-clip.
-                    self.update_status = Some(UpdateStatus::transient(format!(
-                        "restart failed: {err_str}"
-                    )));
-                    return Ok(());
-                }
-                Ok(crate::session::StartOutcome::ResumeFailed { sid }) => {
-                    self.update_status = Some(UpdateStatus::transient(format!(
-                        "Resume failed for sid {sid}; preserved for retry"
-                    )));
-                    return Ok(());
-                }
-                Ok(crate::session::StartOutcome::FreshAfterFailedResume { sid }) => {
-                    self.update_status = Some(UpdateStatus::transient(format!(
-                        "Started fresh; resume previously failed for sid {sid}"
-                    )));
-                }
-                Ok(_) => {}
-            }
-            self.home.set_instance_error(session_id, None);
+                .restart_then_attach(session_id, crate::terminal::get_size(), skip_on_launch);
+            return Ok(());
         }
 
+        self.attach_live_session(session_id, terminal)
+    }
+
+    /// Attach to `session_id`'s running tmux pane and settle the row on return.
+    fn attach_live_session(
+        &mut self,
+        session_id: &str,
+        terminal: &mut Terminal<TuiBackend>,
+    ) -> Result<()> {
         let tmux_session = match self.home.get_instance(session_id) {
             Some(inst) => inst.tmux_session()?,
             None => return Ok(()),
@@ -4151,11 +4190,7 @@ mod tests {
         }
     }
 
-    /// App-level consumption of the structured paste handoff: a mounted view
-    /// of the captured session takes the buffer into its composer and the
-    /// entry is consumed, while another target's draft stays put. The
-    /// daemon-start continuation and the reachable-daemon activations share
-    /// this same drain call, so the App-level behavior is defined once.
+    /// A failed replacement must not consume the previous view's draft.
     #[tokio::test]
     #[serial_test::serial]
     async fn drain_paste_forwards_to_the_mounted_view_and_keeps_other_targets() {
@@ -4178,7 +4213,26 @@ mod tests {
         app.home.structured_preview =
             Some(crate::tui::structured_view::embedded::EmbeddedView::for_test("s-1"));
 
-        app.drain_pending_paste_for_structured_view().await;
+        // A failed attempt to mount s-2 can leave s-1 mounted.
+        app.drain_pending_paste_for_structured_view("s-2").await;
+        assert_eq!(
+            app.home
+                .structured_preview
+                .as_ref()
+                .unwrap()
+                .composer_text(),
+            ""
+        );
+        assert_eq!(
+            app.home
+                .pending_paste_for_structured_view
+                .get("s-1")
+                .map(String::as_str),
+            Some("buffered draft"),
+        );
+
+        app.drain_pending_paste_for_structured_view("s-1").await;
+        app.drain_pending_paste_for_structured_view("s-1").await;
 
         let preview = app.home.structured_preview.as_ref().expect("mounted");
         assert_eq!(

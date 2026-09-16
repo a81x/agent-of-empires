@@ -1957,11 +1957,44 @@ async fn smart_rename_rejects_only_trusted_command_overrides() {
     std::fs::create_dir_all(&repo_config).unwrap();
     std::fs::write(repo_config.join("config.toml"), config).unwrap();
     assert_eq!(rejection_code(repo.path()).await, "no_prompt");
-
-    let app_dir = isolated_app_dir(home.path());
+    let app_dir = crate::session::get_app_dir().expect("isolated app dir");
     std::fs::create_dir_all(&app_dir).unwrap();
     std::fs::write(app_dir.join("config.toml"), config).unwrap();
     assert_eq!(rejection_code(repo.path()).await, "command_overridden");
+}
+
+#[tokio::test]
+#[serial_test::serial]
+async fn list_sessions_shares_config_resolution_across_overlays() {
+    use std::sync::atomic::Ordering;
+
+    let tmp_home = tempfile::tempdir().expect("tempdir HOME");
+    let _home = crate::session::test_support::isolate_app_dir_at(tmp_home.path());
+
+    let mk = |profile: &str, project_path: &str| {
+        let mut inst = Instance::new("test-session", project_path);
+        inst.tool = "custom-tool-2603".to_string();
+        inst.source_profile = profile.to_string();
+        inst
+    };
+    let a = mk("default", "/tmp/repo-a-2603");
+    let a2 = mk("default", "/tmp/repo-a-2603");
+    let b = mk("default", "/tmp/repo-b-2603");
+
+    // The counter lives on this state, so no concurrent test can bump it.
+    let state = crate::server::test_support::build_test_app_state(vec![a, a2, b]);
+
+    let _envelope = list_sessions(
+        axum::extract::State(state.clone()),
+        axum::extract::Query(ListSessionsQuery { state: None }),
+    )
+    .await;
+    let misses = state.list_sessions_resolver_misses.load(Ordering::Relaxed);
+
+    assert_eq!(
+        misses, 2,
+        "shared cache must resolve once per unique (profile, project_path) across both overlays; got {misses}",
+    );
 }
 
 #[tokio::test]
@@ -2041,75 +2074,67 @@ async fn wait_until_left_starting_returns_immediately_if_already_left() {
     inst.status = Status::Running;
     let state = crate::server::test_support::build_test_app_state(vec![inst]);
 
-    let started = std::time::Instant::now();
     let result = wait_until_left_starting(
         &state,
         "wait-already-left",
         std::time::Duration::from_secs(5),
-    )
-    .await;
-    assert_eq!(result.map(|i| i.status), Some(Status::Running));
-    assert!(
-        started.elapsed() < std::time::Duration::from_secs(1),
-        "must not wait when the instance already left Starting"
     );
+    tokio::pin!(result);
+    let result = futures_util::poll!(&mut result).map(|value| value.map(|i| i.status));
+    assert_eq!(result, std::task::Poll::Ready(Some(Status::Running)));
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn wait_until_left_starting_resolves_on_broadcast() {
     let mut inst = Instance::new("starting", "/tmp/wait-b");
     inst.id = "wait-resolves".to_string();
     inst.status = Status::Starting;
     let state = crate::server::test_support::build_test_app_state(vec![inst]);
 
-    let updater_state = state.clone();
-    tokio::spawn(async move {
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-        {
-            let mut instances = updater_state.instances.write().await;
-            if let Some(inst) = instances.iter_mut().find(|i| i.id == "wait-resolves") {
-                inst.status = Status::Waiting;
-            }
-        }
-        let _ = updater_state
-            .status_tx
-            .send(crate::server::push::StatusChange {
-                instance_id: "wait-resolves".to_string(),
-                instance_title: "starting".to_string(),
-                old: Status::Starting,
-                new: Status::Waiting,
-                at: chrono::Utc::now(),
-            });
-    });
+    let waiter =
+        wait_until_left_starting(&state, "wait-resolves", std::time::Duration::from_secs(5));
+    tokio::pin!(waiter);
+    assert!(futures_util::poll!(waiter.as_mut()).is_pending());
+    {
+        let mut instances = state.instances.write().await;
+        instances
+            .iter_mut()
+            .find(|i| i.id == "wait-resolves")
+            .unwrap()
+            .status = Status::Waiting;
+    }
+    state
+        .status_tx
+        .send(crate::server::push::StatusChange {
+            instance_id: "wait-resolves".to_string(),
+            instance_title: "starting".to_string(),
+            old: Status::Starting,
+            new: Status::Waiting,
+            at: chrono::Utc::now(),
+        })
+        .expect("the waiter must be subscribed before the transition");
 
-    let started = std::time::Instant::now();
-    let result =
-        wait_until_left_starting(&state, "wait-resolves", std::time::Duration::from_secs(5)).await;
+    let result = tokio::time::timeout(std::time::Duration::from_secs(2), waiter)
+        .await
+        .expect("the broadcast must resolve before the fallback timeout");
     assert_eq!(result.map(|i| i.status), Some(Status::Waiting));
-    assert!(
-        started.elapsed() < std::time::Duration::from_secs(2),
-        "must resolve promptly off the broadcast, not sit out the full timeout"
-    );
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn wait_until_left_starting_times_out_with_current_status() {
     let mut inst = Instance::new("stuck", "/tmp/wait-c");
     inst.id = "wait-timeout".to_string();
     inst.status = Status::Starting;
     let state = crate::server::test_support::build_test_app_state(vec![inst]);
 
-    let result = wait_until_left_starting(
-        &state,
-        "wait-timeout",
-        std::time::Duration::from_millis(150),
-    )
-    .await;
-    assert_eq!(
-        result.map(|i| i.status),
-        Some(Status::Starting),
-        "timeout must still return the freshest known status, not lie about readiness"
-    );
+    let timeout = std::time::Duration::from_millis(150);
+    let waiter = wait_until_left_starting(&state, "wait-timeout", timeout);
+    tokio::pin!(waiter);
+    assert!(futures_util::poll!(waiter.as_mut()).is_pending());
+    state.instances.write().await[0].status = Status::Waiting;
+    assert!(futures_util::poll!(waiter.as_mut()).is_pending());
+    tokio::time::advance(timeout).await;
+    assert_eq!(waiter.await.map(|i| i.status), Some(Status::Waiting));
 }
 
 #[tokio::test]
@@ -3247,6 +3272,7 @@ fn worktree_name_edit_updates_path_and_optionally_branch() {
 }
 
 #[test]
+#[serial_test::serial]
 fn apply_post_restart_sync_propagates_agent_session_id() {
     // Models the rapid double-restart case: in-memory state is stale
     // (agent_session_id = None) because the 2s status poller hasn't
@@ -3545,8 +3571,8 @@ fn apply_cascade_state_sync_preserves_peer_sid_write() {
 #[serial_test::serial]
 fn send_message_post_restart_save_preserves_peer_sid_write() {
     let temp_home = tempfile::tempdir().unwrap();
-    std::env::set_var("HOME", temp_home.path());
-    let _ = isolated_app_dir(temp_home.path());
+    let _home = crate::session::test_support::isolate_app_dir_at(temp_home.path());
+    let _ = crate::session::get_app_dir().expect("isolated app dir");
 
     let profile = "send-post-restart-peer-sid";
     let storage = Storage::new_unwatched(profile).unwrap();
@@ -3593,24 +3619,11 @@ fn send_message_post_restart_save_preserves_peer_sid_write() {
     assert!(disk.last_accessed_at.is_some());
 }
 
-fn isolated_app_dir(temp_home: &std::path::Path) -> std::path::PathBuf {
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
-    {
-        let config_home = temp_home.join(".config");
-        std::env::set_var("XDG_CONFIG_HOME", &config_home);
-        config_home.join(crate::session::APP_DIR_NAME_XDG)
-    }
-    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-    {
-        temp_home.join(crate::session::APP_DIR_NAME_OTHER)
-    }
-}
-
 #[test]
 #[serial_test::serial]
 fn session_tool_identity_accepts_builtin_agent() {
     let temp_home = tempfile::tempdir().unwrap();
-    std::env::set_var("HOME", temp_home.path());
+    let _home = crate::session::test_support::isolate_app_dir_at(temp_home.path());
     let project = tempfile::tempdir().unwrap();
 
     assert!(validate_session_tool_identity(
@@ -3624,8 +3637,8 @@ fn session_tool_identity_accepts_builtin_agent() {
 #[serial_test::serial]
 fn session_tool_identity_accepts_non_empty_configured_custom_agent() {
     let temp_home = tempfile::tempdir().unwrap();
-    std::env::set_var("HOME", temp_home.path());
-    let app_dir = isolated_app_dir(temp_home.path());
+    let _home = crate::session::test_support::isolate_app_dir_at(temp_home.path());
+    let app_dir = crate::session::get_app_dir().expect("isolated app dir");
     std::fs::create_dir_all(&app_dir).unwrap();
     std::fs::write(
         app_dir.join("config.toml"),
@@ -3648,7 +3661,7 @@ fn session_tool_identity_accepts_non_empty_configured_custom_agent() {
 #[serial_test::serial]
 fn session_tool_identity_rejects_unknown_agent() {
     let temp_home = tempfile::tempdir().unwrap();
-    std::env::set_var("HOME", temp_home.path());
+    let _home = crate::session::test_support::isolate_app_dir_at(temp_home.path());
     let project = tempfile::tempdir().unwrap();
 
     assert!(!validate_session_tool_identity(
@@ -3662,8 +3675,8 @@ fn session_tool_identity_rejects_unknown_agent() {
 #[serial_test::serial]
 fn session_tool_identity_rejects_empty_custom_agent_command() {
     let temp_home = tempfile::tempdir().unwrap();
-    std::env::set_var("HOME", temp_home.path());
-    let app_dir = isolated_app_dir(temp_home.path());
+    let _home = crate::session::test_support::isolate_app_dir_at(temp_home.path());
+    let app_dir = crate::session::get_app_dir().expect("isolated app dir");
     std::fs::create_dir_all(&app_dir).unwrap();
     std::fs::write(
         app_dir.join("config.toml"),
@@ -3686,8 +3699,8 @@ fn session_tool_identity_rejects_empty_custom_agent_command() {
 #[serial_test::serial]
 fn session_tool_identity_rejects_whitespace_only_custom_agent_command() {
     let temp_home = tempfile::tempdir().unwrap();
-    std::env::set_var("HOME", temp_home.path());
-    let app_dir = isolated_app_dir(temp_home.path());
+    let _home = crate::session::test_support::isolate_app_dir_at(temp_home.path());
+    let app_dir = crate::session::get_app_dir().expect("isolated app dir");
     std::fs::create_dir_all(&app_dir).unwrap();
     std::fs::write(
         app_dir.join("config.toml"),
@@ -3710,8 +3723,8 @@ fn session_tool_identity_rejects_whitespace_only_custom_agent_command() {
 #[serial_test::serial]
 fn session_tool_identity_uses_requested_profile() {
     let temp_home = tempfile::tempdir().unwrap();
-    std::env::set_var("HOME", temp_home.path());
-    let app_dir = isolated_app_dir(temp_home.path());
+    let _home = crate::session::test_support::isolate_app_dir_at(temp_home.path());
+    let app_dir = crate::session::get_app_dir().expect("isolated app dir");
     let work_profile = app_dir.join("profiles").join("work");
     std::fs::create_dir_all(&work_profile).unwrap();
     std::fs::write(
@@ -3740,8 +3753,8 @@ fn session_tool_identity_uses_requested_profile() {
 #[serial_test::serial]
 fn session_tool_identity_uses_repo_aware_config_but_not_repo_custom_agents() {
     let temp_home = tempfile::tempdir().unwrap();
-    std::env::set_var("HOME", temp_home.path());
-    let app_dir = isolated_app_dir(temp_home.path());
+    let _home = crate::session::test_support::isolate_app_dir_at(temp_home.path());
+    let app_dir = crate::session::get_app_dir().expect("isolated app dir");
     std::fs::create_dir_all(&app_dir).unwrap();
     std::fs::write(
         app_dir.join("config.toml"),
@@ -3813,6 +3826,7 @@ fn delete_race_state_for(ids: &[&str]) -> std::sync::Arc<crate::server::AppState
 /// parks before any teardown, then completes once the guard drops.
 #[tokio::test]
 async fn permanent_deletion_waits_for_an_in_flight_submission() {
+    let _home = crate::session::test_support::isolate_app_dir();
     use std::time::Duration;
 
     // Direct delete.
@@ -3821,7 +3835,8 @@ async fn permanent_deletion_waits_for_an_in_flight_submission() {
         .session_service
         .prompt_submission("sess-3650-direct")
         .await;
-    let delete = tokio::spawn({
+    let mut claims = state.session_service.watch_submission_claims();
+    let delete = {
         let state = std::sync::Arc::clone(&state);
         async move {
             delete_session(
@@ -3832,11 +3847,17 @@ async fn permanent_deletion_waits_for_an_in_flight_submission() {
             .await
             .into_response()
         }
-    });
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    };
+    tokio::pin!(delete);
     assert!(
-        !delete.is_finished(),
+        futures_util::poll!(&mut delete).is_pending(),
         "a delete must not tear a session down under an in-flight submission"
+    );
+    assert_eq!(
+        claims
+            .try_recv()
+            .expect("contender reached submission claim"),
+        "sess-3650-direct"
     );
     assert_eq!(
         state.instances.read().await[0].status,
@@ -3846,8 +3867,7 @@ async fn permanent_deletion_waits_for_an_in_flight_submission() {
     drop(delivering);
     tokio::time::timeout(Duration::from_secs(10), delete)
         .await
-        .expect("the delete lands once the submission releases the session")
-        .expect("delete task must not panic");
+        .expect("the delete lands once the submission releases the session");
 
     // Workspace teardown, on the owner's own guard.
     let state = delete_race_state("sess-3650-owner");
@@ -3855,7 +3875,8 @@ async fn permanent_deletion_waits_for_an_in_flight_submission() {
         .session_service
         .prompt_submission("sess-3650-owner")
         .await;
-    let workspace = tokio::spawn({
+    let mut claims = state.session_service.watch_submission_claims();
+    let workspace = {
         let state = std::sync::Arc::clone(&state);
         async move {
             purge_workspace_artifacts(
@@ -3866,25 +3887,31 @@ async fn permanent_deletion_waits_for_an_in_flight_submission() {
             )
             .await
         }
-    });
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    };
+    tokio::pin!(workspace);
     assert!(
-        !workspace.is_finished(),
+        futures_util::poll!(&mut workspace).is_pending(),
         "a workspace teardown must wait for the owner's in-flight submission"
+    );
+    assert_eq!(
+        claims
+            .try_recv()
+            .expect("contender reached submission claim"),
+        "sess-3650-owner"
     );
     drop(delivering);
     tokio::time::timeout(Duration::from_secs(10), workspace)
         .await
-        .expect("the workspace teardown lands once the submission releases")
-        .expect("workspace task must not panic");
+        .expect("the workspace teardown lands once the submission releases");
 
-    // Workspace teardown also waits for a sibling's in-flight submission.
+    // A workspace teardown must also wait on a sibling's live submission.
     let state = delete_race_state_for(&["sess-3650-sib", "sess-3650-ws-owner"]);
     let delivering = state
         .session_service
         .prompt_submission("sess-3650-sib")
         .await;
-    let workspace = tokio::spawn({
+    let mut claims = state.session_service.watch_submission_claims();
+    let workspace = {
         let state = std::sync::Arc::clone(&state);
         async move {
             purge_workspace_artifacts(
@@ -3901,11 +3928,15 @@ async fn permanent_deletion_waits_for_an_in_flight_submission() {
             )
             .await
         }
-    });
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    };
+    tokio::pin!(workspace);
     assert!(
-        !workspace.is_finished(),
+        futures_util::poll!(&mut workspace).is_pending(),
         "a workspace teardown must wait for a sibling's in-flight submission"
+    );
+    assert!(
+        std::iter::from_fn(|| claims.try_recv().ok()).any(|id| id == "sess-3650-sib"),
+        "contender reached the sibling submission claim"
     );
     assert!(
         state
@@ -3919,8 +3950,45 @@ async fn permanent_deletion_waits_for_an_in_flight_submission() {
     drop(delivering);
     tokio::time::timeout(Duration::from_secs(10), workspace)
         .await
-        .expect("the workspace teardown lands once the sibling submission releases")
-        .expect("workspace task must not panic");
+        .expect("the workspace teardown lands once the sibling submission releases");
+}
+
+/// Retention waits for submissions, then rechecks restores under the instance lock.
+#[tokio::test]
+async fn the_retention_purge_takes_submission_before_the_instance_lock() {
+    let _home = crate::session::test_support::isolate_app_dir();
+    std::fs::write(
+        crate::session::get_app_dir().unwrap().join("config.toml"),
+        "[session]\ntrash_retention_days = 1\n",
+    )
+    .unwrap();
+    let mut inst = make_test_instance();
+    inst.trashed_at = Some(chrono::Utc::now() - chrono::Duration::days(2));
+    let id = inst.id.clone();
+    let state = crate::server::test_support::build_test_app_state(vec![inst]);
+    let submission = state.session_service.prompt_submission(&id).await;
+    let mut claims = state.session_service.watch_submission_claims();
+    let purge = purge_expired_trash(&state);
+    tokio::pin!(purge);
+    assert!(futures_util::poll!(&mut purge).is_pending());
+    assert_eq!(
+        claims.try_recv().expect("purge reaches submission claim"),
+        id
+    );
+    let lock = state.instance_lock(&id).await;
+    let held = lock
+        .try_lock()
+        .expect("submission must precede instance lock");
+    drop(submission);
+    assert!(futures_util::poll!(&mut purge).is_pending());
+    state.instances.write().await[0].trashed_at = None;
+    drop(held);
+    purge.await;
+    assert_eq!(
+        state.instances.read().await[0].id,
+        id,
+        "restore wins before purge snapshot"
+    );
 }
 
 /// #3650's barrier applies to every handler that stops a worker, not just
@@ -3935,6 +4003,7 @@ async fn permanent_deletion_waits_for_an_in_flight_submission() {
 /// for the same reason `attach_project` and the tied renames do.
 #[tokio::test]
 async fn worker_stopping_handlers_wait_for_an_in_flight_submission() {
+    let _app_dir = crate::session::test_support::isolate_app_dir();
     use std::time::Duration;
 
     async fn call(
@@ -3972,16 +4041,22 @@ async fn worker_stopping_handlers_wait_for_an_in_flight_submission() {
         let id = format!("sess-3650-{which}");
         let state = delete_race_state(&id);
         let delivering = state.session_service.prompt_submission(&id).await;
-        let handler = tokio::spawn({
+        let mut claims = state.session_service.watch_submission_claims();
+        let handler = {
             let state = std::sync::Arc::clone(&state);
             let id = id.clone();
             async move { call(which, state, id).await }
-        });
-
-        tokio::time::sleep(Duration::from_millis(200)).await;
+        };
+        tokio::pin!(handler);
         assert!(
-            !handler.is_finished(),
+            futures_util::poll!(&mut handler).is_pending(),
             "{which} must not quiesce a worker a submission is mid-delivery on"
+        );
+        assert_eq!(
+            claims
+                .try_recv()
+                .expect("contender reached submission claim"),
+            id
         );
         assert_eq!(
             state.instances.read().await[0].status,
@@ -3992,8 +4067,7 @@ async fn worker_stopping_handlers_wait_for_an_in_flight_submission() {
         drop(delivering);
         tokio::time::timeout(Duration::from_secs(10), handler)
             .await
-            .unwrap_or_else(|_| panic!("{which} must finish once the submission releases"))
-            .unwrap_or_else(|e| panic!("{which} task must not panic: {e}"));
+            .unwrap_or_else(|_| panic!("{which} must finish once the submission releases"));
     }
 }
 
@@ -4063,6 +4137,97 @@ async fn session_mutations_allocate_no_prompt_lock_for_an_unknown_id() {
     );
 }
 
+#[test]
+fn create_session_validates_tool_before_builder_or_persistence() {
+    let source = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/server/api/sessions/create.rs"),
+    )
+    .unwrap();
+    let create_start = source.find("pub async fn create_session").unwrap();
+    let create_source = &source[create_start..];
+    // Anchor on the call, not the bare name: a comment above mentions the
+    // fn earlier in the handler and would satisfy a name-only find.
+    let validation = create_source
+        .find("if !validate_session_tool_identity(")
+        .unwrap();
+    let profile_default = create_source.find("body.profile.unwrap_or").unwrap();
+    let spawn_blocking = create_source.find("tokio::task::spawn_blocking").unwrap();
+    // Build and persistence both go through session_spawn.
+    let session_spawn = create_source
+        .find("crate::server::session_spawn::")
+        .unwrap();
+
+    assert!(validation < profile_default);
+    assert!(validation < spawn_blocking);
+    assert!(validation < session_spawn);
+    assert!(create_source.contains("body.profile.as_deref().unwrap_or(&default_profile)"));
+    assert!(create_source.contains("std::path::Path::new(&body.path)"));
+    assert!(!create_source[validation..spawn_blocking].contains("command_override"));
+}
+
+#[tokio::test]
+async fn ensure_session_refreshes_instance_after_instance_lock() {
+    let _home = crate::session::test_support::isolate_app_dir();
+    let inst = make_test_instance();
+    let id = inst.id.clone();
+    let state = crate::server::test_support::build_test_app_state(vec![inst]);
+    let lock = state.instance_lock(&id).await;
+    let held = lock.lock().await;
+    let handler = ensure_session(State(state.clone()), Path(id.clone()), Ok(None));
+    tokio::pin!(handler);
+    assert!(futures_util::poll!(&mut handler).is_pending());
+    state.instances.write().await.clear();
+    drop(held);
+    assert_eq!(
+        handler.await.into_response().status(),
+        StatusCode::NOT_FOUND
+    );
+}
+
+/// The three terminal handlers must take the per-session lock before
+/// snapshotting the instance, like `ensure_session`; a read-then-lock order
+/// lets a concurrent mutation land between the two and hands `spawn_blocking`
+/// a stale clone.
+#[tokio::test]
+async fn terminal_handlers_take_instance_lock_before_snapshot() {
+    let _home = crate::session::test_support::isolate_app_dir();
+    for which in ["ensure", "container", "kill"] {
+        let inst = make_test_instance();
+        let id = inst.id.clone();
+        let state = crate::server::test_support::build_test_app_state(vec![inst]);
+        let lock = state.instance_lock(&id).await;
+        let held = lock.lock().await;
+        let handler = async {
+            let query =
+                axum::extract::Query(crate::server::live_ws::TerminalIndexQuery { index: 1 });
+            match which {
+                "ensure" => {
+                    ensure_terminal(State(state.clone()), Path(id.clone()), query, Ok(None))
+                        .await
+                        .into_response()
+                }
+                "container" => ensure_container_terminal(
+                    State(state.clone()),
+                    Path(id.clone()),
+                    query,
+                    Ok(None),
+                )
+                .await
+                .into_response(),
+                "kill" => kill_terminal(State(state.clone()), Path(id.clone()), query)
+                    .await
+                    .into_response(),
+                _ => unreachable!(),
+            }
+        };
+        tokio::pin!(handler);
+        assert!(futures_util::poll!(&mut handler).is_pending(), "{which}");
+        state.instances.write().await.clear();
+        drop(held);
+        assert_eq!(handler.await.status(), StatusCode::NOT_FOUND, "{which}");
+    }
+}
+
 /// A workspace row can persist with `repos: []`; a file-diff request that
 /// omits `?repo=` must get a 400 for it, not a panic on the empty repo list.
 #[tokio::test]
@@ -4093,26 +4258,30 @@ async fn diff_file_rejects_workspace_with_no_repos() {
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
 }
 
-#[test]
-fn send_message_refreshes_instance_after_instance_lock() {
-    let source = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/server/api/sessions/send.rs"),
-    )
-    .unwrap();
-    let start = source.find("pub async fn send_message").unwrap();
-    let send_source = &source[start..];
-    let lock = send_source
-        .find("let inst_lock = state.instance_lock(&id).await")
-        .unwrap();
-    let read = send_source
-        .find("let instances = state.instances.read().await")
-        .unwrap();
-    let sync_base = send_source
-        .find("let sync_base = instance.clone()")
-        .unwrap();
-
-    assert!(lock < read);
-    assert!(read < sync_base);
+#[tokio::test]
+async fn send_message_refreshes_instance_after_instance_lock() {
+    let _home = crate::session::test_support::isolate_app_dir();
+    let inst = make_test_instance();
+    let id = inst.id.clone();
+    let state = crate::server::test_support::build_test_app_state(vec![inst]);
+    let lock = state.instance_lock(&id).await;
+    let held = lock.lock().await;
+    let handler = send_message(
+        State(state.clone()),
+        Path(id.clone()),
+        Ok(Json(SendMessageRequest {
+            message: "hello".into(),
+            revive: false,
+        })),
+    );
+    tokio::pin!(handler);
+    assert!(futures_util::poll!(&mut handler).is_pending());
+    state.instances.write().await.clear();
+    drop(held);
+    assert_eq!(
+        handler.await.into_response().status(),
+        StatusCode::NOT_FOUND
+    );
 }
 // ── validate_diff_path: security regression tests ──────────────────────────
 //
@@ -4386,8 +4555,8 @@ fn plan_summary_empty_steps_yields_zero_total() {
 #[serial_test::serial]
 fn rename_persistence_reports_missing_authoritative_row() {
     let temp_home = tempfile::tempdir().unwrap();
-    std::env::set_var("HOME", temp_home.path());
-    let _ = isolated_app_dir(temp_home.path());
+    let _home = crate::session::test_support::isolate_app_dir_at(temp_home.path());
+    let _ = crate::session::get_app_dir().expect("isolated app dir");
     let storage = Storage::new_unwatched("rename-missing").unwrap();
 
     let outcome = persist_rename_metadata(&storage, "missing-id", "New title", None, None).unwrap();
@@ -4402,8 +4571,8 @@ fn rename_persistence_reports_missing_authoritative_row() {
 #[serial_test::serial]
 async fn persist_session_update_writes_to_disk() {
     let temp_home = tempfile::tempdir().unwrap();
-    std::env::set_var("HOME", temp_home.path());
-    let _ = isolated_app_dir(temp_home.path());
+    let _home = crate::session::test_support::isolate_app_dir_at(temp_home.path());
+    let _ = crate::session::get_app_dir().expect("isolated app dir");
 
     let profile = "persist-success";
     let storage = Storage::new_unwatched(profile).unwrap();
@@ -4443,8 +4612,8 @@ async fn persist_session_update_writes_to_disk() {
 #[serial_test::serial]
 async fn persist_session_update_surfaces_storage_error() {
     let temp_home = tempfile::tempdir().unwrap();
-    std::env::set_var("HOME", temp_home.path());
-    let _ = isolated_app_dir(temp_home.path());
+    let _home = crate::session::test_support::isolate_app_dir_at(temp_home.path());
+    let _ = crate::session::get_app_dir().expect("isolated app dir");
 
     let profile = "persist-failure";
     // Make `sessions.json` a directory so the store's `read_to_string`
@@ -4470,8 +4639,8 @@ async fn persist_session_update_surfaces_storage_error() {
 #[serial_test::serial]
 async fn group_edit_set_and_clear_round_trip_to_disk() {
     let temp_home = tempfile::tempdir().unwrap();
-    std::env::set_var("HOME", temp_home.path());
-    let _ = isolated_app_dir(temp_home.path());
+    let _home = crate::session::test_support::isolate_app_dir_at(temp_home.path());
+    let _ = crate::session::get_app_dir().expect("isolated app dir");
 
     let profile = "group-edit";
     let storage = Storage::new_unwatched(profile).unwrap();
@@ -4554,8 +4723,8 @@ fn project_with_on_create_hooks(commands: &[&str]) -> tempfile::TempDir {
 #[serial_test::serial]
 fn resolve_hook_plan_refuses_untrusted_repo_hooks() {
     let temp_home = tempfile::tempdir().unwrap();
-    std::env::set_var("HOME", temp_home.path());
-    let _app_dir = isolated_app_dir(temp_home.path());
+    let _home = crate::session::test_support::isolate_app_dir_at(temp_home.path());
+    let _app_dir = crate::session::get_app_dir().expect("isolated app dir");
     let project = project_with_on_create_hooks(&["bash scripts/setup-worktree.sh"]);
     // Approval trusts the whole hooks hash, so the refusal must surface
     // every hook type, not just on_create.
@@ -4594,8 +4763,8 @@ fn resolve_hook_plan_refuses_untrusted_repo_hooks() {
 #[serial_test::serial]
 fn resolve_hook_plan_distinguishes_approval_from_skip() {
     let temp_home = tempfile::tempdir().unwrap();
-    std::env::set_var("HOME", temp_home.path());
-    let _app_dir = isolated_app_dir(temp_home.path());
+    let _home = crate::session::test_support::isolate_app_dir_at(temp_home.path());
+    let _app_dir = crate::session::get_app_dir().expect("isolated app dir");
     let project = project_with_on_create_hooks(&["echo hi"]);
     let base = crate::session::HooksConfig {
         on_create: vec!["echo global".into()],
@@ -4644,8 +4813,8 @@ fn resolve_hook_plan_distinguishes_approval_from_skip() {
 fn resolve_hook_plan_absent_hooks_is_ok() {
     // A repo with no hooks (and no global hooks) is never refused.
     let temp_home = tempfile::tempdir().unwrap();
-    std::env::set_var("HOME", temp_home.path());
-    let _app_dir = isolated_app_dir(temp_home.path());
+    let _home = crate::session::test_support::isolate_app_dir_at(temp_home.path());
+    let _app_dir = crate::session::get_app_dir().expect("isolated app dir");
     let project = tempfile::tempdir().unwrap();
 
     let plan = resolve_create_hook_plan(
@@ -4666,8 +4835,8 @@ fn resolve_hook_plan_scratch_skips_repo_trust() {
     // Scratch sessions have no repo config anchor; even pointing at a path
     // with untrusted hooks must not refuse (matches the CLI scratch branch).
     let temp_home = tempfile::tempdir().unwrap();
-    std::env::set_var("HOME", temp_home.path());
-    let _app_dir = isolated_app_dir(temp_home.path());
+    let _home = crate::session::test_support::isolate_app_dir_at(temp_home.path());
+    let _app_dir = crate::session::get_app_dir().expect("isolated app dir");
     let project = project_with_on_create_hooks(&["echo nope"]);
 
     let plan = resolve_create_hook_plan(
@@ -4692,8 +4861,8 @@ fn resolve_hook_plan_does_not_block_on_untrusted_mcp_without_hooks() {
     // the supervisor gates MCP at spawn, so blocking creation here would be
     // stricter than the CLI. The session is created with MCP left untrusted.
     let temp_home = tempfile::tempdir().unwrap();
-    std::env::set_var("HOME", temp_home.path());
-    let _app_dir = isolated_app_dir(temp_home.path());
+    let _home = crate::session::test_support::isolate_app_dir_at(temp_home.path());
+    let _app_dir = crate::session::get_app_dir().expect("isolated app dir");
     let project = tempfile::tempdir().unwrap();
     std::fs::write(
         project.path().join(".mcp.json"),
@@ -4724,8 +4893,8 @@ fn resolve_hook_plan_inherits_trust_across_worktrees() {
     // created from an already-trusted repo inherits that trust without a
     // fresh prompt, even with trust_hooks: false.
     let temp_home = tempfile::tempdir().unwrap();
-    std::env::set_var("HOME", temp_home.path());
-    let _app_dir = isolated_app_dir(temp_home.path());
+    let _home = crate::session::test_support::isolate_app_dir_at(temp_home.path());
+    let _app_dir = crate::session::get_app_dir().expect("isolated app dir");
 
     let parent = tempfile::Builder::new()
         .prefix("aoe-test-")

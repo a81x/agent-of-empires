@@ -100,8 +100,10 @@ pub fn append_remain_on_exit_args(args: &mut Vec<String>, target: &str) {
 
 /// Append `; set-option -t <target> pane-base-index 0` to an in-flight tmux
 /// argument list so that pane indices always start at 0 regardless of the
-/// user's global config.  This lets status checks use `.0` to reliably target
-/// the agent's pane.  See #488.
+/// user's global config. Pane targets address the first pane as `:^`, which
+/// resolves regardless of that base; the pin keeps the chained `^.0..^.{n}`
+/// captures addressing every pane without a prior `list-panes` round trip.
+/// See #488.
 pub fn append_pane_base_index_args(args: &mut Vec<String>, target: &str) {
     args.extend([
         ";".to_string(),
@@ -266,13 +268,16 @@ pub(crate) fn probe_pane(session_name: &str) -> PaneProbe {
     if session_name.is_empty() {
         return PaneProbe::Missing;
     }
-    // The first window's pinned pane, independent of the active window.
-    let target = format!("={session_name}:^.0");
+    // The first pane by id order, never the active one: `^` follows focus,
+    // and `.0` is base-index sensitive. `list-panes` order is index order.
+    let Some(first) = first_pane_id(session_name) else {
+        return PaneProbe::Missing;
+    };
     // `tmux_query_command`, not `tmux_command`: `classify_pane_probe` matches
     // the ENOENT marker in tmux's `error connecting to <socket> (<strerror>)`,
     // and glibc localizes `strerror` by `LC_MESSAGES`.
     let Some(output) = crate::tmux::tmux_query_command()
-        .args(["display-message", "-t", &target, "-p", "#{pane_dead}"])
+        .args(["display-message", "-t", &first, "-p", "#{pane_dead}"])
         .output()
         .ok()
     else {
@@ -280,6 +285,38 @@ pub(crate) fn probe_pane(session_name: &str) -> PaneProbe {
     };
     let stdout = String::from_utf8_lossy(&output.stdout);
     classify_pane_probe(output.status.success(), stdout.trim(), &output.stderr)
+}
+
+/// `#{pane_id}` of the session's first window's first pane, or `None` when
+/// the session has no panes to address. Sorted by pane index: `list-panes`
+/// order follows creation order, not index order, so the lowest index (the
+/// pane `^.0` used to address) is found by explicit sort.
+fn first_pane_id(session_name: &str) -> Option<String> {
+    let target = format!("={session_name}:");
+    let output = crate::tmux::tmux_command()
+        .args([
+            "list-panes",
+            "-s",
+            "-t",
+            &target,
+            "-F",
+            "#{pane_index} #{pane_id}",
+        ])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    String::from_utf8(output.stdout)
+        .ok()?
+        .lines()
+        .filter_map(|line| {
+            let (index, id) = line.split_once(' ')?;
+            let index: u32 = index.parse().ok()?;
+            (id.starts_with('%')).then_some((index, id.to_string()))
+        })
+        .min_by_key(|(index, _)| *index)
+        .map(|(_, id)| id)
 }
 
 /// Pure classification of one `#{pane_dead}` probe, split out from the real
@@ -311,12 +348,12 @@ pub fn is_pane_dead(session_name: &str) -> bool {
 }
 
 pub(crate) fn pane_current_command(session_name: &str) -> Option<String> {
-    let target = format!("={session_name}:^.0");
+    let first = first_pane_id(session_name)?;
     crate::tmux::tmux_command()
         .args([
             "display-message",
             "-t",
-            &target,
+            &first,
             "-p",
             "#{pane_current_command}",
         ])
@@ -335,7 +372,7 @@ pub(crate) fn pane_current_command(session_name: &str) -> Option<String> {
 /// matched by `^`-anchored rules, so trimming here would let the same pane
 /// read one way through the poller and another through `aoe session capture`.
 pub(crate) fn pane_title(session_name: &str) -> Option<String> {
-    let target = format!("={session_name}:^.0");
+    let target = format!("={session_name}:^");
     crate::tmux::tmux_command()
         .args(["display-message", "-t", &target, "-p", "#{pane_title}"])
         .output()
@@ -354,7 +391,10 @@ fn strip_display_delimiter(raw: &str) -> &str {
 }
 
 fn pane_start_command_is_protected(session_name: &str) -> bool {
-    let target = format!("={session_name}:^.0");
+    let Some(first) = first_pane_id(session_name) else {
+        return false;
+    };
+    let target = first;
     crate::tmux::tmux_command()
         .args([
             "display-message",
@@ -1045,19 +1085,22 @@ mod tests {
     #[test]
     #[serial_test::serial]
     fn kill_session_if_present_kills_existing_session() {
+        let _env = crate::session::test_support::EnvGuard::read_lock();
         if !tmux_available() {
             return;
         }
-        let name = "aoe_test_kill_if_present_alive";
-        let _ = crate::tmux::tmux_command()
-            .args(["kill-session", "-t", name])
-            .output();
+        let guard =
+            crate::tmux::test_helpers::TmuxTestSession::new("aoe_test_kill_if_present_alive");
+        let name = guard.name();
         let spawn = crate::tmux::tmux_command()
-            .args(["new-session", "-d", "-s", name])
-            .status();
-        if !spawn.map(|s| s.success()).unwrap_or(false) {
-            return;
-        }
+            .args(["new-session", "-d", "-s", name, "sleep", "30"])
+            .output()
+            .expect("create tmux fixture");
+        assert!(
+            spawn.status.success(),
+            "tmux fixture: {}",
+            String::from_utf8_lossy(&spawn.stderr)
+        );
         assert!(kill_session_if_present(name).is_ok());
         let exists = crate::tmux::tmux_command()
             .args(["has-session", "-t", name])
@@ -1292,25 +1335,27 @@ mod tests {
         if !tmux_available() {
             return;
         }
-        let guard = super::super::test_helpers::TmuxTestSession::new("aoe_test_pane_title");
+        let guard = crate::tmux::test_helpers::TmuxTestSession::new("aoe_test_pane_title");
         let name = guard.name();
+        // Separate argv bypasses shell startup, which could overwrite the title.
         let mut args: Vec<String> = ["new-session", "-d", "-s", name, "sleep", "30"]
-            .into_iter()
-            .map(str::to_owned)
+            .iter()
+            .map(|arg| arg.to_string())
             .collect();
         append_pane_base_index_args(&mut args, name);
         assert!(crate::tmux::tmux_command()
-            .args(args)
+            .args(&args)
             .status()
-            .unwrap()
+            .expect("create title fixture")
             .success());
-        let target = format!("{name}:^.0");
+        let target = crate::tmux::test_helpers::only_pane_id(name);
         assert!(crate::tmux::tmux_command()
             .args(["select-pane", "-t", &target, "-T", "aoe-title-probe"])
             .status()
-            .unwrap()
+            .expect("set pane title")
             .success());
-        assert_eq!(pane_title(name).as_deref(), Some("aoe-title-probe"));
+        let title = pane_title(name);
+        assert_eq!(title.as_deref(), Some("aoe-title-probe"));
     }
 
     /// Only the delimiter `display-message` adds comes off. tmux 3.6 will not
@@ -1382,7 +1427,7 @@ mod pane_probe_tests {
         assert!(from_utf8(enoent).is_ok());
     }
 
-    /// An empty name never reaches tmux: `:^.0` resolves against whatever
+    /// An empty name never reaches tmux: `:^` resolves against whatever
     /// session is current, so an unrelated live pane would answer `Alive` and
     /// a poller seeded with no name would hold its budget slot forever.
     #[test]

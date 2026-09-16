@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::{Duration, Instant};
 
-use crate::session::path_identity::canonicalize_or_raw;
+pub(crate) use crate::session::path_identity::canonicalize_or_raw;
 use anyhow::{Context, Result};
 use uuid::Uuid;
 mod omp;
@@ -220,12 +220,12 @@ pub(crate) fn extract_pi_cwd_from_header(path: &Path) -> Option<String> {
 /// re-derived here.
 pub(crate) fn pi_sidecar_poll_fn(
     instance_id: String,
-    source: crate::session::instance::PiSidecarSource,
+    source: crate::session::instance::SessionSidecarSource,
 ) -> impl Fn() -> Option<crate::session::poller::SessionIdObservation> + Send + 'static {
     move || {
-        use crate::session::instance::PiSidecarSource;
+        use crate::session::instance::SessionSidecarSource;
         let id = match source {
-            PiSidecarSource::SandboxDir(ref dir) => dir
+            SessionSidecarSource::SandboxDir(ref dir) => dir
                 .parent()
                 .and_then(Path::parent)
                 .filter(|root| root.join("aoe-session").join(&instance_id) == *dir)
@@ -243,7 +243,7 @@ pub(crate) fn pi_sidecar_poll_fn(
                 .and_then(|raw| String::from_utf8(raw).ok())
                 .map(|raw| raw.trim().to_string())
                 .filter(|id| Uuid::parse_str(id).is_ok()),
-            PiSidecarSource::HostHooks => crate::hooks::read_hook_session_id(&instance_id),
+            SessionSidecarSource::HostHooks => crate::hooks::read_hook_session_id(&instance_id),
         };
         id.and_then(validated_session_id)
             .map(crate::session::poller::SessionIdObservation::instance_sidecar)
@@ -350,8 +350,6 @@ fn build_exclusion_set(
     };
 
     let aoe_sessions: Vec<&str> = names
-        .iter()
-        .map(String::as_str)
         .filter(|name| {
             name.starts_with(crate::tmux::SESSION_PREFIX)
                 && !name.starts_with(crate::tmux::TOOL_PREFIX)
@@ -1110,10 +1108,7 @@ const PRIME_AGENT_MTIME_FLOOR_SLACK_MS: f64 = 0.0;
 /// fails to parse and the file is skipped until the next poll.
 const PRIME_AGENT_HEADER_SCAN_BYTES: u64 = 64 * 1024;
 
-/// One Prime Agent session, parsed from the first line of a
-/// `~/.prime/agent/sessions/<uuid>.jsonl` file. The header carries both the
-/// resume id and the working directory; the file name is a different uuid,
-/// so the id must come from the header, never from the path.
+/// A Prime root transcript header supplies the resume ID and working directory.
 struct PrimeAgentSession {
     id: String,
     cwd: String,
@@ -1125,18 +1120,16 @@ struct PrimeAgentSession {
 /// fails closed instead of turning a poll into attacker-controlled work.
 const PRIME_AGENT_MAX_SESSION_FILES: usize = 256;
 
-/// Scan `<prime-agent home>/sessions/*.jsonl` through one anchored root.
+/// Scan the configured Prime Agent session directory through one anchored root.
 /// Intermediate and leaf symlinks, non-regular files, oversized headers, and
 /// stores above the entry cap are rejected. The launch-floor mtime comes from
 /// the opened descriptor, so a path replacement cannot swap its timestamp.
-fn scan_prime_agent_sessions(store: &Path) -> Vec<PrimeAgentSession> {
+fn scan_prime_agent_sessions(store: &Path, session_dir: &Path) -> Vec<PrimeAgentSession> {
     let Ok(root) = crate::session::AnchoredDir::open(store) else {
         return Vec::new();
     };
-    let Ok(names) = root.read_dir(
-        Path::new("sessions"),
-        PRIME_AGENT_MAX_SESSION_FILES.saturating_add(1),
-    ) else {
+    let Ok(names) = root.read_dir(session_dir, PRIME_AGENT_MAX_SESSION_FILES.saturating_add(1))
+    else {
         return Vec::new();
     };
     if names.len() > PRIME_AGENT_MAX_SESSION_FILES {
@@ -1149,7 +1142,7 @@ fn scan_prime_agent_sessions(store: &Path) -> Vec<PrimeAgentSession> {
         if path.extension().and_then(|extension| extension.to_str()) != Some("jsonl") {
             continue;
         }
-        let relative = Path::new("sessions").join(&name);
+        let relative = session_dir.join(&name);
         let Ok(Some(file)) = root.open_regular(&relative, usize::MAX) else {
             continue;
         };
@@ -1171,7 +1164,9 @@ fn scan_prime_agent_sessions(store: &Path) -> Vec<PrimeAgentSession> {
         let Ok(header) = serde_json::from_slice::<serde_json::Value>(&header) else {
             continue;
         };
-        if header.get("type").and_then(|value| value.as_str()) != Some("session") {
+        if header.get("type").and_then(|value| value.as_str()) != Some("session")
+            || header.get("rlmDepth").and_then(|value| value.as_u64()) != Some(0)
+        {
             continue;
         }
         let (Some(id), Some(cwd)) = (
@@ -1221,10 +1216,38 @@ fn select_prime_agent_session(
         .ok_or_else(|| anyhow::anyhow!("No Prime Agent session found matching project path"))
 }
 
-/// Poll the mounted Prime Agent store for a post-launch transcript whose CWD
-/// matches the container workspace.
-pub(crate) fn prime_agent_poll_fn_sandboxed_store(
+fn prime_agent_store_session_id(
+    store: &Path,
+    session_dir: &Path,
+    container_workdir: &str,
+    exclusion: &HashSet<String>,
+    launch_time_ms: f64,
+) -> Option<String> {
+    select_prime_agent_session(
+        scan_prime_agent_sessions(store, session_dir),
+        container_workdir,
+        exclusion,
+        Some(launch_time_ms),
+    )
+    .map_err(|error| {
+        tracing::debug!(target: "session.capture", "sandbox Prime Agent capture failed: {error}")
+    })
+    .ok()
+    .and_then(validated_session_id)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum PrimeRootPublication {
+    Ready(String),
+    /// A root publication whose transcript is positively absent, not unreadable.
+    Pending(String),
+}
+
+/// A pending root preserves an empty-conversation boundary instead of scanning older history.
+pub(crate) fn prime_agent_poll_fn_sandboxed(
+    preferred_sidecar: Box<dyn Fn() -> Option<PrimeRootPublication> + Send + 'static>,
     store: PathBuf,
+    session_dir: PathBuf,
     container_workdir: String,
     instance_id: String,
     launch_time_ms: f64,
@@ -1232,17 +1255,17 @@ pub(crate) fn prime_agent_poll_fn_sandboxed_store(
 ) -> impl Fn() -> Option<String> + Send + 'static {
     move || {
         let exclusion = compose_exclusion(&instance_id, &extra_excludes);
-        select_prime_agent_session(
-            scan_prime_agent_sessions(&store),
-            &container_workdir,
-            &exclusion,
-            Some(launch_time_ms),
-        )
-        .map_err(|error| {
-            tracing::debug!(target: "session.capture", "sandbox Prime Agent capture failed: {error}")
-        })
-        .ok()
-        .and_then(validated_session_id)
+        match preferred_sidecar() {
+            Some(PrimeRootPublication::Ready(id)) if !exclusion.contains(&id) => Some(id),
+            Some(PrimeRootPublication::Pending(id)) if !exclusion.contains(&id) => None,
+            _ => prime_agent_store_session_id(
+                &store,
+                &session_dir,
+                &container_workdir,
+                &exclusion,
+                launch_time_ms,
+            ),
+        }
     }
 }
 
@@ -1677,8 +1700,8 @@ mod tests {
             .set_times(std::fs::FileTimes::new().set_modified(hour_ago))
             .unwrap();
 
-        let old_val = std::env::var("CLAUDE_CONFIG_DIR").ok();
-        std::env::set_var("CLAUDE_CONFIG_DIR", tmp.path());
+        let _env =
+            crate::session::test_support::EnvGuard::set(&[("CLAUDE_CONFIG_DIR", tmp.path())]);
 
         assert!(
             !claude_host_transcript_confirmed_absent("/tmp/myproject", present, &[]),
@@ -1694,11 +1717,6 @@ mod tests {
             present,
             &[]
         ));
-
-        match old_val {
-            Some(v) => std::env::set_var("CLAUDE_CONFIG_DIR", v),
-            None => std::env::remove_var("CLAUDE_CONFIG_DIR"),
-        }
     }
 
     #[cfg(unix)]
@@ -2043,9 +2061,11 @@ mod tests {
         )
         .unwrap();
         // A missing directory scans empty rather than erroring.
-        assert!(scan_prime_agent_sessions(&tmp.path().join("nope")).is_empty());
+        assert!(
+            scan_prime_agent_sessions(&tmp.path().join("nope"), Path::new("sessions")).is_empty()
+        );
 
-        let scanned = scan_prime_agent_sessions(tmp.path());
+        let scanned = scan_prime_agent_sessions(tmp.path(), Path::new("sessions"));
         let mut ids: Vec<&str> = scanned.iter().map(|s| s.id.as_str()).collect();
         ids.sort_unstable();
         assert_eq!(ids, vec!["id-valid"]);
@@ -2066,7 +2086,7 @@ mod tests {
         oversized.push_str("\"}\n");
         std::fs::write(sessions_dir.join("big.jsonl"), &oversized).unwrap();
 
-        assert!(scan_prime_agent_sessions(tmp.path()).is_empty());
+        assert!(scan_prime_agent_sessions(tmp.path(), Path::new("sessions")).is_empty());
     }
 
     #[cfg(unix)]
@@ -2086,7 +2106,7 @@ mod tests {
         )
         .unwrap();
 
-        assert!(scan_prime_agent_sessions(tmp.path()).is_empty());
+        assert!(scan_prime_agent_sessions(tmp.path(), Path::new("sessions")).is_empty());
     }
     #[cfg(unix)]
     #[test]
@@ -2098,7 +2118,7 @@ mod tests {
         write_prime_session(outside.path(), "peer.jsonl", "peer-id", "/workspace");
         symlink(outside.path(), store.path().join("sessions")).unwrap();
 
-        assert!(scan_prime_agent_sessions(store.path()).is_empty());
+        assert!(scan_prime_agent_sessions(store.path(), Path::new("sessions")).is_empty());
     }
 
     #[test]
@@ -2111,7 +2131,7 @@ mod tests {
         }
         write_prime_session(&sessions, "valid.jsonl", "valid-id", "/workspace");
 
-        assert!(scan_prime_agent_sessions(store.path()).is_empty());
+        assert!(scan_prime_agent_sessions(store.path(), Path::new("sessions")).is_empty());
     }
 
     fn capture_floor(seconds: u64) -> std::time::SystemTime {
@@ -2546,9 +2566,10 @@ mod tests {
     }
 
     #[test]
-    fn sandbox_prime_poller_only_claims_post_launch_matching_transcript() {
+    fn sandbox_prime_poller_filters_preferred_and_fallback_from_one_exclusion() {
         let tmp = tempfile::tempdir().unwrap();
-        let sessions = tmp.path().join("sessions");
+        let session_dir = PathBuf::from("custom-sessions");
+        let sessions = tmp.path().join(&session_dir);
         std::fs::create_dir(&sessions).unwrap();
         for (name, id, cwd, mtime) in [
             ("stale", "prime_stale", "/workspace", 1_000),
@@ -2559,14 +2580,56 @@ mod tests {
             let path = write_prime_session(&sessions, &format!("{name}.jsonl"), id, cwd);
             set_mtime_seconds(&path, mtime);
         }
+        let child =
+            write_prime_session(&sessions, "newest-child.jsonl", "prime_child", "/workspace");
+        let mut child_header: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&child).unwrap()).unwrap();
+        child_header["rlmDepth"] = serde_json::json!(1);
+        std::fs::write(&child, format!("{child_header}\n")).unwrap();
+        set_mtime_seconds(&child, 5_000);
 
-        let poll = prime_agent_poll_fn_sandboxed_store(
+        let poll = prime_agent_poll_fn_sandboxed(
+            Box::new(|| None),
             tmp.path().to_path_buf(),
+            session_dir.clone(),
             "/workspace".to_string(),
             "current".to_string(),
             2_000_001.0,
             HashSet::new(),
         );
         assert_eq!(poll().as_deref(), Some("prime_fresh"));
+
+        let preferred = prime_agent_poll_fn_sandboxed(
+            Box::new(|| Some(PrimeRootPublication::Ready("prime_parent".to_string()))),
+            tmp.path().to_path_buf(),
+            session_dir.clone(),
+            "/workspace".to_string(),
+            "current".to_string(),
+            2_000_001.0,
+            HashSet::new(),
+        );
+        assert_eq!(preferred().as_deref(), Some("prime_parent"));
+
+        let excluded_preferred = prime_agent_poll_fn_sandboxed(
+            Box::new(|| Some(PrimeRootPublication::Ready("prime_parent".to_string()))),
+            tmp.path().to_path_buf(),
+            session_dir.clone(),
+            "/workspace".to_string(),
+            "current".to_string(),
+            2_000_001.0,
+            HashSet::from(["prime_parent".to_string()]),
+        );
+        assert_eq!(excluded_preferred().as_deref(), Some("prime_fresh"));
+
+        let all_excluded = prime_agent_poll_fn_sandboxed(
+            Box::new(|| Some(PrimeRootPublication::Ready("prime_parent".to_string()))),
+            tmp.path().to_path_buf(),
+            session_dir,
+            "/workspace".to_string(),
+            "current".to_string(),
+            2_000_001.0,
+            HashSet::from(["prime_parent".to_string(), "prime_fresh".to_string()]),
+        );
+        assert_eq!(all_excluded(), None);
     }
 }

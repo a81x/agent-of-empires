@@ -337,8 +337,12 @@ pub(super) async fn access_policy(
     }
 }
 
-/// Allowed CityHall mutations by method and matched route. Unlisted mutations
-/// are refused before the handler; session handlers also validate ownership.
+/// Mutating routes (POST/PUT/PATCH/DELETE) reachable in CityHall client mode.
+/// Entries are `(method, matched-path template)`. `cityhall_gate` denies unlisted
+/// mutations before handlers run. Tests require classification here or in the
+/// test-only `CITYHALL_MUTATION_DENY` table. Handlers retain their `cityhall_block*`
+/// guards as defense in depth. Reads (GET/HEAD) pass the gate but retain guards
+/// where sensitive. See #7.
 pub(super) const CITYHALL_MUTATION_ALLOW: &[(&str, &str)] = &[
     // Session creation (server-derived) + lifecycle / metadata on the structured
     // sessions this mode owns; each handler re-checks the target is structured.
@@ -409,6 +413,75 @@ pub(super) const CITYHALL_MUTATION_ALLOW: &[(&str, &str)] = &[
     ("POST", "/api/login/logout-all"),
     ("POST", "/api/logout"),
     ("DELETE", "/api/login/sessions/{id}"),
+];
+
+/// Mutating routes deliberately UNREACHABLE in CityHall. Same shape as
+/// [`CITYHALL_MUTATION_ALLOW`]; kept explicit so the
+/// `every_mutating_route_is_cityhall_classified` audit can prove every
+/// router-registered mutation is consciously classified (a new one absent from
+/// both tables fails the build). `cityhall_gate` denies these anyway (they are
+/// simply not in the allow table), but listing them documents the intent and
+/// lets the audit prove exhaustiveness, so it is only needed under `cfg(test)`.
+/// #7.
+#[cfg(test)]
+pub(super) const CITYHALL_MUTATION_DENY: &[(&str, &str)] = &[
+    // Terminal surface.
+    ("POST", "/api/sessions/{id}/ensure"),
+    ("POST", "/api/sessions/{id}/send"),
+    ("POST", "/api/sessions/{id}/terminal"),
+    ("DELETE", "/api/sessions/{id}/terminal"),
+    ("POST", "/api/sessions/{id}/container-terminal"),
+    ("POST", "/api/sessions/{id}/auxiliary/stop"),
+    ("POST", "/api/sessions/{id}/tools/ensure"),
+    ("POST", "/api/sessions/creation-trust"),
+    ("POST", "/api/git/clone"),
+    ("POST", "/api/projects"),
+    // Attaching a repo to a session (#3103) takes an arbitrary host path, so it
+    // is denied for the same reason `git/clone` and `POST /api/projects` are: it
+    // would let a CityHall client create a git worktree anywhere the daemon user
+    // can write, and it also stops the agent worker and removes the sandbox
+    // container. The session lifecycle routes this mode does allow all operate on
+    // state the session already owns.
+    ("POST", "/api/sessions/{id}/projects"),
+    ("PATCH", "/api/projects/{name}"),
+    ("DELETE", "/api/projects/{name}"),
+    ("POST", "/api/profiles"),
+    ("DELETE", "/api/profiles/{name}"),
+    ("PATCH", "/api/profiles/{name}/rename"),
+    ("PATCH", "/api/default-profile"),
+    // MCP mutations.
+    ("POST", "/api/mcp/servers/{name}/drop"),
+    ("POST", "/api/mcp/servers/{name}/keep"),
+    ("POST", "/api/mcp/servers/{name}/resolve"),
+    // Skills mutations.
+    ("POST", "/api/skills"),
+    ("POST", "/api/skills/sync"),
+    ("PUT", "/api/skills/{directory}"),
+    ("DELETE", "/api/skills/{directory}"),
+    ("POST", "/api/skills/{source}/{directory}/adopt"),
+    // Plugin lifecycle.
+    ("POST", "/api/plugins/install"),
+    ("POST", "/api/plugins/install/preview"),
+    ("POST", "/api/plugins/{id}/action"),
+    ("POST", "/api/plugins/{id}/enabled"),
+    ("POST", "/api/plugins/{id}/worker/restart"),
+    ("POST", "/api/plugins/{id}/uninstall"),
+    ("POST", "/api/plugins/{id}/update/apply"),
+    ("POST", "/api/plugins/{id}/update/dismiss"),
+    ("POST", "/api/plugins/commands/{fqid}/invoke"),
+    // ACP agent / worker lifecycle + config.
+    ("DELETE", "/api/sessions/{id}/acp"),
+    ("POST", "/api/sessions/{id}/acp/config-option"),
+    ("POST", "/api/sessions/{id}/acp/disable"),
+    ("POST", "/api/sessions/{id}/acp/enable"),
+    ("POST", "/api/sessions/{id}/acp/install-agent"),
+    ("POST", "/api/sessions/{id}/acp/mode"),
+    ("POST", "/api/sessions/{id}/acp/spawn"),
+    ("POST", "/api/sessions/{id}/acp/switch-agent"),
+    // Global settings / ops / shared workspace ordering.
+    ("PATCH", "/api/settings"),
+    ("PATCH", "/api/log-level"),
+    ("PUT", "/api/workspace-ordering"),
 ];
 
 /// Default-deny CityHall reachability boundary. A no-op outside CityHall mode
@@ -510,7 +583,106 @@ mod tests {
 
     use crate::server::test_helpers::vecs;
     use crate::server::test_support;
+    /// Extract every mutating `(METHOD, path-template)` pair registered in
+    /// `build_router` by scanning `.route("<path>", <handlers>)` and reading the
+    /// method combinators inside each handler expression (balanced parens so a
+    /// nested `get(...).post(...)` doesn't bleed into the next route). Shared by
+    /// the CityHall table-exhaustiveness audit below.
+    fn router_mutating_routes() -> std::collections::BTreeSet<(String, String)> {
+        let src = include_str!("router.rs");
+        let start = src.find("fn build_router").expect("build_router present");
+        let end = src[start..]
+            .find(".layer(axum::middleware::from_fn_with_state")
+            .map(|o| start + o)
+            .unwrap_or(src.len());
+        let body = &src[start..end];
+        let mut out = std::collections::BTreeSet::new();
+        let bytes = body.as_bytes();
+        let marker = ".route(";
+        let mut i = 0;
+        while let Some(rel) = body[i..].find(marker) {
+            let mut j = i + rel + marker.len();
+            while j < body.len() && bytes[j] != b'"' {
+                j += 1;
+            }
+            j += 1;
+            let path_start = j;
+            while j < body.len() && bytes[j] != b'"' {
+                j += 1;
+            }
+            let path = &body[path_start..j];
+            let mut depth = 1i32;
+            let mut k = j;
+            while k < body.len() && depth > 0 {
+                match bytes[k] {
+                    b'(' => depth += 1,
+                    b')' => depth -= 1,
+                    _ => {}
+                }
+                k += 1;
+            }
+            let expr = &body[j..k];
+            for method in ["post", "patch", "put", "delete"] {
+                if expr.contains(&format!("{method}(")) {
+                    out.insert((method.to_uppercase(), path.to_string()));
+                }
+            }
+            i = k;
+        }
+        out
+    }
 
+    /// CityHall audit (route-table exhaustiveness, replaces the old
+    /// handler-body text scan). Every mutating route the router registers
+    /// must appear in exactly the `CITYHALL_MUTATION_ALLOW` /
+    /// `CITYHALL_MUTATION_DENY` tables that drive the default-deny
+    /// `cityhall_gate`. A new mutating route absent from both fails
+    /// the build (forcing a reachable/closed decision), and a stale table entry
+    /// with no matching route also fails. See #7.
+    #[test]
+    fn every_mutating_route_is_cityhall_classified() {
+        let routed = router_mutating_routes();
+        assert!(
+            routed.len() > 60,
+            "router scan found only {} mutating routes; parser likely broke",
+            routed.len()
+        );
+        let classified: std::collections::BTreeSet<(String, String)> = CITYHALL_MUTATION_ALLOW
+            .iter()
+            .chain(CITYHALL_MUTATION_DENY.iter())
+            .map(|(m, p)| ((*m).to_string(), (*p).to_string()))
+            .collect();
+        let mut failures = Vec::new();
+        for route in &routed {
+            if !classified.contains(route) {
+                failures.push(format!(
+                    "{} {} is a mutating route but is in neither CITYHALL_MUTATION_ALLOW nor CITYHALL_MUTATION_DENY.",
+                    route.0, route.1
+                ));
+            }
+        }
+        for entry in &classified {
+            if !routed.contains(entry) {
+                failures.push(format!(
+                    "{} {} is listed in a CityHall table but no router route matches it.",
+                    entry.0, entry.1
+                ));
+            }
+        }
+        for a in CITYHALL_MUTATION_ALLOW {
+            assert!(
+                !CITYHALL_MUTATION_DENY.contains(a),
+                "{} {} is in both CityHall allow and deny tables",
+                a.0,
+                a.1
+            );
+        }
+        assert!(
+            failures.is_empty(),
+            "CityHall route classification is not exhaustive:\n{}",
+            failures.join("\n")
+        );
+    }
     #[test]
     fn strip_host_port_variants() {
         assert_eq!(strip_host_port("localhost:8080"), "localhost");

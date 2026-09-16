@@ -33,8 +33,8 @@
             # every other compile-time embedded asset has to be unioned in
             # explicitly: the acp-worker/adapters manifests that
             # src/acp/adapters.rs reads with include_bytes! (#3204), and
-            # assets/pi, the extension src/session/instance.rs materializes so
-            # pi can publish its own conversation id, and
+            # assets/session, the identity extension that lets supported agents
+            # publish their own conversation id, and
             # docker/Dockerfile, which the agent_compat test embeds to pin the
             # sandbox npm floor, and acp-worker/aoe-agent (manifest, lock and
             # sources), which src/acp/adapters.rs embeds to install the
@@ -102,7 +102,7 @@
             pname = "agent-of-empires-web";
             version = "0";
             src = ./web;
-            npmDepsHash = "sha256-pEYs7YF/D9ciG9O7fdOXnE5FQ2iDnhSz+QxIcZzJzPQ=";
+            npmDepsHash = "sha256-e2402+wQpdMUv0Mw1/2QsGCfsb0Frmj2HOe/0putT7I=";
             # tsc -b && vite build; output goes to web/dist
             installPhase = ''
               mkdir $out

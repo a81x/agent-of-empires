@@ -52,7 +52,8 @@ fn test_row_tag_auto_renders_profile_in_all_profiles_view() {
         .unwrap();
 
     let tools = AvailableTools::with_tools(&["claude"]);
-    let mut view = HomeView::new(None, tools, crate::file_watch::FileWatchService::noop()).unwrap();
+    let mut view =
+        HomeView::new_for_test(None, tools, crate::file_watch::FileWatchService::noop()).unwrap();
     view.group_by = crate::session::config::GroupByMode::Manual;
     view.row_tag_mode = crate::session::config::RowTagMode::Auto;
     view.flat_items = view.build_flat_items();
@@ -99,7 +100,7 @@ fn test_row_tag_auto_omits_tag_in_filtered_view() {
         .unwrap();
 
     let tools = AvailableTools::with_tools(&["claude"]);
-    let mut view = HomeView::new(
+    let mut view = HomeView::new_for_test(
         Some("alpha".to_string()),
         tools,
         crate::file_watch::FileWatchService::noop(),
@@ -147,7 +148,7 @@ fn test_row_tag_profile_renders_in_filtered_view() {
         .unwrap();
 
     let tools = AvailableTools::with_tools(&["claude"]);
-    let mut view = HomeView::new(
+    let mut view = HomeView::new_for_test(
         Some("alpha".to_string()),
         tools,
         crate::file_watch::FileWatchService::noop(),
@@ -231,7 +232,8 @@ fn test_row_tag_branch_renders_when_title_matches_branch() {
         .unwrap();
 
     let tools = AvailableTools::with_tools(&["claude"]);
-    let mut view = HomeView::new(None, tools, crate::file_watch::FileWatchService::noop()).unwrap();
+    let mut view =
+        HomeView::new_for_test(None, tools, crate::file_watch::FileWatchService::noop()).unwrap();
     view.group_by = crate::session::config::GroupByMode::Manual;
     view.row_tag_mode = crate::session::config::RowTagMode::Branch;
     view.flat_items = view.build_flat_items();
@@ -381,7 +383,8 @@ fn test_row_tag_auto_skips_for_empty_source_profile() {
         .unwrap();
 
     let tools = AvailableTools::with_tools(&["claude"]);
-    let mut view = HomeView::new(None, tools, crate::file_watch::FileWatchService::noop()).unwrap();
+    let mut view =
+        HomeView::new_for_test(None, tools, crate::file_watch::FileWatchService::noop()).unwrap();
     view.group_by = crate::session::config::GroupByMode::Manual;
     view.row_tag_mode = crate::session::config::RowTagMode::Auto;
     view.flat_items = view.build_flat_items();
@@ -418,7 +421,8 @@ fn test_create_session_in_all_mode_is_findable() {
     }
 
     let tools = AvailableTools::with_tools(&["claude"]);
-    let mut view = HomeView::new(None, tools, crate::file_watch::FileWatchService::noop()).unwrap();
+    let mut view =
+        HomeView::new_for_test(None, tools, crate::file_watch::FileWatchService::noop()).unwrap();
     view.group_by = crate::session::config::GroupByMode::Manual;
     view.flat_items = view.build_flat_items();
     view.update_selected();
@@ -484,7 +488,8 @@ fn test_save_preserves_per_profile_collapsed_state() {
 
     // Load unified view
     let tools = AvailableTools::with_tools(&["claude"]);
-    let mut view = HomeView::new(None, tools, crate::file_watch::FileWatchService::noop()).unwrap();
+    let mut view =
+        HomeView::new_for_test(None, tools, crate::file_watch::FileWatchService::noop()).unwrap();
     view.group_by = crate::session::config::GroupByMode::Manual;
     view.flat_items = view.build_flat_items();
     view.update_selected();
@@ -591,7 +596,8 @@ fn test_delete_group_scoped_to_owning_profile() {
         .unwrap();
 
     let tools = AvailableTools::with_tools(&["claude"]);
-    let mut view = HomeView::new(None, tools, crate::file_watch::FileWatchService::noop()).unwrap();
+    let mut view =
+        HomeView::new_for_test(None, tools, crate::file_watch::FileWatchService::noop()).unwrap();
     view.group_by = crate::session::config::GroupByMode::Manual;
     view.flat_items = view.build_flat_items();
     view.update_selected();
@@ -695,7 +701,8 @@ fn test_group_delete_dialog_scoped_to_owning_profile() {
         .unwrap();
 
     let tools = AvailableTools::with_tools(&["claude"]);
-    let mut view = HomeView::new(None, tools, crate::file_watch::FileWatchService::noop()).unwrap();
+    let mut view =
+        HomeView::new_for_test(None, tools, crate::file_watch::FileWatchService::noop()).unwrap();
     view.group_by = crate::session::config::GroupByMode::Manual;
     view.flat_items = view.build_flat_items();
     view.update_selected();
@@ -753,7 +760,7 @@ fn test_rename_selected_rejects_all_identity_collisions_and_allows_group_only_ch
         })
         .unwrap();
 
-    let mut view = HomeView::new(
+    let mut view = HomeView::new_for_test(
         Some("test".to_string()),
         AvailableTools::with_tools(&["claude"]),
         crate::file_watch::FileWatchService::noop(),
@@ -847,7 +854,7 @@ fn test_rename_selected_rejects_all_identity_collisions_and_allows_group_only_ch
         Ok(())
     })
     .unwrap();
-    let mut unified = HomeView::new(
+    let mut unified = HomeView::new_for_test(
         None,
         AvailableTools::with_tools(&["claude"]),
         crate::file_watch::FileWatchService::noop(),
@@ -904,7 +911,8 @@ fn test_rename_profile_change_prunes_source_group() {
     let _storage_b = Storage::new_unwatched("beta").unwrap();
 
     let tools = AvailableTools::with_tools(&["claude"]);
-    let mut view = HomeView::new(None, tools, crate::file_watch::FileWatchService::noop()).unwrap();
+    let mut view =
+        HomeView::new_for_test(None, tools, crate::file_watch::FileWatchService::noop()).unwrap();
     view.group_by = crate::session::config::GroupByMode::Manual;
     view.flat_items = view.build_flat_items();
     view.selected_session = Some(id.clone());
