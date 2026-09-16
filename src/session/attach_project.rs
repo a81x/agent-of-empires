@@ -380,9 +380,7 @@ fn plan_conversion(
     let base = builder::resolve_base_branch(
         None,
         builder::project_base_branches(profile)
-            .get(&super::projects::canonical_key(
-                &main_repo.to_string_lossy(),
-            ))
+            .get(&super::projects::canonical_key(main_repo.to_string_lossy()))
             .map(String::as_str),
         config.worktree.default_base_branch.as_deref(),
     );
@@ -417,13 +415,8 @@ fn plan_conversion(
     })
 }
 
-/// Validate the request and create the worktree, without persisting anything.
-///
-/// Split from [`attach`] because the two callers persist differently: the CLI
-/// and the daemon write through [`Storage::update`], while the TUI mutates its
-/// in-memory instance map and saves. Both need the same validation and the same
-/// filesystem work, and both need [`PreparedAttach::rollback`] if their own
-/// persist fails.
+/// Validate an attachment without filesystem changes or persistence.
+/// Callers quiesce moving sessions before [`attach_planned`] revalidates the plan.
 pub fn plan(
     instance: &super::Instance,
     profile: &str,
@@ -503,7 +496,7 @@ pub fn plan(
         None,
         builder::project_base_branches(profile)
             .get(&super::projects::canonical_key(
-                &main_repo_path.to_string_lossy(),
+                main_repo_path.to_string_lossy(),
             ))
             .map(String::as_str),
         config.worktree.default_base_branch.as_deref(),
@@ -540,6 +533,7 @@ pub fn plan(
         added_branch: plan,
         added_worktree: worktree_path,
         init_submodules: config.worktree.init_submodules,
+        on_existing,
     })
 }
 
@@ -565,6 +559,7 @@ pub struct AttachPlan {
     added_branch: BranchPlan,
     added_worktree: PathBuf,
     init_submodules: bool,
+    on_existing: ExistingBranch,
 }
 
 impl AttachPlan {
@@ -837,20 +832,41 @@ pub fn attach(
     attach_planned(storage, session_id, instance, plan)
 }
 
-/// Execute an already-validated plan and persist it.
-///
-/// Split out so a caller that has to quiesce the session can do so *between*
-/// [`plan`] and here: the moving shapes need the worker stopped and the sandbox
-/// container removed before anything is renamed, and validating first means a
-/// refusal never costs the user a stopped session. The daemon needs this split
-/// because its quiesce is async and cannot run inside a blocking closure.
+/// Revalidate and persist an attachment under identity then lifecycle exclusion.
+/// Caller must quiesce any runtime whose worktree or mount set changes.
+/// A rejected commit rolls back the filesystem changes.
 pub fn attach_planned(
     storage: &Storage,
     session_id: &str,
     instance: &super::Instance,
     plan: AttachPlan,
 ) -> Result<AttachOutcome> {
-    let prepared = execute(instance, plan)?;
+    let _identity = super::storage::acquire_session_identity_lock()?;
+    let _lifecycle = storage.acquire_instance_lifecycle_lock(session_id)?;
+    let fresh = storage
+        .load()?
+        .into_iter()
+        .find(|row| row.id == session_id)
+        .with_context(|| format!("session not found: {session_id}"))?;
+    anyhow::ensure!(
+        fresh.lifecycle_reservation.is_none()
+            && fresh.lifecycle_generation == instance.lifecycle_generation
+            && fresh.project_path == instance.project_path,
+        "session changed while preparing project attachment"
+    );
+    let refreshed = self::plan(
+        &fresh,
+        storage.profile(),
+        &plan.added_main_repo,
+        plan.on_existing,
+    )?;
+    anyhow::ensure!(
+        refreshed.moves_session == plan.moves_session
+            && refreshed.added_worktree == plan.added_worktree
+            && refreshed.added_branch.branch == plan.added_branch.branch,
+        "attachment target changed while preparing project attachment"
+    );
+    let prepared = execute(&fresh, refreshed)?;
 
     let id = session_id.to_string();
     let workspace = prepared.workspace_info.clone();
@@ -933,9 +949,9 @@ pub struct Quiesced {
 pub fn quiesce_for_conversion(storage: &Storage, instance: &super::Instance) -> Result<Quiesced> {
     let mut quiesced = Quiesced::default();
 
-    // The worker registry only exists in a build with the structured view, and
-    // without it there is no ACP worker to stop.
-    if let Ok(Some(record)) = crate::process::worker_registry::load(&instance.id) {
+    if let Some(record) = crate::process::worker_registry::load(&instance.id)
+        .context("cannot establish worker ownership before workspace conversion")?
+    {
         crate::process::worker_registry::delete(&instance.id).ok();
         crate::process::worker::terminate_process_group(record.pid);
         quiesced.worker_was_running = true;
@@ -1209,6 +1225,21 @@ pub fn reset_sandbox_container(
 mod tests {
     use super::*;
     use crate::session::{Instance, WorkspaceInfo, WorkspaceRepo, WorktreeInfo};
+    #[test]
+    #[serial_test::serial]
+    fn quiescence_rejects_unreadable_worker_ownership() {
+        let temp = tempfile::tempdir().unwrap();
+        let _guard = isolated_profile(temp.path(), "attach-owner");
+        let storage = Storage::open_unwatched("attach-owner").unwrap();
+        let instance = Instance::new("Owner", temp.path().to_str().unwrap());
+        let record = crate::process::worker_registry::record_path(&instance.id).unwrap();
+        std::fs::write(&record, "{").unwrap();
+        assert!(
+            quiesce_for_conversion(&storage, &instance).is_err(),
+            "unreadable ownership cannot authorize worktree conversion"
+        );
+        assert_eq!(std::fs::read_to_string(record).unwrap(), "{");
+    }
 
     fn workspace_instance() -> Instance {
         let mut inst = Instance::new("WS", "/tmp/ws");
@@ -1416,18 +1447,44 @@ mod tests {
         );
         assert_eq!(plan.workspace_dir(), workspace);
 
-        let prepared = execute(&inst, plan).expect("the worktree must be created");
+        let storage = Storage::open_unwatched("attach-append").unwrap();
+        storage
+            .update(|rows, _| {
+                rows.push(inst.clone());
+                Ok(())
+            })
+            .unwrap();
+        let identity = super::super::storage::acquire_session_identity_lock().unwrap();
+        let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            ready_tx.send(()).unwrap();
+            let outcome = attach_planned(&storage, &inst.id, &inst, plan);
+            done_tx.send(()).unwrap();
+            outcome
+        });
+        ready_rx.recv().unwrap();
+        let premature = done_rx
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .is_ok();
+        let created_during_cleanup = workspace.join("frontend").exists();
+        drop(identity);
+        let outcome = worker
+            .join()
+            .unwrap()
+            .expect("the worktree must be created");
         assert!(
-            prepared.outcome.moved_to.is_none(),
-            "nothing moved, so there is no new project_path to report"
+            !premature && !created_during_cleanup,
+            "attach must not create references during cleanup exclusion"
         );
+        assert!(outcome.moved_to.is_none());
         assert!(workspace.join("frontend/.git").exists());
         assert!(
             backend_wt.join(".git").exists(),
             "the repo the session already had must be untouched"
         );
         assert_eq!(
-            prepared
+            outcome
                 .workspace_info
                 .repos
                 .iter()
@@ -1435,6 +1492,24 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["backend", "frontend"]
         );
+        let third = temp.path().join("src/third");
+        init_repo(&third);
+        let storage = Storage::open_unwatched("attach-append").unwrap();
+        let current = storage.load().unwrap().pop().unwrap();
+        let pending =
+            super::plan(&current, "attach-append", &third, ExistingBranch::Refuse).unwrap();
+        storage
+            .update(|rows, _| {
+                rows[0].trashed_at = Some(Utc::now());
+                Ok(())
+            })
+            .unwrap();
+        let rejected = attach_planned(&storage, &current.id, &current, pending);
+        assert!(
+            rejected.is_err(),
+            "a plan cannot attach after the durable row is trashed"
+        );
+        assert!(!workspace.join("third").exists());
     }
 
     /// The in-place shape moves the session's working directory into a new

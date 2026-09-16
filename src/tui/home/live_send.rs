@@ -1104,22 +1104,15 @@ impl Drop for LiveCaptureWorker {
 /// introducing one.
 const PANE_COUNT_PROBE_MS: u64 = 1_000;
 
-/// How many panes the worker's target window has, for deciding whether the
-/// preview needs the composite path. Returns 1 on any failure, which keeps the
-/// caller on the cheap single-pane transport.
-///
-/// A zoomed pane (`C-b z`) also reports 1: tmux keeps `window_panes` at its real
-/// count while reporting every pane at the window's full rectangle, so the panes
-/// overlap and the compositor's tiling assumption does not hold. Compositing
-/// there hides the zoomed pane behind border fill, so the single-pane transport
-/// is both cheaper and more correct.
+/// Use the composite preview only for an unzoomed split window.
+/// Missing or malformed observations retain the single-pane transport.
 fn probe_pane_count(name: &str, deadline: &crate::tmux::TmuxCommandDeadline) -> u16 {
     let mut command = crate::tmux::tmux_command();
     command.args([
         "display-message",
         "-p",
         "-t",
-        &format!("{name}:^"),
+        &format!("={name}:^"),
         "-F",
         "#{window_panes} #{window_zoomed_flag}",
     ]);
@@ -2267,7 +2260,7 @@ fn dispatch_via_fork(
         }
     }
 
-    let target = format!("{}:^.0", tmux_name);
+    let target = format!("={}:^.0", tmux_name);
     let mut cmd = crate::tmux::tmux_command();
     cmd.stderr(Stdio::null());
     match action {

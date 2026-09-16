@@ -600,6 +600,10 @@ last_seen_version = "{}"
         self.spawn(&[]);
     }
 
+    pub fn spawn_peer_tui(&self, name: &str) {
+        self.tmux_new_detached(name, self.binary_path.to_str().expect("binary path"));
+    }
+
     /// Spawn `aoe <args>` inside a detached tmux session.
     pub fn spawn(&mut self, args: &[&str]) {
         let cmd_str = self.build_tmux_command(args);
@@ -676,12 +680,16 @@ last_seen_version = "{}"
     /// Send one or more tmux key names (e.g. "Enter", "Escape", "q", "C-c").
     pub fn send_keys(&self, keys: &str) {
         assert!(self.spawned, "must call spawn_tui() or spawn() first");
+        self.send_session_keys(&self.session_name, keys);
+    }
+
+    pub fn send_session_keys(&self, name: &str, keys: &str) {
         let output = Command::new("tmux")
             .arg("-S")
             .arg(&self.socket_path)
             .arg("send-keys")
             .arg("-t")
-            .arg(&self.session_name)
+            .arg(name)
             .arg(keys)
             .output()
             .expect("failed to send keys");
@@ -784,14 +792,14 @@ last_seen_version = "{}"
 
     /// Capture the current screen contents as plain text (no ANSI escapes).
     pub fn capture_screen(&self) -> String {
-        self.capture_pane(false)
+        self.capture_pane(&self.session_name, false)
     }
 
     /// Same as [`capture_screen`](Self::capture_screen) but keeps the escape
     /// sequences, so a test can assert on styling the TUI painted (an
     /// underline, a color) and not just on the text.
     pub fn capture_screen_styled(&self) -> String {
-        self.capture_pane(true)
+        self.capture_pane(&self.session_name, true)
     }
 
     /// Whether this tmux stores and re-emits OSC 8 hyperlinks through
@@ -817,14 +825,18 @@ last_seen_version = "{}"
         (major, minor) >= (3, 4)
     }
 
-    fn capture_pane(&self, styled: bool) -> String {
+    pub fn capture_session_screen(&self, name: &str) -> String {
+        self.capture_pane(name, false)
+    }
+
+    fn capture_pane(&self, name: &str, styled: bool) -> String {
         assert!(self.spawned, "must call spawn_tui() or spawn() first");
         let mut cmd = Command::new("tmux");
         cmd.arg("-S")
             .arg(&self.socket_path)
             .arg("capture-pane")
             .arg("-t")
-            .arg(&self.session_name)
+            .arg(name)
             .arg("-p");
         if styled {
             cmd.arg("-e");
@@ -1075,20 +1087,12 @@ last_seen_version = "{}"
 
 impl Drop for TuiTestHarness {
     fn drop(&mut self) {
-        // Stop structured view workers and the daemon before tearing down tmux so
-        // a panicking assertion can't leak a daemon (which holds the test
-        // port / pid file) into the next serial test. Worker first, then
-        // daemon, so the fake-ACP child exits cleanly.
-        if self.stop_daemon_on_drop {
+        // A spawned TUI may have started its isolated daemon.
+        if self.stop_daemon_on_drop || self.spawned {
             let _ = self.run_cli(&["acp", "stop", "--all"]);
             let _ = self.run_cli(&["serve", "--stop"]);
         }
-        // Kill the entire per-test tmux server, not just the primary session:
-        // tests also create tool / terminal / pre-created agent sessions on
-        // this same private socket, and `spawn` may never have been called
-        // (e.g. a CLI-only test that pre-creates sessions via
-        // `tmux_new_detached`). Tearing down the server reaps them all and
-        // stops the run from accumulating orphaned tmux servers.
+        // Reap all sessions on this private socket, including CLI-created panes.
         self.kill_server();
 
         // Convert recording to GIF if one was produced.

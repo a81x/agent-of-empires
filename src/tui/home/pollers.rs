@@ -94,75 +94,6 @@ impl HomeView {
         }
     }
 
-    /// Apply the result of a background stop. Returns true if an instance was
-    /// updated so the caller can trigger a redraw.
-    pub fn apply_stop_results(&mut self) -> bool {
-        use crate::session::Status;
-        use std::sync::mpsc::TryRecvError;
-
-        match self.stop_poller.try_recv_result() {
-            Ok(result) => {
-                // `Instance::stop` committed its terminal state while holding
-                // the cross-process lifecycle lock. Merge that durable row on
-                // both success and failure so the in-memory error message is
-                // attached to the generation that actually failed.
-                let committed = self
-                    .get_instance(&result.session_id)
-                    .map(|instance| instance.source_profile.clone())
-                    .and_then(|profile| self.storages.get(&profile))
-                    .and_then(|storage| storage.load().ok())
-                    .and_then(|instances| {
-                        instances
-                            .into_iter()
-                            .find(|instance| instance.id == result.session_id)
-                    });
-                if let Some(committed) = committed {
-                    self.mutate_instance(&result.session_id, |instance| {
-                        instance.merge_post_start(&committed);
-                    });
-                }
-                if !result.success {
-                    self.set_instance_error(&result.session_id, result.error);
-                    self.set_instance_status(&result.session_id, Status::Error);
-                    if let Err(e) = self.save() {
-                        tracing::error!(target: "tui.home", "Failed to save after stop: {}", e);
-                    }
-                }
-                true
-            }
-            Err(TryRecvError::Empty) => false,
-            Err(TryRecvError::Disconnected) => {
-                // The single worker thread is gone (a panic in perform_stop
-                // dropped result_tx). Rows were optimistically marked Stopped
-                // at request time and Stopped is frozen for the StatusPoller
-                // (tier 0), so a lost failure result would otherwise show
-                // "Stopped" over a still-running container forever; only the
-                // poller's in-flight set knows which rows those are. Mirrors
-                // the Disconnected handling in `apply_restart_results`.
-                let stuck = self.stop_poller.take_pending();
-                if stuck.is_empty() {
-                    return false;
-                }
-                tracing::error!(
-                    target: "tui.home",
-                    rows = stuck.len(),
-                    "stop poller worker gone; marking in-flight stops Error",
-                );
-                for id in &stuck {
-                    self.set_instance_error(
-                        id,
-                        Some("Stop worker crashed; the session may not have stopped".to_string()),
-                    );
-                    self.set_instance_status(id, Status::Error);
-                }
-                if let Err(e) = self.save() {
-                    tracing::error!(target: "tui.home", "Failed to save after stop: {}", e);
-                }
-                true
-            }
-        }
-    }
-
     /// Apply a background trash result. The worker already committed durable
     /// state while holding the lifecycle flock; this drain only refreshes the
     /// in-memory path after confirming the same durable row is still trashed.
@@ -646,12 +577,7 @@ impl HomeView {
                 }
                 Err(TryRecvError::Empty) => break,
                 Err(TryRecvError::Disconnected) => {
-                    // The single worker thread is gone (a panic in
-                    // perform_restart dropped result_tx). Clear the in-flight set
-                    // defensively so the stuck rows fall back to the StatusPoller
-                    // (which marks them Error) instead of being filtered out of
-                    // polling forever by `pollable_instances`. Mirrors the
-                    // Disconnected handling in `apply_recovery_updates`.
+                    // A crashed worker cannot release its pending restart admissions.
                     if !self.restart_in_flight.is_empty() {
                         tracing::error!(
                             target: "session.restart",
@@ -779,12 +705,6 @@ impl HomeView {
                 continue;
             }
             if let Some(inst) = self.instances.get_mut(&elig.id) {
-                // Set Status::Starting AND last_start_time: the existing 3s
-                // grace at `update_status_with_metadata_inner` only fires on
-                // the latter, and without it the TUI's StatusPoller (every
-                // 500ms) would observe missing tmux + no last_start_time and
-                // immediately flip the status to `Error` before the worker
-                // has finished its cascade.
                 debug_assert!(inst.status != crate::session::Status::Creating);
                 inst.status = crate::session::Status::Starting;
                 inst.last_error = None;

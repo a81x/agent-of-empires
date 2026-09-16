@@ -186,22 +186,6 @@ impl HomeView {
         self.instances.insert(instance.id.clone(), instance);
     }
 
-    /// Publish a row that this process already committed through
-    /// `Storage::update`. Unlike a provisional TUI add, a later missing disk row
-    /// is a peer deletion and must not be recreated by `save()`.
-    pub(super) fn publish_persisted_instance(&mut self, instance: Instance) {
-        let profile = instance.source_profile.clone();
-        let id = instance.id.clone();
-        self.add_instance(instance);
-        let remove_profile_entry = self.pending_added.get_mut(&profile).is_some_and(|pending| {
-            pending.remove(&id);
-            pending.is_empty()
-        });
-        if remove_profile_entry {
-            self.pending_added.remove(&profile);
-        }
-    }
-
     /// Centralized instance removal: shift-removes from the ordered map
     /// (preserves the order of trailing rows; swap_remove would silently
     /// reorder the sidebar), records the id in `pending_deletions` so the
@@ -430,73 +414,5 @@ impl HomeView {
             }
         }
         Ok(())
-    }
-
-    /// Persist a passively-detected status transition for one instance so
-    /// the next disk reload (a TUI relaunch, or a peer like `aoe serve`)
-    /// finds disk already caught up instead of comparing against a stale
-    /// snapshot and misreading it as a fresh transition. See #2690. Best
-    /// effort: unlike `apply_user_action`, a write failure here does not
-    /// roll back the in-memory status update, since the poller is the sole
-    /// authority on live status regardless of whether disk persistence
-    /// succeeds.
-    ///
-    /// `mark_unread` folds the Running -> Idle unread mark into the same
-    /// `Storage::update` call instead of a second flock round-trip on the
-    /// same row in the same tick, matching the daemon's per-tick batching
-    /// shape in `status_poll_loop`. Terminal rows only; see the
-    /// `is_structured()` return below.
-    pub(in crate::tui) fn persist_passive_status_transition(&self, id: &str, mark_unread: bool) {
-        let Some(inst) = self.instances.get(id) else {
-            return;
-        };
-        let Some(storage) = self.storages.get(&inst.source_profile) else {
-            return;
-        };
-        // A structured row has nothing for the TUI to persist, so bail before
-        // taking the flock at all.
-        //
-        // Its status is not durable: that is a daemon-side overlay rebuilt from
-        // live worker state (`apply_acp_overlay_inplace`) and re-derived at
-        // daemon boot by `seed_acp_statuses`, and the daemon's own passive
-        // writer gates the patch on exactly this predicate
-        // (`decide_passive_transition` returns `patch: None` for
-        // `is_structured()`, `server/status_poll.rs`). Persisting it here would strand a
-        // row at `Running` or `Error` with no producer left to heal it once the
-        // daemon is gone, since the tmux poller now bails on structured rows
-        // (`status_poller.rs`); this is the #3201 regression from #3170.
-        //
-        // Its unread mark is not ours either, as of #3181: the daemon writes it
-        // from the live ACP turn-end event (`should_mark_acp_unread`), and the
-        // caller's predicate is gated on `!structured` to match. So `mark_unread`
-        // is only ever `false` here for a structured row and this return is
-        // total, not an optimization.
-        if inst.is_structured() {
-            return;
-        }
-        let patch = crate::session::PassiveStatusPatch::from_instance(inst);
-        if let Err(e) = storage.update(|insts, _groups| {
-            if let Some(disk) = insts.iter_mut().find(|i| i.id == id) {
-                disk.merge_passive_status_patch(id, &patch);
-                if mark_unread {
-                    disk.mark_unread();
-                }
-            }
-            Ok(())
-        }) {
-            // Best-effort persistence (see method docstring): a write
-            // failure here does not roll back the in-memory update, but
-            // silence would obscure a persistent flock timeout or EIO
-            // loop. The daemon's sibling path in
-            // `api::persist_session_update` logs the same class of
-            // failure at `target: "http.api.sessions"`; log here so a
-            // TUI-only user has parity visibility under
-            // `AOE_LOG_LEVEL=debug`.
-            tracing::warn!(
-                target: "session.store",
-                session_id = %id,
-                "persist_passive_status_transition failed: {e}"
-            );
-        }
     }
 }

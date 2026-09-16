@@ -1,11 +1,6 @@
 //! Background restart handler for TUI responsiveness.
 //!
-//! Restarting a sandboxed session re-runs the start cascade (docker image pull,
-//! container create/start, `before_start` host hook), which can block for
-//! seconds; a stalled registry pull has no timeout of its own. Running that on
-//! the UI event loop froze the TUI. This mirrors `StopPoller`:
-//! requests go to a worker thread, results come back over a channel the main
-//! loop polls each frame.
+//! Run restart cascades on a worker and apply results on the main loop.
 
 use std::sync::mpsc::TryRecvError;
 

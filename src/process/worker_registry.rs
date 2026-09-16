@@ -298,24 +298,6 @@ fn with_registry_lock<T>(session_id: &str, operation: impl FnOnce() -> Result<T>
 
 pub fn load(session_id: &str) -> Result<Option<WorkerRecord>> {
     let path = record_path(session_id)?;
-    if !path.exists() {
-        return Ok(None);
-    }
-    let bytes = std::fs::read(&path).with_context(|| format!("reading {}", path.display()))?;
-    match serde_json::from_slice::<WorkerRecord>(&bytes) {
-        Ok(record) => Ok(Some(record)),
-        Err(e) => {
-            warn!(
-                target: "acp.registry",
-                path = %path.display(),
-                "failed to parse worker record: {e}; treating as missing"
-            );
-            Ok(None)
-        }
-    }
-}
-fn load_strict_unlocked(session_id: &str) -> Result<Option<WorkerRecord>> {
-    let path = record_path(session_id)?;
     match std::fs::read(&path) {
         Ok(bytes) => serde_json::from_slice(&bytes)
             .with_context(|| format!("parsing {}", path.display()))
@@ -380,7 +362,7 @@ fn delete_unlocked(session_id: &str) -> Result<()> {
 /// A replacement save uses the same lock, so it either lands before this check
 /// and is preserved or lands after cleanup and remains.
 pub fn delete_if_owned(session_id: &str, owner_pid: u32) -> Result<bool> {
-    with_registry_lock(session_id, || match load_strict_unlocked(session_id)? {
+    with_registry_lock(session_id, || match load(session_id)? {
         Some(record) if record.pid == owner_pid => {
             delete_unlocked(session_id)?;
             Ok(true)
@@ -405,7 +387,7 @@ fn update_if_owned(
     update: impl FnOnce(&mut WorkerRecord),
 ) -> Result<bool> {
     with_registry_lock(session_id, || {
-        let Some(mut record) = load_strict_unlocked(session_id)? else {
+        let Some(mut record) = load(session_id)? else {
             return Ok(false);
         };
         if record.pid != owner_pid {
@@ -419,7 +401,7 @@ fn update_if_owned(
 
 fn delete_if_absent(session_id: &str) -> Result<bool> {
     with_registry_lock(session_id, || {
-        if load_strict_unlocked(session_id)?.is_some() {
+        if load(session_id)?.is_some() {
             return Ok(false);
         }
         delete_unlocked(session_id)?;
@@ -663,7 +645,7 @@ pub async fn terminate_and_wait(session_id: &str) {
 /// left alone. Returns whether the registry is settled for that runner.
 pub fn delete_if_owned_by(session_id: &str, pid: u32, generation: u64) -> bool {
     let identity = crate::acp::runner_lifecycle::RunnerIdentity { pid, generation };
-    with_registry_lock(session_id, || match load_strict_unlocked(session_id)? {
+    with_registry_lock(session_id, || match load(session_id)? {
         Some(rec) if !identity.matches_record(rec.pid, rec.generation) => {
             debug!(
                 target: "acp.registry",

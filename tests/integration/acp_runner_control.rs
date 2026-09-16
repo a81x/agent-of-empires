@@ -708,23 +708,18 @@ for line in sys.stdin:
     );
     let old_agent_pid = wait_for_u32(&agent_pid_file, "old agent pid");
 
-    let attach = async {
-        tokio::time::timeout(
-            Duration::from_millis(500),
-            AcpClient::attach(
-                socket.clone(),
-                home.clone(),
-                vec![],
-                "stored-codex-thread".into(),
-                false,
-                AcpSessionId(session_id.into()),
-                None,
-                "fake-agent".into(),
-                None,
-            ),
-        )
-        .await
-    };
+    let attach = AcpClient::attach(
+        socket.clone(),
+        home.clone(),
+        vec![],
+        "stored-codex-thread".into(),
+        false,
+        AcpSessionId(session_id.into()),
+        None,
+        "fake-agent".into(),
+        None,
+        Some(tokio::time::Instant::now() + Duration::from_millis(500)),
+    );
     let spawn_replacement = async {
         let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
         while !std::fs::read_to_string(&agent_log)
@@ -744,7 +739,10 @@ for line in sys.stdin:
     };
     let (attach, mut replacement) = tokio::join!(attach, spawn_replacement);
     assert!(
-        attach.is_err(),
+        matches!(
+            attach,
+            Err(agent_of_empires::acp::acp_client::AcpError::AttachTimedOut)
+        ),
         "delayed initialize must exceed the attach budget"
     );
     wait_for_runner_exit(&mut old.0);
@@ -1397,6 +1395,7 @@ for line in sys.stdin:
         None,
         "review-agent".into(),
         None,
+        None,
     )
     .await
     .unwrap();
@@ -1541,6 +1540,7 @@ for line in sys.stdin:
             AcpSessionId(session.into()),
             None,
             "review-agent".into(),
+            None,
             None,
         )
         .await

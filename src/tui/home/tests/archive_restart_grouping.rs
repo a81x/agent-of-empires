@@ -21,7 +21,9 @@ fn archive_advances_cursor_to_next_session() {
         other => panic!("expected a session row below the cursor, got {other:?}"),
     };
 
-    env.view.toggle_archive_at_cursor().unwrap();
+    with_canonical_archive(&mut env, |env| {
+        env.view.toggle_archive_at_cursor().unwrap();
+    });
 
     assert!(
         env.view.get_instance(&id).unwrap().is_archived(),
@@ -60,7 +62,9 @@ fn archive_bottom_row_falls_back_to_session_above() {
         other => panic!("expected a session row above the cursor, got {other:?}"),
     };
 
-    env.view.toggle_archive_at_cursor().unwrap();
+    with_canonical_archive(&mut env, |env| {
+        env.view.toggle_archive_at_cursor().unwrap();
+    });
 
     assert!(env.view.get_instance(&id).unwrap().is_archived());
     assert_eq!(
@@ -82,7 +86,9 @@ fn archive_last_active_session_clears_selection() {
     env.view.update_selected();
     let id = env.view.selected_session.clone().unwrap();
 
-    env.view.toggle_archive_at_cursor().unwrap();
+    with_canonical_archive(&mut env, |env| {
+        env.view.toggle_archive_at_cursor().unwrap();
+    });
 
     assert!(env.view.get_instance(&id).unwrap().is_archived());
     assert_eq!(
@@ -110,7 +116,9 @@ fn archive_successor_skips_archived_rows() {
         other => panic!("expected a second session row, got {other:?}"),
     };
     env.view.select_session_by_id(&parked_id);
-    env.view.toggle_archive_at_cursor().unwrap();
+    with_canonical_archive(&mut env, |env| {
+        env.view.toggle_archive_at_cursor().unwrap();
+    });
     assert!(env.view.get_instance(&parked_id).unwrap().is_archived());
 
     // Archive the remaining active session. The only session row left below
@@ -120,7 +128,9 @@ fn archive_successor_skips_archived_rows() {
         id, parked_id,
         "selection must have fallen back to the active row"
     );
-    env.view.toggle_archive_at_cursor().unwrap();
+    with_canonical_archive(&mut env, |env| {
+        env.view.toggle_archive_at_cursor().unwrap();
+    });
 
     assert!(env.view.get_instance(&id).unwrap().is_archived());
     assert_eq!(
@@ -144,7 +154,9 @@ fn archive_last_active_session_attention_sort_clears_selection() {
     env.view.update_selected();
     let id = env.view.selected_session.clone().unwrap();
 
-    env.view.toggle_archive_at_cursor().unwrap();
+    with_canonical_archive(&mut env, |env| {
+        env.view.toggle_archive_at_cursor().unwrap();
+    });
 
     assert!(env.view.get_instance(&id).unwrap().is_archived());
     assert_eq!(
@@ -169,13 +181,17 @@ fn unarchive_keeps_selection() {
     env.view.update_selected();
     let id = env.view.selected_session.clone().unwrap();
 
-    env.view.toggle_archive_at_cursor().unwrap();
+    with_canonical_archive(&mut env, |env| {
+        env.view.toggle_archive_at_cursor().unwrap();
+    });
     assert!(env.view.get_instance(&id).unwrap().is_archived());
 
     // The archive advanced the cursor to the neighbor; navigate back onto
     // the archived row (visible because the section is expanded) to restore.
     env.view.select_session_by_id(&id);
-    env.view.toggle_archive_at_cursor().unwrap();
+    with_canonical_archive(&mut env, |env| {
+        env.view.toggle_archive_at_cursor().unwrap();
+    });
     assert!(
         !env.view.get_instance(&id).unwrap().is_archived(),
         "second toggle unarchives"
@@ -715,19 +731,20 @@ fn apply_restart_results_propagates_worker_sid_without_peer_write() {
 
 #[test]
 #[serial]
-fn execute_send_message_missing_session_shows_send_failed() {
+fn sending_to_a_session_that_is_gone_is_refused_before_any_pane_work() {
     let mut env = create_test_env_with_sessions(1);
     let id = env.view.instance_at(0).id.clone();
     env.view.instances.shift_remove(&id);
 
-    env.view.execute_send_message(&id, "hello");
-
-    let dialog = env.view.info_dialog.as_ref().expect("send failure dialog");
-    assert_eq!(dialog.title(), "Send Failed");
-    assert_eq!(
-        dialog.message(),
-        "Session disappeared before the message could be sent."
+    // The pane preparation is the guard now: a session the daemon does not
+    // publish cannot be prepared, and the caller renders that as "Send Failed".
+    let refusal = env.view.prepare_send_target(
+        &id,
+        crate::tui::home::live_send::LiveSendTarget::Agent,
+        "hello".to_string(),
+        None,
     );
+    assert!(refusal.is_err(), "a missing session cannot be prepared");
 }
 
 /// A second restart press while the first cascade is still running on the
@@ -2924,20 +2941,7 @@ fn archived_sub_folders_honor_sort_order() {
 #[test]
 #[serial]
 fn every_view_mode_paints_the_same_sunk_row_decoration() {
-    // `render_item_line`'s three view arms each carried their own copy of the
-    // archive / snooze / favorite block (Structured and Terminal had
-    // byte-identical title blocks), and the Tool arm had none at all: an
-    // archived or snoozed session in Tool view kept painting its live glyph
-    // with no `z ` prefix. `decorate_row` owns the overlay for every mode now,
-    // so the three must agree.
-    //
-    // The pane views are seeded live on purpose. `ICON_IDLE` and `ICON_STOPPED`
-    // are the same glyph and an unseeded pane row is already dimmed, so a row
-    // whose terminal is NOT running renders identically with and without the
-    // sink override, and every assertion below would pass on a renderer that
-    // dropped `decorate_row` entirely. Injecting the pane names into the shared
-    // tmux snapshot makes the seed a bright animated spinner, which is what
-    // gives the override something to actually override.
+    // Live seeds make a missing sink overlay observable in every view.
     use crate::session::Status;
     use crate::tui::home::{ViewMode, ICON_STOPPED};
     use ratatui::style::Modifier;
@@ -2961,14 +2965,27 @@ fn every_view_mode_paints_the_same_sunk_row_decoration() {
         depth: 0,
     };
 
-    let seed_panes_live = || {
-        crate::tmux::test_inject_session_into_cache(&crate::tmux::TerminalSession::generate_name(
-            &id, &title,
-        ));
-        crate::tmux::test_inject_session_into_cache(&crate::tmux::ToolSession::generate_name(
-            &id, &title, "lazygit",
-        ));
-    };
+    env.view.mutate_instance(&id, |instance| {
+        use crate::session::{AuxiliaryObservation, AuxiliaryTarget, PanePresence};
+        instance.auxiliary = vec![
+            AuxiliaryObservation {
+                target: AuxiliaryTarget::Host { index: 0 },
+                pane: crate::session::PaneObservation {
+                    state: PanePresence::Alive,
+                    tmux_session: Some("host".into()),
+                },
+            },
+            AuxiliaryObservation {
+                target: AuxiliaryTarget::Tool {
+                    tool_name: "lazygit".to_owned(),
+                },
+                pane: crate::session::PaneObservation {
+                    state: PanePresence::Alive,
+                    tmux_session: Some("tool".into()),
+                },
+            },
+        ];
+    });
 
     // (label, archived, snoozed, expected title prefix, extra modifiers)
     let cases = [
@@ -2991,7 +3008,6 @@ fn every_view_mode_paints_the_same_sunk_row_decoration() {
 
         // Anti-vacuity: a live, unsunk row must NOT already look sunk, or the
         // sink assertions below prove nothing about this mode.
-        seed_panes_live();
         env.view.mutate_instance(&id, |inst| {
             inst.status = Status::Running;
             inst.archived_at = None;
@@ -3006,7 +3022,6 @@ fn every_view_mode_paints_the_same_sunk_row_decoration() {
         );
 
         for (label, archived, snoozed, prefix, extra) in cases {
-            seed_panes_live();
             // Status stays Running so the live-glyph branch would fire in
             // every mode if the sink override were missing.
             env.view.mutate_instance(&id, |inst| {
@@ -3048,7 +3063,6 @@ fn every_view_mode_paints_the_same_sunk_row_decoration() {
         // punching through would paint a bright animated "still alive" row
         // inside the Archived shelf while signalling nothing about the failure.
         for status in [Status::Error, Status::Deleting] {
-            seed_panes_live();
             env.view.mutate_instance(&id, |inst| {
                 inst.status = status;
                 inst.archived_at = Some(chrono::Utc::now());

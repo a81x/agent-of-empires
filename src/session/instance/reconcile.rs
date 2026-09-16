@@ -3,13 +3,7 @@
 use super::*;
 
 impl Instance {
-    /// Reload this instance from disk before a launch that would re-persist
-    /// peer-writable fields. Refreshes `agent_session_id` (poller-observed)
-    /// and `resume_intent` (user-set) from disk; carries runtime-only fields
-    /// (`#[serde(skip)]` + `source_profile`) onto the disk snapshot. Closes
-    /// the ~2s `status_poll_loop` lag window in which a CLI peer
-    /// `set-session-id` would otherwise be silently overwritten. No-op on
-    /// storage error or if the row is gone from disk.
+    /// Best-effort CLI reload; native launch uses the fallible store path.
     pub(super) fn reconcile_from_disk(&mut self) {
         let Ok(storage) = crate::session::storage::Storage::new(
             &self.effective_profile(),
@@ -20,66 +14,37 @@ impl Instance {
                 "failed to open storage to reload disk state before launch; using in-memory value");
             return;
         };
-        let mut disk = match storage.load() {
-            Ok(instances) => match instances.into_iter().find(|i| i.id == self.id) {
-                Some(d) => d,
-                None => return,
-            },
-            Err(e) => {
-                tracing::warn!(target: "session.store",
-                    session = %self.id,
-                    error = %e,
-                    "failed to load disk state before launch; using in-memory value");
-                return;
-            }
-        };
-
-        // Carry runtime-only fields (`#[serde(skip)]`) and locally-mutated
-        // launch-time state from `self` onto the disk snapshot. This carry
-        // set is not required to match `merge_runtime_fields` exactly: each
-        // reconciliation path feeds a different consumer, and each consumer
-        // rewrites the runtime field it observes before reading
-        // (`pane_dead_observed` is rewritten by the TUI's status poller
-        // before its consumers read).
-        let disk_has_newer_lifecycle = disk.lifecycle_generation > self.lifecycle_generation;
-        if !disk_has_newer_lifecycle {
-            disk.last_error_check = self.last_error_check;
-            disk.last_error = self.last_error.take();
+        if let Err(error) = self.reconcile_from_store(&storage) {
+            tracing::warn!(target: "session.store", session = %self.id, %error, "failed to reconcile session from disk");
         }
-        disk.last_start_time = self.last_start_time;
-        disk.session_id_poller = self.session_id_poller.take();
-        disk.session_id_poller_retry_after = self.session_id_poller_retry_after;
-        disk.retroactive_capture_excludes = std::mem::take(&mut self.retroactive_capture_excludes);
-        disk.pane_dead_observed = self.pane_dead_observed;
-        disk.force_fresh_next_launch = self.force_fresh_next_launch;
-        disk.pending_host_env = std::mem::take(&mut self.pending_host_env);
-        disk.identity_publisher_launched = self.identity_publisher_launched;
-        disk.source_profile = std::mem::take(&mut self.source_profile);
-        disk.ever_confirmed_present = self.ever_confirmed_present;
-        disk.unknown_since = self.unknown_since;
-        // `before_start_env` is `#[serde(skip)]`, so the disk snapshot always
-        // has it empty. Carry the live value forward; otherwise this reload
-        // (which runs before every launch) would wipe the host-minted cache and
-        // make `get_container_for_instance` re-run the before_start hook on each
-        // relaunch of an already-running container, defeating the one-time
-        // backfill and re-minting credentials needlessly.
-        if let (Some(disk_sandbox), Some(runtime_sandbox)) =
-            (disk.sandbox_info.as_mut(), self.sandbox_info.as_ref())
-        {
-            disk_sandbox.before_start_env = runtime_sandbox.before_start_env.clone();
-        }
-
-        *self = disk;
     }
 
-    /// Closes the data-loss window where `/clear` writes the sidecar but
-    /// the daemon crashes before the next poll tick persists it: without
-    /// this step, the next launch's wipe destroys the fresh sid.
-    ///
-    /// Claude-only (sole sidecar tool); `Default` intent only (`Use(X)`
-    /// and `Cleared` override); excluded sids skipped (cascade re-poison
-    /// guard).
-    pub(super) fn reconcile_sidecar_into_disk(&mut self) {
+    pub(super) fn reconcile_from_store(
+        &mut self,
+        storage: &dyn crate::session::SessionStore,
+    ) -> Result<()> {
+        let mut disk = storage
+            .load()?
+            .into_iter()
+            .find(|row| row.id == self.id)
+            .ok_or(LifecycleReservationError::Superseded)?;
+
+        let preserve_errors = disk.lifecycle_generation <= self.lifecycle_generation;
+        disk.source_profile = if self.source_profile == storage.storage().profile() {
+            std::mem::take(&mut self.source_profile)
+        } else {
+            storage.storage().profile().to_owned()
+        };
+        let prior = std::mem::replace(self, disk);
+        self.inherit_runtime(prior, preserve_errors);
+        Ok(())
+    }
+
+    /// Capture the final sidecar value before launch can replace it.
+    pub(super) fn reconcile_sidecar_into_disk(
+        &mut self,
+        storage: &dyn crate::session::SessionStore,
+    ) -> Result<()> {
         if !matches!(
             self.resolved_capture_backend(),
             Some(
@@ -87,38 +52,34 @@ impl Instance {
                     | crate::agents::SessionCaptureBackend::HookSidecar
             )
         ) {
-            return;
+            return Ok(());
         }
         if !matches!(self.resume_intent, ResumeIntent::Default) {
-            return;
+            return Ok(());
         }
         let Some(fresh) = crate::hooks::read_hook_session_id_any_age(&self.id) else {
-            return;
+            return Ok(());
         };
         if Some(&fresh) == self.agent_session_id.as_ref() {
-            return;
+            return Ok(());
         }
         if self.retroactive_capture_excludes.contains(&fresh) {
-            return;
+            return Ok(());
         }
-        let profile = self.effective_profile();
         let baseline = self.agent_session_id.as_deref();
-        match persist_session_to_storage(
-            &profile,
-            &self.id,
-            &fresh,
-            baseline,
-            &self.resolve_file_watch(),
-        ) {
+        match super::sid_persist::persist_session_to_store_guarded(
+            storage, &self.id, &fresh, baseline, false, None,
+        )? {
             SidWrite::Applied => {
                 self.agent_session_id = Some(fresh);
             }
             SidWrite::Skipped => {
                 // Peer wrote between reconcile and CAS; reload to converge.
-                self.reconcile_from_disk();
+                self.reconcile_from_store(storage)?;
             }
             SidWrite::Failed => {}
         }
+        Ok(())
     }
 }
 
@@ -385,7 +346,8 @@ mod tests {
 
         let dir = write_sidecar(&inst.id, SIDECAR_TEST_FRESH_UUID);
 
-        inst.reconcile_sidecar_into_disk();
+        inst.reconcile_sidecar_into_disk(&crate::session::Storage::new_unwatched(profile).unwrap())
+            .unwrap();
         std::fs::remove_dir_all(&dir).ok();
 
         assert_eq!(
@@ -422,7 +384,8 @@ mod tests {
         seed_disk_for_sidecar_test(profile, &inst);
         let dir = write_sidecar(&inst.id, "cursor-conversation-new");
 
-        inst.reconcile_sidecar_into_disk();
+        inst.reconcile_sidecar_into_disk(&crate::session::Storage::new_unwatched(profile).unwrap())
+            .unwrap();
         std::fs::remove_dir_all(&dir).ok();
 
         let storage = crate::session::storage::Storage::new_unwatched(profile).unwrap();
@@ -456,7 +419,8 @@ mod tests {
 
         let dir = write_sidecar(&inst.id, SIDECAR_TEST_FRESH_UUID);
 
-        inst.reconcile_sidecar_into_disk();
+        inst.reconcile_sidecar_into_disk(&crate::session::Storage::new_unwatched(profile).unwrap())
+            .unwrap();
         std::fs::remove_dir_all(&dir).ok();
 
         assert_eq!(inst.agent_session_id.as_deref(), Some("disk-sid"));
@@ -488,7 +452,8 @@ mod tests {
 
         let dir = write_sidecar(&inst.id, SIDECAR_TEST_FRESH_UUID);
 
-        inst.reconcile_sidecar_into_disk();
+        inst.reconcile_sidecar_into_disk(&crate::session::Storage::new_unwatched(profile).unwrap())
+            .unwrap();
         std::fs::remove_dir_all(&dir).ok();
 
         assert_eq!(inst.agent_session_id.as_deref(), Some("disk-sid"));
@@ -520,7 +485,8 @@ mod tests {
 
         let dir = write_sidecar(&inst.id, SIDECAR_TEST_FRESH_UUID);
 
-        inst.reconcile_sidecar_into_disk();
+        inst.reconcile_sidecar_into_disk(&crate::session::Storage::new_unwatched(profile).unwrap())
+            .unwrap();
         std::fs::remove_dir_all(&dir).ok();
 
         assert_eq!(inst.agent_session_id.as_deref(), Some("disk-sid"));
@@ -554,7 +520,8 @@ mod tests {
 
         let dir = write_sidecar(&inst.id, SIDECAR_TEST_FRESH_UUID);
 
-        inst.reconcile_sidecar_into_disk();
+        inst.reconcile_sidecar_into_disk(&crate::session::Storage::new_unwatched(profile).unwrap())
+            .unwrap();
         std::fs::remove_dir_all(&dir).ok();
 
         assert_eq!(inst.agent_session_id.as_deref(), Some("disk-sid"));
@@ -584,7 +551,8 @@ mod tests {
         inst.agent_session_id = Some("disk-sid".to_string());
         seed_disk_for_sidecar_test(profile, &inst);
 
-        inst.reconcile_sidecar_into_disk();
+        inst.reconcile_sidecar_into_disk(&crate::session::Storage::new_unwatched(profile).unwrap())
+            .unwrap();
 
         assert_eq!(inst.agent_session_id.as_deref(), Some("disk-sid"));
         let storage = crate::session::storage::Storage::new_unwatched(profile).unwrap();
@@ -623,7 +591,8 @@ mod tests {
 
         let dir = write_sidecar(&inst.id, SIDECAR_TEST_FRESH_UUID);
 
-        inst.reconcile_sidecar_into_disk();
+        inst.reconcile_sidecar_into_disk(&crate::session::Storage::new_unwatched(profile).unwrap())
+            .unwrap();
         std::fs::remove_dir_all(&dir).ok();
 
         assert_eq!(inst.agent_session_id.as_deref(), Some("peer-wrote-this"));

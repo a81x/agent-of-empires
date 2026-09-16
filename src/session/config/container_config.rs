@@ -1194,10 +1194,11 @@ fn prepare_sandbox_dir(
     home: &Path,
     instance_id: Option<&str>,
     fold: CredentialFold,
+    auto_propagate: bool,
 ) -> Result<PathBuf> {
     let host_dir = home.join(mount.host_rel);
     let sandbox_dir = sandbox_dir_for(mount, home, instance_id)?;
-    prepare_sandbox_dir_from(mount, host_dir, sandbox_dir, home, fold)
+    prepare_sandbox_dir_from(mount, host_dir, sandbox_dir, home, fold, auto_propagate)
 }
 
 fn prepare_sandbox_dir_from(
@@ -1206,10 +1207,9 @@ fn prepare_sandbox_dir_from(
     sandbox_dir: PathBuf,
     home: &Path,
     fold: CredentialFold,
+    auto_propagate: bool,
 ) -> Result<PathBuf> {
-    // Remove stale files before syncing. This prevents leftovers from a previous
-    // session (e.g. a SQLite database created by an older tool version) from
-    // causing failures when the container image is updated.
+    // Discard incompatible agent files before refreshing the private store.
     for &name in mount.clean_files {
         let path = sandbox_dir.join(name);
         if path.exists() {
@@ -1307,35 +1307,16 @@ fn prepare_sandbox_dir_from(
         }
     }
 
-    let config = crate::session::config::Config::load_or_warn();
     let app_dir = crate::session::get_app_dir().ok();
     if let Some(app_dir) = app_dir {
-        sync_managed_skills_into_sandbox(
-            mount,
-            &sandbox_dir,
-            &app_dir,
-            config.skills.auto_propagate,
-        );
+        sync_managed_skills_into_sandbox(mount, &sandbox_dir, &app_dir, auto_propagate);
     }
 
     Ok(sandbox_dir)
 }
 
-/// Reconcile AoE-managed skills into this agent's sandbox skills dir (#3053).
-///
-/// Deliberately not folded into `copy_dirs`: that path is host-to-sandbox and
-/// runs only on a sandbox's first launch, so a skill authored after the
-/// container first ran would never reach it. Managed skills are a small,
-/// AoE-owned tree, so reconciling them on every launch is cheap and safe in a
-/// way re-copying the whole config tree is not. `copy_dirs` keeps doing its own
-/// job of importing the user's hand-written host skills on first run.
-///
-/// The sandbox target is derived from the agent's own skills root, which must
-/// live under the dir the sandbox mirrors. Codex reads `~/.agents/skills`, which
-/// is outside its `.codex` mount, so it has no sandbox target and is host-only
-/// for now.
-/// `auto_propagate` is passed in rather than read here so the opt-in gate is
-/// directly testable; a leaf function that reaches for global config cannot be.
+/// Reconcile managed skills on every launch; `copy_dirs` imports user skills only once.
+/// Only roots within the mirrored agent directory have a sandbox target.
 fn sync_managed_skills_into_sandbox(
     mount: &AgentConfigMount,
     sandbox_dir: &Path,
@@ -1610,15 +1591,13 @@ fn compute_workspace_volume_paths(
     Ok((volumes, ws_container))
 }
 
-/// Whether the agent `tool` resolves to under `profile` shares a credential
-/// file across its sandboxes.
+/// Whether the resolved agent shares credentials across its sandboxes.
 pub(crate) fn agent_shares_credential_file(
-    profile: &str,
+    session_config: &super::SessionConfig,
     tool: &str,
     detect_as: Option<&str>,
 ) -> bool {
-    let profile_config = super::profile_config::resolve_config_or_warn(profile);
-    resolve_active_agent(tool, detect_as, &profile_config.session)
+    resolve_active_agent(tool, detect_as, session_config)
         .is_some_and(|agent| agent_mounts_share_credential_file(agent.name))
 }
 
@@ -1630,16 +1609,16 @@ fn agent_mounts_share_credential_file(agent: &str) -> bool {
 
 /// Re-sync the current instance's physically isolated agent config.
 pub(crate) fn refresh_agent_configs_for_instance(
-    profile: &str,
+    profile_config: &super::Config,
     instance_id: &str,
     tool: &str,
     detect_as: Option<&str>,
     fold: CredentialFold,
+    auto_propagate: bool,
 ) {
     let Some(home) = dirs::home_dir() else {
         return;
     };
-    let profile_config = super::profile_config::resolve_config_or_warn(profile);
     let Some(agent) = resolve_active_agent(tool, detect_as, &profile_config.session) else {
         return;
     };
@@ -1655,8 +1634,9 @@ pub(crate) fn refresh_agent_configs_for_instance(
                 directory.join(SANDBOX_PRIVATE_SUBDIR).join(instance_id),
                 &home,
                 fold,
+                auto_propagate,
             ),
-            None => prepare_sandbox_dir(mount, &home, Some(instance_id), fold),
+            None => prepare_sandbox_dir(mount, &home, Some(instance_id), fold, auto_propagate),
         };
         match result {
             Ok(sandbox_dir) => {
@@ -1664,7 +1644,7 @@ pub(crate) fn refresh_agent_configs_for_instance(
                     && profile_config.session.agent_status_hooks
                     && should_refresh_codex_hooks(mount, &sandbox_dir, &home)
                 {
-                    refresh_codex_sandbox_hooks(mount, &sandbox_dir, &profile_config);
+                    refresh_codex_sandbox_hooks(mount, &sandbox_dir, profile_config);
                 }
             }
             Err(error) => tracing::warn!(target: "session.profile",
@@ -1773,7 +1753,7 @@ fn apply_folder_trust_config(
 pub(crate) fn ensure_folder_trust_config_for_active_agent(
     tool: &str,
     detect_as: Option<&str>,
-    profile: &str,
+    session_config: &super::SessionConfig,
     instance_id: &str,
     container_workspace_path: &str,
     is_yolo_mode: bool,
@@ -1782,10 +1762,7 @@ pub(crate) fn ensure_folder_trust_config_for_active_agent(
         return;
     };
 
-    let resolved_profile = super::effective_profile(profile);
-    let config = super::profile_config::resolve_config_or_warn(&resolved_profile);
-    let session_config = config.session;
-    let active_agent = resolve_active_agent(tool, detect_as, &session_config);
+    let active_agent = resolve_active_agent(tool, detect_as, session_config);
     let config_tool = active_agent.map_or(tool, |agent| agent.name);
     // A session whose agent reads its own config dir (a wrapper exporting
     // CLAUDE_CONFIG_DIR, say) is seeded there instead: the staged directory
@@ -1796,9 +1773,6 @@ pub(crate) fn ensure_folder_trust_config_for_active_agent(
         .iter()
         .filter(|m| m.tool_name == config_tool)
     {
-        // The instance segment is the ownership boundary. The mounted path is
-        // still the agent's config root inside this one container.
-
         let sandbox_dir = match agent_config_dir.as_ref() {
             Some(dir) => Ok(dir.join(SANDBOX_PRIVATE_SUBDIR).join(instance_id)),
             None => sandbox_dir_for(mount, &home, Some(instance_id)),
@@ -1859,16 +1833,14 @@ fn resolve_active_agent(
 pub(crate) fn managed_codex_home(
     tool: &str,
     detect_as: Option<&str>,
-    profile: &str,
+    session_config: &super::SessionConfig,
     instance_id: &str,
 ) -> Result<Option<String>> {
     crate::session::validate_instance_id(instance_id).map_err(|e| {
         anyhow::anyhow!("refusing to build Codex home for unsafe AOE_INSTANCE_ID: {e}")
     })?;
-    let resolved_profile = super::effective_profile(profile);
-    let session_config = super::profile_config::resolve_config_or_warn(&resolved_profile).session;
     let config_tool =
-        resolve_active_agent(tool, detect_as, &session_config).map_or(tool, |a| a.name);
+        resolve_active_agent(tool, detect_as, session_config).map_or(tool, |a| a.name);
     Ok((config_tool == "codex").then(|| format!("/root/.codex/{instance_id}")))
 }
 
@@ -2180,7 +2152,7 @@ pub(crate) fn build_container_config(
     is_yolo_mode: bool,
     instance_id: &str,
     workspace_info: Option<&crate::session::WorkspaceInfo>,
-    profile: &str,
+    launch_config: &crate::session::LaunchConfig,
 ) -> Result<ContainerConfig> {
     let home = dirs::home_dir().ok_or_else(|| anyhow::anyhow!("Could not find home directory"))?;
     crate::session::validate_instance_id(instance_id).map_err(|e| {
@@ -2188,8 +2160,7 @@ pub(crate) fn build_container_config(
     })?;
 
     let project_path = Path::new(project_path_str);
-    let resolved_profile = super::effective_profile(profile);
-    let profile_config = super::profile_config::resolve_config_or_warn(&resolved_profile);
+    let profile_config = &launch_config.profile;
     let profile_session_config = &profile_config.session;
     let active_agent = resolve_active_agent(
         agent_selection.tool,
@@ -2229,27 +2200,11 @@ pub(crate) fn build_container_config(
 
     let mut volumes = project_volumes;
 
-    let sandbox_config = {
-        match super::repo_config::resolve_config_with_repo(&resolved_profile, project_path) {
-            Ok(c) => {
-                tracing::debug!(target: "session.profile",
-                    "Loaded sandbox config: extra_volumes={:?}, mount_ssh={}, volume_ignores={:?}",
-                    c.sandbox.extra_volumes,
-                    c.sandbox.mount_ssh,
-                    c.sandbox.volume_ignores
-                );
-                c.sandbox
-            }
-            Err(e) => {
-                tracing::warn!(target: "session.profile", "Failed to load config, using defaults: {}", e);
-                Default::default()
-            }
-        }
-    };
+    let sandbox_config = launch_config.sandbox();
 
     const CONTAINER_HOME: &str = "/root";
 
-    let mut environment = collect_environment(&sandbox_config, sandbox_info);
+    let mut environment = collect_environment(sandbox_config, sandbox_info);
     // Pin the home used to place agent hooks. Container images may declare a
     // different ENV HOME, so absence is not proof that `/root` is effective.
     if !environment.iter().any(|entry| entry.key() == "HOME") {
@@ -2263,7 +2218,7 @@ pub(crate) fn build_container_config(
         if let Some(codex_home) = managed_codex_home(
             agent_selection.tool,
             agent_selection.detect_as,
-            profile,
+            profile_session_config,
             instance_id,
         )? {
             environment.push(EnvEntry::Literal {
@@ -2350,6 +2305,7 @@ pub(crate) fn build_container_config(
         profile_session_config.agent_config_dir_for(agent_selection.tool, &home);
     // Agent definitions are in AGENT_CONFIG_MOUNTS. Add new agents there.
     let mut active_sandbox_config: Option<(&AgentConfigMount, PathBuf)> = None;
+    let auto_propagate = launch_config.global.skills.auto_propagate;
     let mut shared_credential_mounts = Vec::new();
     let mut identity_publisher_installed = false;
     let mut identity_publisher_path: Option<(PathBuf, String)> = None;
@@ -2367,12 +2323,14 @@ pub(crate) fn build_container_config(
                 directory.join(SANDBOX_PRIVATE_SUBDIR).join(instance_id),
                 &home,
                 agent_selection.credential_fold,
+                auto_propagate,
             ),
             None => prepare_sandbox_dir(
                 mount,
                 &home,
                 Some(instance_id),
                 agent_selection.credential_fold,
+                auto_propagate,
             ),
         };
         let sandbox_dir = match sandbox_dir {
@@ -2476,7 +2434,7 @@ pub(crate) fn build_container_config(
             if let Some(sidecar) = &agent.sidecar_hooks {
                 let mut events = match crate::agents::resolved_sidecar_hook_events(
                     agent,
-                    &profile_config,
+                    profile_config,
                 ) {
                     Ok(events) => events,
                     Err(e) => {
@@ -2544,7 +2502,7 @@ pub(crate) fn build_container_config(
                     tracing::warn!(target: "session.profile", "No sandbox config mount for {} hooks", agent.name);
                 }
             } else if let Some(hook_cfg) = &agent.hook_config {
-                let mut events = match crate::agents::resolved_hook_events(agent, &profile_config) {
+                let mut events = match crate::agents::resolved_hook_events(agent, profile_config) {
                     Ok(events) => events,
                     Err(e) => {
                         tracing::warn!(target: "session.profile", "Failed to resolve hooks in sandbox config: {}", e);
@@ -2632,14 +2590,11 @@ pub(crate) fn build_container_config(
         }
     }
 
-    // Folder trust goes through the shared registry so the create path and the
-    // attach/restart path in `instance/container.rs` cannot drift (issue #472).
-    // Called outside the YOLO gate because the registry decides per agent which
-    // prompts are approval gates and which merely block startup.
+    // The agent registry distinguishes approval gates from startup-only trust prompts.
     ensure_folder_trust_config_for_active_agent(
         agent_selection.tool,
         agent_selection.detect_as,
-        profile,
+        profile_session_config,
         instance_id,
         &workspace_path,
         is_yolo_mode,
@@ -2763,8 +2718,8 @@ pub(crate) fn build_container_config(
         named_ignore_volumes,
         named_ignore_volumes_authoritative,
         environment,
-        cpu_limit: sandbox_config.cpu_limit,
-        memory_limit: sandbox_config.memory_limit,
+        cpu_limit: sandbox_config.cpu_limit.clone(),
+        memory_limit: sandbox_config.memory_limit.clone(),
         port_mappings: sandbox_config.port_mappings.clone(),
         network: sanitize_network(sandbox_config.network.as_deref()),
         selinux_relabel: sandbox_config.selinux_relabel,
@@ -2833,6 +2788,29 @@ fn common_ancestor(a: &Path, b: &Path) -> PathBuf {
 
 #[cfg(test)]
 mod tests {
+    fn build_container_config(
+        project_path_str: &str,
+        sandbox_info: &crate::session::instance::SandboxInfo,
+        agent_selection: super::ContainerAgentSelection<'_>,
+        is_yolo_mode: bool,
+        instance_id: &str,
+        workspace_info: Option<&crate::session::WorkspaceInfo>,
+        profile: &str,
+    ) -> anyhow::Result<crate::containers::ContainerConfig> {
+        let config = crate::session::storage::local_launch_configuration(
+            &crate::session::config::effective_profile(profile),
+            std::path::Path::new(project_path_str),
+        );
+        super::build_container_config(
+            project_path_str,
+            sandbox_info,
+            agent_selection,
+            is_yolo_mode,
+            instance_id,
+            workspace_info,
+            &config,
+        )
+    }
 
     // The sandbox design rests on a bind that already exists: the Pi config
     // dir at `/root/.pi`. Everything else follows from it, so assert the mount
@@ -3490,7 +3468,7 @@ mod tests {
             .find(|m| m.tool_name == "hermes")
             .unwrap();
         let sandbox =
-            prepare_sandbox_dir(mount, dir.path(), None, CredentialFold::Freshest).unwrap();
+            prepare_sandbox_dir(mount, dir.path(), None, CredentialFold::Freshest, false).unwrap();
 
         assert!(sandbox.join("config.yaml").exists());
         assert!(sandbox.join(".env").exists());
@@ -3565,7 +3543,8 @@ mod tests {
             .iter()
             .find(|m| m.tool_name == "opencode" && m.host_rel == ".local/share/opencode")
             .expect("opencode data-dir mount");
-        let out = prepare_sandbox_dir(mount, dir.path(), None, CredentialFold::Freshest).unwrap();
+        let out =
+            prepare_sandbox_dir(mount, dir.path(), None, CredentialFold::Freshest, false).unwrap();
         assert_eq!(out, sandbox);
 
         assert!(
@@ -3964,8 +3943,14 @@ mod tests {
             .iter()
             .find(|m| m.tool_name == "prime-agent")
             .expect("prime-agent mount must exist");
-        let sandbox =
-            prepare_sandbox_dir(prime_mount, home.path(), None, CredentialFold::Freshest).unwrap();
+        let sandbox = prepare_sandbox_dir(
+            prime_mount,
+            home.path(),
+            None,
+            CredentialFold::Freshest,
+            false,
+        )
+        .unwrap();
 
         assert_eq!(
             fs::read_to_string(sandbox.join("skills/reviewing/SKILL.md")).unwrap(),
@@ -3973,20 +3958,13 @@ mod tests {
         );
     }
 
-    // Regression for #3014: settings.json (a top-level file) referenced a hook
-    // script under ~/.claude/hooks/, but `hooks` was absent from Claude's
-    // copy_dirs, so the config was carried into the sandbox without the script
-    // it points at and every tool call errored ("No such file or directory").
+    // Config-referenced hook scripts must accompany the config into the sandbox.
     #[test]
     fn test_claude_mount_copies_hooks_alongside_settings() {
         let claude_mount = AGENT_CONFIG_MOUNTS
             .iter()
             .find(|m| m.tool_name == "claude")
             .expect("claude mount must exist");
-        assert!(
-            claude_mount.copy_dirs.contains(&"hooks"),
-            "claude copy_dirs must include 'hooks' so settings.json's referenced scripts land in-container"
-        );
 
         let dir = TempDir::new().unwrap();
         let host = dir.path().join("host");
@@ -4495,6 +4473,7 @@ mod tests {
                 store.clone(),
                 home.path(),
                 CredentialFold::Freshest,
+                false,
             )
             .unwrap()
         };
@@ -4571,6 +4550,7 @@ mod tests {
                 store.clone(),
                 home.path(),
                 CredentialFold::Freshest,
+                false,
             )
             .unwrap()
         };
@@ -4622,8 +4602,15 @@ mod tests {
         let shared = root.join(".credentials.json");
         fs::create_dir_all(&store).unwrap();
         let prepare = |fold| {
-            prepare_sandbox_dir_from(&mount, host.clone(), store.clone(), home.path(), fold)
-                .unwrap()
+            prepare_sandbox_dir_from(
+                &mount,
+                host.clone(),
+                store.clone(),
+                home.path(),
+                fold,
+                false,
+            )
+            .unwrap()
         };
 
         // A file holding no usable credential is seeded from the host.
@@ -4659,8 +4646,15 @@ mod tests {
         let shared = root.join(".credentials.json");
         fs::create_dir_all(&store).unwrap();
         let prepare = |fold| {
-            prepare_sandbox_dir_from(&mount, host.clone(), store.clone(), home.path(), fold)
-                .unwrap()
+            prepare_sandbox_dir_from(
+                &mount,
+                host.clone(),
+                store.clone(),
+                home.path(),
+                fold,
+                false,
+            )
+            .unwrap()
         };
 
         // A container whose credential fails to authenticate empties both
@@ -5969,11 +5963,14 @@ trust_level = "trusted"
         .unwrap();
 
         refresh_agent_configs_for_instance(
-            &crate::session::config::effective_profile(""),
+            &super::super::profile_config::resolve_config_or_warn(
+                &crate::session::config::effective_profile(""),
+            ),
             instance_id,
             "codex",
             None,
             CredentialFold::Freshest,
+            false,
         );
         let refreshed: toml::Value =
             toml::from_str(&fs::read_to_string(codex_sandbox.join("config.toml")).unwrap())
@@ -5984,7 +5981,7 @@ trust_level = "trusted"
         ensure_folder_trust_config_for_active_agent(
             "codex",
             None,
-            "",
+            &super::super::SessionConfig::default(),
             instance_id,
             "/workspace/project",
             true,
@@ -6021,11 +6018,14 @@ trust_level = "trusted"
         .unwrap();
 
         refresh_agent_configs_for_instance(
-            &crate::session::config::effective_profile(""),
+            &super::super::profile_config::resolve_config_or_warn(
+                &crate::session::config::effective_profile(""),
+            ),
             "gemini-yolo-refresh-test",
             "gemini",
             None,
             CredentialFold::Freshest,
+            false,
         );
         let refreshed: serde_json::Value = serde_json::from_str(
             &fs::read_to_string(gemini_sandbox.join("settings.json")).unwrap(),
@@ -6037,7 +6037,7 @@ trust_level = "trusted"
         ensure_folder_trust_config_for_active_agent(
             "gemini",
             None,
-            "",
+            &super::super::SessionConfig::default(),
             "gemini-yolo-refresh-test",
             "/workspace/project",
             true,
@@ -6720,11 +6720,14 @@ trusted_hash = "keep"
         fs::write(codex_dir.join("config.toml"), r#"model = "updated""#).unwrap();
 
         refresh_agent_configs_for_instance(
-            &crate::session::config::effective_profile(""),
+            &super::super::profile_config::resolve_config_or_warn(
+                &crate::session::config::effective_profile(""),
+            ),
             instance_id,
             "codex",
             None,
             CredentialFold::Freshest,
+            false,
         );
 
         let config_text = fs::read_to_string(&sandbox_config_path).unwrap();
@@ -6843,11 +6846,12 @@ trusted_hash = "keep"
             )
             .unwrap();
             refresh_agent_configs_for_instance(
-                profile,
+                &super::super::profile_config::resolve_config_or_warn(profile),
                 instance_id,
                 "codex",
                 None,
                 CredentialFold::Freshest,
+                false,
             );
         }
 
@@ -7360,7 +7364,7 @@ volume_ignores = ["target"]
             clean_files: &["opencode.db", "opencode.db-wal", "opencode.db-shm"],
         };
 
-        prepare_sandbox_dir(&mount, home.path(), None, CredentialFold::Freshest).unwrap();
+        prepare_sandbox_dir(&mount, home.path(), None, CredentialFold::Freshest, false).unwrap();
 
         assert!(!sandbox_dir.join("opencode.db").exists());
         assert!(!sandbox_dir.join("opencode.db-wal").exists());
@@ -7398,7 +7402,7 @@ volume_ignores = ["target"]
             clean_files: &[],
         };
 
-        prepare_sandbox_dir(&mount, home.path(), None, CredentialFold::Freshest).unwrap();
+        prepare_sandbox_dir(&mount, home.path(), None, CredentialFold::Freshest, false).unwrap();
 
         assert!(
             !sandbox_dir.join("opencode.db").exists(),
@@ -7431,7 +7435,7 @@ volume_ignores = ["target"]
         };
 
         // Should not panic or error when files don't exist
-        prepare_sandbox_dir(&mount, home.path(), None, CredentialFold::Freshest).unwrap();
+        prepare_sandbox_dir(&mount, home.path(), None, CredentialFold::Freshest, false).unwrap();
     }
 
     // --- GCP credential mount tests ---

@@ -2501,7 +2501,7 @@ impl VtChannel {
         if !tmux_supports_pipe_pane_io(deadline) {
             return None;
         }
-        let target = format!("{name}:^.0");
+        let target = format!("={name}:^.0");
         // Arming only needs the geometry; the cursor rides along because the
         // probe is shared with `reconcile_grid` and costs one fork either way.
         let (cols, rows, _, _) = pane_size_cursor(&target, deadline)?;
@@ -5640,11 +5640,17 @@ mod tests {
                 "-y",
                 "40",
                 script,
+                ";",
+                "set-option",
+                "-t",
+                guard.name(),
+                "pane-base-index",
+                "0",
             ])
             .output()
             .expect("tmux new-session");
         assert!(out.status.success());
-        let target = format!("{}:^.0", guard.name());
+        let target = format!("={}:^.0", guard.name());
         let deadline = crate::tmux::TmuxCommandDeadline::new();
 
         // Wait for the prompt to be painted before seeding.
@@ -5719,12 +5725,18 @@ mod tests {
                 "-y",
                 "24",
                 script,
+                ";",
+                "set-option",
+                "-t",
+                guard.name(),
+                "pane-base-index",
+                "0",
             ])
             .output()
             .expect("tmux new-session");
         assert!(out.status.success());
         // Let the pane paint before capturing it.
-        let target = format!("{}:^.0", guard.name());
+        let target = format!("={}:^.0", guard.name());
         let deadline = crate::tmux::TmuxCommandDeadline::new();
         let mut stream = Vec::new();
         for _ in 0..50 {

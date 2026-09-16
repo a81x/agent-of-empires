@@ -364,7 +364,9 @@ impl Session {
     }
     pub(crate) fn exists_with_deadline(&self, deadline: &crate::tmux::TmuxCommandDeadline) -> bool {
         let mut command = crate::tmux::tmux_command();
-        command.args(["has-session", "-t", &self.name]);
+        command
+            .args(["has-session", "-t"])
+            .arg(format!("={}", self.name));
         deadline
             .run(&mut command)
             .map(|output| output.status.success())
@@ -527,10 +529,11 @@ impl Session {
             Some(&wrapped_command),
             size,
         );
-        append_remain_on_exit_args(&mut args, &self.name);
-        append_pane_base_index_args(&mut args, &self.name);
-        append_window_size_args(&mut args, &self.name);
-        append_tmux_setting_args(&mut args, &self.name, &config);
+        let target = format!("={}:", self.name);
+        append_remain_on_exit_args(&mut args, &target);
+        append_pane_base_index_args(&mut args, &target);
+        append_window_size_args(&mut args, &target);
+        append_tmux_setting_args(&mut args, &target, &config);
 
         let output = crate::tmux::tmux_command().args(&args).output()?;
 
@@ -603,7 +606,7 @@ impl Session {
         // that on every session via `append_pane_base_index_args`
         // (see #488, #2231). The `-k` flag forces respawn past the
         // remembered exit status; without it tmux refuses to respawn.
-        let target = format!("{}:^.0", self.name);
+        let target = format!("={}:^.0", self.name);
         let mut args: Vec<String> = vec![
             "respawn-pane".to_string(),
             "-k".to_string(),
@@ -628,13 +631,7 @@ impl Session {
     }
 
     pub fn kill(&self) -> Result<()> {
-        if !self.exists() {
-            return Ok(());
-        }
-
-        // Kill the entire process tree first to ensure child processes are terminated.
-        // This handles cases where tools like Claude spawn subprocesses that may
-        // survive tmux's SIGHUP signal.
+        // Descendants may survive the SIGHUP sent by tmux.
         if let Some(pane_pid) = self.get_pane_pid() {
             process::kill_process_tree(pane_pid);
         }
@@ -652,7 +649,12 @@ impl Session {
         }
 
         let mut command = crate::tmux::tmux_command();
-        command.args(["rename-session", "-t", &self.name, new_name]);
+        command.args([
+            "rename-session",
+            "-t",
+            &format!("={}:", self.name),
+            new_name,
+        ]);
         let output = crate::tmux::run_tmux_command_with_timeout(&mut command)?;
 
         if !output.status.success() {
@@ -667,19 +669,17 @@ impl Session {
         if !self.exists() {
             bail!("Session does not exist: {}", self.name);
         }
+        let target = format!("={}:", self.name);
 
         if crate::tmux::utils::inside_tmux() {
             let status = crate::tmux::tmux_command()
-                .args(["switch-client", "-t", &self.name])
+                .args(["switch-client", "-t", &target])
                 .status()?;
 
             if !status.success() {
-                // Fall back to attach-session if switch-client fails.
-                // This handles cases where TMUX env var is inherited but we're
-                // not actually inside a tmux client (e.g., terminal spawned
-                // from within tmux via `open -a Terminal`).
+                // TMUX may be inherited without a connected client.
                 let status = crate::tmux::tmux_command()
-                    .args(["attach-session", "-t", &self.name])
+                    .args(["attach-session", "-t", &target])
                     .status()?;
 
                 if !status.success() {
@@ -694,7 +694,7 @@ impl Session {
             }
         } else {
             let status = crate::tmux::tmux_command()
-                .args(["attach-session", "-t", &self.name])
+                .args(["attach-session", "-t", &target])
                 .status()?;
 
             if !status.success() {
@@ -721,7 +721,7 @@ impl Session {
             .args([
                 "display-message",
                 "-t",
-                &self.name,
+                &format!("={}:", self.name),
                 "-p",
                 "#{session_attached} #{pane_pid} #{pane_dead}",
             ])
@@ -752,7 +752,7 @@ impl Session {
             .args([
                 "display-message",
                 "-t",
-                &self.name,
+                &format!("={}:", self.name),
                 "-p",
                 "#{session_created}",
             ])
@@ -781,7 +781,7 @@ impl Session {
     /// OMP uses this device to key its terminal-session breadcrumb. Target the
     /// first window's first pane for the same reason as [`Self::capture_pane`].
     pub fn pane_tty(&self) -> Result<String> {
-        let target = format!("{}:^.0", self.name);
+        let target = format!("={}:^.0", self.name);
         let output = crate::tmux::tmux_command()
             .args(["display-message", "-t", &target, "-p", "#{pane_tty}"])
             .output()?;
@@ -802,7 +802,7 @@ impl Session {
 
         // Use `^.0` to target the first window's first pane regardless of
         // base-index or which pane is active.  See #435, #488.
-        let target = format!("{}:^.0", self.name);
+        let target = format!("={}:^.0", self.name);
         let output = crate::tmux::tmux_command()
             .args([
                 "capture-pane",
@@ -926,8 +926,8 @@ impl Session {
         /// probe proves that the pane row still indexes the captured bytes.
         const AFTER_CURSOR_SENTINEL: &str = "@@aoe-after-cur@@";
 
-        let window = format!("{}:^", self.name);
-        let pane0 = format!("{}:^.0", self.name);
+        let window = format!("={}:^", self.name);
+        let pane0 = format!("={}:^.0", self.name);
         let mut command = crate::tmux::tmux_command();
         command.args([
             "display-message",
@@ -1109,12 +1109,12 @@ impl Session {
             "display-message".to_string(),
             "-p".to_string(),
             "-t".to_string(),
-            format!("{}:^", self.name),
+            format!("={}:^", self.name),
             "-F".to_string(),
             format!("{WINDOW_SENTINEL} #{{window_width}} #{{window_height}}"),
         ];
         for i in 0..count {
-            let target = format!("{}:^.{}", self.name, i);
+            let target = format!("={}:^.{}", self.name, i);
             args.push(";".to_string());
             args.extend([
                 "display-message".to_string(),
@@ -1193,7 +1193,7 @@ impl Session {
         if !self.exists() {
             return Ok(String::new());
         }
-        let target = format!("{}:^.0", self.name);
+        let target = format!("={}:^.0", self.name);
         let output = crate::tmux::tmux_command()
             .args(["capture-pane", "-t", &target, "-p", "-J", "-S", "-"])
             .output()?;
@@ -1232,7 +1232,7 @@ impl Session {
         lines: usize,
         deadline: &crate::tmux::TmuxCommandDeadline,
     ) -> Result<(String, Option<PaneCursor>)> {
-        let target = format!("{}:^.0", self.name);
+        let target = format!("={}:^.0", self.name);
         let start = format!("-{}", lines);
         const HEADER_FMT: &str = CURSOR_FMT;
         let mut command = crate::tmux::tmux_command();
@@ -1309,7 +1309,7 @@ impl Session {
         // `^.0` pins the first window's first pane, matching capture_pane:
         // a bare session name follows the ACTIVE pane, which would let
         // input land in a different pane than the one being captured.
-        let target = format!("{}:^.0", self.name);
+        let target = format!("={}:^.0", self.name);
         for batch in raw_byte_batches(bytes) {
             let output = crate::tmux::tmux_command()
                 .args(["send-keys", "-t", &target, "-H"])
@@ -1336,7 +1336,7 @@ impl Session {
     /// contract. tmux translates LF to CR in the buffer by default, matching
     /// the raw-byte encoding this replaces.
     pub fn paste_text(&self, text: &str) -> Result<()> {
-        let target = format!("{}:^.0", self.name);
+        let target = format!("={}:^.0", self.name);
         Self::send_via_paste_buffer(&target, text)
     }
 
@@ -1376,7 +1376,7 @@ impl Session {
             bail!("Session does not exist: {}", self.name);
         }
 
-        let target = format!("{}:^.0", self.name);
+        let target = format!("={}:^.0", self.name);
         let byte_len = text.len();
         let line_count = text.lines().count();
         let max_line = text.lines().map(str::len).max().unwrap_or(0);
@@ -1445,7 +1445,7 @@ impl Session {
             bail!("Session does not exist: {}", self.name);
         }
 
-        let target = format!("{}:^.0", self.name);
+        let target = format!("={}:^.0", self.name);
         for token in tokens {
             match token {
                 crate::agents::KeyToken::Literal(text) => {
@@ -1474,7 +1474,13 @@ impl Session {
             return;
         }
         let mut command = crate::tmux::tmux_command();
-        command.args(["set-option", "-t", &self.name, "window-size", "latest"]);
+        command.args([
+            "set-option",
+            "-t",
+            &format!("={}:", self.name),
+            "window-size",
+            "latest",
+        ]);
         let _ = crate::tmux::run_tmux_command_with_timeout(&mut command);
     }
 
@@ -1548,17 +1554,18 @@ impl Session {
         deadline: &crate::tmux::TmuxCommandDeadline,
     ) -> bool {
         let heartbeat = heartbeat.to_string();
+        let target = format!("={}:", self.name);
         let mut command = crate::tmux::tmux_command();
         command.args([
             "set-option",
             "-t",
-            &self.name,
+            &target,
             opt,
             owner_id,
             ";",
             "set-option",
             "-t",
-            &self.name,
+            &target,
             hb_opt,
             &heartbeat,
         ]);
@@ -1584,12 +1591,19 @@ impl Session {
     ) -> std::io::Result<bool> {
         let condition = Self::owner_pair_condition(opt, hb_opt, observed.0, observed.1);
         let owner_id = Self::tmux_command_string_literal(owner_id);
-        let target = Self::tmux_command_string_literal(&self.name);
+        let target = Self::tmux_command_string_literal(&format!("={}:", self.name));
         let replace = format!(
             "set-option -t {target} {opt} {owner_id} ; set-option -t {target} {hb_opt} {heartbeat} ; display-message -p aoe-owner-replaced"
         );
         let mut command = crate::tmux::tmux_command();
-        command.args(["if-shell", "-t", &self.name, "-F", &condition, &replace]);
+        command.args([
+            "if-shell",
+            "-t",
+            &format!("={}:", self.name),
+            "-F",
+            &condition,
+            &replace,
+        ]);
         let output = deadline.run(&mut command)?;
         if !output.status.success() {
             return Err(std::io::Error::other("tmux owner replacement failed"));
@@ -1609,14 +1623,21 @@ impl Session {
         deadline: &crate::tmux::TmuxCommandDeadline,
     ) {
         let condition = Self::owner_pair_condition(opt, hb_opt, owner_id, &heartbeat.to_string());
-        let target = Self::tmux_command_string_literal(&self.name);
+        let target = Self::tmux_command_string_literal(&format!("={}:", self.name));
         let mut release =
             format!("set-option -u -t {target} {opt} ; set-option -u -t {target} {hb_opt}");
         if restore_window_size {
             release.push_str(&format!(" ; set-option -t {target} window-size latest"));
         }
         let mut command = crate::tmux::tmux_command();
-        command.args(["if-shell", "-t", &self.name, "-F", &condition, &release]);
+        command.args([
+            "if-shell",
+            "-t",
+            &format!("={}:", self.name),
+            "-F",
+            &condition,
+            &release,
+        ]);
         let _ = deadline.run(&mut command);
     }
 
@@ -1628,7 +1649,14 @@ impl Session {
     ) -> std::io::Result<(String, String)> {
         let format = format!("#{{{opt}}}|#{{{hb_opt}}}");
         let mut command = crate::tmux::tmux_command();
-        command.args(["display-message", "-p", "-t", &self.name, "-F", &format]);
+        command.args([
+            "display-message",
+            "-p",
+            "-t",
+            &format!("={}:", self.name),
+            "-F",
+            &format,
+        ]);
         let output = deadline.run(&mut command)?;
         if !output.status.success() {
             return Err(std::io::Error::other("tmux owner snapshot failed"));
@@ -1731,13 +1759,20 @@ impl Session {
     ) -> bool {
         let owner_id = Self::tmux_format_literal(owner_id);
         let condition = format!("#{{==:#{{{opt}}},{owner_id}}}");
-        let target = Self::tmux_command_string_literal(&self.name);
+        let target = Self::tmux_command_string_literal(&format!("={}:", self.name));
         let refresh = format!(
             "set-option -t {target} {hb_opt} {} ; display-message -p aoe-owner-refreshed",
             next_owner_heartbeat(0)
         );
         let mut command = crate::tmux::tmux_command();
-        command.args(["if-shell", "-t", &self.name, "-F", &condition, &refresh]);
+        command.args([
+            "if-shell",
+            "-t",
+            &format!("={}:", self.name),
+            "-F",
+            &condition,
+            &refresh,
+        ]);
         deadline.run(&mut command).is_ok_and(|output| {
             output.status.success()
                 && String::from_utf8_lossy(&output.stdout)
@@ -1833,7 +1868,7 @@ impl Session {
         if cols == 0 || rows == 0 {
             return None;
         }
-        let pane_target = format!("{}:^.0", self.name);
+        let pane_target = format!("={}:^.0", self.name);
         let window_rows = self
             .pane_chrome_rows_with_deadline(&pane_target, deadline)
             .map(|chrome| rows.saturating_add(chrome))
@@ -1848,12 +1883,19 @@ impl Session {
         // while the chrome probe above and the preview capture both use the
         // first. The observed-size reconcile also reads the first window, so
         // resizing any other would loop forever chasing a mismatch.
-        let target = Self::tmux_command_string_literal(&format!("{}:^", self.name));
+        let target = Self::tmux_command_string_literal(&format!("={}:^", self.name));
         let resize = format!(
             "resize-window -t {target} -x {cols} -y {window_rows} ; display-message -p aoe-resize-applied"
         );
         let mut command = crate::tmux::tmux_command();
-        command.args(["if-shell", "-t", &self.name, "-F", condition, &resize]);
+        command.args([
+            "if-shell",
+            "-t",
+            &format!("={}:", self.name),
+            "-F",
+            condition,
+            &resize,
+        ]);
         deadline
             .run(&mut command)
             .is_ok_and(|output| {
@@ -1875,14 +1917,21 @@ impl Session {
     ) {
         let owner_id = Self::tmux_format_literal(owner_id);
         let condition = format!("#{{==:#{{{opt}}},{owner_id}}}");
-        let target = Self::tmux_command_string_literal(&self.name);
+        let target = Self::tmux_command_string_literal(&format!("={}:", self.name));
         let mut release =
             format!("set-option -u -t {target} {opt} ; set-option -u -t {target} {hb_opt}");
         if restore_window_size {
             release.push_str(&format!(" ; set-option -t {target} window-size latest"));
         }
         let mut command = crate::tmux::tmux_command();
-        command.args(["if-shell", "-t", &self.name, "-F", &condition, &release]);
+        command.args([
+            "if-shell",
+            "-t",
+            &format!("={}:", self.name),
+            "-F",
+            &condition,
+            &release,
+        ]);
         let _ = deadline.run(&mut command);
     }
 
@@ -1917,14 +1966,21 @@ impl Session {
     ) -> bool {
         let owner_format = Self::tmux_format_literal(owner_id);
         let condition = format!("#{{==:#{{{VT_OWNER_OPT}}},{owner_format}}}");
-        let target = Self::tmux_command_string_literal(&format!("{}:^.0", self.name));
+        let target = Self::tmux_command_string_literal(&format!("={}:^.0", self.name));
         let pipe_command = Self::tmux_command_string_literal(pipe_command);
         let owner_command = Self::tmux_command_string_literal(owner_id);
         let arm = format!(
             "pipe-pane {flags} -t {target} {pipe_command} ; set-option -t {target} {VT_PIPE_OWNER_OPT} {owner_command} ; display-message -p aoe-pipe-armed"
         );
         let mut command = crate::tmux::tmux_command();
-        command.args(["if-shell", "-t", &self.name, "-F", &condition, &arm]);
+        command.args([
+            "if-shell",
+            "-t",
+            &format!("={}:", self.name),
+            "-F",
+            &condition,
+            &arm,
+        ]);
         let Ok(output) = deadline.run(&mut command) else {
             return false;
         };
@@ -1959,7 +2015,7 @@ impl Session {
             "#{{||:#{{==:#{{{VT_PIPE_OWNER_OPT}}},{owner_format}}},#{{==:#{{{VT_OWNER_OPT}}},{owner_format}}}}}"
         );
         let clear_lease_condition = format!("#{{==:#{{{VT_OWNER_OPT}}},{owner_format}}}");
-        let target = Self::tmux_command_string_literal(&format!("{}:^.0", self.name));
+        let target = Self::tmux_command_string_literal(&format!("={}:^.0", self.name));
         let clear_lease = format!(
             "set-option -u -t {target} {VT_OWNER_OPT} ; set-option -u -t {target} {VT_OWNER_HB_OPT}"
         );
@@ -1967,7 +2023,14 @@ impl Session {
             "pipe-pane -t {target} ; set-option -u -t {target} {VT_PIPE_OWNER_OPT} ; if-shell -t {target} -F '{clear_lease_condition}' '{clear_lease}'"
         );
         let mut command = crate::tmux::tmux_command();
-        command.args(["if-shell", "-t", &self.name, "-F", &condition, &release]);
+        command.args([
+            "if-shell",
+            "-t",
+            &format!("={}:", self.name),
+            "-F",
+            &condition,
+            &release,
+        ]);
         let _ = deadline.run(&mut command);
     }
 
@@ -2115,7 +2178,7 @@ impl Session {
         command.args([
             "display-message",
             "-t",
-            &self.name,
+            &format!("={}:", self.name),
             "-p",
             "#{session_attached}",
         ]);
@@ -2184,7 +2247,7 @@ impl Session {
         deadline: &crate::tmux::TmuxCommandDeadline,
     ) -> bool {
         let mut command = crate::tmux::tmux_command();
-        command.args(["set-option", "-t", &self.name, opt, value]);
+        command.args(["set-option", "-t", &format!("={}:", self.name), opt, value]);
         deadline
             .run(&mut command)
             .map(|output| output.status.success())
@@ -2204,7 +2267,7 @@ impl Session {
         deadline: &crate::tmux::TmuxCommandDeadline,
     ) -> bool {
         let mut command = crate::tmux::tmux_command();
-        command.args(["set-option", "-u", "-t", &self.name, opt]);
+        command.args(["set-option", "-u", "-t", &format!("={}:", self.name), opt]);
         deadline
             .run(&mut command)
             .map(|output| output.status.success())
@@ -2611,36 +2674,29 @@ mod tests {
         }
     }
 
-    /// Move `session_name`'s only window to index 1 under `base-index 1`, so
-    /// window 0 genuinely does not exist.
-    ///
-    /// Setting `base-index 1` on a live session does not renumber the window it
-    /// was created with, and a `:0.0` target against a session that still has a
-    /// window 0 resolves fine, so the option on its own leaves the base-index
-    /// half of #435 / #488 untested (#3368). Moving the window afterwards
-    /// reproduces what a user with `base-index 1` in their `tmux.conf` has,
-    /// without touching the server-global option every other tmux test shares.
-    ///
-    /// tmux resolves a window index that does not exist to the session's
-    /// current window, so with a second window active a `:0.0` target then
-    /// reads the active window rather than failing loudly. That is the
-    /// regression these callers exist to catch.
+    /// Rebase the fixture's window to 1 and pin its agent pane to 0.
     fn rebase_first_window_to_index_one(session_name: &str) {
+        let target = format!("={session_name}:");
         let set = crate::tmux::tmux_command()
-            .args(["set-option", "-t", session_name, "base-index", "1"])
+            .args([
+                "set-option",
+                "-t",
+                &target,
+                "base-index",
+                "1",
+                ";",
+                "set-option",
+                "-t",
+                &target,
+                "pane-base-index",
+                "0",
+            ])
             .output()
             .expect("tmux set-option base-index");
         assert!(set.status.success(), "failed to set base-index 1");
 
         let moved = crate::tmux::tmux_command()
-            .args([
-                "move-window",
-                "-d",
-                "-s",
-                &format!("{session_name}:0"),
-                "-t",
-                &format!("{session_name}:1"),
-            ])
+            .args(["move-window", "-r", "-t", &target])
             .output()
             .expect("tmux move-window");
         assert!(
@@ -2650,7 +2706,7 @@ mod tests {
         );
 
         let listed = crate::tmux::tmux_command()
-            .args(["list-windows", "-t", session_name, "-F", "#{window_index}"])
+            .args(["list-windows", "-t", &target, "-F", "#{window_index}"])
             .output()
             .expect("tmux list-windows");
         let indices = String::from_utf8_lossy(&listed.stdout);
@@ -3238,6 +3294,24 @@ mod tests {
         refresh_session_cache();
         let session = Session::from_name(guard.name());
         (guard, session)
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn missing_transport_target_never_sends_to_a_prefix_sibling() {
+        if !tmux_available() {
+            return;
+        }
+        let missing = TmuxTestSession::new("aoe_test_exact_transport");
+        let sibling = TmuxTestSession::new(&format!("{}_t1", missing.name()));
+        let sibling_session = start_composite_session(sibling.name(), 80, 24, "cat");
+        let session = Session::from_name(missing.name());
+        assert!(session.send_raw_bytes(b"wrong-target\n").is_err());
+        assert!(session.paste_text("wrong-target\n").is_err());
+        assert!(!sibling_session
+            .capture_pane(10)
+            .unwrap()
+            .contains("wrong-target"));
     }
 
     #[test]
@@ -5434,9 +5508,7 @@ mod tests {
         );
     }
 
-    /// Regression test for the dead-pane restart bug: a session whose pane
-    /// has died (remain-on-exit kept the session) must be revivable via
-    /// respawn_dead_pane without tearing down the tmux session.
+    /// A retained dead pane is revivable without exposing its stale process PID.
     #[test]
     #[serial_test::serial]
     fn test_respawn_dead_pane_revives_dead_pane() {
@@ -5448,11 +5520,7 @@ mod tests {
         let guard = TmuxTestSession::new("aoe_test_respawn");
         let session_name = guard.name().to_string();
 
-        // Start a session with a command that exits immediately and
-        // remain-on-exit set, so we end up with a dead pane. Pin
-        // pane-base-index 0 to match what aoe does in production;
-        // without this, users with `pane-base-index 1` in their
-        // tmux.conf cause the `^.0` target to miss.
+        // Pin pane zero independently of user tmux configuration.
         let output = crate::tmux::tmux_command()
             .args([
                 "new-session",
@@ -5489,6 +5557,11 @@ mod tests {
 
         assert!(session.exists(), "Session should exist via remain-on-exit");
         assert!(session.is_pane_dead(), "Pane should be dead after `true`");
+        assert_eq!(
+            session.get_pane_pid(),
+            None,
+            "a dead pane is not a live process owner"
+        );
 
         let respawned = session
             .respawn_dead_pane("/tmp", Some("sleep 30"))
@@ -5500,6 +5573,10 @@ mod tests {
         assert!(
             !session.is_pane_dead(),
             "Pane should be alive after respawn"
+        );
+        assert!(
+            session.get_pane_pid().is_some(),
+            "the respawned pane owns a live process"
         );
 
         let respawned_again = session

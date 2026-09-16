@@ -14,9 +14,38 @@ pub(super) fn kill_process_group(child: &Child) {
     signal_process_group(child, nix::sys::signal::Signal::SIGKILL);
 }
 
+pub(super) fn try_wait_status_hook(
+    child: &mut Child,
+) -> std::io::Result<Option<std::process::ExitStatus>> {
+    use nix::sys::wait::{waitid, Id, WaitPidFlag, WaitStatus};
+    let flags = WaitPidFlag::WEXITED | WaitPidFlag::WNOHANG | WaitPidFlag::WNOWAIT;
+    match waitid(
+        Id::Pid(nix::unistd::Pid::from_raw(child.id() as i32)),
+        flags,
+    ) {
+        Ok(WaitStatus::StillAlive) | Err(nix::errno::Errno::EINTR) => Ok(None),
+        Ok(_) => {
+            // Retain the exited leader until cleanup so its group ID cannot be reused.
+            kill_process_group(child);
+            child.wait().map(Some)
+        }
+        Err(error) => Err(error.into()),
+    }
+}
+
 fn signal_process_group(child: &Child, signal: nix::sys::signal::Signal) {
     let Ok(pid) = i32::try_from(child.id()) else {
         return;
     };
     let _ = nix::sys::signal::killpg(nix::unistd::Pid::from_raw(pid), signal);
+}
+
+pub(crate) fn detach_daemon_stdin() -> std::io::Result<()> {
+    use std::os::fd::AsRawFd;
+    let null = std::fs::File::open("/dev/null")?;
+    // Replace the inherited transaction descriptor without leaving fd0 vacant.
+    if unsafe { nix::libc::dup2(null.as_raw_fd(), nix::libc::STDIN_FILENO) } < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(())
 }
