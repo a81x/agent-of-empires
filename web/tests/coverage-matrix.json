@@ -1966,7 +1966,7 @@
       "risk": "medium",
       "specs": [
         "src/components/acp/__tests__/BackgroundAgentsPanel.test.tsx",
-        "src/components/acp/__tests__/ToolCards.test.tsx",
+        "src/components/acp/ToolCards.render.test.tsx",
         "src/lib/acpTypes.reducer.test.ts"
       ],
       "components": [
@@ -1974,7 +1974,13 @@
         "web/src/components/acp/backgroundAgentsContext.ts",
         "web/src/components/acp/ToolCards.tsx",
         "web/src/lib/acpTypes.ts",
-        "web/src/hooks/useAcpSession.ts"
+        "web/src/hooks/useAcpSession.ts",
+        "web/src/components/acp/CoreToolCards.tsx",
+        "web/src/components/acp/GroupToolCards.tsx",
+        "web/src/components/acp/NamedToolCards.tsx",
+        "web/src/components/acp/TodoCards.tsx",
+        "web/src/components/acp/ToolCardChrome.tsx",
+        "web/src/components/acp/ToolOutputMedia.tsx"
       ]
     },
     {
@@ -2234,7 +2240,16 @@
       "kind": "vitest",
       "risk": "medium",
       "specs": ["src/lib/acpTypes.test.ts", "src/components/acp/ToolCards.render.test.tsx"],
-      "components": ["web/src/components/acp/ToolCards.tsx", "web/src/lib/acpTypes.ts"]
+      "components": [
+        "web/src/components/acp/ToolCards.tsx",
+        "web/src/lib/acpTypes.ts",
+        "web/src/components/acp/CoreToolCards.tsx",
+        "web/src/components/acp/GroupToolCards.tsx",
+        "web/src/components/acp/NamedToolCards.tsx",
+        "web/src/components/acp/TodoCards.tsx",
+        "web/src/components/acp/ToolCardChrome.tsx",
+        "web/src/components/acp/ToolOutputMedia.tsx"
+      ]
     },
     {
       "id": "acp.rate-limit-recovery",
@@ -2455,8 +2470,17 @@
       "id": "acp.tool-cards",
       "kind": "vitest",
       "risk": "high",
-      "specs": ["src/components/acp/ToolCards.render.test.tsx", "src/components/acp/__tests__/ToolCards.test.tsx"],
-      "components": ["web/src/components/acp/ToolCards.tsx", "web/src/components/ProvenanceBadge.tsx"]
+      "specs": ["src/components/acp/ToolCards.render.test.tsx"],
+      "components": [
+        "web/src/components/acp/ToolCards.tsx",
+        "web/src/components/ProvenanceBadge.tsx",
+        "web/src/components/acp/CoreToolCards.tsx",
+        "web/src/components/acp/GroupToolCards.tsx",
+        "web/src/components/acp/NamedToolCards.tsx",
+        "web/src/components/acp/TodoCards.tsx",
+        "web/src/components/acp/ToolCardChrome.tsx",
+        "web/src/components/acp/ToolOutputMedia.tsx"
+      ]
     },
     {
       "id": "acp.reused-tool-message-ids",
@@ -2510,7 +2534,13 @@
         "web/src/components/acp/AcpRuntime.tsx",
         "web/src/components/acp/StructuredView.tsx",
         "web/src/components/acp/ToolCards.tsx",
-        "web/src/components/acp/ToolErrorBody.tsx"
+        "web/src/components/acp/ToolErrorBody.tsx",
+        "web/src/components/acp/CoreToolCards.tsx",
+        "web/src/components/acp/GroupToolCards.tsx",
+        "web/src/components/acp/NamedToolCards.tsx",
+        "web/src/components/acp/TodoCards.tsx",
+        "web/src/components/acp/ToolCardChrome.tsx",
+        "web/src/components/acp/ToolOutputMedia.tsx"
       ]
     },
     {
@@ -2528,7 +2558,13 @@
       "components": [
         "web/src/components/acp/AcpRuntime.tsx",
         "web/src/components/acp/StructuredView.tsx",
-        "web/src/components/acp/ToolCards.tsx"
+        "web/src/components/acp/ToolCards.tsx",
+        "web/src/components/acp/CoreToolCards.tsx",
+        "web/src/components/acp/GroupToolCards.tsx",
+        "web/src/components/acp/NamedToolCards.tsx",
+        "web/src/components/acp/TodoCards.tsx",
+        "web/src/components/acp/ToolCardChrome.tsx",
+        "web/src/components/acp/ToolOutputMedia.tsx"
       ]
     },
     {
@@ -2546,7 +2582,13 @@
         "web/src/components/acp/AcpRuntime.tsx",
         "web/src/lib/agentProfiles.ts",
         "web/src/lib/acpArgs.ts",
-        "web/src/lib/acpTypes.ts"
+        "web/src/lib/acpTypes.ts",
+        "web/src/components/acp/CoreToolCards.tsx",
+        "web/src/components/acp/GroupToolCards.tsx",
+        "web/src/components/acp/NamedToolCards.tsx",
+        "web/src/components/acp/TodoCards.tsx",
+        "web/src/components/acp/ToolCardChrome.tsx",
+        "web/src/components/acp/ToolOutputMedia.tsx"
       ]
     },
     {
@@ -3245,7 +3287,15 @@
       "kind": "mocked-playwright",
       "risk": "medium",
       "specs": ["tests/acp-tool-cards.spec.ts", "src/components/acp/ToolCards.render.test.tsx"],
-      "components": ["web/src/components/acp/ToolCards.tsx"]
+      "components": [
+        "web/src/components/acp/ToolCards.tsx",
+        "web/src/components/acp/CoreToolCards.tsx",
+        "web/src/components/acp/GroupToolCards.tsx",
+        "web/src/components/acp/NamedToolCards.tsx",
+        "web/src/components/acp/TodoCards.tsx",
+        "web/src/components/acp/ToolCardChrome.tsx",
+        "web/src/components/acp/ToolOutputMedia.tsx"
+      ]
     },
     {
       "id": "acp.story.edit-card-diff-scroll",
@@ -3716,9 +3766,18 @@
         "src/components/plugin/__tests__/PluginSlots.test.tsx",
         "src/lib/__tests__/pluginUi.test.ts",
         "src/hooks/usePluginUiState.test.tsx",
-        "src/components/acp/__tests__/ToolCards.test.tsx"
+        "src/components/acp/ToolCards.render.test.tsx"
       ],
-      "components": ["web/src/components/plugin/PluginSlots.tsx", "web/src/components/acp/ToolCards.tsx"]
+      "components": [
+        "web/src/components/plugin/PluginSlots.tsx",
+        "web/src/components/acp/ToolCards.tsx",
+        "web/src/components/acp/CoreToolCards.tsx",
+        "web/src/components/acp/GroupToolCards.tsx",
+        "web/src/components/acp/NamedToolCards.tsx",
+        "web/src/components/acp/TodoCards.tsx",
+        "web/src/components/acp/ToolCardChrome.tsx",
+        "web/src/components/acp/ToolOutputMedia.tsx"
+      ]
     },
     {
       "id": "plugins.pane-blocks",

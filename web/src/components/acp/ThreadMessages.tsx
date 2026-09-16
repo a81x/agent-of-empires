@@ -8,7 +8,9 @@ import { isDiffCommentsCardPayload, parseDiffCommentsSentinel } from "../diff/co
 import { SUBAGENT_TASK_NAME, TODO_GROUP_NAME, TOOL_GROUP_NAME } from "./AcpRuntime";
 import { ElicitationAnswerCard } from "./ElicitationAnswerCard";
 import { Markdown } from "./Markdown";
-import { AsyncSubagentCard, SubagentCard, TodoGroupCard, ToolCard, ToolGroupCard } from "./ToolCards";
+import { AsyncSubagentCard, SubagentCard, ToolGroupCard } from "./GroupToolCards";
+import { TodoGroupCard } from "./TodoCards";
+import { ToolCard } from "./ToolCards";
 
 export function UserMessage() {
   return (
