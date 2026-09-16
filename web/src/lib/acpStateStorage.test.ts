@@ -54,8 +54,6 @@ describe("getQueuedCount", () => {
   it("memoises the count so a later localStorage edit is not re-read", () => {
     writeEntry("a", 2);
     expect(getQueuedCount("a")).toBe(2);
-    // Direct localStorage mutation does not invalidate the in-memory
-    // cache; only setQueueCount / a storage event / clear do.
     writeEntry("a", 9);
     expect(getQueuedCount("a")).toBe(2);
   });
@@ -110,7 +108,6 @@ describe("clearQueueCount", () => {
     const unsub = subscribeAcpState(cb, new Set(["a"]));
     clearQueueCount("a");
     expect(cb).toHaveBeenCalledTimes(1);
-    // Cache dropped; with no localStorage entry the count reads 0.
     expect(getQueuedCount("a")).toBe(0);
     unsub();
   });

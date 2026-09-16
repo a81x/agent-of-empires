@@ -52,7 +52,6 @@ const skill = {
 const preview = { kind: "consent_required", dismissed: false, consent: { id: "p" } };
 
 const requestCases: RequestCase[] = [
-  // Sessions
   {
     name: "fetchSessions",
     call: () => api.fetchSessions(),
@@ -120,7 +119,6 @@ const requestCases: RequestCase[] = [
     url: "/api/sessions/s1/diff/file?path=a.ts&repo=myrepo",
   },
   { name: "getSessionFile", call: () => api.getSessionFile("s1", "a b.ts"), url: "/api/sessions/s1/file?path=a+b.ts" },
-  // Settings, UI state, tips
   { name: "fetchSettings", call: () => api.fetchSettings(), url: "/api/settings" },
   {
     name: "fetchSettings profile",
@@ -207,7 +205,6 @@ const requestCases: RequestCase[] = [
     method: "POST",
     result: true,
   },
-  // Profiles
   {
     name: "createProfile",
     call: () => api.createProfile("work"),
@@ -246,7 +243,6 @@ const requestCases: RequestCase[] = [
     respond: json({ description: "x" }),
     result: { description: "x" },
   },
-  // Themes, sounds, about, telemetry, updates
   {
     name: "fetchThemes",
     call: () => api.fetchThemes(),
@@ -302,7 +298,6 @@ const requestCases: RequestCase[] = [
     method: "POST",
     result: true,
   },
-  // Git
   { name: "fetchBranches", call: () => api.fetchBranches("/repo"), url: "/api/git/branches?path=%2Frepo" },
   {
     name: "fetchBranches remote",
@@ -332,7 +327,6 @@ const requestCases: RequestCase[] = [
     method: "POST",
     body: { url: "u", destination: "/d", shallow: true, bare: true },
   },
-  // ACP
   {
     name: "fetchContextPrimer",
     call: () => api.fetchContextPrimer("weird/id", 42),
@@ -384,7 +378,6 @@ const requestCases: RequestCase[] = [
     result: { view: "structured" },
   },
   { name: "acpDisable", call: () => api.acpDisable("a/b"), url: "/api/sessions/a%2Fb/acp/disable", method: "POST" },
-  // Queue
   {
     name: "enqueueServerPrompt",
     call: () =>
@@ -434,7 +427,6 @@ const requestCases: RequestCase[] = [
     method: "DELETE",
     result: true,
   },
-  // Devices, login
   { name: "fetchDevices", call: () => api.fetchDevices(), url: "/api/devices" },
   {
     name: "revokeDevice",
@@ -458,7 +450,6 @@ const requestCases: RequestCase[] = [
     result: { required: true },
   },
   { name: "verifyToken", call: () => api.verifyToken(), url: "/api/login/status", result: true },
-  // Wizard
   {
     name: "fetchAgents",
     call: () => api.fetchAgents(),
@@ -555,7 +546,6 @@ const requestCases: RequestCase[] = [
     respond: json(session, 201),
     result: { ok: true, session },
   },
-  // Session mutations
   {
     name: "renameSession",
     call: () => api.renameSession("s1", "T"),
@@ -753,7 +743,6 @@ const requestCases: RequestCase[] = [
       warnings: ["w"],
     },
   },
-  // MCP
   { name: "fetchMcpServers", call: () => api.fetchMcpServers(), url: "/api/mcp/servers" },
   {
     name: "fetchMcpServers agent",
@@ -784,7 +773,6 @@ const requestCases: RequestCase[] = [
     body: { agent: "claude" },
     result: true,
   },
-  // Skills
   {
     name: "fetchSkills",
     call: () => api.fetchSkills(),
@@ -847,7 +835,6 @@ const requestCases: RequestCase[] = [
     method: "POST",
     body: { roots: ["r"], replace: ["x"], directories: ["d"] },
   },
-  // Plugins
   {
     name: "fetchPlugins",
     call: () => api.fetchPlugins(),

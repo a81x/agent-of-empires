@@ -10,8 +10,6 @@ import {
 import type { SessionResponse, SessionStatus } from "./types";
 
 const NOW = Date.parse("2026-05-01T12:00:00Z");
-/** Explicit window for tests that exercise the freshness path. The
- *  module default is 0 (off), so tests opt in by passing this explicitly. */
 const TEST_WINDOW_MS = 20 * 60 * 1000;
 
 beforeEach(() => {
@@ -33,9 +31,6 @@ function session(
 
 describe("IDLE_DECAY_WINDOW_MS default", () => {
   it("is 0 (off) by default — opt-in feature", () => {
-    // Guards against an accidental flip back to a non-zero default. The
-    // freshness signal needs to stay opt-in across the dashboard since
-    // the rattle pulses are visually noisy in steady-state usage.
     expect(IDLE_DECAY_WINDOW_MS).toBe(0);
   });
 });
@@ -54,7 +49,6 @@ describe("idleAgeMs", () => {
   });
 
   it("returns null for future timestamps (clock skew)", () => {
-    // Clock skew between server and browser must not look like a fresh idle.
     expect(idleAgeMs(session("Idle", new Date(NOW + 60_000).toISOString()))).toBeNull();
   });
 
@@ -65,8 +59,6 @@ describe("idleAgeMs", () => {
 
 describe("isFreshIdle", () => {
   it("is false by default (window is 0)", () => {
-    // Default-window call: even a session that just transitioned should
-    // be treated as not-fresh, because the freshness signal is opt-in.
     expect(isFreshIdle(session("Idle", new Date(NOW - 1_000).toISOString()))).toBe(false);
   });
 
@@ -83,8 +75,6 @@ describe("isFreshIdle", () => {
   });
 
   it("is false when window is non-positive", () => {
-    // Defensive: negative or zero window short-circuits before any
-    // timestamp math, so a positive `idle_entered_at` can't sneak in.
     expect(isFreshIdle(session("Idle", new Date(NOW - 1).toISOString()), 0)).toBe(false);
     expect(isFreshIdle(session("Idle", new Date(NOW - 1).toISOString()), -1)).toBe(false);
   });
@@ -92,7 +82,6 @@ describe("isFreshIdle", () => {
 
 describe("getStatusDotClass", () => {
   it("uses idle class by default (freshness opt-in)", () => {
-    // No explicit window → falls back to the off default → idle class.
     expect(getStatusDotClass(session("Idle", new Date(NOW - 1_000).toISOString()))).toBe("bg-status-idle");
   });
 
@@ -115,8 +104,6 @@ describe("getStatusDotClass", () => {
   });
 
   it("uses the dormant class for an idle-reaped (dormant) session", () => {
-    // Structured worker parked for inactivity: distinct dim-amber dot, not
-    // the live-idle grey. See #2250.
     expect(getStatusDotClass(session("Idle", null, true))).toBe("bg-status-dormant");
   });
 
@@ -127,8 +114,6 @@ describe("getStatusDotClass", () => {
   });
 
   it("keeps the Stopped grey for a deliberate stop (dormant false)", () => {
-    // The server reports dormant=false for a deliberately-stopped row even
-    // though it carries the idle-dormant marker, so the dot stays grey.
     expect(getStatusDotClass(session("Stopped", null, false))).toBe("bg-status-stopped");
   });
 });
@@ -169,8 +154,6 @@ describe("isSessionActive", () => {
   });
 
   it("retains the legacy string-only API for callers without idle_entered_at", () => {
-    // Some callers (legacy paths, unit tests) still pass a bare status. The
-    // overload must keep classifying Running/Waiting/Starting as active.
     expect(isSessionActive("Running")).toBe(true);
     expect(isSessionActive("Idle")).toBe(false);
   });

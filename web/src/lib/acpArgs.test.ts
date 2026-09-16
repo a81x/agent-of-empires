@@ -1,8 +1,3 @@
-// JSON-shaped args_preview parser. Every structured view tool card runs the
-// args through these helpers; if parseJsonObject silently accepts
-// arrays or non-object scalars, ApprovalCard's <dl> renderer crashes
-// when callers iterate Object.entries on a non-object.
-
 import { describe, expect, it } from "vitest";
 
 import {
@@ -93,8 +88,6 @@ describe("pickStr", () => {
   });
 
   it("does not pick up an inherited prototype key", () => {
-    // The args_preview is JSON.parse output, which never has a custom
-    // prototype, but the helper should still only look at own keys.
     class Bag {
       hidden = "via prototype";
     }
@@ -196,8 +189,6 @@ describe("todoItemsFromArgs", () => {
 
 describe("hasTodoArrayArgsText", () => {
   it("recognizes an empty todos array as a clear-list snapshot", () => {
-    // The #2003 case: a TodoWrite that clears the list still carries the
-    // `todos` key, so it must read as a todo snapshot even with zero items.
     expect(hasTodoArrayArgsText(JSON.stringify({ todos: [] }))).toBe(true);
   });
 

@@ -21,8 +21,6 @@ describe("classifyClick", () => {
     expect(classifyClick({ metaKey: false, ctrlKey: true, shiftKey: false })).toBe("toggle");
     expect(classifyClick({ metaKey: false, ctrlKey: false, shiftKey: true })).toBe("range");
     expect(classifyClick({ metaKey: true, ctrlKey: false, shiftKey: true })).toBe("additive-range");
-    // Ctrl+Shift on Windows/Linux is the same additive-range gesture as
-    // Cmd+Shift on macOS.
     expect(classifyClick({ metaKey: false, ctrlKey: true, shiftKey: true })).toBe("additive-range");
   });
 });
@@ -65,7 +63,6 @@ describe("selectionReducer", () => {
       additive: false,
     });
     expect([...ranged.selectedIds].sort()).toEqual(["b", "c", "d"]);
-    // Anchor stays put so a second Shift+click re-pivots from "b".
     expect(ranged.anchorId).toBe("b");
     const reranged = selectionReducer(ranged, {
       type: "range",
@@ -77,9 +74,6 @@ describe("selectionReducer", () => {
   });
 
   it("range re-anchors to the target when the old anchor is no longer rendered", () => {
-    // Anchor "x" scrolled out of the rendered order (collapsed group, filter).
-    // The range falls back to the clicked row AND re-anchors there, so the
-    // next Shift+click forms a real range instead of collapsing again.
     const stale = state(["x"], "x");
     const ranged = selectionReducer(stale, {
       type: "range",

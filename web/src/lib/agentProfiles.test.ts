@@ -56,9 +56,6 @@ describe("resolveAgentProfile", () => {
   });
 
   it("aoe-agent claims no claude specials despite bundling claude as a provider", () => {
-    // Regression for #1904: this profile used to spread CLAUDE, so the view
-    // advertised subagent indentation, the claude specialised cards, and the
-    // legacy mode picker for an adapter whose surface is Read / Write / Bash.
     const p = resolveAgentProfile("aoe-agent");
     expect(p.capabilities).toEqual({
       todos: false,
@@ -70,7 +67,6 @@ describe("resolveAgentProfile", () => {
     });
     expect(p.parentMetaNamespaces).toEqual([]);
     expect(p.specialTitles).toEqual({ skillNames: [], scheduleNames: [], harnessNames: [] });
-    // No subagent card by wire name either: nothing actually runs.
     expect(isSubagentToolName("task", p)).toBe(false);
   });
 
@@ -97,8 +93,6 @@ describe("resolveAgentProfile", () => {
     expect(p.aliases.edit).toEqual(["edit", "write"]);
     expect(p.aliases.search).toEqual(["grep", "glob"]);
     expect(p.aliases.fetch).toEqual(["webfetch"]);
-    // `task` is no longer a think alias; it classifies as a subagent
-    // launch by wire name instead. See #3070.
     expect(p.aliases.think).toBeUndefined();
     expect(p.subagentToolNames).toEqual(["task"]);
   });
@@ -122,7 +116,6 @@ describe("resolveAgentLifecycle", () => {
   });
 
   it("resolves active for every other registered key", () => {
-    // Table over the remaining mirror keys; all must be plain Active.
     const cases = ["claude", "claude-code", "codex", "opencode", "vibe", "pi", "omp", "kimi", "aoe-agent"];
     for (const key of cases) {
       expect(resolveAgentLifecycle(key).state).toBe("active");
@@ -138,8 +131,6 @@ describe("resolveAgentLifecycle", () => {
   });
 
   it("mirrors the profile lifecycle field for deprecated entries", () => {
-    // The static flag on AgentProfile and the resolver must agree, so a
-    // consumer reading either source sees the same state.
     expect(resolveAgentProfile("gemini").lifecycle).toEqual(resolveAgentLifecycle("gemini"));
     expect(DEFAULT_AGENT_PROFILE.lifecycle).toBeUndefined();
   });
@@ -193,9 +184,7 @@ describe("isSubagentToolName", () => {
   });
 
   it("does not match `task` for an agent that doesn't declare it", () => {
-    // codex has capabilities.subagents=false and no subagentToolNames.
     expect(isSubagentToolName("task", resolveAgentProfile("codex"))).toBe(false);
-    // claude declares subagents but leaves subagentToolNames empty (linkage-based).
     expect(isSubagentToolName("task", resolveAgentProfile("claude"))).toBe(false);
   });
 

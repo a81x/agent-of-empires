@@ -33,7 +33,6 @@ describe("pane layout pure ops", () => {
     let l = addTab(emptyLayout(), "right", "diff");
     l = addTab(l, "right", "terminal:0");
     expect(dockTabs(l, "right")).toEqual(["diff", "terminal:0"]);
-    // adding an already-open tab is a no-op (returns the same reference)
     expect(addTab(l, "right", "diff")).toBe(l);
   });
 
@@ -68,10 +67,8 @@ describe("pane layout pure ops", () => {
     l = addTab(l, "right", "b");
     l = addTab(l, "right", "c");
     l = setActive(l, "right", "a");
-    // Drag "a" to the end. index is the post-removal index, so end == 2.
     l = placeTab(l, "a", { dock: "right", group: 0, index: 2 });
     expect(dockTabs(l, "right")).toEqual(["b", "c", "a"]);
-    // Reordering the active tab keeps it active.
     expect(l.right[0]!.active).toBe("a");
   });
 
@@ -92,13 +89,10 @@ describe("pane layout pure ops", () => {
     l = addTab(l, "bottom", "y");
     l = setActive(l, "right", "a");
     l = setActive(l, "bottom", "x");
-    // Move right's active "a" between x and y.
     l = placeTab(l, "a", { dock: "bottom", group: 0, index: 1 });
     expect(dockTabs(l, "right")).toEqual(["b"]);
     expect(dockTabs(l, "bottom")).toEqual(["x", "a", "y"]);
-    // Moved tab activates in its destination.
     expect(l.bottom[0]!.active).toBe("a");
-    // Source falls back to a neighbor.
     expect(l.right[0]!.active).toBe("b");
   });
 
@@ -119,7 +113,6 @@ describe("pane layout pure ops", () => {
   it("placeTab split lifts a tab into a new sibling group in the same dock", () => {
     let l = addTab(emptyLayout(), "right", "a");
     l = addTab(l, "right", "b");
-    // Split "b" into a fresh group after group 0.
     l = placeTab(l, "b", { dock: "right", group: 1, newGroup: true });
     expect(l.right.length).toBe(2);
     expect(l.right[0]!.tabs).toEqual(["a"]);
@@ -142,8 +135,6 @@ describe("pane layout pure ops", () => {
     l = addTab(l, "right", "b");
     l = placeTab(l, "b", { dock: "right", group: 1, newGroup: true }); // groups [a], [b]
     l = setActive(l, "right", "a");
-    // Move "a" (its group's only tab) into group 1; group 0 prunes and the
-    // target-group index shifts down by one.
     l = placeTab(l, "a", { dock: "right", group: 1, index: 1 });
     expect(l.right.length).toBe(1);
     expect(l.right[0]!.tabs).toEqual(["b", "a"]);
@@ -179,10 +170,8 @@ describe("pane layout pure ops", () => {
     let l = addTab(emptyLayout(), "right", "plugin:p:a");
     l = removeTab(l, "plugin:p:a");
     expect(l.closedPlugins).toContain("plugin:p:a");
-    // sync must not re-add a tab the user explicitly closed
     l = syncPluginTabs(l, [{ id: "plugin:p:a", defaultDock: "right" }]);
     expect(dockOf(l, "plugin:p:a")).toBeNull();
-    // a brand-new plugin pane is added to its default dock
     l = syncPluginTabs(l, [{ id: "plugin:p:b", defaultDock: "bottom" }]);
     expect(dockOf(l, "plugin:p:b")).toBe("bottom");
   });
@@ -230,11 +219,9 @@ describe("usePaneLayout migration + persistence", () => {
     act(() => result.current.addTerminal("right"));
     expect(dockTabs(result.current.layout, "right")).toContain("terminal:1");
 
-    // A different session starts from the template, unaffected by s1's tab.
     const other = renderHook(() => usePaneLayout("s2"));
     expect(dockTabs(other.result.current.layout, "right")).not.toContain("terminal:1");
 
-    // s1's addition round-trips through localStorage.
     const reloaded = renderHook(() => usePaneLayout("s1"));
     expect(dockTabs(reloaded.result.current.layout, "right")).toContain("terminal:1");
   });
@@ -357,8 +344,6 @@ describe("usePaneLayout migration + persistence", () => {
 });
 
 describe("seedLayout (auto-open pane prefs, #3035)", () => {
-  // Mirrors defaultTemplate(): diff + terminal:0 added via addTab (not the
-  // monotonic addTerminal allocator, which would start at terminal:1).
   function template(): DockLayout {
     let l = addTab(emptyLayout(), "right", "diff");
     l = addTab(l, "right", "terminal:0");

@@ -55,8 +55,6 @@ describe("logger", () => {
     fetchMock = vi.fn().mockResolvedValue(new Response("ok", { status: 200 }));
     vi.stubGlobal("fetch", fetchMock);
     setHref("http://localhost/sessions/abc?token=secret#frag");
-    // sendBeacon is optional on the global; default to absent so the
-    // fetch path runs unless a test opts in.
     Object.defineProperty(navigator, "sendBeacon", {
       configurable: true,
       value: undefined,
@@ -98,7 +96,6 @@ describe("logger", () => {
     expect(entry.target).toBe("test");
     expect(entry.sessionId).toBe("s1");
     expect(entry.userAgent).toBe("vitest-agent");
-    // Token is stripped from the path, frag/pathname preserved.
     expect(entry.path).toBe("/sessions/abc#frag");
   });
 
@@ -124,7 +121,6 @@ describe("logger", () => {
     const payload = JSON.parse(fetchMock.mock.calls[0][1].body);
     const messages = payload.entries.map((e: { message: string }) => e.message);
     expect(messages).toContain('{"code":42}');
-    // JSON.stringify throws on the circular ref -> String(err) fallback.
     expect(messages.some((m: string) => m.includes("[object Object]"))).toBe(true);
   });
 
@@ -139,9 +135,6 @@ describe("logger", () => {
 
   it("flushes immediately when the batch hits MAX_BATCH", async () => {
     const { reportError } = await freshLogger();
-    // The token bucket caps at 10, so we advance wall-clock 1s every few
-    // entries to refill (10/s) and let all 20 through to hit MAX_BATCH,
-    // which triggers an inline flush (no installer needed).
     for (let i = 0; i < 20; i++) {
       if (i % 5 === 0) vi.setSystemTime((i + 1) * 1000);
       reportError(new Error(`e${i}`));
@@ -155,13 +148,11 @@ describe("logger", () => {
   it("rate-limits past the token cap and emits a dropped notice", async () => {
     const { reportError, installClientLogger } = await freshLogger();
     installClientLogger();
-    // Token bucket caps at 10 with no time advance, so entries 11+ drop.
     for (let i = 0; i < 15; i++) {
       reportError(new Error(`e${i}`));
     }
     await vi.advanceTimersByTimeAsync(2000);
     const payload = JSON.parse(fetchMock.mock.calls[0][1].body);
-    // 10 real entries + 1 synthetic "dropped" warn entry.
     expect(payload.entries).toHaveLength(11);
     const notice = payload.entries[payload.entries.length - 1];
     expect(notice.level).toBe("warn");
@@ -174,12 +165,10 @@ describe("logger", () => {
     const { reportError, installClientLogger } = await freshLogger();
     installClientLogger();
     for (let i = 0; i < 10; i++) reportError(new Error(`first${i}`));
-    // Drain done. Advance 1s -> ~10 tokens refill (10/s).
     vi.setSystemTime(1000);
     for (let i = 0; i < 5; i++) reportError(new Error(`second${i}`));
     await vi.advanceTimersByTimeAsync(2000);
     const payload = JSON.parse(fetchMock.mock.calls[0][1].body);
-    // All 15 accepted, no dropped notice.
     expect(payload.entries).toHaveLength(15);
     expect(payload.entries.some((e: { dropped?: number }) => e.dropped)).toBe(false);
   });
@@ -195,7 +184,6 @@ describe("logger", () => {
     reportError(new Error("via beacon"));
 
     document.dispatchEvent(new Event("visibilitychange"));
-    // visibilityState defaults to "visible" in jsdom; flush only on hidden.
     expect(beacon).not.toHaveBeenCalled();
 
     vi.spyOn(document, "visibilityState", "get").mockReturnValue("hidden");
@@ -257,10 +245,6 @@ describe("logger", () => {
   it("trims an oversized batch to the byte budget and re-reports the remainder as dropped", async () => {
     const { reportError, installClientLogger } = await freshLogger();
     installClientLogger();
-    // Two entries each ~25KB: the first fits under the 48KB budget, the
-    // second trips it (combined ~50KB) and is counted dropped. The
-    // dropped count surfaces as a synthetic notice on the following flush.
-    // Use string payloads so no stack trace inflates the serialized size.
     const chunk = "x".repeat(25 * 1024);
     reportError(chunk);
     reportError(chunk);
@@ -310,8 +294,6 @@ describe("logger", () => {
     const { reportError, installClientLogger } = await freshLogger();
     installClientLogger();
     reportError(new Error("will fail to send"));
-    // A rejected fetch is swallowed inside flush; advancing timers must
-    // not surface the rejection (no unhandled promise, no throw).
     await vi.advanceTimersByTimeAsync(2000);
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });

@@ -95,7 +95,6 @@ describe("parseFileRef", () => {
   });
 
   it("does not eat a bare Windows drive colon", () => {
-    // No numeric line here, so nothing should be stripped.
     expect(parseFileRef("C:\\repo\\app.ts")).toEqual({
       path: "C:/repo/app.ts",
     });
@@ -166,7 +165,6 @@ describe("resolveToRepoRelative", () => {
   });
 
   it("does not match a sibling dir with a shared prefix", () => {
-    // `/Users/me/repo` must not match `/Users/me/repo_old/...`.
     expect(resolveToRepoRelative("/Users/me/repo_old/src/app.ts", single)).toBeNull();
   });
 

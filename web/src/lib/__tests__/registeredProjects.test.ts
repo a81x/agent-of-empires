@@ -42,8 +42,6 @@ function repoGroup(repoPath: string, over: Partial<RepoGroup> = {}): RepoGroup {
   };
 }
 
-// Defaults to pinned: most of these cases assert the empty-header behavior,
-// which only pinned projects get (#2208). Unpinned cases pass `{ pinned: false }`.
 function project(path: string, over: Partial<ProjectInfo> = {}): ProjectInfo {
   return { name: path.split("/").pop() ?? path, path, scope: "global", pinned: true, ...over };
 }
@@ -53,7 +51,6 @@ describe("normalizeProjectPathKey", () => {
     expect(normalizeProjectPathKey("/work/Foo/ ".trim())).toBe("/work/Foo");
     expect(normalizeProjectPathKey("/work/foo/")).toBe("/work/foo");
     expect(normalizeProjectPathKey("/work/foo")).toBe("/work/foo");
-    // Case is preserved: distinct repos on a case-sensitive filesystem.
     expect(normalizeProjectPathKey("/work/Foo")).not.toBe(normalizeProjectPathKey("/work/foo"));
   });
 });
@@ -84,14 +81,11 @@ describe("mergeRegisteredProjects", () => {
   });
 
   it("does NOT append a header for a saved-but-unpinned repo with no live group", () => {
-    // A project added via the Projects view defaults to unpinned: saved, but
-    // not forced into the sidebar. See #2208.
     const merged = mergeRegisteredProjects([], [project("/work/saved", { pinned: false })]);
     expect(merged).toHaveLength(0);
   });
 
   it("appends the header when at least one registration for the path is pinned", () => {
-    // Same path saved unpinned in one scope and pinned in another: the pin wins.
     const merged = mergeRegisteredProjects(
       [],
       [
@@ -170,7 +164,6 @@ describe("SidebarGroup pin derivation + render gating", () => {
   it("treats a populated saved-but-unpinned repo as not pinned (#2208)", () => {
     const [g] = mergeRegisteredProjects([repoGroup("/work/alpha")], [project("/work/alpha", { pinned: false })]);
     const sg = repoGroupToSidebarGroup(g!);
-    // The entry is attached (so the menu can offer Pin) but there is no marker.
     expect(sg.registeredProjects).toHaveLength(1);
     expect(sg.pinned).toBe(false);
     expect(sg.pinnedEmpty).toBe(false);
@@ -178,7 +171,6 @@ describe("SidebarGroup pin derivation + render gating", () => {
 });
 
 describe("unpinnedSavedProjects (sidebar Projects section, #2212)", () => {
-  // A workspace whose only session is archived, so workspaceIsSunk() is true.
   function sunkWorkspace(repoPath: string): Workspace {
     return {
       ...workspace(repoPath),

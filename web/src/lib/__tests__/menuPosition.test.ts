@@ -103,8 +103,6 @@ describe("useClampedMenuPosition", () => {
     menuRect: { width: number; height: number };
     viewport: { width: number; height: number };
   }) {
-    // The hook forwards a functional updater so callers carrying extra menu
-    // state keep it through a reposition. See #2312.
     const setContextMenu = vi.fn<Dispatch<SetStateAction<{ x: number; y: number } | null>>>();
     const menu = document.createElement("div");
     menu.getBoundingClientRect = () =>
@@ -156,7 +154,6 @@ describe("useClampedMenuPosition", () => {
       prev: { x: number; y: number } | null,
     ) => { x: number; y: number } | null;
     expect(updater({ x: 100, y: 700 })).toEqual({ x: 100, y: 472 });
-    // Extra menu state on the previous value survives the reposition.
     expect(updater({ x: 100, y: 700, scope: "bulk" } as never)).toEqual({ x: 100, y: 472, scope: "bulk" });
   });
 

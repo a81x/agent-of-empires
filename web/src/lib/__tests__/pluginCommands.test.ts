@@ -11,8 +11,6 @@ import {
   resolveCommandLinks,
 } from "../pluginCommands";
 
-// buildPluginCommandActions' action-less entries dispatch through invokePluginCommand;
-// mock just that export so performing one records the call instead of hitting the network.
 vi.mock("../api", async (orig) => ({
   ...(await orig<typeof import("../api")>()),
   invokePluginCommand: vi.fn().mockResolvedValue(true),
@@ -52,7 +50,6 @@ const openPr: PluginCommand = {
   action: { kind: "open-ui-link", slot: "row-column", id: "pr" },
 };
 
-// An action-less command (no client action): invoked through the worker path.
 const refresh: PluginCommand = {
   fqid: "plugin.acme.github.refresh",
   plugin_id: "acme.github",
@@ -197,7 +194,6 @@ describe("multi-repo workspaces", () => {
       "plugin:plugin.acme.github.open_pr:0",
       "plugin:plugin.acme.github.open_pr:1",
     ]);
-    // No single-entry shortcut hint when the command fans out.
     expect(actions[0].shortcut).toBeUndefined();
   });
 
@@ -261,13 +257,10 @@ describe("pickKeybindEffect", () => {
       kind: "invoke",
       cmd: refresh,
     });
-    // No session: nothing to scope the invocation to.
     expect(pickKeybindEffect([refresh], [], null, refreshEv)).toBeNull();
   });
 
   it("falls through to a later command sharing the chord when the first is inactive", () => {
-    // cmdA matches the chord but has no entry (inactive for this session); cmdB
-    // shares the chord and resolves, so it must still fire.
     expect(pickKeybindEffect([cmdA, cmdB], [entryFor("acme.b", "https://x.test/2")], "s1", ev)).toEqual({
       kind: "open",
       href: "https://x.test/2",

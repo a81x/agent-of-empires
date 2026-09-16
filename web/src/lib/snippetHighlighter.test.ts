@@ -88,9 +88,6 @@ describe("resolveSnippetTheme", () => {
   });
 });
 
-// The Rust side asserts every builtin theme *has* a `shiki_theme`; this asserts
-// the id it names is one shiki can actually load, which the wholesale registry
-// read no longer checks for us.
 describe("builtin theme syntax palettes", () => {
   it("each name a palette shiki bundles", () => {
     const dir = new URL("../../../themes/builtin/", import.meta.url);

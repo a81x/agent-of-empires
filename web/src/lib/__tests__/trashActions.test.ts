@@ -1,7 +1,3 @@
-// Coverage for the trash/restore action loops (#2489): apply each snapshot,
-// flag failures via onError, and toast the aggregate result. The api calls
-// are mocked so the test exercises only the loop + notify branches.
-
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../api", () => ({
@@ -138,9 +134,6 @@ describe("deleteWorkspaceSessions (#2536)", () => {
   });
 
   it("leaves a session that is neither deleted nor failed untouched (kept-restored)", async () => {
-    // Server kept sess-b (a concurrent restore won the race): it is reported
-    // in neither `deleted` nor `failed`, so we must not purge its local state
-    // or flag it Error; the next poll reconciles it.
     deleteMock.mockResolvedValue(ok({ deleted: ["a"], failed: [] }));
     const d = deps();
 
@@ -233,7 +226,6 @@ describe("workspaceCleanupDefaults (#3167)", () => {
         expected: { delete_worktree: false, delete_branch: false, delete_sandbox: false },
       },
       {
-        // cleanup_defaults ask to delete, but there is no cleanable worktree, so worktree/branch stay off.
         name: "no cleanable worktree suppresses worktree/branch",
         sessions: [
           s({
@@ -264,7 +256,6 @@ describe("workspaceCleanupDefaults (#3167)", () => {
         expected: { delete_worktree: false, delete_branch: false, delete_sandbox: true },
       },
       {
-        // any-session-wins: one session opts into the worktree, another into the sandbox.
         name: "any session opting in flips the flag",
         sessions: [
           s({

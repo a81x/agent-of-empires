@@ -63,7 +63,6 @@ describe("resolveLaunchCommand (structured view)", () => {
   });
 
   it("editing the prefix back into the override does not double-append registry args", () => {
-    // Simulate the wizard writing the edited prefix into commandOverride.
     const edited = "opencode-plannotator";
     const r = resolveLaunchCommand({
       ...base,

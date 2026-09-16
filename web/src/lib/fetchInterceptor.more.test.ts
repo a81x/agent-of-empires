@@ -47,8 +47,6 @@ vi.mock("./toastBus", () => ({
 
 type Mod = typeof import("./fetchInterceptor");
 
-// Re-import the module fresh so its module-level dedup flags and the
-// window.__aoeFetchPatched guard start clean, then install the wrapper.
 async function freshInstall(): Promise<{ mod: Mod; original: ReturnType<typeof vi.fn> }> {
   vi.resetModules();
   delete (window as unknown as { __aoeFetchPatched?: boolean }).__aoeFetchPatched;
@@ -86,7 +84,6 @@ describe("installFetchErrorToasts lifecycle", () => {
   it("installs the wrapper exactly once", async () => {
     const { mod, original } = await freshInstall();
     const wrapped = window.fetch;
-    // A second install must be a no-op: fetch stays the same wrapper.
     mod.installFetchErrorToasts();
     expect(window.fetch).toBe(wrapped);
     expect(window.fetch).not.toBe(original);
@@ -131,7 +128,6 @@ describe("request header injection", () => {
 
     const headers = new Headers((original.mock.calls[0][1] as RequestInit).headers);
     expect(headers.has("X-Request-Id")).toBe(false);
-    // Auth header still attaches for same-origin requests.
     expect(headers.get("Authorization")).toBe("Bearer tok-123");
   });
 
@@ -143,7 +139,6 @@ describe("request header injection", () => {
     await window.fetch("https://example.com/api/thing");
 
     const init = original.mock.calls[0][1];
-    // attachAuthHeader returns the original init untouched (undefined here).
     expect(init).toBeUndefined();
     expect(getOrCreateDeviceBindingSecret).not.toHaveBeenCalled();
   });
@@ -157,7 +152,6 @@ describe("request header injection", () => {
     await window.fetch("/api/sessions");
 
     const init = original.mock.calls[0][1] as RequestInit;
-    // No Authorization / binding header, but X-Request-Id is still added.
     const headers = new Headers(init.headers);
     expect(headers.has("Authorization")).toBe(false);
     expect(headers.has("X-Aoe-Device-Binding")).toBe(false);
@@ -185,7 +179,6 @@ describe("request header injection", () => {
     const absolute = `${window.location.origin}/api/sessions`;
     await window.fetch(absolute);
     const headers = new Headers((original.mock.calls[0][1] as RequestInit).headers);
-    // Recognized as same-origin /api/ -> request id injected.
     expect(headers.get("X-Request-Id")).toBeTruthy();
   });
 });
@@ -358,9 +351,6 @@ describe("5xx toast handling", () => {
     expect(reportError).not.toHaveBeenCalled();
   });
 
-  // #3094 / #3087: a prompt POST to a resuming worker returns a transient
-  // worker_not_ready 503 that the structured view hook treats as normal
-  // "queuing, will retry" state, so the generic 5xx toast must stay quiet.
   it("suppresses the toast for a worker_not_ready 503 on /acp/prompt", async () => {
     const { original } = await freshInstall();
     original.mockResolvedValue(new Response("worker_not_ready", { status: 503 }));

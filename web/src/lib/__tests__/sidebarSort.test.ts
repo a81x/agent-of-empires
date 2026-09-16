@@ -154,11 +154,6 @@ describe("compareWorkspacesByLastActivityDesc", () => {
   });
 
   it("breaks ties by id when both sides have no usable timestamp", () => {
-    // Both workspaces return NEGATIVE_INFINITY from
-    // workspaceLastActivityMs. Subtracting two -Infinity values yields
-    // NaN, which Array.sort treats like equality and skips the
-    // tie-break, so this case would silently flake without the
-    // explicit `<` / `>` comparison in the comparator.
     const bad = {
       created_at: "bad",
       idle_entered_at: null,
@@ -205,8 +200,6 @@ describe("workspaceIsSunk", () => {
   });
 
   it("returns false when even one session is live", () => {
-    // A multi-session workspace with one live session must stay in the
-    // active tier rather than sinking the whole group out of sight.
     const ws = workspace("w", [session({ id: "s1", archived_at: "2025-01-01T00:00:00Z" }), session({ id: "s2" })]);
     expect(workspaceIsSunk(ws)).toBe(false);
   });
@@ -217,8 +210,6 @@ describe("workspaceIsSunk", () => {
   });
 
   it("returns true when every session is archived-only (no snooze)", () => {
-    // Branch coverage on the lambda: `archived_at != null` true side
-    // alone, no snoozed_until contribution.
     const ws = workspace("w", [
       session({ id: "s1", archived_at: "2025-01-01T00:00:00Z" }),
       session({ id: "s2", archived_at: "2025-02-01T00:00:00Z" }),
@@ -227,8 +218,6 @@ describe("workspaceIsSunk", () => {
   });
 
   it("returns true when every session is snoozed-only (no archive)", () => {
-    // Branch coverage on the lambda: `snoozed_until != null` true
-    // side alone, after archived_at false short-circuits the `||`.
     const ws = workspace("w", [
       session({ id: "s1", snoozed_until: "2099-01-01T00:00:00Z" }),
       session({ id: "s2", snoozed_until: "2099-02-01T00:00:00Z" }),
@@ -237,9 +226,6 @@ describe("workspaceIsSunk", () => {
   });
 
   it("returns false when one session has neither flag", () => {
-    // Branch coverage: the lambda's `archived_at != null` false side
-    // AND `snoozed_until != null` false side both fire, then `every`
-    // short-circuits with false.
     const ws = workspace("w", [
       session({ id: "s1", archived_at: "2025-01-01T00:00:00Z" }),
       session({ id: "s2" }), // live session breaks the every().
@@ -250,8 +236,6 @@ describe("workspaceIsSunk", () => {
 
 describe("workspaceTriageTier", () => {
   it("returns 0 (pinned) for any pinned session, overriding sink fields", () => {
-    // Pin clears archive/snooze server-side, but a sibling session in
-    // the same workspace could still be archived. Any-pinned wins.
     const ws = workspace("w", [
       session({ id: "s1", pinned_at: "2025-01-01T00:00:00Z" }),
       session({ id: "s2", archived_at: "2025-01-01T00:00:00Z" }),
@@ -272,27 +256,15 @@ describe("workspaceTriageTier", () => {
 
 describe("resolveEffectiveSnoozedUntil", () => {
   it("returns the server value when no optimistic override is set", () => {
-    // Regression: snooze had no optimistic state; the chip waited
-    // for the next sessions-poll to flip, which read laggy compared
-    // to pin / archive's instant feedback. See #1581 CodeRabbit
-    // review. `undefined` on the optimistic side means "no override,
-    // fall through to the server value."
     expect(resolveEffectiveSnoozedUntil(undefined, null)).toBeNull();
     expect(resolveEffectiveSnoozedUntil(undefined, "2099-01-01T00:00:00Z")).toBe("2099-01-01T00:00:00Z");
   });
 
   it("uses an optimistic string to render the snooze chip pre-PATCH", () => {
-    // Regression: clicking a preset must flip the chip immediately,
-    // not wait for the round-trip. Optimistic value wins over the
-    // (still-null) server prop until the next poll mirrors it.
     expect(resolveEffectiveSnoozedUntil("2099-01-01T00:00:00Z", null)).toBe("2099-01-01T00:00:00Z");
   });
 
   it("uses an explicit null override to hide the chip pre-PATCH on unsnooze", () => {
-    // Clicking Unsnooze flips the chip away while the PATCH is in
-    // flight. The optimistic null wins until the server prop also
-    // returns null and the clear-on-prop-sync effect drops the
-    // override.
     expect(resolveEffectiveSnoozedUntil(null, "2099-01-01T00:00:00Z")).toBeNull();
   });
 });
@@ -307,12 +279,6 @@ describe("snoozeTimestampCloseEnough", () => {
   });
 
   it("rejects a 5-minute skew (re-snooze case)", () => {
-    // Regression: re-snoozing an already-snoozed row used to drop
-    // the optimistic override because the prop and override were
-    // both non-null. The new helper compares actual timestamps so
-    // a 1h re-snooze on a row already sitting on a 1h snooze
-    // (where the server hasn't acked the new duration yet) keeps
-    // the optimistic chip visible. See #1581 CodeRabbit review.
     expect(snoozeTimestampCloseEnough("2099-01-01T00:00:00Z", "2099-01-01T00:05:00Z")).toBe(false);
   });
 
@@ -322,17 +288,11 @@ describe("snoozeTimestampCloseEnough", () => {
   });
 
   it("covers both `||` short-circuit branches when only one side is unparseable", () => {
-    // Branch coverage: the `!Number.isFinite(a) || !Number.isFinite(b)`
-    // check has 4 outcomes (a/b each parseable or not). The other
-    // cases above hit both-finite and both-unparseable; these two
-    // exercise the mixed cases so v8 sees every branch leg.
     expect(snoozeTimestampCloseEnough("2099-01-01T00:00:00Z", "not-a-date")).toBe(false);
     expect(snoozeTimestampCloseEnough("not-a-date", "2099-01-01T00:00:00Z")).toBe(false);
   });
 
   it("rejects exactly at the 2-minute tolerance boundary", () => {
-    // Inclusive boundary at 2 minutes (= 120_000 ms). Just-over
-    // counts as different snoozes; just-under counts as the same.
     expect(snoozeTimestampCloseEnough("2099-01-01T00:00:00Z", "2099-01-01T00:02:00Z")).toBe(true);
     expect(snoozeTimestampCloseEnough("2099-01-01T00:00:00Z", "2099-01-01T00:02:00.001Z")).toBe(false);
   });
@@ -340,13 +300,6 @@ describe("snoozeTimestampCloseEnough", () => {
 
 describe("rank-based comparator with two unranked workspaces", () => {
   it("compares with `<`/`>` instead of subtraction to avoid NaN", () => {
-    // Regression: two workspaces missing from the persisted ordering
-    // both resolve to `Infinity`; `Infinity - Infinity` is `NaN`,
-    // which `Array.prototype.sort` treats like equality and silently
-    // skips the id tie-break, leaving order at the mercy of input
-    // order. This test simulates the same rank-based comparator used
-    // by `useRepoGroups.sortByRank` and asserts deterministic order
-    // by id ascending. See #1581 CodeRabbit review.
     const rank = new Map<string, number>();
     const rankOf = (id: string) => rank.get(id) ?? Infinity;
     const cmp = (a: Workspace, b: Workspace) => {
@@ -366,9 +319,6 @@ describe("rank-based comparator with two unranked workspaces", () => {
 
 describe("compareWorkspacesByLastActivityDesc triage tier", () => {
   it("sinks fully-archived workspaces below live ones regardless of activity", () => {
-    // The archived workspace has the most recent activity timestamp; if
-    // the comparator naively used activity only it would sort first.
-    // Triage tier forces it to the bottom.
     const archived = workspace("archived-newer", [
       session({
         id: "sa",
@@ -382,8 +332,6 @@ describe("compareWorkspacesByLastActivityDesc triage tier", () => {
   });
 
   it("lifts pinned workspaces above live ones regardless of activity", () => {
-    // The pinned workspace has the older activity timestamp; without
-    // the tier prefix the live one would sort first.
     const pinned = workspace("pinned-older", [
       session({
         id: "sp",
@@ -422,20 +370,10 @@ describe("triageStateOf", () => {
   });
 
   it("returns 'archived' when archived + snoozed are both set (no pin)", () => {
-    // Branch coverage: the archived/snoozed branch combo without
-    // pin. Archive wins because the data layer makes it impossible
-    // for a session to be both at once, but workspace aggregators
-    // can surface both via different sessions. Archive is the
-    // stronger sink so the menu picks it.
     expect(triageStateOf({ isPinned: false, isArchived: true, isSnoozed: true })).toBe("archived");
   });
 
   it("prefers pinned over archived and snoozed (defensive priority)", () => {
-    // The server's XOR rules make pinned + archived impossible at the
-    // session level, but a multi-session workspace can still surface
-    // both via the any-pinned / any-archived aggregators. The state
-    // function picks pinned so the menu does not show contradictory
-    // toggles.
     expect(triageStateOf({ isPinned: true, isArchived: true, isSnoozed: false })).toBe("pinned");
     expect(triageStateOf({ isPinned: true, isArchived: false, isSnoozed: true })).toBe("pinned");
   });
@@ -453,9 +391,6 @@ describe("triageMenuShape", () => {
   });
 
   it("a pinned row offers Unpin plus Archive / Snooze", () => {
-    // Archiving or snoozing a pinned session is a valid transition
-    // (the backend clears pinned_at) and the TUI already allows it,
-    // so the menu must not force unpin-first.
     const shape = triageMenuShape("pinned");
     expect(shape.showUnpin).toBe(true);
     expect(shape.showArchive).toBe(true);
@@ -466,8 +401,6 @@ describe("triageMenuShape", () => {
   });
 
   it("an archived row only offers Unarchive", () => {
-    // Regression: an archived row used to show Pin and Snooze in
-    // the same menu. See #1581.
     const shape = triageMenuShape("archived");
     expect(shape.showUnarchive).toBe(true);
     expect(shape.showPin).toBe(false);
@@ -609,7 +542,6 @@ describe("workspaceAttentionRank (#1640)", () => {
         snoozed_until: "2999-01-01T00:00:00Z",
       }),
     ]);
-    // Running (4) wins over the sunk snoozed Waiting (99).
     expect(workspaceAttentionRank(ws)).toBe(4);
   });
 });
@@ -627,8 +559,6 @@ describe("workspaceIsUrgent / workspaceIsFavorited (#1640)", () => {
 });
 
 describe("compareWorkspacesByAttention (#1640)", () => {
-  // Shared activity timestamp so the status rank, not the within-tier
-  // recency key, drives ordering in the pure-rank cases.
   const TS = "2025-06-01T00:00:00Z";
   const wsStatus = (id: string, status: string) =>
     workspace(id, [session({ id: `${id}-s`, status: status as never, created_at: TS })]);
@@ -690,8 +620,6 @@ describe("compareWorkspacesByAttention (#1640)", () => {
         last_accessed_at: null,
       }),
     ]);
-    // -Infinity vs -Infinity must not poison the comparator into skipping
-    // the id tie-break; "a" sorts before "b".
     expect(order([b, a])).toEqual(["a", "b"]);
   });
 });
@@ -700,8 +628,6 @@ describe("compareWorkspacesForComputedSortMode (#1640)", () => {
   it("returns the attention comparator only for attention mode", () => {
     expect(compareWorkspacesForComputedSortMode("attention")).toBe(compareWorkspacesByAttention);
     expect(compareWorkspacesForComputedSortMode("lastActivity")).toBe(compareWorkspacesByLastActivityDesc);
-    // The group/nested axes have no manual order, so manual falls back to
-    // last-activity there.
     expect(compareWorkspacesForComputedSortMode("manual")).toBe(compareWorkspacesByLastActivityDesc);
   });
 });
@@ -766,15 +692,12 @@ describe("plugin sort comparators (#2401)", () => {
     expect(ascList.map((w) => w.id)).toEqual(["b", "a"]);
     const descList = [wsA, wsB].slice().sort(compareWorkspacesByPluginSort({ direction: "desc", values }));
     expect(descList.map((w) => w.id)).toEqual(["a", "b"]);
-    // An unvalued workspace sinks to the bottom in both directions.
     const wsC = workspace("c", [session({ id: "c1" })]);
     const sunk = [wsC, wsA, wsB].slice().sort(compareWorkspacesByPluginSort({ direction: "desc", values }));
     expect(sunk[sunk.length - 1]!.id).toBe("c");
   });
 
   it("compareWorkspacesByPluginSort keeps triage tier ahead of the plugin scalar", () => {
-    // wsB is sunk (its only session archived) but has the best asc value; tier
-    // still pushes it below the live wsA.
     const archivedB = workspace("b", [session({ id: "b1", archived_at: "2025-01-01T00:00:00Z" })]);
     const values = new Map([
       ["a1", 99],

@@ -439,7 +439,6 @@ describe("acpDrafts toast dedupe (#1345)", () => {
   it("clears dedupe after a successful write; later failure re-toasts", () => {
     const spy = attachToastSpy();
 
-    // First storm: setItem throws.
     const setItemSpy = vi.spyOn(Storage.prototype, "setItem");
     setItemSpy.mockImplementation(() => {
       throw makeQuotaError();
@@ -448,12 +447,10 @@ describe("acpDrafts toast dedupe (#1345)", () => {
     setDraft("sess-a", "xy");
     expect(spy.errors).toHaveLength(1);
 
-    // Storage frees up. The next write succeeds and clears the flag.
     setItemSpy.mockRestore();
     setDraft("sess-a", "xyz"); // succeeds against real localStorage
     expect(window.localStorage.getItem("acp:draft:sess-a")).toBe("xyz");
 
-    // Storage fills up again. The next failure must re-toast.
     vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
       throw makeQuotaError();
     });
@@ -483,8 +480,6 @@ describe("acpDrafts toast dedupe (#1345)", () => {
 
     setDraft("sess-a", "");
 
-    // Empty-text path goes through safeRemoveItem, which swallows the
-    // throw silently. There is no unsent text at risk, so no toast.
     expect(spy.errors).toHaveLength(0);
   });
 

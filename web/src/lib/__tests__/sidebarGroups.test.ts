@@ -134,12 +134,10 @@ describe("buildSessionGroups", () => {
     expect(feature.workspaces).toHaveLength(1);
     expect(fix.workspaces).toHaveLength(1);
 
-    // Real workspace id preserved for actions; render keys distinct.
     expect(feature.workspaces[0]!.workspace.id).toBe("w1");
     expect(fix.workspaces[0]!.workspace.id).toBe("w1");
     expect(feature.workspaces[0]!.key).not.toBe(fix.workspaces[0]!.key);
 
-    // Each view carries only its group's sessions.
     expect(feature.workspaces[0]!.workspace.sessions.map((s) => s.id)).toEqual(["a"]);
     expect(fix.workspaces[0]!.workspace.sessions.map((s) => s.id)).toEqual(["b"]);
   });
@@ -280,7 +278,6 @@ describe("buildNestedSidebarGroups", () => {
       }),
     ]);
     expect(nested[0]!.repo.capabilities.reorder).toBe(false);
-    // Other repo affordances stay intact.
     expect(nested[0]!.repo.capabilities.appearance).toBe(true);
     expect(nested[0]!.repo.capabilities.create).toBe("repo");
   });
@@ -336,7 +333,6 @@ describe("buildNestedSidebarGroups", () => {
       ],
       (repoId, groupPath) => repoId === "/repo-a" && groupPath === "feature",
     );
-    // Same group path in two repos collapses independently.
     expect(nested[0]!.subgroups[0]!.collapsed).toBe(true);
     expect(nested[1]!.subgroups[0]!.collapsed).toBe(false);
   });
@@ -402,16 +398,12 @@ describe("buildOrgGroups", () => {
   });
 
   it("keeps same-named owners on different hosts as separate buckets", () => {
-    // Regression for the #3284 review: bucketing by the bare owner instead
-    // of the host-scoped key would merge GitHub "acme" and GitLab "acme"
-    // into one group and one bulk-archive scope.
     const orgs = buildOrg([
       repoGroup({ id: "/repo-gh", repoPath: "/repo-gh", remoteOwner: "acme", remoteOwnerKey: "acme@github.com" }),
       repoGroup({ id: "/repo-gl", repoPath: "/repo-gl", remoteOwner: "acme", remoteOwnerKey: "acme@gitlab.com" }),
     ]);
     expect(orgs).toHaveLength(2);
     expect(orgs.map((o) => o.org.id)).toEqual(["acme@github.com", "acme@gitlab.com"]);
-    // Both headers still display the bare owner.
     expect(orgs.every((o) => o.org.displayName === "acme")).toBe(true);
     expect(orgs[0]!.repos.map((r) => r.id)).toEqual(["/repo-gh"]);
     expect(orgs[1]!.repos.map((r) => r.id)).toEqual(["/repo-gl"]);
@@ -448,7 +440,6 @@ describe("buildOrgGroups", () => {
       (orgId, repoId) => orgId === "acme@example.com" && repoId === "/repo-a",
     );
     const repos = orgs[0]!.repos;
-    // The lookup, not the flat-axis `collapsed` field on the input, wins.
     expect(repos.find((r) => r.id === "/repo-a")!.collapsed).toBe(true);
     expect(repos.find((r) => r.id === "/repo-b")!.collapsed).toBe(false);
   });
@@ -530,8 +521,6 @@ describe("archivableWorkspaces", () => {
   });
 
   it("keys off the primary session, ignoring archived siblings", () => {
-    // A workspace whose primary session is live is archivable even if a
-    // later session is already archived; triage acts on sessions[0].
     const groups = build([
       workspace("w1", [
         session({ id: "a", group_path: "feature" }),

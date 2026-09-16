@@ -1,11 +1,3 @@
-// Drift guard + behavioral lock for the single shortcut registry (issue #1648).
-//
-// This is the test that makes "one source of truth" real: it pins the exact
-// rendered label strings (so the help overlay and tour cannot silently change
-// formatting), pins the match behavior of every binding (so a refactor cannot
-// rebind a key), proves the SHORTCUTS array order is cosmetic (exactly one
-// shortcut matches any given event), and couples the tour to the registry
-// (every tour hint id resolves to a registered shortcut).
 import { describe, expect, it } from "vitest";
 import {
   SHORTCUTS,
@@ -269,7 +261,6 @@ describe("matchShortcut behavior (no binding changed by the refactor)", () => {
       stopPropagation: false,
     });
 
-    // escape neither prevents nor stops.
     const esc = matchShortcut(ev({ key: "Escape" }), {
       mac: true,
       isInput: false,
@@ -282,9 +273,6 @@ describe("matchShortcut behavior (no binding changed by the refactor)", () => {
 });
 
 describe("array order is cosmetic (predicates are mutually exclusive)", () => {
-  // Build the event that should fire each shortcut, then assert exactly one
-  // shortcut in the whole registry matches it. If a future binding overlaps an
-  // existing one, this turns red regardless of array order.
   function triggeringEvent(s: ShortcutDef): {
     event: ShortcutKeyEvent;
     isInput: boolean;

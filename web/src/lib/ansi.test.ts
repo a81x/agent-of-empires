@@ -13,17 +13,12 @@ describe("hasAnsi / stripAnsi", () => {
   });
 
   it("strips non-SGR CSI noise", () => {
-    // Cursor up + line erase
     const noisy = `${ESC}[2K${ESC}[1Aredraw`;
     expect(stripAnsi(noisy)).toBe("redraw");
   });
 
   it("hasAnsi requires a real CSI shape, not just ESC[", () => {
-    // Markdown blob discussing ANSI codes contains the literal
-    // characters but no actual sequence. Triggering the ANSI fast
-    // path here would render the prose without Shiki highlighting.
     expect(hasAnsi(`docs say: prefix is "${ESC}[" then params`)).toBe(false);
-    // Real SGR still detected.
     expect(hasAnsi(`${ESC}[31mred${ESC}[0m`)).toBe(true);
   });
 });
@@ -39,12 +34,9 @@ describe("collapseCarriageReturns", () => {
     expect(collapseCarriageReturns("plain\nlines")).toBe("plain\nlines");
   });
   it("preserves CRLF line endings", () => {
-    // Windows-style CRLF — the trailing \r is part of the line ending,
-    // not a redraw marker. Stripping it would corrupt the text.
     expect(collapseCarriageReturns("line1\r\nline2\r\n")).toBe("line1\r\nline2\r\n");
   });
   it("collapses redraws within a CRLF-terminated line", () => {
-    // Mixed: redraws in the middle of a line, CRLF at the end.
     expect(collapseCarriageReturns("p:1/3\rp:2/3\rp:3/3\r\nnext")).toBe("p:3/3\r\nnext");
   });
 });
@@ -58,11 +50,8 @@ describe("parseAnsi", () => {
   });
 
   it("splits text at SGR boundaries and applies fg colors", () => {
-    // ls --color output shape: reset, then "[01;34mApplications[0m"
     const text = `${ESC}[0m${ESC}[01;34mApplications${ESC}[0m\nbin`;
     const segs = parseAnsi(text);
-    // Reset segment is empty, filtered out. Then a styled "Applications",
-    // then a plain "\nbin".
     expect(segs.map((s) => s.text)).toEqual(["Applications", "\nbin"]);
     expect(segs[0].style.bold).toBe(true);
     expect(segs[0].style.fg).toBe("#2472c8");
@@ -73,7 +62,6 @@ describe("parseAnsi", () => {
     const text = `${ESC}[38;5;82mlime${ESC}[0m ${ESC}[38;2;10;20;30mrgb${ESC}[0m`;
     const segs = parseAnsi(text);
     expect(segs[0].text).toBe("lime");
-    // 82 is in the 6x6x6 cube: i = 66, r = 1, g = 5, b = 0 → (51, 255, 0)
     expect(segs[0].style.fg).toBe("rgb(51, 255, 0)");
     expect(segs[2].text).toBe("rgb");
     expect(segs[2].style.fg).toBe("rgb(10, 20, 30)");
@@ -130,9 +118,6 @@ describe("OSC 8 hyperlinks and other OSC sequences", () => {
   });
 
   it("anchors the link to its own text when color opens before the link", () => {
-    // The shape `tmux capture-pane -e` emits: the SGR change lands BEFORE
-    // the OSC 8 opener, so counting escape bytes as visible text shifted
-    // the link right by the length of the color sequence.
     const line = `Styled: ${ESC}[31m${ESC}]8;;https://example.com/red${ESC}\\red link${ESC}[39m${ESC}]8;;${ESC}\\`;
     expect(parseAnsi(line)).toEqual([
       { text: "Styled: ", style: {} },
@@ -149,8 +134,6 @@ describe("OSC 8 hyperlinks and other OSC sequences", () => {
   });
 
   it("detects output whose only escape sequence is a hyperlink", () => {
-    // Output with a link but no color must still reach this parser; the
-    // caller renders it as plain text otherwise and the bytes leak.
     expect(hasAnsi(link("https://x.com", "click"))).toBe(true);
     expect(hasAnsi(`${ESC}]0;title${ESC}\\`)).toBe(true);
   });
