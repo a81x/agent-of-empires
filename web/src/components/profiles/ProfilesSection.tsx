@@ -13,6 +13,7 @@ import {
 import type { HooksOverride, ProfileInfo, ProfileSettingsResponse } from "../../lib/types";
 import { buildEffectiveHooks } from "../../lib/profileHooks";
 import { HooksReadOnlyPanel } from "./HooksReadOnlyPanel";
+import { validateProfileName } from "./profileName";
 
 interface Props {
   readOnly?: boolean;
@@ -29,12 +30,6 @@ const EDIT_SECTIONS: ReadonlyArray<{ tab: string; label: string }> = [
 const SECONDARY_BUTTON =
   "px-3 py-1.5 rounded-md border border-surface-700 text-xs text-text-secondary hover:bg-surface-800 cursor-pointer";
 const LINK_BUTTON = "text-xs text-text-dim hover:text-text-primary cursor-pointer";
-
-function validateName(name: string): string | null {
-  if (!name) return "Name is required";
-  if (!/^[a-zA-Z0-9_-]+$/.test(name)) return "Only letters, digits, hyphens, and underscores";
-  return null;
-}
 
 export function ProfilesSection({ readOnly }: Props) {
   const navigate = useNavigate();
@@ -107,7 +102,7 @@ export function ProfilesSection({ readOnly }: Props) {
     const { mode } = nameInput;
     const trimmed = nameInput.value.trim();
     if (mode === "rename" && trimmed === selected) return closeInput();
-    const err = validateName(trimmed);
+    const err = validateProfileName(trimmed);
     if (err) return setError(err);
     const ok = mode === "create" ? await createProfile(trimmed) : await renameProfile(selected, trimmed);
     if (!ok) return setError(`Failed to ${mode} profile`);
