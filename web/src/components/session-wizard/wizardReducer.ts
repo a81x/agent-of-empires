@@ -21,7 +21,6 @@ export interface WizardData {
   extraRepoPaths: string[];
   /** Per extra repo base branch, keyed by path; outranks `baseBranch`. */
   repoBases: Record<string, string>;
-  advancedEnabled: boolean;
   customInstruction: string;
   extraArgs: string;
   commandOverride: string;
@@ -91,7 +90,6 @@ export const initialData: WizardData = {
   extraEnv: [],
   extraRepoPaths: [],
   repoBases: {},
-  advancedEnabled: false,
   profileDirty: false,
   customInstruction: "",
   extraArgs: "",

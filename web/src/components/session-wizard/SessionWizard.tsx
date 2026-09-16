@@ -318,7 +318,7 @@ export function SessionWizard({ onClose, onCreated, prefill, nameOnly = false }:
                 </button>
                 {moreOpen && (
                   <div className="mt-4 space-y-6">
-                    <SessionStep data={state.data} onChange={handleChange} embedded />
+                    <SessionStep data={state.data} onChange={handleChange} />
                     <AgentOptions
                       data={state.data}
                       onChange={handleChange}

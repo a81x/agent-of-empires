@@ -1,10 +1,10 @@
-import { useCallback, useState } from "react";
+import { useCallback } from "react";
 import type { AgentInfo, ProfileInfo } from "../../../lib/types";
 import { fetchSettings } from "../../../lib/api";
 import { isAcpEligible } from "../../../lib/acpCapableTools";
 import { resolveLaunchCommand } from "../../../lib/launchCommand";
 import { commandMapsFromSettings, EMPTY_COMMAND_MAPS, type CommandMaps } from "../commandMaps";
-import { Toggle } from "./Toggle";
+import { ToggleRow } from "./Toggle";
 
 interface WizardData {
   tool: string;
@@ -13,7 +13,6 @@ interface WizardData {
   profileDirty: boolean;
   sandboxEnabled: boolean;
   yoloMode: boolean;
-  advancedEnabled: boolean;
   sandboxImage: string;
   extraEnv: string[];
   customInstruction: string;
@@ -39,22 +38,11 @@ interface Props {
     agentEffort?: string;
     commandMaps?: CommandMaps;
   }) => void;
-  /** Profile-resolved override / custom-agent maps, used to preview the
-   *  exact launch command. Sourced from the settings the wizard already
-   *  fetched, so this step issues no extra request. See #1911. */
+  /** Profile-resolved maps for the launch command preview. */
   commandMaps?: CommandMaps;
-  /** When true, wrap the container/instructions/args block in its own
-   *  "Advanced settings" disclosure (legacy AgentStep wrapper behavior).
-   *  When false, render that block flat: the single-screen wizard already
-   *  nests this whole section inside the one "More options" fold, so a
-   *  second disclosure would be redundant (#2210). */
-  collapsibleAdvanced?: boolean;
 }
 
-/** Read-only callout when the selected tool cannot run in the structured view. This
- *  includes built-in tools without ACP support, custom agents that do
- *  not provide `agent_acp_cmd`, and agents the operator's allowlist refuses
- *  (#3241). ACP-capable and permitted tools render `ViewPickerCard` instead. */
+/** Terminal fallback notice for tools that cannot use the structured view. */
 function ViewNotice({
   tool,
   customAgent,
@@ -83,9 +71,6 @@ function ViewNotice({
   );
 }
 
-/** Interactive view picker shown when the selected tool is ACP-capable.
- *  Defaults on (the structured view is the default); turning it off launches a
- *  terminal-view session instead (see #1580). */
 function ViewPickerCard({
   checked,
   onChange,
@@ -95,38 +80,25 @@ function ViewPickerCard({
   onChange: (v: boolean) => void;
   sandboxEnabled: boolean;
 }) {
-  const sandboxedStructuredView = checked && sandboxEnabled;
-  // Styled to match the sibling Core toggles (sandbox / auto-approve):
-  // a full-row clickable label, so the whole card is a hit target, not just
-  // the 12px switch. See #2101.
   return (
-    <label
-      className="mb-5 flex items-center justify-between gap-3 p-3 bg-surface-900 border border-surface-700 rounded-lg cursor-pointer"
-      onClick={(e) => {
-        if ((e.target as HTMLElement).closest('button[role="switch"]')) return;
-        onChange(!checked);
-      }}
-    >
-      <div className="flex-1">
-        <div className="text-sm font-medium text-text-primary">Structured view</div>
-        <p className="text-xs text-text-dim mt-0.5 leading-snug">
-          {sandboxedStructuredView
-            ? "Structured view + container: the agent runs inside the sandbox container, so its file and terminal access stay inside the container's mounts. Turn off to run this session in the terminal view instead."
-            : checked
-              ? "Renders the agent's plan, tool calls, and diffs in the structured view. Turn off to run this session in the terminal view instead."
-              : "This session will run in the terminal view (raw tmux). Turn on to use the structured view; you can also switch views from the session later."}
-        </p>
-      </div>
-      <Toggle checked={checked} onChange={onChange} label="Use structured view" />
-    </label>
+    <ToggleRow
+      className="mb-5 cursor-pointer"
+      title="Structured view"
+      description={
+        checked && sandboxEnabled
+          ? "Structured view + container: the agent runs inside the sandbox container, so its file and terminal access stay inside the container's mounts. Turn off to run this session in the terminal view instead."
+          : checked
+            ? "Renders the agent's plan, tool calls, and diffs in the structured view. Turn off to run this session in the terminal view instead."
+            : "This session will run in the terminal view (raw tmux). Turn on to use the structured view; you can also switch views from the session later."
+      }
+      checked={checked}
+      onChange={onChange}
+      switchLabel="Use structured view"
+    />
   );
 }
 
-/** Lower half of the agent section: structured-view choice, workflow preset,
- *  sandbox / auto-approve toggles, and the advanced launch knobs. Split out
- *  of the old monolithic AgentStep (#2210) so the single-screen wizard can
- *  fold it all behind the More options disclosure while the agent picker
- *  stays up top. */
+/** Structured view choice, workflow preset, sandbox and auto-approve toggles, and launch knobs. */
 export function AgentOptions({
   data,
   onChange,
@@ -135,17 +107,13 @@ export function AgentOptions({
   dockerAvailable,
   onApplyProfileDefaults,
   commandMaps = EMPTY_COMMAND_MAPS,
-  collapsibleAdvanced = false,
 }: Props) {
   const selectedAgent = agents.find((a) => a.name === data.tool);
   const selectedCustomAgent = selectedAgent?.kind === "custom";
   const acpCapable = isAcpEligible(data.tool, selectedAgent);
   const isHostOnly = selectedAgent?.host_only ?? false;
-  const [showAdvanced, setShowAdvanced] = useState(data.advancedEnabled);
   const showProfilePicker = profiles.length > 1;
 
-  // Mirror SessionWizard.handleSubmit so the preview shows the view the
-  // session will actually launch with (#1580).
   const willUseStructuredView = acpCapable && data.useStructuredView;
   const resolvedCommand = resolveLaunchCommand({
     tool: data.tool,
@@ -162,7 +130,6 @@ export function AgentOptions({
 
   const handleProfileChange = useCallback(
     async (profileName: string) => {
-      // If user had manual edits, confirm before overwriting
       if (data.profileDirty && profileName) {
         const ok = window.confirm("Selecting a profile will reset your settings to that profile's defaults. Continue?");
         if (!ok) return;
@@ -172,16 +139,13 @@ export function AgentOptions({
 
       if (!profileName) return;
 
-      // Load profile-resolved settings (global + profile overrides merged)
       try {
         const settings = await fetchSettings(profileName);
         if (settings) {
           const session = settings.session as Record<string, unknown> | undefined;
           const sandbox = settings.sandbox as Record<string, unknown> | undefined;
           const worktree = settings.worktree as Record<string, unknown> | undefined;
-          // Pre-populate sandbox env from the profile so the user can see and edit
-          // it before submission; without this, an empty extra_env is sent and the
-          // backend falls back to the wrong (globally-default) profile's env vars.
+          // Without the profile env, an empty extra_env makes the backend use the wrong profile's env.
           const env = Array.isArray(sandbox?.environment)
             ? (sandbox.environment as unknown[]).filter((v): v is string => typeof v === "string")
             : [];
@@ -200,7 +164,7 @@ export function AgentOptions({
           });
         }
       } catch {
-        // If we can't load profile settings, just set the profile name
+        // Keep just the profile name.
       }
     },
     [data.profileDirty, data.tool, onChange, onApplyProfileDefaults],
@@ -208,7 +172,6 @@ export function AgentOptions({
 
   const advancedBlock = (
     <div className="space-y-4">
-      {/* Container config (if sandbox enabled) */}
       {data.sandboxEnabled && (
         <>
           <div>
@@ -259,7 +222,6 @@ export function AgentOptions({
         </>
       )}
 
-      {/* Custom instruction */}
       <div>
         <label className="block text-sm text-text-dim mb-1.5">Agent instructions</label>
         <textarea
@@ -271,7 +233,6 @@ export function AgentOptions({
         />
       </div>
 
-      {/* Extra args */}
       <div>
         <label className="block text-sm text-text-dim mb-1.5">Additional arguments</label>
         <input
@@ -288,7 +249,6 @@ export function AgentOptions({
         )}
       </div>
 
-      {/* Command override */}
       <div>
         <label className="block text-sm text-text-dim mb-1.5">Command override</label>
         <input
@@ -309,9 +269,6 @@ export function AgentOptions({
 
   return (
     <div>
-      {/* View picker. ACP-capable tools get a per-session structured-view
-          toggle (default on, see #1580); other tools show a read-only
-          terminal fallback notice. Lives under More options (#2210). */}
       {acpCapable ? (
         <ViewPickerCard
           checked={data.useStructuredView}
@@ -326,10 +283,6 @@ export function AgentOptions({
         />
       )}
 
-      {/* Profile selector. We render a card list (rather than a native
-          <select>) so each profile can carry a short description beneath
-          its name. The card list also makes the active selection more
-          obvious on touch devices. See #949. */}
       {showProfilePicker && (
         <div className="mb-5">
           <label className="block text-sm text-text-dim mb-1.5">Workflow preset</label>
@@ -384,39 +337,24 @@ export function AgentOptions({
         </div>
       )}
 
-      {/* Core toggles */}
       <div className="space-y-2 mb-4">
-        <label
-          className="flex items-center justify-between gap-3 p-3 bg-surface-900 border border-surface-700 rounded-lg cursor-pointer"
-          onClick={() => !(isHostOnly || !dockerAvailable) && onChange("sandboxEnabled", !data.sandboxEnabled)}
-        >
-          <div className="flex-1">
-            <div className="text-sm font-medium text-text-primary">Run in a safe container</div>
-            <div className="text-xs text-text-dim mt-0.5 leading-snug">
-              {!dockerAvailable
-                ? "Docker is not running. Install or start Docker to use containers."
-                : "Isolate the agent so it can't affect your system"}
-            </div>
-          </div>
-          <Toggle
-            checked={data.sandboxEnabled}
-            onChange={(v) => onChange("sandboxEnabled", v)}
-            disabled={isHostOnly || !dockerAvailable}
-          />
-        </label>
-
-        <label
-          className="flex items-center justify-between gap-3 p-3 bg-surface-900 border border-surface-700 rounded-lg cursor-pointer"
-          onClick={() => onChange("yoloMode", !data.yoloMode)}
-        >
-          <div className="flex-1">
-            <div className="text-sm font-medium text-text-primary">Auto-approve actions</div>
-            <div className="text-xs text-text-dim mt-0.5 leading-snug">
-              Let the agent run commands without asking. Faster, less safe.
-            </div>
-          </div>
-          <Toggle checked={data.yoloMode} onChange={(v) => onChange("yoloMode", v)} />
-        </label>
+        <ToggleRow
+          title="Run in a safe container"
+          description={
+            !dockerAvailable
+              ? "Docker is not running. Install or start Docker to use containers."
+              : "Isolate the agent so it can't affect your system"
+          }
+          checked={data.sandboxEnabled}
+          onChange={(v) => onChange("sandboxEnabled", v)}
+          disabled={isHostOnly || !dockerAvailable}
+        />
+        <ToggleRow
+          title="Auto-approve actions"
+          description="Let the agent run commands without asking. Faster, less safe."
+          checked={data.yoloMode}
+          onChange={(v) => onChange("yoloMode", v)}
+        />
       </div>
 
       {isHostOnly && (
@@ -426,39 +364,7 @@ export function AgentOptions({
         </p>
       )}
 
-      {collapsibleAdvanced ? (
-        <>
-          {/* Advanced settings (collapsible) */}
-          <button
-            onClick={() => {
-              setShowAdvanced(!showAdvanced);
-              // Keep the persisted flag in sync on both expand and collapse so
-              // it never drifts from the disclosure state.
-              onChange("advancedEnabled", !showAdvanced);
-            }}
-            className="flex items-center gap-2 text-sm text-text-dim hover:text-text-secondary py-2 cursor-pointer w-full"
-          >
-            <svg
-              className={`w-3 h-3 transition-transform ${showAdvanced ? "rotate-90" : ""}`}
-              viewBox="0 0 12 12"
-              fill="currentColor"
-            >
-              <path
-                d="M4.5 2l4.5 4-4.5 4"
-                stroke="currentColor"
-                strokeWidth="1.5"
-                fill="none"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-              />
-            </svg>
-            Advanced settings
-          </button>
-          {showAdvanced && <div className="mt-2 border-t border-surface-700/30 pt-4">{advancedBlock}</div>}
-        </>
-      ) : (
-        advancedBlock
-      )}
+      {advancedBlock}
     </div>
   );
 }

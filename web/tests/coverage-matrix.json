@@ -880,9 +880,8 @@
         "web/src/components/DirectoryBrowser.tsx",
         "web/src/components/session-wizard/SessionWizard.tsx",
         "web/src/components/session-wizard/LaunchFooter.tsx",
-        "web/src/components/session-wizard/steps/AgentStep.tsx",
-        "web/src/components/session-wizard/steps/AgentPickerEssentials.tsx",
         "web/src/components/session-wizard/steps/AgentOptions.tsx",
+        "web/src/components/session-wizard/steps/AgentPickerEssentials.tsx",
         "web/src/components/session-wizard/steps/Toggle.tsx",
         "web/src/components/session-wizard/steps/ExtraReposPicker.tsx",
         "web/src/components/session-wizard/steps/ProjectStep.tsx",
@@ -910,7 +909,7 @@
       "id": "wizard.agent-lifecycle",
       "kind": "vitest",
       "risk": "low",
-      "specs": ["src/components/session-wizard/__tests__/AgentPickerEssentials.lifecycle.test.tsx"],
+      "specs": ["src/components/session-wizard/__tests__/AgentOptions.test.tsx"],
       "components": ["web/src/components/session-wizard/steps/AgentPickerEssentials.tsx"]
     },
     {
@@ -946,7 +945,7 @@
       "risk": "high",
       "specs": [
         "src/components/session-wizard/__tests__/HooksTrustDialog.test.tsx",
-        "src/components/session-wizard/__tests__/SessionWizard.hooksTrust.test.tsx",
+        "src/components/session-wizard/__tests__/SessionWizard.test.tsx",
         "src/lib/__tests__/createSessionApi.test.ts"
       ],
       "components": [
@@ -970,12 +969,12 @@
       "kind": "vitest",
       "risk": "high",
       "specs": [
-        "src/components/session-wizard/__tests__/structuredViewToggle.test.tsx",
+        "src/components/session-wizard/__tests__/SessionWizard.test.tsx",
         "src/components/session-wizard/wizardReducer.test.ts"
       ],
       "components": [
         "web/src/components/session-wizard/SessionWizard.tsx",
-        "web/src/components/session-wizard/steps/AgentStep.tsx",
+        "web/src/components/session-wizard/steps/AgentOptions.tsx",
         "web/src/components/session-wizard/steps/AgentPickerEssentials.tsx",
         "web/src/components/session-wizard/wizardReducer.ts"
       ]
@@ -986,7 +985,8 @@
       "risk": "high",
       "specs": [
         "src/lib/__tests__/acpEligibility.test.ts",
-        "src/components/session-wizard/__tests__/structuredViewToggle.test.tsx"
+        "src/components/session-wizard/__tests__/SessionWizard.test.tsx",
+        "src/components/session-wizard/__tests__/AgentOptions.test.tsx"
       ],
       "components": [
         "web/src/lib/acpCapableTools.ts",
@@ -1005,11 +1005,8 @@
       "id": "wizard.resolved-launch-command",
       "kind": "vitest",
       "risk": "medium",
-      "specs": ["src/components/session-wizard/__tests__/structuredViewToggle.test.tsx"],
-      "components": [
-        "web/src/components/session-wizard/steps/AgentStep.tsx",
-        "web/src/components/session-wizard/steps/AgentOptions.tsx"
-      ]
+      "specs": ["src/components/session-wizard/__tests__/SessionWizard.test.tsx"],
+      "components": ["web/src/components/session-wizard/steps/AgentOptions.tsx"]
     },
     {
       "id": "acp.custom-agent-acp-capable",
@@ -1018,7 +1015,7 @@
       "specs": ["tests/live/acp-custom-agent.spec.ts"],
       "components": [
         "web/src/components/session-wizard/SessionWizard.tsx",
-        "web/src/components/session-wizard/steps/AgentStep.tsx",
+        "web/src/components/session-wizard/steps/AgentOptions.tsx",
         "web/src/components/TerminalView.tsx"
       ]
     },
@@ -1027,7 +1024,7 @@
       "kind": "mocked-playwright",
       "risk": "medium",
       "specs": ["tests/wizard-agent-step.spec.ts"],
-      "components": ["web/src/components/session-wizard/steps/AgentStep.tsx"]
+      "components": ["web/src/components/session-wizard/steps/AgentOptions.tsx"]
     },
     {
       "id": "wizard.scratch-toggle-visible",
@@ -1072,9 +1069,8 @@
       "specs": ["tests/live/wizard-acp-create-session.spec.ts"],
       "components": [
         "web/src/components/session-wizard/SessionWizard.tsx",
-        "web/src/components/session-wizard/steps/AgentStep.tsx",
-        "web/src/components/session-wizard/steps/AgentPickerEssentials.tsx",
-        "web/src/components/session-wizard/steps/AgentOptions.tsx"
+        "web/src/components/session-wizard/steps/AgentOptions.tsx",
+        "web/src/components/session-wizard/steps/AgentPickerEssentials.tsx"
       ]
     },
     {
@@ -1092,7 +1088,7 @@
       "id": "wizard.import-claude-session.unit",
       "kind": "vitest",
       "risk": "high",
-      "specs": ["src/components/session-wizard/__tests__/ProjectStep.import.test.tsx"],
+      "specs": ["src/components/session-wizard/__tests__/ProjectStep.test.tsx"],
       "components": [
         "web/src/components/session-wizard/steps/ProjectStep.tsx",
         "web/src/components/session-wizard/steps/ClaudeSessionPicker.tsx"
@@ -1109,7 +1105,7 @@
       "id": "wizard.recent-hides-workspaces",
       "kind": "vitest",
       "risk": "medium",
-      "specs": ["src/components/session-wizard/__tests__/ProjectStep.workspace.test.tsx"],
+      "specs": ["src/components/session-wizard/__tests__/ProjectStep.test.tsx"],
       "components": ["web/src/components/session-wizard/steps/ProjectStep.tsx"]
     },
     {
@@ -1942,7 +1938,10 @@
       "kind": "live-playwright",
       "risk": "medium",
       "specs": ["tests/live/git-clone.spec.ts"],
-      "components": ["web/src/components/session-wizard/steps/ProjectStep.tsx"]
+      "components": [
+        "web/src/components/session-wizard/steps/ProjectStep.tsx",
+        "web/src/components/session-wizard/steps/CloneRepoForm.tsx"
+      ]
     },
     {
       "id": "acp.spawn-prompt",
