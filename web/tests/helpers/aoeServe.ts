@@ -484,7 +484,7 @@ function writeFakeAcpShim(
   }
 }
 
-async function loginWithPassphrase(
+export async function loginWithPassphrase(
   baseUrl: string,
   passphrase: string,
   deviceBindingSecret: string,

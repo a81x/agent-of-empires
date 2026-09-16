@@ -14,6 +14,8 @@ type LiveFixtures = {
   serve: ServeHandle;
   /** `--auth=passphrase` without a session cookie, so LoginPage renders. */
   servePassphrase: ServeHandle;
+  /** `--auth=passphrase` with a harness login; use `bootDashboard` to open it in the browser. */
+  servePreauthed: ServeHandle;
   serveReadOnly: ServeHandle;
   /** `--auth=token`; `handle.authToken` holds the daemon-written token. */
   serveToken: ServeHandle;
@@ -47,6 +49,33 @@ export async function seedAuth(page: Page, handle: ServeHandle): Promise<void> {
   }
 }
 
+/** The cookie and device-binding headers the SPA's fetch interceptor adds. */
+export function authHeaders(handle: ServeHandle): Record<string, string> {
+  const out: Record<string, string> = {};
+  if (handle.sessionCookie) out["Cookie"] = `${handle.sessionCookie.name}=${handle.sessionCookie.value}`;
+  if (handle.deviceBindingSecret) out["X-Aoe-Device-Binding"] = handle.deviceBindingSecret;
+  return out;
+}
+
+/**
+ * Authenticate the page and open the SPA at `/`, then route client-side: in passphrase mode a hard
+ * navigation elsewhere carries no device-binding header and redirects to /login.
+ */
+export async function bootDashboard(page: Page, handle: ServeHandle, path = "/"): Promise<void> {
+  await seedAuth(page, handle);
+  // Listen before navigating; bootstrap's /api/about can resolve before goto settles.
+  await Promise.all([
+    page.waitForResponse((res) => res.url().endsWith("/api/about") && res.status() === 200, { timeout: 10_000 }),
+    page.goto(handle.baseUrl),
+  ]);
+  if (path !== "/") {
+    await page.evaluate((target) => {
+      window.history.pushState({}, "", target);
+      window.dispatchEvent(new PopStateEvent("popstate"));
+    }, path);
+  }
+}
+
 export const test = base.extend<LiveFixtures>({
   spawnServe: async ({}, use, testInfo) => {
     const handles: Array<{ handle: ServeHandle; acp?: boolean }> = [];
@@ -68,6 +97,8 @@ export const test = base.extend<LiveFixtures>({
   },
   serve: async ({ spawnServe }, use) => use(await spawnServe()),
   servePassphrase: async ({ spawnServe }, use) => use(await spawnServe({ authMode: "passphrase" })),
+  servePreauthed: async ({ spawnServe }, use) =>
+    use(await spawnServe({ authMode: "passphrase", preloginViaHarness: true })),
   serveToken: async ({ spawnServe }, use) => use(await spawnServe({ authMode: "token" })),
   serveReadOnly: async ({ spawnServe }, use) => use(await spawnServe({ readOnly: true })),
   serveAcp: async ({ spawnServe }, use) => use(await spawnServe({ acp: true })),
