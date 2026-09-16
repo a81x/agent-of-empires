@@ -10,6 +10,7 @@ import {
   patchServerRow,
   summarizeAnswers,
   transcriptRowToActivity,
+  type AcpEvent,
   type AcpFrame,
   type AcpState,
   type Elicitation,
@@ -18,14 +19,7 @@ import {
   type ToolCall,
 } from "./acpTypes";
 
-// Targets the AcpEvent variants and helper branches the canonical
-// acpTypes.test.ts leaves cold: PromptCapabilities, PromptRejected, and the
-// client-side halves of the elicitation path. Both projections are
-// server-owned now: the transcript rows since Tier 4 and the control state
-// since Tier 1.2, so the folds themselves are covered by the Rust
-// `TranscriptModel` / `AcpState` tests. What is asserted here is the client's
-// side of the boundary: how a `reduced_state` frame lands, and what the
-// client still derives for itself.
+const ev = (state: AcpState, seq: number, event: AcpEvent) => applyEvent(state, { session_id: "s-1", seq, event });
 
 function tc(id: string, over: Partial<ToolCall> = {}): ToolCall {
   return {
@@ -59,10 +53,6 @@ function reducedState(over: Partial<ReducedState> = {}): ReducedState {
 }
 
 describe("webRendersServerRow", () => {
-  // The daemon emits `notice` rows so the native view can show a failed
-  // startup or a refused mode switch inline. The web shows the same thing as
-  // a banner from its own control state, so rendering the row too would
-  // duplicate it.
   it("skips notice rows and keeps everything else", () => {
     const row = (kind: string): TranscriptRow => ({
       id: `r-${kind}`,
@@ -110,7 +100,6 @@ describe("applyReducedState (Tier 1.2)", () => {
     expect(next.plan?.steps).toHaveLength(1);
     expect(next.inFlightTool?.id).toBe("t-9");
     expect(next.pendingApprovals).toEqual([approval]);
-    // The wire carries a thinking signal object; the client renders a flag.
     expect(next.thinking).toBe(true);
     expect(next.rateLimit?.status).toBe("limited");
     expect(next.availableCommands).toHaveLength(1);
@@ -120,8 +109,6 @@ describe("applyReducedState (Tier 1.2)", () => {
     expect(next.compacting).toBe(true);
   });
 
-  // The server omits cold fields this socket already holds; they arrive as
-  // empty defaults, so adopting them would blank the pickers mid-session.
   it("keeps omitted cold fields at their current value", () => {
     const seeded = applyReducedState(
       emptyAcpState(),
@@ -136,7 +123,6 @@ describe("applyReducedState (Tier 1.2)", () => {
     expect(omitted.availableCommands).toHaveLength(1);
     expect(omitted.availableModes).toHaveLength(1);
 
-    // A frame that does not name them is authoritative, including empty.
     const cleared = applyReducedState(seeded, reducedState());
     expect(cleared.availableCommands).toHaveLength(0);
   });
@@ -146,9 +132,6 @@ describe("applyReducedState (Tier 1.2)", () => {
     expect(applyReducedState(seeded, reducedState()).lastSeq).toBe(12);
   });
 
-  // The card clears on the resolve POST rather than waiting for the
-  // broadcast (#1821); without the filter the next frame would paint it
-  // straight back, since the daemon has not folded the resolve yet.
   it("keeps a locally-resolved card hidden until the server drops it", () => {
     const approval = {
       nonce: "n-1",
@@ -164,8 +147,6 @@ describe("applyReducedState (Tier 1.2)", () => {
     state = applyReducedState(state, pending);
     expect(state.pendingApprovals).toEqual([]);
 
-    // Once the daemon stops listing it the nonce is forgotten, so a later
-    // request reusing it is not swallowed.
     state = applyReducedState(state, reducedState());
     expect(state.locallyResolved).toEqual([]);
     state = applyReducedState(state, pending);
@@ -246,35 +227,25 @@ describe("appendElicitationAnswerRow (#2209)", () => {
 
 describe("applyEvent / PromptCapabilities", () => {
   it("maps the wire snake_case fields onto camelCase capability flags", () => {
-    const next = applyEvent(emptyAcpState(), {
-      session_id: "s-1",
-      seq: 1,
-      event: {
-        PromptCapabilities: { image: true, audio: false, embedded_context: true },
-      },
+    const next = ev(emptyAcpState(), 1, {
+      PromptCapabilities: { image: true, audio: false, embedded_context: true },
     });
     expect(next.promptCapabilities).toEqual({
       image: true,
       audio: false,
       embeddedContext: true,
-      // Absent on the wire: events persisted before #2805 have no
-      // `steering` key and must not read as capable.
       steering: false,
     });
   });
 
   it("carries the steering flag through, both ways (#2805)", () => {
     for (const steering of [true, false]) {
-      const next = applyEvent(emptyAcpState(), {
-        session_id: "s-1",
-        seq: 1,
-        event: {
-          PromptCapabilities: {
-            image: false,
-            audio: false,
-            embedded_context: false,
-            steering,
-          },
+      const next = ev(emptyAcpState(), 1, {
+        PromptCapabilities: {
+          image: false,
+          audio: false,
+          embedded_context: false,
+          steering,
         },
       });
       expect(next.promptCapabilities?.steering).toBe(steering);
@@ -292,11 +263,7 @@ describe("applyEvent / PromptRejected (#1196)", () => {
   }
 
   it("records a Retry pill and retires the spinner for that submission", () => {
-    let state = applyEvent(emptyAcpState(), {
-      session_id: "s-1",
-      seq: 1,
-      event: { UserPromptSent: { text: "do thing" } },
-    });
+    let state = ev(emptyAcpState(), 1, { UserPromptSent: { text: "do thing" } });
     expect(state.turnActive).toBe(true);
     state = applyEvent(state, rejectFrame(2, "do thing"));
     expect(state.rejectedPrompts).toHaveLength(1);
@@ -322,51 +289,39 @@ describe("applyEvent / PromptRejected (#1196)", () => {
 describe("applyEvent / background agents", () => {
   it("builds, updates, and finalizes a background-agent record", () => {
     let s = emptyAcpState();
-    s = applyEvent(s, {
-      session_id: "s-1",
-      seq: 1,
-      event: {
-        BackgroundAgentLaunched: {
-          agent_id: "a1",
-          tool_call_id: "task-1",
-          description: "map backend",
-          prompt: "do it",
-          model: "claude-opus-4-8",
-          started_at: "2026-06-27T00:00:00Z",
-        },
+    s = ev(s, 1, {
+      BackgroundAgentLaunched: {
+        agent_id: "a1",
+        tool_call_id: "task-1",
+        description: "map backend",
+        prompt: "do it",
+        model: "claude-opus-4-8",
+        started_at: "2026-06-27T00:00:00Z",
       },
     });
     expect(s.backgroundAgents).toHaveLength(1);
     expect(s.backgroundAgents[0]!.status).toBe("running");
     expect(s.backgroundAgents[0]!.toolCallId).toBe("task-1");
 
-    s = applyEvent(s, {
-      session_id: "s-1",
-      seq: 2,
-      event: {
-        BackgroundAgentProgress: {
-          agent_id: "a1",
-          status: "running",
-          tool_count: 4,
-          last_tool: "Read",
-          last_text: "scanning",
-          at: "2026-06-27T00:00:05Z",
-        },
+    s = ev(s, 2, {
+      BackgroundAgentProgress: {
+        agent_id: "a1",
+        status: "running",
+        tool_count: 4,
+        last_tool: "Read",
+        last_text: "scanning",
+        at: "2026-06-27T00:00:05Z",
       },
     });
     expect(s.backgroundAgents[0]!.toolCount).toBe(4);
     expect(s.backgroundAgents[0]!.lastTool).toBe("Read");
 
-    s = applyEvent(s, {
-      session_id: "s-1",
-      seq: 3,
-      event: {
-        BackgroundAgentCompleted: {
-          agent_id: "a1",
-          status: "completed",
-          result: "done",
-          ended_at: "2026-06-27T00:00:10Z",
-        },
+    s = ev(s, 3, {
+      BackgroundAgentCompleted: {
+        agent_id: "a1",
+        status: "completed",
+        result: "done",
+        ended_at: "2026-06-27T00:00:10Z",
       },
     });
     expect(s.backgroundAgents[0]!.status).toBe("completed");
@@ -375,36 +330,24 @@ describe("applyEvent / background agents", () => {
 
   it("freezes the elapsed timer when an agent stalls and clears it if it resumes", () => {
     let s = emptyAcpState();
-    s = applyEvent(s, {
-      session_id: "s-1",
-      seq: 1,
-      event: {
-        BackgroundAgentLaunched: {
-          agent_id: "a1",
-          tool_call_id: "t1",
-          description: "x",
-          prompt: "y",
-          model: "m",
-          started_at: "2026-06-27T00:00:00Z",
-        },
+    s = ev(s, 1, {
+      BackgroundAgentLaunched: {
+        agent_id: "a1",
+        tool_call_id: "t1",
+        description: "x",
+        prompt: "y",
+        model: "m",
+        started_at: "2026-06-27T00:00:00Z",
       },
     });
     expect(s.backgroundAgents[0]!.endedAt).toBeNull();
-    s = applyEvent(s, {
-      session_id: "s-1",
-      seq: 2,
-      event: {
-        BackgroundAgentProgress: { agent_id: "a1", status: "stalled", tool_count: 1, at: "2026-06-27T00:01:30Z" },
-      },
+    s = ev(s, 2, {
+      BackgroundAgentProgress: { agent_id: "a1", status: "stalled", tool_count: 1, at: "2026-06-27T00:01:30Z" },
     });
     expect(s.backgroundAgents[0]!.status).toBe("stalled");
     expect(s.backgroundAgents[0]!.endedAt).toBe("2026-06-27T00:01:30Z");
-    s = applyEvent(s, {
-      session_id: "s-1",
-      seq: 3,
-      event: {
-        BackgroundAgentProgress: { agent_id: "a1", status: "running", tool_count: 2, at: "2026-06-27T00:01:35Z" },
-      },
+    s = ev(s, 3, {
+      BackgroundAgentProgress: { agent_id: "a1", status: "running", tool_count: 2, at: "2026-06-27T00:01:35Z" },
     });
     expect(s.backgroundAgents[0]!.status).toBe("running");
     expect(s.backgroundAgents[0]!.endedAt).toBeNull();
@@ -412,41 +355,29 @@ describe("applyEvent / background agents", () => {
 
   it("does not reopen a completed agent on a late progress event", () => {
     let s = emptyAcpState();
-    s = applyEvent(s, {
-      session_id: "s-1",
-      seq: 1,
-      event: {
-        BackgroundAgentLaunched: {
-          agent_id: "a1",
-          tool_call_id: "task-1",
-          description: "x",
-          prompt: "y",
-          model: "m",
-          started_at: "2026-06-27T00:00:00Z",
-        },
+    s = ev(s, 1, {
+      BackgroundAgentLaunched: {
+        agent_id: "a1",
+        tool_call_id: "task-1",
+        description: "x",
+        prompt: "y",
+        model: "m",
+        started_at: "2026-06-27T00:00:00Z",
       },
     });
-    s = applyEvent(s, {
-      session_id: "s-1",
-      seq: 2,
-      event: {
-        BackgroundAgentCompleted: {
-          agent_id: "a1",
-          status: "completed",
-          ended_at: "2026-06-27T00:00:10Z",
-        },
+    s = ev(s, 2, {
+      BackgroundAgentCompleted: {
+        agent_id: "a1",
+        status: "completed",
+        ended_at: "2026-06-27T00:00:10Z",
       },
     });
-    s = applyEvent(s, {
-      session_id: "s-1",
-      seq: 3,
-      event: {
-        BackgroundAgentProgress: {
-          agent_id: "a1",
-          status: "running",
-          tool_count: 99,
-          at: "2026-06-27T00:00:20Z",
-        },
+    s = ev(s, 3, {
+      BackgroundAgentProgress: {
+        agent_id: "a1",
+        status: "running",
+        tool_count: 99,
+        at: "2026-06-27T00:00:20Z",
       },
     });
     expect(s.backgroundAgents[0]!.status).toBe("completed");
@@ -543,8 +474,6 @@ describe("mergeServerRows (Tier 4 reconcile-by-id)", () => {
   });
 
   it("merges a sparse synth tool_start into a richer existing start at the seam (#2711)", () => {
-    // A later replay page folds in isolation and synthesizes a sparse start
-    // (kind "other", empty args) for a tool whose real start is already loaded.
     const existing = [start("a", { kind: "execute", args_preview: '{"x":1}' })];
     const sparse = {
       id: "start-a",
@@ -579,14 +508,9 @@ describe("patchServerRow (Tier 4 delta Patch)", () => {
 
 describe("applyEvent / UserPromptSent prompt counter (Tier 4)", () => {
   it("bumps promptSeq for a prompt this client did not dispatch", () => {
-    const next = applyEvent(emptyAcpState(), {
-      session_id: "s-1",
-      seq: 1,
-      event: { UserPromptSent: { text: "hi", prompt_id: "cmp-1" } },
-    });
+    const next = ev(emptyAcpState(), 1, { UserPromptSent: { text: "hi", prompt_id: "cmp-1" } });
     expect(next.promptSeq).toBe(1);
     expect(next.turnActive).toBe(true);
-    // The transcript row is server-owned; applyEvent adds none.
     expect(next.activity).toHaveLength(0);
   });
 
@@ -598,11 +522,7 @@ describe("applyEvent / UserPromptSent prompt counter (Tier 4)", () => {
       promptSeq: 1,
       turnActive: true,
     };
-    const next = applyEvent(seeded, {
-      session_id: "s-1",
-      seq: 1,
-      event: { UserPromptSent: { text: "hi", prompt_id: "cmp-1" } },
-    });
+    const next = ev(seeded, 1, { UserPromptSent: { text: "hi", prompt_id: "cmp-1" } });
     expect(next.promptSeq).toBe(1);
     expect(next.inflightPromptIds).toEqual([]);
   });
