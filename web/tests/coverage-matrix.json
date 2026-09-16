@@ -2042,7 +2042,7 @@
       "id": "acp.elicitation",
       "kind": "live-playwright",
       "risk": "high",
-      "specs": ["tests/live/acp-stories/ask-user-question.spec.ts"],
+      "specs": ["tests/live/acp-stories/approvals.spec.ts"],
       "components": [
         "web/src/components/acp/AskUserQuestionCard.tsx",
         "web/src/components/acp/StructuredView.tsx",
@@ -2514,7 +2514,7 @@
       "id": "acp.story.stop-tool-card-terminal",
       "kind": "live-playwright",
       "risk": "high",
-      "specs": ["tests/live/acp-stories/stop-tool-card-terminal.spec.ts"],
+      "specs": ["tests/live/acp-stories/composer-controls.spec.ts"],
       "components": ["web/src/components/acp/StructuredView.tsx", "web/src/components/acp/ToolCards.tsx"]
     },
     {
@@ -2810,7 +2810,7 @@
       "id": "story.sidebar-queued-count",
       "kind": "live-playwright",
       "risk": "medium",
-      "specs": ["tests/live/acp-stories/sidebar-queued-count.spec.ts"],
+      "specs": ["tests/live/acp-stories/queue.spec.ts"],
       "components": ["web/src/components/WorkspaceSidebar.tsx"]
     },
     {
@@ -2999,28 +2999,28 @@
       "id": "acp.story.approval-allow",
       "kind": "live-playwright",
       "risk": "high",
-      "specs": ["tests/live/acp-stories/approval-allow.spec.ts"],
+      "specs": ["tests/live/acp-stories/approvals.spec.ts"],
       "components": ["web/src/components/acp/ApprovalCard.tsx"]
     },
     {
       "id": "acp.story.approval-question",
       "kind": "live-playwright",
       "risk": "high",
-      "specs": ["tests/live/acp-stories/approval-question.spec.ts"],
+      "specs": ["tests/live/acp-stories/approvals.spec.ts"],
       "components": ["web/src/components/acp/ApprovalCard.tsx"]
     },
     {
       "id": "acp.story.approval-deny",
       "kind": "live-playwright",
       "risk": "high",
-      "specs": ["tests/live/acp-stories/approval-deny.spec.ts"],
+      "specs": ["tests/live/acp-stories/approvals.spec.ts"],
       "components": ["web/src/components/acp/ApprovalCard.tsx"]
     },
     {
       "id": "acp.story.mode-picker",
       "kind": "live-playwright",
       "risk": "medium",
-      "specs": ["tests/live/acp-stories/acp-mode-picker.spec.ts"],
+      "specs": ["tests/live/acp-stories/composer-controls.spec.ts"],
       "components": ["web/src/components/acp/Composer.tsx"]
     },
     {
@@ -3149,14 +3149,14 @@
       "id": "acp.story.composer-stop",
       "kind": "live-playwright",
       "risk": "high",
-      "specs": ["tests/live/acp-stories/composer-stop.spec.ts"],
+      "specs": ["tests/live/acp-stories/composer-controls.spec.ts"],
       "components": ["web/src/components/acp/Composer.tsx", "web/src/components/acp/ToolCards.tsx"]
     },
     {
       "id": "acp.story.composer-queue-follow-up",
       "kind": "live-playwright",
       "risk": "high",
-      "specs": ["tests/live/acp-stories/composer-queue-follow-up.spec.ts"],
+      "specs": ["tests/live/acp-stories/queue.spec.ts"],
       "components": ["web/src/components/acp/Composer.tsx"]
     },
     {
@@ -3188,21 +3188,21 @@
       "id": "acp.story.queue-drains-while-unmounted",
       "kind": "live-playwright",
       "risk": "high",
-      "specs": ["tests/live/acp-stories/queue-drains-while-unmounted.spec.ts"],
+      "specs": ["tests/live/acp-stories/queue.spec.ts"],
       "components": ["web/src/components/acp/AcpQueueDrainer.tsx", "web/src/App.tsx"]
     },
     {
       "id": "acp.story.queue-edit-message",
       "kind": "live-playwright",
       "risk": "medium",
-      "specs": ["tests/live/acp-stories/queue-edit-message.spec.ts"],
+      "specs": ["tests/live/acp-stories/queue.spec.ts"],
       "components": ["web/src/components/acp/StructuredView.tsx"]
     },
     {
       "id": "acp.story.queue-delete-message",
       "kind": "live-playwright",
       "risk": "medium",
-      "specs": ["tests/live/acp-stories/queue-delete-message.spec.ts"],
+      "specs": ["tests/live/acp-stories/queue.spec.ts"],
       "components": ["web/src/components/acp/StructuredView.tsx"]
     },
     {
@@ -3224,7 +3224,7 @@
       "kind": "live-playwright",
       "risk": "high",
       "specs": [
-        "tests/live/acp-stories/composer-slash-pick-no-arg.spec.ts",
+        "tests/live/acp-stories/composer-controls.spec.ts",
         "src/components/acp/Composer.slashCommand.dom.test.tsx",
         "src/components/acp/slashCompletion.test.ts"
       ],
@@ -3262,7 +3262,7 @@
       "id": "acp.story.queue-follow-up-with-nav",
       "kind": "live-playwright",
       "risk": "high",
-      "specs": ["tests/live/acp-stories/queue-follow-up-with-nav.spec.ts"],
+      "specs": ["tests/live/acp-stories/queue.spec.ts"],
       "components": ["web/src/components/acp/Composer.tsx", "web/src/hooks/useAcpSession.ts"]
     },
     {
