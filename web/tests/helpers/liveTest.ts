@@ -3,6 +3,7 @@
 
 import { test as base, expect, type Page } from "@playwright/test";
 import { spawnAoeServe, type ServeHandle, type SpawnOptions } from "./aoeServe";
+import { attachServeDiagnostics } from "./acp";
 import { startCoverage, stopAndWriteCoverage } from "./coverageCapture";
 
 export type ServeOptions = Omit<SpawnOptions, "workerIndex" | "parallelIndex">;
@@ -48,17 +49,20 @@ export async function seedAuth(page: Page, handle: ServeHandle): Promise<void> {
 
 export const test = base.extend<LiveFixtures>({
   spawnServe: async ({}, use, testInfo) => {
-    const handles: ServeHandle[] = [];
+    const handles: Array<{ handle: ServeHandle; acp?: boolean }> = [];
     await use(async (opts = {}) => {
       const handle = await spawnAoeServe({
         ...opts,
         workerIndex: testInfo.workerIndex,
         parallelIndex: testInfo.parallelIndex,
       });
-      handles.push(handle);
+      handles.push({ handle, acp: opts.acp });
       return handle;
     });
-    const results = await Promise.allSettled(handles.map((h) => h.stop()));
+    if (testInfo.status !== testInfo.expectedStatus) {
+      for (const { handle, acp } of handles) if (acp) await attachServeDiagnostics(testInfo, handle).catch(() => {});
+    }
+    const results = await Promise.allSettled(handles.map(({ handle }) => handle.stop()));
     const errors = results.flatMap((r) => (r.status === "rejected" ? [r.reason] : []));
     if (errors.length) throw new AggregateError(errors, "live server teardown failed");
   },

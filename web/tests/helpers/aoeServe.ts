@@ -291,6 +291,10 @@ export function seedSessionViaAoeAdd(opts: {
   };
 }
 
+export function fakeAcpScriptPath(home: string): string {
+  return join(home, "fake-acp-script.json");
+}
+
 export function resolveAoeBinary(): string {
   const fromEnv = process.env.AOE_E2E_BINARY;
   if (fromEnv && existsSync(fromEnv)) return fromEnv;
@@ -734,7 +738,7 @@ export async function spawnAoeServe(opts: SpawnOptions): Promise<ServeHandle> {
   if (opts.acp) {
     let script = opts.fakeAcpScript;
     if (script !== undefined && typeof script !== "string") {
-      const path = join(home, "fake-acp-script.json");
+      const path = fakeAcpScriptPath(home);
       writeFileSync(path, JSON.stringify(script));
       script = path;
     }
