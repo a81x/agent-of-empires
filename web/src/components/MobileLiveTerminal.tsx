@@ -11,6 +11,7 @@ import { useSelectionHold } from "../hooks/useSelectionHold";
 import { FrameTimingProbe, mountedBlocks } from "./live-terminal/pacing";
 import { FORWARD_TOUCH_GAIN, useForwardInput } from "./live-terminal/useForwardInput";
 import { Row } from "./live-terminal/TermRow";
+import { LIVE_WINDOW_SCREENS, useLiveEdgeScroll } from "./live-terminal/useLiveEdgeScroll";
 import { useTerminalInput } from "./live-terminal/useTerminalInput";
 
 // Renders a tmux pane from streamed `capture-pane` frames (src/server/live_ws.rs) as DOM text in a natively
@@ -27,8 +28,6 @@ const LINE_RATIO = 1.2;
 const RESIZE_DEBOUNCE_MS = 150;
 /** How long the trimmed row count must stay lower before shrinking; outlasts a stalled stream's spinner gaps. */
 const SHRINK_DELAY_MS = 1500;
-/** Live capture window in screenfuls, so a peek up lands on real text; within the server's fast-cadence bound. */
-const LIVE_WINDOW_SCREENS = 2;
 /** Release velocities (px/ms): below the minimum a drag stops dead; the cap keeps a flick a small continuation. */
 const FLICK_MIN_VELOCITY = 0.3;
 const FLICK_MAX_VELOCITY = 1.5;
@@ -176,60 +175,6 @@ export function MobileLiveTerminal({
   useEffect(() => {
     readingRef.current = reading;
   }, [reading]);
-  // No programmatic scroll while a finger is down: it cancels the native gesture on iOS.
-  const touchActiveRef = useRef(false);
-  // Largest container height at the current width; rows derive from it so the keyboard never resizes tmux.
-  const latchRef = useRef<{ width: number; maxHeight: number }>({ width: 0, maxHeight: 0 });
-  // Pixel top of the cursor row, sticky across mid-redraw frames that hide the cursor.
-  const cursorAnchorRef = useRef<number | null>(null);
-  useEffect(() => {
-    cursorAnchorRef.current = null;
-  }, [lineH]);
-  // The live-edge scroll target is the bottom, except while the keyboard has shrunk the container: then the
-  // cursor is anchored near the viewport bottom so the agent's prompt stays visible.
-  const liveScrollTarget = useCallback(
-    (el: HTMLDivElement) => {
-      const bottom = Math.max(0, el.scrollHeight - el.clientHeight);
-      const shrunken = latchRef.current.maxHeight - el.clientHeight > lineH * 1.5;
-      const anchor = cursorAnchorRef.current;
-      if (!shrunken || anchor == null) return bottom;
-      // One spare line keeps the input box border visible.
-      return Math.min(bottom, Math.max(0, anchor + 2 * lineH - el.clientHeight));
-    },
-    [lineH],
-  );
-  const geomRef = useRef({ target: -1, clientHeight: 0, scrollTop: 0 });
-  // Sticky "reading, do not follow the tail" latch. It re-attaches only at the literal bottom (onScroll), on a
-  // lift at the bottom (onTouchEnd), or via jump-to-latest; recomputing it per frame yanked paused readers back.
-  const liveDetachedRef = useRef(false);
-  // Swallows the scroll event from a programmatic return to live before `reading` catches up.
-  const forceLiveRef = useRef(false);
-  // A keyboard height change seen while pinning was suppressed, applied at the next pin that can run.
-  const pendingHeightPinRef = useRef(false);
-  const pinIfWasAtBottom = useCallback(() => {
-    const el = scrollerRef.current;
-    if (!el) return;
-    const prev = geomRef.current;
-    const target = liveScrollTarget(el);
-    const heightChanged = prev.target >= 0 && Math.abs(el.clientHeight - prev.clientHeight) > 1;
-    const movingUp = prev.target >= 0 && el.scrollTop < prev.scrollTop - 0.5;
-    // A real scroll-up moved up and sits clearly above the target; appends, content-shrink clamps, and keyboard
-    // height changes also lower scrollTop relative to the target but are not the user's doing.
-    if (!heightChanged && movingUp && el.scrollTop < target - 2) liveDetachedRef.current = true;
-    if (heightChanged) pendingHeightPinRef.current = true;
-    if (liveDetachedRef.current) {
-      pendingHeightPinRef.current = false;
-    } else if (
-      !touchActiveRef.current &&
-      // Following the tail must not fire in the first pixels of an upward flick, or it cancels iOS momentum.
-      (prev.target < 0 || pendingHeightPinRef.current || (!movingUp && target > el.scrollTop))
-    ) {
-      el.scrollTop = target;
-      pendingHeightPinRef.current = false;
-    }
-    geomRef.current = { target, clientHeight: el.clientHeight, scrollTop: el.scrollTop };
-  }, [liveScrollTarget]);
-
   // Unchanged lines keep their parse and wrap identity across frames, so memoized rows skip them.
   const [parseCache] = useState(() => new LineParseCache());
   const lines = useMemo(() => (frame ? parseCache.lines(frame.lines ?? frame.content) : []), [frame, parseCache]);
@@ -339,11 +284,6 @@ export function MobileLiveTerminal({
     return { row, col, top: (effectiveSpacerLines + row) * lineH };
   }, [reading, frame, lines.length, screenRows, visual, renderCols, effectiveSpacerLines, lineH, lastNonBlankRow]);
 
-  const atBottom = useCallback(() => {
-    const el = scrollerRef.current;
-    return !el || el.scrollTop >= liveScrollTarget(el) - lineH * 1.5;
-  }, [lineH, liveScrollTarget]);
-
   // One view sync per painted frame; scroll events fire per pixel.
   const viewSyncRafRef = useRef(0);
   const scheduleViewSync = useCallback(() => {
@@ -355,33 +295,27 @@ export function MobileLiveTerminal({
   }, [syncView]);
   useEffect(() => () => cancelAnimationFrame(viewSyncRafRef.current), []);
 
-  const onScrollLastTopRef = useRef(0);
-  const onScroll = useCallback(() => {
-    scheduleViewSync();
-    if (forwardModeRef.current) return;
-    const el = scrollerRef.current;
-    if (!el) return;
-    const movingUp = el.scrollTop < onScrollLastTopRef.current - 0.5;
-    onScrollLastTopRef.current = el.scrollTop;
-    if (forceLiveRef.current) {
-      if (reading) return returnToLive(rowsRef.current * LIVE_WINDOW_SCREENS);
-      forceLiveRef.current = false;
-    }
-    if (!atBottom()) enterReading(rowsRef.current);
-    // Mid-gesture passes over the bottom settle on touchend instead.
-    else if (!touchActiveRef.current) returnToLive(rowsRef.current * LIVE_WINDOW_SCREENS);
-    // Scrolling down to the literal bottom is where auto-follow resumes for mouse scrolling.
-    if (el.scrollHeight - el.clientHeight - el.scrollTop < 2 && !movingUp) liveDetachedRef.current = false;
-  }, [atBottom, enterReading, forwardModeRef, reading, returnToLive, scheduleViewSync]);
-
-  const jumpToLatest = useCallback(() => {
-    const el = scrollerRef.current;
-    if (el) el.scrollTop = liveScrollTarget(el);
-    liveDetachedRef.current = false;
-    // Dropping the selection releases a held frame.
-    document.getSelection()?.removeAllRanges();
-    returnToLive(rowsRef.current * LIVE_WINDOW_SCREENS);
-  }, [returnToLive, liveScrollTarget]);
+  const {
+    touchActiveRef,
+    latchRef,
+    cursorAnchorRef,
+    liveDetachedRef,
+    forceLiveRef,
+    liveScrollTarget,
+    pinIfWasAtBottom,
+    atBottom,
+    onScroll,
+    jumpToLatest,
+  } = useLiveEdgeScroll({
+    scrollerRef,
+    lineH,
+    rowsRef,
+    reading,
+    enterReading,
+    returnToLive,
+    forwardModeRef,
+    scheduleViewSync,
+  });
 
   // A tap raises the keyboard; focus() must stay synchronous for iOS. A click ending a selection is left alone.
   const focusInputOnTap = useCallback(() => {
@@ -605,7 +539,7 @@ export function MobileLiveTerminal({
       ro.disconnect();
       if (timer) clearTimeout(timer);
     };
-  }, [active, charW, lineH, sendResize, setWindow, pinIfWasAtBottom, keyboardOpen, pinchGeneration]);
+  }, [active, charW, lineH, latchRef, sendResize, setWindow, pinIfWasAtBottom, keyboardOpen, pinchGeneration]);
 
   // Opening the keyboard means typing: return to the live prompt before the viewport shrinks.
   useEffect(() => {
@@ -620,7 +554,7 @@ export function MobileLiveTerminal({
       syncView();
     });
     return () => cancelAnimationFrame(id);
-  }, [focused, keyboardOpen, liveScrollTarget, returnToLive, syncView]);
+  }, [focused, keyboardOpen, forceLiveRef, liveDetachedRef, liveScrollTarget, returnToLive, syncView]);
 
   // Fast cadence only for the visible, active pane at the live edge.
   useEffect(() => {
@@ -641,7 +575,7 @@ export function MobileLiveTerminal({
     // Match the virtualization window to the pinned position before paint.
     syncView();
     // `renderRowCount` changes the content height at the live edge, which must re-pin.
-  }, [lines, spacerLines, lineH, live, renderRowCount, pinIfWasAtBottom, syncView]);
+  }, [lines, spacerLines, lineH, live, renderRowCount, cursorAnchorRef, pinIfWasAtBottom, syncView]);
 
   const input = useTerminalInput({
     active,
