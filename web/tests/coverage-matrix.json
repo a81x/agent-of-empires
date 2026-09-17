@@ -1859,7 +1859,7 @@
       "kind": "vitest",
       "risk": "medium",
       "specs": ["src/components/diff/__tests__/DiffFileViewer.split.test.tsx"],
-      "components": ["web/src/components/diff/DiffFileViewer.tsx"]
+      "components": ["web/src/components/diff/DiffFileViewer.tsx", "web/src/components/diff/DiffViewerHeader.tsx"]
     },
     {
       "id": "right-panel.diff-render-and-find",
