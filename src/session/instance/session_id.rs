@@ -850,80 +850,65 @@ mod tests {
         }
     }
 
+    fn profiled(profile: &str, tool: &str, command: &str) -> Instance {
+        let mut inst = tool_instance(tool, "/tmp/profiled");
+        inst.source_profile = profile.to_string();
+        inst.command = command.to_string();
+        inst
+    }
+
+    /// A resume subcommand must land right after the program the pane runs; a launcher or a
+    /// path-qualified script hides it, while a bare renamed wrapper is that program (#3638).
     #[test]
     fn codex_wrapper_command_never_takes_a_spliced_subcommand() {
         const PROFILE: &str = "codex-wrapper-splice-test";
         let _registry = install_aliases(PROFILE, &[("codex-remote", "codex")]);
         let sid = "11111111-2222-3333-4444-555555555555";
-
-        let mut wrapped = Instance::new("wrapper", "/tmp/codex-splice");
-        wrapped.source_profile = PROFILE.to_string();
-        wrapped.tool = "codex-remote".to_string();
-        wrapped.command = "ssh -t lenovo codex".to_string();
-        wrapped.agent_session_id = Some(sid.to_string());
-        wrapped.resume_intent = ResumeIntent::Use(sid.to_string());
-        assert_eq!(
-            wrapped.terminal_context_resume_cached(),
-            TerminalContextResume::CommandUnsupported
-        );
-        let mut cmd = wrapped.command.clone();
-        assert!(!wrapped.apply_session_flags(&mut cmd, "test").unwrap());
-        assert_eq!(
-            cmd, "ssh -t lenovo codex",
-            "the resume token must not be spliced onto the launcher"
-        );
-
-        let mut direct = Instance::new("direct", "/tmp/codex-splice");
-        direct.source_profile = PROFILE.to_string();
-        direct.tool = "codex-remote".to_string();
-        direct.command = "codex --model o3".to_string();
-        direct.agent_session_id = Some(sid.to_string());
-        direct.resume_intent = ResumeIntent::Use(sid.to_string());
-        assert_eq!(
-            direct.terminal_context_resume_cached(),
-            TerminalContextResume::Available
-        );
-        let mut direct_cmd = direct.command.clone();
-        assert!(direct.apply_session_flags(&mut direct_cmd, "test").unwrap());
-        assert_eq!(direct_cmd, format!("codex resume {sid} --model o3"));
-
-        let mut qualified = Instance::new("qualified", "/tmp/codex-splice");
-        qualified.source_profile = PROFILE.to_string();
-        qualified.tool = "codex-remote".to_string();
-        qualified.command = "/opt/bin/mycodex".to_string();
-        qualified.agent_session_id = Some(sid.to_string());
-        qualified.resume_intent = ResumeIntent::Use(sid.to_string());
-        assert_eq!(
-            qualified.terminal_context_resume_cached(),
-            TerminalContextResume::CommandUnsupported
-        );
-        let mut qualified_cmd = qualified.command.clone();
-        assert!(!qualified
-            .apply_session_flags(&mut qualified_cmd, "test")
-            .unwrap());
-        assert_eq!(qualified_cmd, "/opt/bin/mycodex");
-
-        for command in ["mycodex", "codex-personal"] {
-            let mut bare = Instance::new("bare", "/tmp/codex-splice");
-            bare.source_profile = PROFILE.to_string();
-            bare.tool = "codex-remote".to_string();
-            bare.command = command.to_string();
-            bare.agent_session_id = Some(sid.to_string());
-            bare.resume_intent = ResumeIntent::Use(sid.to_string());
-            assert_eq!(
-                bare.terminal_context_resume_cached(),
+        for (command, context, expected) in [
+            (
+                "ssh -t lenovo codex",
+                TerminalContextResume::CommandUnsupported,
+                None,
+            ),
+            (
+                "/opt/bin/mycodex",
+                TerminalContextResume::CommandUnsupported,
+                None,
+            ),
+            (
+                "codex --model o3",
                 TerminalContextResume::Available,
+                Some(format!("codex resume {sid} --model o3")),
+            ),
+            (
+                "mycodex",
+                TerminalContextResume::Available,
+                Some(format!("mycodex resume {sid}")),
+            ),
+            (
+                "codex-personal",
+                TerminalContextResume::Available,
+                Some(format!("codex-personal resume {sid}")),
+            ),
+        ] {
+            let mut inst = profiled(PROFILE, "codex-remote", command);
+            inst.agent_session_id = Some(sid.to_string());
+            inst.resume_intent = ResumeIntent::Use(sid.to_string());
+            assert_eq!(inst.terminal_context_resume_cached(), context, "{command}");
+            let mut cmd = command.to_string();
+            assert_eq!(
+                inst.apply_session_flags(&mut cmd, "test").unwrap(),
+                expected.is_some()
+            );
+            assert_eq!(
+                cmd,
+                expected.unwrap_or_else(|| command.to_string()),
                 "{command}"
             );
-            let mut bare_cmd = bare.command.clone();
-            assert!(
-                bare.apply_session_flags(&mut bare_cmd, "test").unwrap(),
-                "{command}"
-            );
-            assert_eq!(bare_cmd, format!("{command} resume {sid}"));
         }
     }
 
+    /// A custom agent resolves capture and resume through its `detect_as` base (#3638).
     #[test]
     fn custom_agent_pins_and_resumes_through_its_detect_as_base() {
         const PROFILE: &str = "custom-agent-resume-test";
@@ -936,17 +921,13 @@ mod tests {
             ],
         );
 
-        let mut inst = Instance::new("wrapper", "/tmp/custom-agent-resume");
-        inst.source_profile = PROFILE.to_string();
-        inst.tool = "claude-personal".to_string();
-        inst.command = "claude-personal".to_string();
-
+        let mut inst = profiled(PROFILE, "claude-personal", "claude-personal");
         let mut fresh = "claude-personal".to_string();
         assert!(!inst.apply_session_flags(&mut fresh, "test").unwrap());
         let sid = inst
             .agent_session_id
             .clone()
-            .expect("a wrapper launch must pin the conversation it is about to start");
+            .expect("a wrapper launch pins its conversation");
         assert_eq!(fresh, format!("claude-personal --session-id {sid}"));
 
         inst.resume_intent = ResumeIntent::Use(sid.clone());
@@ -959,52 +940,40 @@ mod tests {
         assert_eq!(restart, format!("claude-personal --resume {sid}"));
         assert_eq!(inst.agent_session_id.as_deref(), Some(sid.as_str()));
 
-        let mut unsupported = Instance::new("wrapper", "/tmp/custom-agent-resume");
-        unsupported.source_profile = PROFILE.to_string();
-        unsupported.tool = "droid-personal".to_string();
-        unsupported.command = "droid-personal".to_string();
+        let mut unsupported = profiled(PROFILE, "droid-personal", "droid-personal");
         unsupported.resume_intent = ResumeIntent::Use(sid.clone());
-        assert_eq!(
-            unsupported.terminal_context_resume_cached(),
-            TerminalContextResume::AgentUnsupported
-        );
-        let mut droid = "droid-personal".to_string();
-        assert!(!unsupported.apply_session_flags(&mut droid, "test").unwrap());
-        assert_eq!(droid, "droid-personal");
-
-        let mut sandboxed = Instance::new("wrapper", "/tmp/custom-agent-resume");
-        sandboxed.source_profile = PROFILE.to_string();
-        sandboxed.tool = "copilot-personal".to_string();
-        sandboxed.command = "copilot-personal".to_string();
+        // Sandboxing applies the base agent's store rule: copilot has nothing to resume there.
+        let mut sandboxed = profiled(PROFILE, "copilot-personal", "copilot-personal");
         sandboxed.agent_session_id = Some(sid);
         sandboxed.sandbox_info = Some(test_sandbox("test", None));
-        assert_eq!(
-            sandboxed.terminal_context_resume_cached(),
-            TerminalContextResume::SandboxUnsupported
-        );
-        let mut copilot = "copilot-personal".to_string();
-        assert!(!sandboxed.apply_session_flags(&mut copilot, "test").unwrap());
-        assert_eq!(copilot, "copilot-personal");
+        for (mut inst, context) in [
+            (unsupported, TerminalContextResume::AgentUnsupported),
+            (sandboxed, TerminalContextResume::SandboxUnsupported),
+        ] {
+            assert_eq!(inst.terminal_context_resume_cached(), context);
+            let mut cmd = inst.command.clone();
+            assert!(!inst.apply_session_flags(&mut cmd, "test").unwrap());
+            assert_eq!(cmd, inst.command);
+        }
     }
 
     #[test]
     fn unsupported_context_without_identity_neither_resumes_nor_polls() {
         let mut inst = tool_instance("codex", "/tmp/test");
-
         assert_eq!(inst.acquire_session_id_with(&|_| None), (None, false));
         assert_eq!(inst.agent_session_id, None);
-
         let mut cmd = String::from("codex");
         assert!(!inst.apply_session_flags(&mut cmd, "test").unwrap());
         assert_eq!(cmd, "codex");
-
         inst.capture_started_at = Some(std::time::SystemTime::now());
         inst.maybe_start_poller_since(None);
         assert!(inst.session_id_poller.is_none());
     }
 
+    /// A command's own session selector skips AoE injection, and conflicts with AoE state.
     #[test]
-    fn external_session_selectors_skip_aoe_injection_without_managed_state() {
+    fn external_session_selectors_skip_injection_or_conflict_with_managed_state() {
+        let sid = "11111111-2222-3333-4444-555555555555";
         for command in [
             "claude --resume external",
             "claude --resume=external",
@@ -1013,6 +982,7 @@ mod tests {
             "claude --continue",
             "claude -r external",
             "claude --from-pr=3678",
+            "claude --from-pr 3678",
             "claude --teleport external",
             "claude --cloud external",
             "claude --remote external",
@@ -1023,61 +993,29 @@ mod tests {
             assert!(!inst.apply_session_flags(&mut actual, "test").unwrap());
             assert_eq!(actual, command);
             assert!(inst.agent_session_id.is_none());
-        }
-    }
-
-    #[test]
-    fn external_session_selector_conflicts_with_managed_state() {
-        let sid = "11111111-2222-3333-4444-555555555555";
-        for (stored, intent) in [
-            (Some(sid.to_string()), ResumeIntent::Default),
-            (None, ResumeIntent::Use(sid.to_string())),
-            (
-                Some("child-session".to_string()),
-                ResumeIntent::Fork {
-                    from: sid.to_string(),
-                },
-            ),
-        ] {
-            let mut inst = tool_instance("claude", "/tmp/x");
-            inst.agent_session_id = stored;
-            inst.resume_intent = intent;
-            let error = inst
-                .apply_session_flags(&mut "claude --resume external".to_string(), "test")
-                .unwrap_err();
-            assert!(error
-                .to_string()
-                .contains("already contains native session selector"));
-            assert!(error
-                .to_string()
-                .contains("clear the AoE-managed resume state"));
-        }
-    }
-
-    #[test]
-    fn alternate_claude_selectors_conflict_with_managed_state() {
-        let sid = "11111111-2222-3333-4444-555555555555";
-        for command in [
-            "claude -c",
-            "claude --continue",
-            "claude -r external",
-            "claude --from-pr 3678",
-            "claude --teleport external",
-            "claude --cloud external",
-            "claude --remote external",
-            "claude --fork-session",
-        ] {
-            let mut inst = tool_instance("claude", "/tmp/x");
-            inst.agent_session_id = Some(sid.to_string());
-            let error = inst
-                .apply_session_flags(&mut command.to_string(), "test")
-                .unwrap_err();
-            assert!(
-                error
-                    .to_string()
-                    .contains("already contains native session selector"),
-                "command={command:?}, error={error:#}"
-            );
+            for (stored, intent) in [
+                (Some(sid.to_string()), ResumeIntent::Default),
+                (None, ResumeIntent::Use(sid.to_string())),
+                (
+                    Some("child-session".to_string()),
+                    ResumeIntent::Fork {
+                        from: sid.to_string(),
+                    },
+                ),
+            ] {
+                let mut managed = tool_instance("claude", "/tmp/x");
+                managed.agent_session_id = stored;
+                managed.resume_intent = intent;
+                let error = managed
+                    .apply_session_flags(&mut command.to_string(), "test")
+                    .unwrap_err()
+                    .to_string();
+                assert!(
+                    error.contains("already contains native session selector"),
+                    "{command}: {error}"
+                );
+                assert!(error.contains("clear the AoE-managed resume state"));
+            }
         }
     }
 
@@ -1215,7 +1153,7 @@ mod tests {
         use super::*;
         use crate::session::capture::encode_claude_project_path;
         use std::fs;
-        use std::path::PathBuf;
+        use std::path::{Path, PathBuf};
         use std::time::{Duration, SystemTime};
         use tempfile::{tempdir, TempDir};
 
@@ -1227,263 +1165,141 @@ mod tests {
             EnvGuard::set(&pairs)
         }
 
-        fn write_jsonl_with_mtime(path: &std::path::Path, mtime: SystemTime) {
-            fs::write(path, "").unwrap();
-            let f = fs::File::options().write(true).open(path).unwrap();
-            f.set_times(fs::FileTimes::new().set_modified(mtime))
-                .unwrap();
-        }
-
-        #[test]
-        #[serial]
-        fn supersedes_stale_claude_sid_from_pane_sidecar() {
-            let temp = tempdir().unwrap();
-            let _home = claude_home_guard(&temp);
-            let (_hooks, _base, _hook_temp) = crate::hooks::test_support::BaseGuard::ready();
-
-            let project_path = "/tmp/aoe-test-claude-sidecar-rotation";
-            let claude_dir = temp
-                .path()
-                .join(".claude")
+        fn write_transcript(claude_home: &Path, project_path: &str, sid: &str, age_secs: u64) {
+            let dir = claude_home
                 .join("projects")
                 .join(encode_claude_project_path(project_path));
-            fs::create_dir_all(&claude_dir).unwrap();
-            let stale = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
-            let fresh = "11111111-2222-3333-4444-555555555555";
-            fs::write(claude_dir.join(format!("{fresh}.jsonl")), "").unwrap();
-
-            let mut inst = tool_instance("claude", project_path);
-            inst.agent_session_id = Some(stale.to_string());
-            inst.resume_intent = ResumeIntent::Default;
-            crate::hooks::write_session_id_via_guard(&inst.id, fresh).unwrap();
-
-            let (sid, is_existing) = inst.acquire_session_id();
-            assert_eq!(sid.as_deref(), Some(fresh));
-            assert!(is_existing);
-            assert_eq!(inst.agent_session_id.as_deref(), Some(fresh));
-        }
-
-        #[test]
-        #[serial]
-        fn observed_sid_without_transcript_downgrades_to_fresh() {
-            let temp = tempdir().unwrap();
-            let _guard = claude_home_guard(&temp);
-
-            let project_path = "/tmp/aoe-test-observed-no-transcript";
-            let claude_dir = temp
-                .path()
-                .join(".claude")
-                .join("projects")
-                .join(encode_claude_project_path(project_path));
-            fs::create_dir_all(&claude_dir).unwrap();
-
-            let stored = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
-            let empty_thread = "11111111-2222-3333-4444-555555555555";
-            write_jsonl_with_mtime(
-                &claude_dir.join(format!("{stored}.jsonl")),
-                SystemTime::now() - Duration::from_secs(120),
-            );
-
-            let mut inst = tool_instance("claude", project_path);
-            inst.agent_session_id = Some(stored.to_string());
-            inst.resume_intent = ResumeIntent::Default;
-
-            let dir = super::write_sidecar(&inst.id, empty_thread);
-            let (sid, is_existing) = inst.acquire_session_id();
-            std::fs::remove_dir_all(&dir).ok();
-
-            assert_eq!(sid.as_deref(), Some(empty_thread));
-            assert!(
-                !is_existing,
-                "an observed sid with no transcript must launch as \
-                 --session-id, never --resume"
-            );
-        }
-
-        #[test]
-        #[serial]
-        fn stored_sid_without_transcript_launches_fresh_pinned() {
-            let temp = tempdir().unwrap();
-            let _guard = claude_home_guard(&temp);
-
-            let project_path = "/tmp/aoe-test-2291-no-jsonl";
-            let stored = "12121212-3434-5656-7878-9a9a9a9a9a9a";
-
-            let mut inst = tool_instance("claude", project_path);
-            inst.agent_session_id = Some(stored.to_string());
-            inst.resume_intent = ResumeIntent::Default;
-
-            let (sid, is_existing) = inst.acquire_session_id();
-            assert_eq!(sid.as_deref(), Some(stored));
-            assert!(
-                !is_existing,
-                "a stored sid with no transcript must launch fresh-pinned, not --resume"
-            );
-            assert_eq!(inst.agent_session_id.as_deref(), Some(stored));
-        }
-
-        #[test]
-        #[serial]
-        fn stored_sid_with_stale_transcript_still_resumes() {
-            let temp = tempdir().unwrap();
-            let _guard = claude_home_guard(&temp);
-
-            let project_path = "/tmp/aoe-test-stale-transcript";
-            let claude_dir = temp
-                .path()
-                .join(".claude")
-                .join("projects")
-                .join(encode_claude_project_path(project_path));
-            fs::create_dir_all(&claude_dir).unwrap();
-
-            let stored = "12121212-3434-5656-7878-9a9a9a9a9a9a";
-            write_jsonl_with_mtime(
-                &claude_dir.join(format!("{stored}.jsonl")),
-                SystemTime::now() - Duration::from_secs(3600),
-            );
-
-            let mut inst = tool_instance("claude", project_path);
-            inst.agent_session_id = Some(stored.to_string());
-            inst.resume_intent = ResumeIntent::Default;
-
-            let (sid, is_existing) = inst.acquire_session_id();
-            assert_eq!(sid.as_deref(), Some(stored));
-            assert!(
-                is_existing,
-                "a real (if idle) transcript on disk must resume with --resume"
-            );
-            assert_eq!(inst.agent_session_id.as_deref(), Some(stored));
-        }
-
-        #[test]
-        #[serial]
-        fn same_cwd_sessions_resume_their_own_profile_scoped_conversation() {
-            let temp = tempdir().unwrap();
-            let _guard = claude_home_guard(&temp);
-
-            let project_path = "/tmp/aoe-test-3399-shared-cwd";
-            let cases = [
-                ("aoe-3399-personal", "11111111-1111-4111-8111-111111111111"),
-                ("aoe-3399-work", "22222222-2222-4222-8222-222222222222"),
-            ];
-            for (profile, sid) in cases {
-                let claude_home = temp.path().join(format!(".claude-{profile}"));
-                let dir = claude_home
-                    .join("projects")
-                    .join(encode_claude_project_path(project_path));
-                fs::create_dir_all(&dir).unwrap();
-                write_jsonl_with_mtime(
-                    &dir.join(format!("{sid}.jsonl")),
-                    SystemTime::now() - Duration::from_secs(3600),
-                );
-
-                let config_path = crate::session::get_profile_dir_path(profile)
-                    .unwrap()
-                    .join("config.toml");
-                fs::create_dir_all(config_path.parent().unwrap()).unwrap();
-                fs::write(
-                    &config_path,
-                    format!(
-                        "environment = [\"CLAUDE_CONFIG_DIR={}\"]\n",
-                        claude_home.display()
-                    ),
+            fs::create_dir_all(&dir).unwrap();
+            let path = dir.join(format!("{sid}.jsonl"));
+            fs::write(&path, "").unwrap();
+            fs::File::options()
+                .write(true)
+                .open(path)
+                .unwrap()
+                .set_times(
+                    fs::FileTimes::new()
+                        .set_modified(SystemTime::now() - Duration::from_secs(age_secs)),
                 )
                 .unwrap();
-            }
+        }
 
-            for (profile, sid) in cases {
-                let mut inst = Instance::new(profile, project_path);
-                inst.source_profile = profile.to_string();
-                inst.tool = "claude".to_string();
-                inst.agent_session_id = Some(sid.to_string());
-                inst.resume_intent = ResumeIntent::Default;
-
-                let (acquired, is_existing) = inst.acquire_session_id();
-                assert_eq!(acquired.as_deref(), Some(sid));
-                assert!(
-                    is_existing,
-                    "{profile}: transcript under the profile's own CLAUDE_CONFIG_DIR \
-                     must resume with --resume, not launch fresh-pinned"
+        /// Default intent: the pane's sidecar outranks the stored id and peer transcripts, and a
+        /// host Claude id with no transcript relaunches pinned instead of a doomed `--resume`.
+        #[test]
+        #[serial]
+        fn acquire_reconciles_stored_id_with_sidecar_and_transcript() {
+            const A: &str = "aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa";
+            const B: &str = "bbbbbbbb-2222-4222-8222-bbbbbbbbbbbb";
+            const C: &str = "cccccccc-3333-4333-8333-cccccccccccc";
+            type Case<'a> = (
+                &'a str,
+                &'a str,
+                bool,
+                &'a [(&'a str, u64)],
+                Option<&'a str>,
+                &'a str,
+                &'a str,
+                bool,
+            );
+            let cases: [Case; 7] = [
+                (
+                    "sidecar rotation supersedes stored",
+                    "claude",
+                    false,
+                    &[(B, 0)],
+                    Some(B),
+                    A,
+                    B,
+                    true,
+                ),
+                (
+                    "observed sid without transcript",
+                    "claude",
+                    false,
+                    &[(A, 120)],
+                    Some(B),
+                    A,
+                    B,
+                    false,
+                ),
+                (
+                    "stored sid without transcript",
+                    "claude",
+                    false,
+                    &[],
+                    None,
+                    C,
+                    C,
+                    false,
+                ),
+                (
+                    "idle transcript still resumes",
+                    "claude",
+                    false,
+                    &[(C, 3600)],
+                    None,
+                    C,
+                    C,
+                    true,
+                ),
+                (
+                    "unsupported tool keeps stored id",
+                    "cursor",
+                    false,
+                    &[],
+                    None,
+                    "stored-cursor-sid",
+                    "stored-cursor-sid",
+                    true,
+                ),
+                (
+                    "sidecar wins over fresher peer",
+                    "claude",
+                    false,
+                    &[(A, 120), (B, 5)],
+                    Some(A),
+                    C,
+                    A,
+                    true,
+                ),
+                (
+                    "sandboxed claude reads host sidecar",
+                    "claude",
+                    true,
+                    &[(A, 120), (B, 5)],
+                    Some(A),
+                    C,
+                    A,
+                    true,
+                ),
+            ];
+            for (label, tool, sandboxed, transcripts, sidecar, stored, want_sid, want_existing) in
+                cases
+            {
+                let temp = tempdir().unwrap();
+                let _home = claude_home_guard(&temp);
+                let (_hooks, _base, _hook_temp) = crate::hooks::test_support::BaseGuard::ready();
+                let project_path = "/tmp/aoe-test-verify-on-resume";
+                for (sid, age) in transcripts {
+                    write_transcript(&temp.path().join(".claude"), project_path, sid, *age);
+                }
+                let mut inst = tool_instance(tool, project_path);
+                inst.agent_session_id = Some(stored.to_string());
+                if sandboxed {
+                    inst.sandbox_info = Some(test_sandbox("verify-sandbox", None));
+                }
+                let dir = sidecar.map(|sid| write_sidecar(&inst.id, sid));
+                let acquired = inst.acquire_session_id();
+                if let Some(dir) = dir {
+                    fs::remove_dir_all(dir).ok();
+                }
+                assert_eq!(
+                    acquired,
+                    (Some(want_sid.to_string()), want_existing),
+                    "{label}"
                 );
+                assert_eq!(inst.agent_session_id.as_deref(), Some(want_sid), "{label}");
             }
-
-            let (shadowed_profile, other_sid) = (cases[0].0, cases[1].1);
-            let mut inst = Instance::new("minted-switcher", project_path);
-            inst.source_profile = shadowed_profile.to_string();
-            inst.tool = "claude".to_string();
-            inst.agent_session_id = Some(other_sid.to_string());
-            inst.resume_intent = ResumeIntent::Default;
-            inst.pending_host_env = vec![(
-                "CLAUDE_CONFIG_DIR".to_string(),
-                temp.path()
-                    .join(format!(".claude-{}", cases[1].0))
-                    .to_string_lossy()
-                    .into_owned(),
-            )];
-
-            let (acquired, is_existing) = inst.acquire_session_id();
-            assert_eq!(acquired.as_deref(), Some(other_sid));
-            assert!(
-                is_existing,
-                "a before_session-minted CLAUDE_CONFIG_DIR must win over the \
-                 profile's, matching what the launch injects into the pane"
-            );
-        }
-
-        #[test]
-        #[serial]
-        fn unaffected_for_unsupported_tool() {
-            let temp = tempdir().unwrap();
-            let _guard = claude_home_guard(&temp);
-
-            let mut inst = tool_instance("cursor", "/tmp/aoe-test-2291-cursor");
-            inst.agent_session_id = Some("stored-cursor-sid".to_string());
-            inst.resume_intent = ResumeIntent::Default;
-
-            let (sid, is_existing) = inst.acquire_session_id();
-            assert_eq!(sid.as_deref(), Some("stored-cursor-sid"));
-            assert!(is_existing);
-            assert_eq!(inst.agent_session_id.as_deref(), Some("stored-cursor-sid"));
-        }
-
-        #[test]
-        #[serial]
-        fn sidecar_wins_over_fresher_peer_jsonl() {
-            let temp = tempdir().unwrap();
-            let _guard = claude_home_guard(&temp);
-
-            let project_path = "/tmp/aoe-test-2344-shared-cwd";
-            let claude_dir = temp
-                .path()
-                .join(".claude")
-                .join("projects")
-                .join(encode_claude_project_path(project_path));
-            fs::create_dir_all(&claude_dir).unwrap();
-
-            let mine = "aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa";
-            let peer = "bbbbbbbb-2222-4222-8222-bbbbbbbbbbbb";
-            let stored = "cccccccc-3333-4333-8333-cccccccccccc";
-            let now = SystemTime::now();
-            write_jsonl_with_mtime(
-                &claude_dir.join(format!("{mine}.jsonl")),
-                now - Duration::from_secs(120),
-            );
-            write_jsonl_with_mtime(
-                &claude_dir.join(format!("{peer}.jsonl")),
-                now - Duration::from_secs(5),
-            );
-
-            let mut inst = tool_instance("claude", project_path);
-            inst.agent_session_id = Some(stored.to_string());
-            inst.resume_intent = ResumeIntent::Default;
-
-            let dir = super::write_sidecar(&inst.id, mine);
-            let (sid, is_existing) = inst.acquire_session_id();
-            std::fs::remove_dir_all(&dir).ok();
-
-            assert_eq!(sid.as_deref(), Some(mine));
-            assert!(is_existing);
-            assert_eq!(inst.agent_session_id.as_deref(), Some(mine));
         }
 
         #[test]
@@ -1493,84 +1309,85 @@ mod tests {
             let _guard = claude_home_guard(&temp);
             let mut inst = tool_instance("claude", "/tmp/idle-sidecar");
             inst.agent_session_id = Some("stored-old".to_string());
-            inst.resume_intent = ResumeIntent::Default;
-
-            let dir = super::write_sidecar(&inst.id, "published-new");
-            let stale = SystemTime::now() - Duration::from_secs(10 * 60);
-            std::fs::File::options()
+            let dir = write_sidecar(&inst.id, "published-new");
+            fs::File::options()
                 .write(true)
                 .open(dir.join("session_id"))
                 .unwrap()
-                .set_times(std::fs::FileTimes::new().set_modified(stale))
+                .set_times(
+                    fs::FileTimes::new()
+                        .set_modified(SystemTime::now() - Duration::from_secs(10 * 60)),
+                )
                 .unwrap();
-
             assert_eq!(
                 inst.capture_freshest_session_id().as_deref(),
                 Some("published-new")
             );
-            std::fs::remove_dir_all(dir).ok();
+            fs::remove_dir_all(dir).ok();
         }
 
+        /// Same-cwd sessions in profiles with different `CLAUDE_CONFIG_DIR`s each resume their
+        /// own conversation, and a `before_session`-minted value wins over the profile's (#3399).
         #[test]
         #[serial]
-        fn sidecar_consulted_for_sandboxed_claude() {
+        fn same_cwd_sessions_resume_their_own_profile_scoped_conversation() {
             let temp = tempdir().unwrap();
             let _guard = claude_home_guard(&temp);
-
-            let project_path = "/tmp/aoe-test-2344-sandbox";
-            let claude_dir = temp
-                .path()
-                .join(".claude")
-                .join("projects")
-                .join(encode_claude_project_path(project_path));
-            fs::create_dir_all(&claude_dir).unwrap();
-
-            let mine = "eeeeeeee-5555-4555-8555-eeeeeeeeeeee";
-            let peer = "ffffffff-6666-4666-8666-ffffffffffff";
-            let stored = "dddddddd-7777-4777-8777-dddddddddddd";
-            let now = SystemTime::now();
-            write_jsonl_with_mtime(
-                &claude_dir.join(format!("{mine}.jsonl")),
-                now - Duration::from_secs(120),
+            let project_path = "/tmp/aoe-test-3399-shared-cwd";
+            let cases = [
+                ("aoe-3399-personal", "11111111-1111-4111-8111-111111111111"),
+                ("aoe-3399-work", "22222222-2222-4222-8222-222222222222"),
+            ];
+            let home_for = |profile: &str| temp.path().join(format!(".claude-{profile}"));
+            for (profile, sid) in cases {
+                write_transcript(&home_for(profile), project_path, sid, 3600);
+                let config_path = crate::session::get_profile_dir_path(profile)
+                    .unwrap()
+                    .join("config.toml");
+                fs::create_dir_all(config_path.parent().unwrap()).unwrap();
+                let config = format!(
+                    "environment = [\"CLAUDE_CONFIG_DIR={}\"]\n",
+                    home_for(profile).display()
+                );
+                fs::write(&config_path, config).unwrap();
+            }
+            let acquire = |profile: &str, sid: &str, minted: Option<&str>| {
+                let mut inst = tool_instance("claude", project_path);
+                inst.source_profile = profile.to_string();
+                inst.agent_session_id = Some(sid.to_string());
+                inst.pending_host_env = minted
+                    .map(|p| {
+                        vec![(
+                            "CLAUDE_CONFIG_DIR".to_string(),
+                            home_for(p).to_string_lossy().into_owned(),
+                        )]
+                    })
+                    .unwrap_or_default();
+                inst.acquire_session_id()
+            };
+            for (profile, sid) in cases {
+                assert_eq!(
+                    acquire(profile, sid, None),
+                    (Some(sid.to_string()), true),
+                    "{profile}"
+                );
+            }
+            let (shadowed, (minted, other_sid)) = (cases[0].0, cases[1]);
+            assert_eq!(
+                acquire(shadowed, other_sid, Some(minted)),
+                (Some(other_sid.to_string()), true)
             );
-            write_jsonl_with_mtime(
-                &claude_dir.join(format!("{peer}.jsonl")),
-                now - Duration::from_secs(5),
-            );
-
-            let mut inst = tool_instance("claude", project_path);
-            inst.agent_session_id = Some(stored.to_string());
-            inst.resume_intent = ResumeIntent::Default;
-            inst.sandbox_info = Some(test_sandbox("verify-2344-sandbox", None));
-            assert!(inst.is_sandboxed());
-
-            let dir = super::write_sidecar(&inst.id, mine);
-            let (sid, is_existing) = inst.acquire_session_id();
-            std::fs::remove_dir_all(&dir).ok();
-
-            assert_eq!(sid.as_deref(), Some(mine));
-            assert!(is_existing);
-            assert_eq!(inst.agent_session_id.as_deref(), Some(mine));
         }
 
         #[test]
         fn pi_fresh_launch_pins_the_minted_id() {
             let pinned = "aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa";
-
             let mut inst = tool_instance("pi", "/tmp/pi-fresh");
-            let (sid, is_existing) = inst.acquire_session_id_with(&|_| Some(pinned.to_string()));
-            assert_eq!(sid.as_deref(), Some(pinned));
-            assert!(
-                !is_existing,
-                "a pinned launch is a new session, not a resume"
-            );
+            let acquired = inst.acquire_session_id_with(&|_| Some(pinned.to_string()));
+            assert_eq!(acquired, (Some(pinned.to_string()), false));
             assert_eq!(inst.agent_session_id.as_deref(), Some(pinned));
             assert_eq!(
-                crate::session::instance::launch_command::build_resume_flags(
-                    "pi",
-                    pinned,
-                    is_existing
-                ),
+                build_resume_flags("pi", pinned, false),
                 format!("--session-id {pinned}")
             );
 

@@ -663,38 +663,54 @@ mod tests {
         assert_eq!(outcome, StartOutcome::Fresh);
     }
 
-    #[test]
-    #[serial]
-    fn fallback_marks_resume_failed_and_preserves_sid_when_pane_dies() {
+    /// A claude row with a stored sid, seeded on disk, launching a fake `claude` from `script`.
+    struct Fallback {
+        inst: Instance,
+        storage: crate::session::storage::Storage,
+        sid: String,
+        tmux_name: String,
+        _auto_resume: Option<crate::session::test_support::AutoResumeGuard>,
+        _claude: crate::session::test_support::EnvGuard,
+        _env: crate::session::test_support::EnvGuard,
+        _temp: tempfile::TempDir,
+    }
+
+    impl Drop for Fallback {
+        fn drop(&mut self) {
+            let _ = crate::tmux::tmux_command()
+                .args(["kill-session", "-t", &self.tmux_name])
+                .output();
+        }
+    }
+
+    /// `None` when tmux is unavailable. `seed_transcript` makes acquire take the `--resume` path.
+    fn fallback_fixture(
+        profile: &str,
+        sid: &str,
+        script: &str,
+        seed_transcript: bool,
+        auto_resume: Option<bool>,
+    ) -> Option<Fallback> {
         if crate::tmux::tmux_command().arg("-V").output().is_err() {
             eprintln!("tmux not available; skipping");
-            return;
+            return None;
         }
         let temp = tempdir().unwrap();
         let project_dir = temp.path().join("project");
         std::fs::create_dir_all(&project_dir).unwrap();
-        let project_path = project_dir.to_str().unwrap();
-        let _env = isolate_resume_environment(temp.path());
-
-        let storage = crate::session::storage::Storage::new_unwatched("fb-test").unwrap();
-
-        let stale_sid = "11111111-1111-1111-1111-111111111111".to_string();
-        let mut inst = Instance::new("fallback_dies_test", project_path);
+        let env = isolate_resume_environment(temp.path());
+        let auto_resume = auto_resume.map(crate::session::test_support::AutoResumeGuard::set);
+        let storage = crate::session::storage::Storage::new_unwatched(profile).unwrap();
+        let mut inst = Instance::new(profile, project_dir.to_str().unwrap());
         inst.tool = "claude".to_string();
-        inst.source_profile = "fb-test".to_string();
-        let _fake_claude = install_fake_claude(temp.path(), "#!/bin/sh\nexit 1\n");
+        inst.source_profile = profile.to_string();
+        let claude = install_fake_claude(temp.path(), script);
         inst.command = "claude".to_string();
-        inst.agent_session_id = Some(stale_sid.clone());
+        inst.agent_session_id = Some(sid.to_string());
         inst.status = Status::Idle;
-        // Real prior conversation on disk so acquire takes the --resume path.
-        seed_claude_transcript(&inst.project_path, &stale_sid);
-        let id = inst.id.clone();
-
-        let tmux_name = crate::tmux::Session::generate_name(&inst.id, &inst.title);
-        let _ = crate::tmux::tmux_command()
-            .args(["kill-session", "-t", &tmux_name])
-            .output();
-
+        if seed_transcript {
+            seed_claude_transcript(&inst.project_path, sid);
+        }
         let xs = vec![inst.clone()];
         storage
             .update(|i, g| {
@@ -703,367 +719,168 @@ mod tests {
                 Ok(())
             })
             .unwrap();
-
-        let outcome = inst.start_with_resume_fallback(None, true, ResumeAttemptPolicy::Allow);
-
+        let tmux_name = crate::tmux::Session::generate_name(&inst.id, &inst.title);
         let _ = crate::tmux::tmux_command()
             .args(["kill-session", "-t", &tmux_name])
             .output();
+        Some(Fallback {
+            inst,
+            storage,
+            sid: sid.to_string(),
+            tmux_name,
+            _auto_resume: auto_resume,
+            _claude: claude,
+            _env: env,
+            _temp: temp,
+        })
+    }
 
-        assert_eq!(
-            outcome.unwrap(),
-            StartOutcome::ResumeFailed {
-                sid: stale_sid.clone(),
-            }
-        );
-        assert_eq!(inst.agent_session_id.as_deref(), Some(stale_sid.as_str()));
-        assert_eq!(
-            inst.resume_probe_failed_sid.as_deref(),
-            Some(stale_sid.as_str())
-        );
-        assert_eq!(inst.status, Status::Error);
-        assert_eq!(
-            inst.last_error.as_deref(),
-            Some(
-                format!("resume failed for sid {stale_sid}; preserved for explicit retry").as_str()
-            )
-        );
-        assert!(inst.last_error_check.is_some());
-        let loaded = storage.load().unwrap();
-        let row = loaded.iter().find(|i| i.id == id).expect("instance");
-        assert_eq!(row.agent_session_id.as_deref(), Some(stale_sid.as_str()));
-        assert_eq!(
-            row.resume_probe_failed_sid.as_deref(),
-            Some(stale_sid.as_str())
-        );
+    fn dies_on_sid(sid: &str) -> String {
+        format!("#!/bin/sh\ncase \"$*\" in *{sid}*) exit 1 ;; esac\nexec sleep 30\n")
+    }
+
+    fn assert_failure_marked(f: &Fallback) {
+        let sid = Some(f.sid.as_str());
+        assert_eq!(f.inst.agent_session_id.as_deref(), sid);
+        assert_eq!(f.inst.resume_probe_failed_sid.as_deref(), sid);
+        let loaded = f.storage.load().unwrap();
+        let row = loaded.iter().find(|i| i.id == f.inst.id).expect("instance");
+        assert_eq!(row.agent_session_id.as_deref(), sid);
+        assert_eq!(row.resume_probe_failed_sid.as_deref(), sid);
     }
 
     #[test]
     #[serial]
-    fn fallback_does_not_launch_fresh_when_command_would_live_without_stale_sid() {
-        if crate::tmux::tmux_command().arg("-V").output().is_err() {
-            eprintln!("tmux not available; skipping");
-            return;
-        }
-        let temp = tempdir().unwrap();
-        let project_dir = temp.path().join("project");
-        std::fs::create_dir_all(&project_dir).unwrap();
-        let project_path = project_dir.to_str().unwrap();
-        let _env = isolate_resume_environment(temp.path());
-
-        let storage = crate::session::storage::Storage::new_unwatched("fb-test-live").unwrap();
-
-        let stale_sid = "22222222-2222-2222-2222-222222222222".to_string();
-        let mut inst = Instance::new("fallback_lives_test", project_path);
-        inst.tool = "claude".to_string();
-        inst.source_profile = "fb-test-live".to_string();
-        let script = format!(
-            "#!/bin/sh\ncase \"$*\" in *{stale}*) exit 1 ;; esac\nexec sleep 30\n",
-            stale = stale_sid,
-        );
-        let _fake_claude = install_fake_claude(temp.path(), &script);
-        inst.command = "claude".to_string();
-        inst.agent_session_id = Some(stale_sid.clone());
-        inst.status = Status::Idle;
-        // Real prior conversation on disk so acquire takes the --resume path.
-        seed_claude_transcript(&inst.project_path, &stale_sid);
-
-        let xs = vec![inst.clone()];
-        storage
-            .update(|i, g| {
-                *i = xs.to_vec();
-                *g = crate::session::GroupTree::new_with_groups(&xs, &[]).get_all_groups();
-                Ok(())
-            })
-            .unwrap();
-
-        let tmux_name = crate::tmux::Session::generate_name(&inst.id, &inst.title);
-        let _ = crate::tmux::tmux_command()
-            .args(["kill-session", "-t", &tmux_name])
-            .output();
-
-        let outcome = inst.start_with_resume_fallback(None, true, ResumeAttemptPolicy::Allow);
-
-        let _ = crate::tmux::tmux_command()
-            .args(["kill-session", "-t", &tmux_name])
-            .output();
-
-        assert_eq!(
-            outcome.unwrap(),
-            StartOutcome::ResumeFailed {
-                sid: stale_sid.clone(),
+    fn fallback_marks_resume_failed_and_preserves_sid() {
+        // Whether the pane dies outright or only the resume argv is doomed, no fresh launch.
+        for (profile, sid, script) in [
+            (
+                "fb-test",
+                "11111111-1111-1111-1111-111111111111",
+                "#!/bin/sh\nexit 1\n".to_string(),
+            ),
+            (
+                "fb-test-live",
+                "22222222-2222-2222-2222-222222222222",
+                dies_on_sid("22222222-2222-2222-2222-222222222222"),
+            ),
+        ] {
+            let Some(mut f) = fallback_fixture(profile, sid, &script, true, None) else {
+                return;
+            };
+            let outcome = f
+                .inst
+                .start_with_resume_fallback(None, true, ResumeAttemptPolicy::Allow);
+            assert_eq!(
+                outcome.unwrap(),
+                StartOutcome::ResumeFailed {
+                    sid: sid.to_string()
+                }
+            );
+            assert_failure_marked(&f);
+            if profile == "fb-test" {
+                assert_eq!(f.inst.status, Status::Error);
+                assert_eq!(
+                    f.inst.last_error.as_deref(),
+                    Some(
+                        format!("resume failed for sid {sid}; preserved for explicit retry")
+                            .as_str()
+                    )
+                );
+                assert!(f.inst.last_error_check.is_some());
             }
-        );
-        assert_eq!(inst.agent_session_id.as_deref(), Some(stale_sid.as_str()));
-        assert_eq!(
-            inst.resume_probe_failed_sid.as_deref(),
-            Some(stale_sid.as_str())
-        );
-        let loaded = storage.load().unwrap();
-        let row = loaded.iter().find(|i| i.id == inst.id).expect("instance");
-        assert_eq!(row.agent_session_id.as_deref(), Some(stale_sid.as_str()));
-        assert_eq!(
-            row.resume_probe_failed_sid.as_deref(),
-            Some(stale_sid.as_str())
-        );
+        }
     }
 
+    /// `auto_resume_on_restart = false` scopes only restart/reattach; `Allow` still resumes (#2609).
     #[test]
     #[serial]
-    fn auto_resume_on_restart_false_skips_stored_sid_and_launches_fresh() {
-        if crate::tmux::tmux_command().arg("-V").output().is_err() {
-            eprintln!("tmux not available; skipping");
+    fn auto_resume_setting_scopes_only_the_honoring_policy() {
+        let sid = "44444444-4444-4444-4444-444444444444";
+        let Some(mut f) =
+            fallback_fixture("fb-toggle-off", sid, &dies_on_sid(sid), false, Some(false))
+        else {
             return;
-        }
-        let temp = tempdir().unwrap();
-        let project_dir = temp.path().join("project");
-        std::fs::create_dir_all(&project_dir).unwrap();
-        let project_path = project_dir.to_str().unwrap();
-        let _env = isolate_resume_environment(temp.path());
-
-        let _auto_resume = crate::session::test_support::AutoResumeGuard::set(false);
-
-        let storage = crate::session::storage::Storage::new_unwatched("fb-toggle-off").unwrap();
-
-        let stale_sid = "44444444-4444-4444-4444-444444444444".to_string();
-        let mut inst = Instance::new("fallback_toggle_off_test", project_path);
-        inst.tool = "claude".to_string();
-        inst.source_profile = "fb-toggle-off".to_string();
-        // Would die if (and only if) `--resume <stale_sid>` reached the command; with the toggle
-        // off it must never be passed, so this process lives.
-        let script = format!(
-            "#!/bin/sh\ncase \"$*\" in *{stale}*) exit 1 ;; esac\nexec sleep 30\n",
-            stale = stale_sid,
-        );
-        let _fake_claude = install_fake_claude(temp.path(), &script);
-        inst.command = "claude".to_string();
-        inst.agent_session_id = Some(stale_sid.clone());
-        inst.status = Status::Idle;
-
-        let xs = vec![inst.clone()];
-        storage
-            .update(|i, g| {
-                *i = xs.to_vec();
-                *g = crate::session::GroupTree::new_with_groups(&xs, &[]).get_all_groups();
-                Ok(())
-            })
-            .unwrap();
-
-        let tmux_name = crate::tmux::Session::generate_name(&inst.id, &inst.title);
-        let _ = crate::tmux::tmux_command()
-            .args(["kill-session", "-t", &tmux_name])
-            .output();
-
-        let outcome = inst.start_with_resume_fallback(
+        };
+        let outcome = f.inst.start_with_resume_fallback(
             None,
             true,
             ResumeAttemptPolicy::HonorAutoResumeSetting,
         );
-
-        let _ = crate::tmux::tmux_command()
-            .args(["kill-session", "-t", &tmux_name])
-            .output();
-
         assert_eq!(outcome.unwrap(), StartOutcome::Fresh);
-        assert_ne!(
-            inst.agent_session_id.as_deref(),
-            Some(stale_sid.as_str()),
-            "toggle off must generate a fresh sid, not reuse the stale one"
-        );
-    }
+        assert_ne!(f.inst.agent_session_id.as_deref(), Some(sid));
+        drop(f);
 
-    #[test]
-    #[serial]
-    fn allow_policy_still_attempts_resume_when_auto_resume_on_restart_is_false() {
-        if crate::tmux::tmux_command().arg("-V").output().is_err() {
-            eprintln!("tmux not available; skipping");
+        let sid = "55555555-5555-5555-5555-555555555555";
+        let Some(mut f) = fallback_fixture(
+            "fb-allow-ignores",
+            sid,
+            "#!/bin/sh\nexit 1\n",
+            true,
+            Some(false),
+        ) else {
             return;
-        }
-        let temp = tempdir().unwrap();
-        let project_dir = temp.path().join("project");
-        std::fs::create_dir_all(&project_dir).unwrap();
-        let project_path = project_dir.to_str().unwrap();
-        let _env = isolate_resume_environment(temp.path());
-
-        let _auto_resume = crate::session::test_support::AutoResumeGuard::set(false);
-
-        let storage = crate::session::storage::Storage::new_unwatched("fb-allow-ignores").unwrap();
-
-        let stale_sid = "55555555-5555-5555-5555-555555555555".to_string();
-        let mut inst = Instance::new("fallback_allow_ignores_toggle_test", project_path);
-        inst.tool = "claude".to_string();
-        inst.source_profile = "fb-allow-ignores".to_string();
-        let _fake_claude = install_fake_claude(temp.path(), "#!/bin/sh\nexit 1\n");
-        inst.command = "claude".to_string();
-        inst.agent_session_id = Some(stale_sid.clone());
-        inst.status = Status::Idle;
-        // Real prior conversation on disk so acquire takes the --resume path.
-        seed_claude_transcript(&inst.project_path, &stale_sid);
-
-        let xs = vec![inst.clone()];
-        storage
-            .update(|i, g| {
-                *i = xs.to_vec();
-                *g = crate::session::GroupTree::new_with_groups(&xs, &[]).get_all_groups();
-                Ok(())
-            })
-            .unwrap();
-
-        let tmux_name = crate::tmux::Session::generate_name(&inst.id, &inst.title);
-        let _ = crate::tmux::tmux_command()
-            .args(["kill-session", "-t", &tmux_name])
-            .output();
-
-        let outcome = inst.start_with_resume_fallback(None, true, ResumeAttemptPolicy::Allow);
-
-        let _ = crate::tmux::tmux_command()
-            .args(["kill-session", "-t", &tmux_name])
-            .output();
-
+        };
+        let outcome = f
+            .inst
+            .start_with_resume_fallback(None, true, ResumeAttemptPolicy::Allow);
         assert_eq!(
             outcome.unwrap(),
             StartOutcome::ResumeFailed {
-                sid: stale_sid.clone(),
-            },
-            "Allow must ignore auto_resume_on_restart=false and still attempt resume"
+                sid: sid.to_string()
+            }
         );
     }
 
-    // #2609 core bug: a sid whose resume probe already failed once must never be retried
-    // automatically.
+    /// A sid whose resume probe already failed is never retried automatically (#2609).
     #[test]
     #[serial]
     fn stale_probe_failed_sid_is_not_retried_on_next_attempt() {
-        if crate::tmux::tmux_command().arg("-V").output().is_err() {
-            eprintln!("tmux not available; skipping");
+        let sid = "66666666-6666-6666-6666-666666666666";
+        let Some(mut f) = fallback_fixture("fb-loop-break", sid, "#!/bin/sh\nexit 1\n", true, None)
+        else {
             return;
-        }
-        let temp = tempdir().unwrap();
-        let project_dir = temp.path().join("project");
-        std::fs::create_dir_all(&project_dir).unwrap();
-        let project_path = project_dir.to_str().unwrap();
-        let _env = isolate_resume_environment(temp.path());
-
-        let storage = crate::session::storage::Storage::new_unwatched("fb-loop-break").unwrap();
-
-        let stale_sid = "66666666-6666-6666-6666-666666666666".to_string();
-        let mut inst = Instance::new("fallback_loop_break_test", project_path);
-        inst.tool = "claude".to_string();
-        inst.source_profile = "fb-loop-break".to_string();
-        let _fake_claude = install_fake_claude(temp.path(), "#!/bin/sh\nexit 1\n");
-        inst.command = "claude".to_string();
-        inst.agent_session_id = Some(stale_sid.clone());
-        inst.status = Status::Idle;
-        // Real prior conversation on disk so the FIRST attempt takes the --resume path (and fails).
-        seed_claude_transcript(&inst.project_path, &stale_sid);
-
-        let xs = vec![inst.clone()];
-        storage
-            .update(|i, g| {
-                *i = xs.to_vec();
-                *g = crate::session::GroupTree::new_with_groups(&xs, &[]).get_all_groups();
-                Ok(())
-            })
-            .unwrap();
-
-        let tmux_name = crate::tmux::Session::generate_name(&inst.id, &inst.title);
-        let _ = crate::tmux::tmux_command()
-            .args(["kill-session", "-t", &tmux_name])
-            .output();
-
-        // First attempt: reproduces the pre-existing `ResumeFailed` path,
-        // exactly like `fallback_marks_resume_failed_and_preserves_sid_when_pane_dies`.
-        let first = inst
+        };
+        let first = f
+            .inst
             .start_with_resume_fallback(None, true, ResumeAttemptPolicy::Allow)
             .unwrap();
         assert_eq!(
             first,
             StartOutcome::ResumeFailed {
-                sid: stale_sid.clone(),
+                sid: sid.to_string()
             }
         );
-        assert_eq!(
-            inst.resume_probe_failed_sid.as_deref(),
-            Some(stale_sid.as_str())
-        );
+        assert_eq!(f.inst.resume_probe_failed_sid.as_deref(), Some(sid));
 
-        // Second attempt, same sid, same doomed command: on the pre-fix tree this reproduces the
-        // reported bug (identical `ResumeFailed` forever).
-        inst.kill_clean().unwrap();
-        let second = inst
+        f.inst.kill_clean().unwrap();
+        let second = f
+            .inst
             .start_with_resume_fallback(None, true, ResumeAttemptPolicy::Allow)
             .unwrap();
-
-        let _ = crate::tmux::tmux_command()
-            .args(["kill-session", "-t", &tmux_name])
-            .output();
-
         assert_eq!(
             second,
             StartOutcome::FreshAfterFailedResume {
-                sid: stale_sid.clone(),
-            },
-            "a sid that already failed a resume probe must not be retried automatically"
+                sid: sid.to_string()
+            }
         );
-        assert_ne!(
-            inst.agent_session_id.as_deref(),
-            Some(stale_sid.as_str()),
-            "loop-breaker must generate a fresh sid instead of repeating the doomed one"
-        );
-        assert_eq!(
-            inst.resume_probe_failed_sid, None,
-            "loop-breaker's fresh launch clears the stale marker, matching ResumeIntent::Cleared semantics"
-        );
+        assert_ne!(f.inst.agent_session_id.as_deref(), Some(sid));
+        assert_eq!(f.inst.resume_probe_failed_sid, None);
     }
 
     #[test]
     #[serial]
     fn resume_failed_fires_when_pane_dies_inside_post_shell_grace_window() {
-        if crate::tmux::tmux_command().arg("-V").output().is_err() {
-            eprintln!("tmux not available; skipping");
+        let sid = "33333333-3333-3333-3333-333333333333";
+        let script =
+            format!("#!/bin/sh\ncase \"$*\" in *{sid}*) exec sleep 30 ;; esac\nexec sleep 30\n");
+        let Some(mut f) = fallback_fixture("fb-test-grace", sid, &script, true, None) else {
             return;
-        }
-        let temp = tempdir().unwrap();
-        let project_dir = temp.path().join("project");
-        std::fs::create_dir_all(&project_dir).unwrap();
-        let project_path = project_dir.to_str().unwrap();
-        let _env = isolate_resume_environment(temp.path());
-
-        let storage = crate::session::storage::Storage::new_unwatched("fb-test-grace").unwrap();
-
-        let stale_sid = "33333333-3333-3333-3333-333333333333".to_string();
-        let mut inst = Instance::new("fallback_grace_test", project_path);
-        inst.tool = "claude".to_string();
-        inst.source_profile = "fb-test-grace".to_string();
-        let script = format!(
-            "#!/bin/sh\ncase \"$*\" in *{stale}*) exec sleep 30 ;; esac\nexec sleep 30\n",
-            stale = stale_sid,
-        );
-        let _fake_claude = install_fake_claude(temp.path(), &script);
-        inst.command = "claude".to_string();
-        inst.agent_session_id = Some(stale_sid.clone());
-        inst.status = Status::Idle;
-        // Real prior conversation on disk so acquire takes the --resume path.
-        seed_claude_transcript(&inst.project_path, &stale_sid);
-
-        let xs = vec![inst.clone()];
-        storage
-            .update(|i, g| {
-                *i = xs.to_vec();
-                *g = crate::session::GroupTree::new_with_groups(&xs, &[]).get_all_groups();
-                Ok(())
-            })
-            .unwrap();
-
-        let tmux_name = crate::tmux::Session::generate_name(&inst.id, &inst.title);
-        let _ = crate::tmux::tmux_command()
-            .args(["kill-session", "-t", &tmux_name])
-            .output();
-
-        let _pane = crate::tmux::test_helpers::TmuxTestSession::from_name(tmux_name.clone());
+        };
+        let _pane = crate::tmux::test_helpers::TmuxTestSession::from_name(f.tmux_name.clone());
         let observed = std::rc::Rc::new(std::cell::Cell::new(false));
         let observed_in_probe = observed.clone();
-        let probe_name = tmux_name.clone();
+        let probe_name = f.tmux_name.clone();
         POST_SHELL_OBSERVER.with(|slot| {
             *slot.borrow_mut() = Some(Box::new(move |session| {
                 assert!(session.exists());
@@ -1078,28 +895,23 @@ mod tests {
             }))
         });
         let _observer = PostShellObserver;
-        let outcome = inst.start_with_resume_fallback(None, true, ResumeAttemptPolicy::Allow);
+        let outcome = f
+            .inst
+            .start_with_resume_fallback(None, true, ResumeAttemptPolicy::Allow);
         assert!(
             observed.get(),
             "the observer must enter the post-shell grace branch before death"
         );
-
-        let _ = crate::tmux::tmux_command()
-            .args(["kill-session", "-t", &tmux_name])
-            .output();
-
         assert_eq!(
             outcome.unwrap(),
             StartOutcome::ResumeFailed {
-                sid: stale_sid.clone()
+                sid: sid.to_string()
             }
         );
-        assert_eq!(inst.agent_session_id.as_deref(), Some(stale_sid.as_str()));
-        assert_eq!(
-            inst.resume_probe_failed_sid.as_deref(),
-            Some(stale_sid.as_str())
-        );
+        assert_eq!(f.inst.agent_session_id.as_deref(), Some(sid));
+        assert_eq!(f.inst.resume_probe_failed_sid.as_deref(), Some(sid));
     }
+
     #[test]
     fn pinned_fresh_probe_uses_resolved_alias_capability() {
         const PROFILE: &str = "pinned-probe-alias";
