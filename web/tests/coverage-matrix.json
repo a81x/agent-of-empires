@@ -1672,6 +1672,8 @@
       "components": [
         "web/src/components/diff/CopyPathContextMenu.tsx",
         "web/src/components/diff/DiffFileList.tsx",
+        "web/src/components/diff/DiffFileRows.tsx",
+        "web/src/components/diff/BasePicker.tsx",
         "web/src/lib/clipboard.ts"
       ]
     },
