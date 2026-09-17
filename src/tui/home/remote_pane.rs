@@ -134,7 +134,7 @@ impl HomeView {
         changed
     }
 
-    fn remote_live_key(&self) -> Option<RemoteKey> {
+    pub(super) fn remote_live_key(&self) -> Option<RemoteKey> {
         self.live_send.as_ref()?.remote_key()
     }
 
@@ -210,6 +210,13 @@ impl HomeView {
         if !bytes.is_empty() {
             self.remote_preview.send(PreviewCommand::Input(bytes));
         }
+    }
+
+    /// Scroll a watched remote pane this viewer is not driving. `col`/`row` are
+    /// 0-based pane cells; the daemon encodes the notch for the pane's modes.
+    pub(super) fn send_remote_wheel(&self, up: bool, col: u16, row: u16) {
+        self.remote_preview
+            .send(PreviewCommand::Wheel { up, col, row });
     }
 
     /// Render the selected remote row into the preview pane.

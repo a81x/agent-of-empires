@@ -456,7 +456,7 @@ fn autoscroll_does_not_forward_to_normal_pane() {
 
 /// A full-screen app with mouse tracking but in the LEGACY (non-SGR)
 /// encoding is still forwarded; the byte builder emits X10-encoded
-/// bytes for it instead of SGR (see `wheel_mouse_bytes_legacy_encodes_x10`).
+/// bytes for it instead of SGR (see `crate::tmux::mouse`).
 /// Forwarding pins the preview to the live edge like the SGR case.
 #[test]
 #[serial]

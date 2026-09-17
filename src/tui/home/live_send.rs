@@ -428,13 +428,6 @@ pub(in crate::tui) fn format_target_label(title: &str, target: &LiveSendTarget) 
 pub(super) enum TmuxAction {
     Literal(String),
     Named(String),
-    /// `send-keys -N <count> <name>`: the named key repeated `count` times
-    /// in one fork. Consecutive runs of the same key (e.g. several wheel
-    /// notches drained in one batch) fold their counts together.
-    NamedRepeat {
-        name: String,
-        count: usize,
-    },
     HexBytes(Vec<u8>),
     /// A multi-line paste routed through `paste-buffer -p`.
     Paste(String),
@@ -465,16 +458,6 @@ pub(super) fn coalesce(batch: Vec<WorkerMsg>) -> Vec<TmuxAction> {
             WorkerMsg::Send(TmuxKey::Named(name)) => {
                 flush(&mut out, &mut run);
                 out.push(TmuxAction::Named(name));
-            }
-            WorkerMsg::Send(TmuxKey::NamedRepeat { name, count }) => {
-                flush(&mut out, &mut run);
-                match out.last_mut() {
-                    Some(TmuxAction::NamedRepeat {
-                        name: prev_name,
-                        count: prev_count,
-                    }) if *prev_name == name => *prev_count += count,
-                    _ => out.push(TmuxAction::NamedRepeat { name, count }),
-                }
             }
             WorkerMsg::Send(TmuxKey::HexBytes(bytes)) => {
                 flush(&mut out, &mut run);
@@ -2417,14 +2400,6 @@ fn dispatch_via_fork(
         TmuxAction::Named(name) => {
             cmd.args(["send-keys", "-t", &target, name.as_str()]);
         }
-        TmuxAction::NamedRepeat { name, count } => {
-            // `-N <count>` repeats the key `count` times in one fork. tmux
-            // renders each press in the pane's current cursor-key mode, so
-            // the wheel-forward arrows honor DECCKM just like a single
-            // `Named` does.
-            let count = count.to_string();
-            cmd.args(["send-keys", "-t", &target, "-N", &count, name.as_str()]);
-        }
         TmuxAction::HexBytes(bytes) => {
             // `-H` sends each subsequent arg as the hex byte value of an
             // ASCII character. We use this for control bytes (CR, TAB,
@@ -2475,10 +2450,6 @@ fn encode_action_bytes(action: &TmuxAction, app_cursor: bool) -> Vec<u8> {
         // Already raw control bytes (CR/TAB/ESC, bracketed-paste markers).
         TmuxAction::HexBytes(bytes) => bytes.clone(),
         TmuxAction::Named(name) => encode_named_key(name, app_cursor),
-        TmuxAction::NamedRepeat { name, count } => {
-            let one = encode_named_key(name, app_cursor);
-            one.repeat(*count)
-        }
         // Paste never reaches here: the vt fast path is skipped for it so
         // tmux can make the bracketed-paste decision.
         TmuxAction::Paste(_) => Vec::new(),
@@ -2501,7 +2472,6 @@ pub(super) fn encode_key_bytes(key: &TmuxKey, app_cursor: bool) -> Vec<u8> {
     match key {
         TmuxKey::Literal(s) => s.clone().into_bytes(),
         TmuxKey::Named(name) => encode_named_key(name, app_cursor),
-        TmuxKey::NamedRepeat { name, count } => encode_named_key(name, app_cursor).repeat(*count),
         TmuxKey::HexBytes(bytes) => bytes.clone(),
         TmuxKey::Paste(text) => {
             let mut out = Vec::with_capacity(text.len() + 12);
@@ -2726,16 +2696,6 @@ mod vt_input_encode_tests {
             encode_action_bytes(&TmuxAction::Literal("hi".into()), false),
             b"hi"
         );
-        assert_eq!(
-            encode_action_bytes(
-                &TmuxAction::NamedRepeat {
-                    name: "Up".into(),
-                    count: 3
-                },
-                false
-            ),
-            b"\x1b[A\x1b[A\x1b[A"
-        );
         // Resize is never pane input -> empty here (handled by the fork path).
         assert!(encode_action_bytes(&TmuxAction::Resize { cols: 80, rows: 24 }, false).is_empty());
     }
@@ -2780,7 +2740,6 @@ pub(super) fn send_key_oneshot(tmux_name: &str, key: TmuxKey) {
     let action = match key {
         TmuxKey::Literal(s) => TmuxAction::Literal(s),
         TmuxKey::Named(name) => TmuxAction::Named(name),
-        TmuxKey::NamedRepeat { name, count } => TmuxAction::NamedRepeat { name, count },
         TmuxKey::HexBytes(bytes) => TmuxAction::HexBytes(bytes),
         TmuxKey::Paste(text) => TmuxAction::Paste(text),
     };
@@ -2867,8 +2826,7 @@ pub(super) enum LiveDispatch {
 
 /// How the translator wants the keystroke delivered. `Literal` payloads
 /// go through `tmux send-keys -l --`, named keys through `tmux send-keys`,
-/// `NamedRepeat` through `tmux send-keys -N <count>` (one fork for N
-/// presses of the same key), and `HexBytes` through
+/// and `HexBytes` through
 /// `tmux send-keys -H <byte> <byte> ...` for raw bytes that can't ride a
 /// literal payload (control bytes like ESC, CR, TAB, and the
 /// bracketed-paste markers).
@@ -2876,13 +2834,6 @@ pub(super) enum LiveDispatch {
 pub(super) enum TmuxKey {
     Literal(String),
     Named(String),
-    /// A named key sent `count` times in a single fork. The wheel-forward
-    /// path uses this to deliver a notch's worth of arrow presses without
-    /// one fork per press.
-    NamedRepeat {
-        name: String,
-        count: usize,
-    },
     HexBytes(Vec<u8>),
     /// A multi-line paste, delivered through tmux's `paste-buffer -p` so
     /// tmux decides whether the receiving program gets bracketed-paste
@@ -3500,69 +3451,6 @@ mod tests {
             vec![
                 TmuxAction::Named("Up".into()),
                 TmuxAction::Named("Up".into()),
-            ]
-        );
-    }
-
-    fn snd_named_repeat(name: &str, count: usize) -> WorkerMsg {
-        WorkerMsg::Send(TmuxKey::NamedRepeat {
-            name: name.into(),
-            count,
-        })
-    }
-
-    #[test]
-    fn coalesce_same_named_repeats_fold_counts() {
-        // Several wheel notches drained in one batch collapse to a single
-        // `send-keys -N <total>` fork.
-        let out = coalesce(vec![snd_named_repeat("Up", 3), snd_named_repeat("Up", 3)]);
-        assert_eq!(
-            out,
-            vec![TmuxAction::NamedRepeat {
-                name: "Up".into(),
-                count: 6,
-            }]
-        );
-    }
-
-    #[test]
-    fn coalesce_different_named_repeats_do_not_fold() {
-        // A direction change (Up then Down) must not merge; the counts and
-        // order have to survive so the agent scrolls each way in turn.
-        let out = coalesce(vec![snd_named_repeat("Up", 3), snd_named_repeat("Down", 3)]);
-        assert_eq!(
-            out,
-            vec![
-                TmuxAction::NamedRepeat {
-                    name: "Up".into(),
-                    count: 3,
-                },
-                TmuxAction::NamedRepeat {
-                    name: "Down".into(),
-                    count: 3,
-                },
-            ]
-        );
-    }
-
-    #[test]
-    fn coalesce_named_repeat_flushes_literal_run() {
-        // Order must hold: literals typed before the wheel notch flush
-        // ahead of the arrow repeat, never after it.
-        let out = coalesce(vec![
-            snd_lit("ab"),
-            snd_named_repeat("Down", 3),
-            snd_lit("cd"),
-        ]);
-        assert_eq!(
-            out,
-            vec![
-                TmuxAction::Literal("ab".into()),
-                TmuxAction::NamedRepeat {
-                    name: "Down".into(),
-                    count: 3,
-                },
-                TmuxAction::Literal("cd".into()),
             ]
         );
     }
@@ -4534,18 +4422,5 @@ mod remote_input_tests {
     fn encode_key_bytes_brackets_a_paste() {
         let bytes = encode_key_bytes(&TmuxKey::Paste("a\nb".to_string()), false);
         assert_eq!(bytes, b"\x1b[200~a\nb\x1b[201~");
-    }
-
-    #[test]
-    fn encode_key_bytes_repeats_a_named_run() {
-        let one = encode_key_bytes(&TmuxKey::Named("Down".to_string()), false);
-        let three = encode_key_bytes(
-            &TmuxKey::NamedRepeat {
-                name: "Down".to_string(),
-                count: 3,
-            },
-            false,
-        );
-        assert_eq!(three, one.repeat(3));
     }
 }

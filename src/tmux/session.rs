@@ -1261,6 +1261,21 @@ impl Session {
     /// when both probes agree; a raced frame paints content with no cursor,
     /// which beats painting it on the wrong row. At rest the first try
     /// agrees and the cursor never blinks.
+    /// The pane's cursor and modes straight from tmux, bypassing any VT grid,
+    /// whose parser can miss a mode reset such as a respawned pane's.
+    pub fn pane_cursor(&self) -> Option<PaneCursor> {
+        let target = format!("={}:^", self.name);
+        let mut command = crate::tmux::tmux_command();
+        command.args(["display-message", "-p", "-t", &target, "-F", CURSOR_FMT]);
+        let output = crate::tmux::TmuxCommandDeadline::new()
+            .run(&mut command)
+            .ok()?;
+        if !output.status.success() {
+            return None;
+        }
+        PaneCursor::parse(String::from_utf8_lossy(&output.stdout).trim())
+    }
+
     pub fn capture_pane_with_cursor(&self, lines: usize) -> Result<(String, Option<PaneCursor>)> {
         let deadline = crate::tmux::TmuxCommandDeadline::new();
         self.capture_pane_with_cursor_with_deadline(lines, &deadline)

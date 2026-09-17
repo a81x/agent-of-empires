@@ -3,6 +3,7 @@
 pub(crate) mod composite;
 pub(crate) mod detect;
 pub(crate) mod env;
+pub(crate) mod mouse;
 pub(crate) mod osc8;
 mod session;
 mod session_kind;

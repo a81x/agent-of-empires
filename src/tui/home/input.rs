@@ -267,37 +267,11 @@ fn map_pane_cell(pane: ratatui::layout::Rect, col: u16, row: u16) -> (u16, u16) 
     }
 }
 
-/// Build the mouse-wheel byte sequence to forward to a full-screen app
-/// under the live preview. `up` selects wheel-up (button 64) vs wheel-down
-/// (65); `sgr` selects the SGR (1006) encoding vs the legacy X10 encoding,
-/// matching whatever the app has enabled.
-fn wheel_mouse_bytes(
-    up: bool,
-    sgr: bool,
-    pane: ratatui::layout::Rect,
-    col: u16,
-    row: u16,
-) -> Vec<u8> {
-    let (cx, cy) = map_pane_cell(pane, col, row);
-    let button: u16 = if up { 64 } else { 65 };
-    if sgr {
-        // SGR (1006): textual, press marker `M`. No coordinate limit.
-        format!("\x1b[<{button};{cx};{cy}M").into_bytes()
-    } else {
-        // Legacy X10: `ESC [ M` then three bytes, each the value + 32.
-        // Bytes top out at 255, so coordinates above 223 can't be
-        // encoded; clamp there (preview cells are far below that anyway).
-        let enc = |v: u16| (v.min(223) + 32) as u8;
-        vec![0x1b, b'[', b'M', enc(button), enc(cx), enc(cy)]
-    }
-}
-
 /// Build the byte sequence for a single forwarded mouse button event at
 /// screen cell `(col, row)`, mapped into the app's pane. `base_button` is the
 /// SGR low-bits code (left=0, middle=1, right=2); `release` is a button-up;
 /// `motion` is a drag (button held while moving). `sgr` picks SGR (1006) vs
-/// the legacy X10 encoding, matching the app. Mirrors `wheel_mouse_bytes`,
-/// which is just the wheel buttons (64/65).
+/// the legacy X10 encoding, matching the app.
 fn mouse_event_bytes(
     base_button: u16,
     release: bool,
@@ -308,20 +282,8 @@ fn mouse_event_bytes(
     row: u16,
 ) -> Vec<u8> {
     let (cx, cy) = map_pane_cell(pane, col, row);
-    // The motion bit (32) rides on press/drag reports in both encodings.
     let cb = base_button + if motion { 32 } else { 0 };
-    if sgr {
-        // SGR (1006): press/drag end with `M`, release with `m`; the button
-        // identity survives on release (unlike X10).
-        let end = if release { 'm' } else { 'M' };
-        format!("\x1b[<{cb};{cx};{cy}{end}").into_bytes()
-    } else {
-        // Legacy X10: `ESC [ M` then three bytes, each value + 32 (clamped at
-        // 223). A release can't carry a button, so it uses the agnostic 3.
-        let enc = |v: u16| (v.min(223) + 32) as u8;
-        let btn = if release { 3 } else { cb };
-        vec![0x1b, b'[', b'M', enc(btn), enc(cx), enc(cy)]
-    }
+    crate::tmux::mouse::mouse_report_bytes(cb, release, sgr, cx, cy)
 }
 
 /// The bare mouse-motion (hover) bytes to forward to the previewed pane, or
@@ -344,17 +306,25 @@ fn hover_forward_bytes(
         .then(|| mouse_event_bytes(3, false, true, cursor.mouse_sgr, target, col, row))
 }
 
-/// Page presses delivered per wheel notch for a no-mouse full-screen app.
-/// One page per notch: full-screen apps that scroll on `PageUp`/`PageDown`
-/// (Claude Code's fullscreen renderer is the motivating case) have no finer
-/// keyboard step, and a page per notch reads as a normal "flick to scroll".
-const WHEEL_PAGE_STEP: usize = 1;
+/// The 1-based pane cell a wheel notch over screen cell `(col, row)` forwards
+/// at, or `None` to fall back to the capture-window scroll: the pane is on the
+/// normal screen, or the pointer is outside pane 0 of a composite, where no
+/// pane takes the input. See `forward_wheel_to_preview`.
+fn wheel_forward_cell(
+    cursor: &crate::tmux::PaneCursor,
+    pane: ratatui::layout::Rect,
+    col: u16,
+    row: u16,
+) -> Option<(u16, u16)> {
+    if !cursor.alternate_on {
+        return None;
+    }
+    let target = mouse_target_rect(cursor, pane, col, row)?;
+    Some(map_pane_cell(target, col, row))
+}
 
-/// Decide what to forward to the previewed full-screen pane for one wheel
-/// notch, or `None` to fall back to the capture-window scroll. Pure so the
-/// branch the fix turns on (page keys vs. raw mouse bytes vs. no forward) is
-/// asserted directly, without standing up a worker. See
-/// `forward_wheel_to_preview` for the full rationale.
+/// The key a wheel notch forwards to the previewed pane, or `None` to fall
+/// back to the capture-window scroll.
 fn wheel_forward_key(
     cursor: &crate::tmux::PaneCursor,
     up: bool,
@@ -362,32 +332,8 @@ fn wheel_forward_key(
     col: u16,
     row: u16,
 ) -> Option<live_send::TmuxKey> {
-    if !cursor.alternate_on {
-        return None;
-    }
-    // Outside pane 0 on a composited preview there is nothing to drive: the
-    // pointer is over a pane that receives no input, and paging pane 0 because
-    // the wheel turned somewhere else would be a scroll the user did not aim.
-    let target = mouse_target_rect(cursor, pane, col, row)?;
-    if cursor.mouse_tracking {
-        Some(live_send::TmuxKey::HexBytes(wheel_mouse_bytes(
-            up,
-            cursor.mouse_sgr,
-            target,
-            col,
-            row,
-        )))
-    } else {
-        // No mouse tracking: send `PageUp`/`PageDown`, NOT arrow keys. A
-        // full-screen app reads arrow keys as cursor / input-history
-        // navigation, not scroll (Claude Code 2.1.x even surfaces "Scroll
-        // wheel is sending arrow keys, use PgUp/PgDn to scroll"). The page
-        // keys scroll its transcript regardless of cursor-key mode.
-        Some(live_send::TmuxKey::NamedRepeat {
-            name: if up { "PageUp" } else { "PageDown" }.to_string(),
-            count: WHEEL_PAGE_STEP,
-        })
-    }
+    let (cx, cy) = wheel_forward_cell(cursor, pane, col, row)?;
+    crate::tmux::mouse::wheel_notch_bytes(cursor, up, cx, cy).map(live_send::TmuxKey::HexBytes)
 }
 
 fn resolve_hook_install_agent(
@@ -922,7 +868,7 @@ impl HomeView {
         // the way the wheel forward does (#2421). The extent stays pinned to the
         // screen edge; the agent's redraw is what reveals more text under the
         // held selection.
-        if forward_ready && self.forward_scroll_to_preview(at_top, col, row) {
+        if forward_ready && self.forward_wheel_to_preview(at_top, col, row) {
             self.preview_autoscroll_at = Some(now);
             return true;
         }
@@ -4434,60 +4380,32 @@ impl HomeView {
     }
 
     /// Forward one wheel notch to the previewed full-screen (alternate-screen)
-    /// pane so it scrolls its OWN content, exactly as a terminal does on
-    /// direct attach. Active in BOTH live-send and passive preview: the
-    /// alternate screen has no scrollback, so the preview's capture-window
-    /// scroll is inert there (growing the window only exposes the unrelated
-    /// normal-buffer history and bottoms out at the session start), and
-    /// forwarding is the only way to reach the agent's history. Branched on
-    /// what the app asked for (see `wheel_forward_key`):
+    /// pane so it scrolls its OWN content, as a terminal does on direct attach.
+    /// The alternate screen has no scrollback, so the capture-window scroll is
+    /// inert there and forwarding is the only way to reach the app's history.
+    /// A mouse-tracking app gets a wheel report, any other a page key (see
+    /// [`crate::tmux::mouse::wheel_notch_bytes`]). Normal-buffer panes are not
+    /// forwarded, so the caller keeps the capture-window scroll.
     ///
-    /// * **Mouse tracking on**: forward the wheel as a mouse event, encoding
-    ///   following the app (SGR 1006 when `mouse_sgr` is set, else legacy
-    ///   X10). The previewed pane is sized to the preview rect in both modes
-    ///   (`passive_pane_synced` / the live-send sync resize), so the mapped
-    ///   coordinates land inside it.
-    /// * **Mouse tracking off**: send `PageUp`/`PageDown`, not arrow keys. A
-    ///   full-screen app reads arrows as cursor / input-history navigation,
-    ///   not scroll; the page keys scroll its transcript regardless of mode.
-    ///   Claude Code's fullscreen renderer is the motivating case (#2407).
-    ///
-    /// Normal-buffer panes get `None` from `wheel_forward_key`, so the caller
-    /// keeps the capture-window scroll (which reaches real scrollback there).
-    ///
-    /// In live-send the key rides the ordered `LiveSendWorker` so it stays in
-    /// sequence with typed keystrokes. In passive preview there is no worker,
-    /// so it goes out as a one-shot fork to the previewed pane's tmux target.
+    /// Active in live-send and passive preview alike, and for the edge-held
+    /// selection autoscroll. A passive remote pane takes no input from this
+    /// viewer, so the daemon encodes the notch itself from a `wheel` message.
     /// Returns true when the event was forwarded.
     fn forward_wheel_to_preview(&self, up: bool, col: u16, row: u16) -> bool {
-        let cursor = self.active_preview_cursor();
-        let Some(cursor) = cursor else { return false };
-        let Some(key) = wheel_forward_key(&cursor, up, self.preview_text_view.pane, col, row)
-        else {
-            return false;
-        };
-        self.send_to_preview_pane(key)
-    }
-
-    /// During an edge-held preview selection over a full-screen
-    /// (alternate-screen) agent, the aoe capture-window scroll is inert (the
-    /// alternate screen has no scrollback, so `scroll_preview_offset` can't
-    /// move), so forward the SAME scroll input one wheel notch would, scrolling
-    /// the agent's OWN transcript. Mirrors `forward_wheel_to_preview` by reusing
-    /// `wheel_forward_key`: a mouse-tracking app gets a wheel-up/down mouse
-    /// report at the held cell (PageUp does nothing while it owns the mouse), a
-    /// no-mouse app gets `PageUp`/`PageDown`. `wheel_forward_key` also enforces
-    /// the alternate-screen gate, so a normal-buffer pane that has merely
-    /// bottomed out its scrollback never gets scroll input injected into its
-    /// shell. `up` selects the top-edge (scroll back) vs bottom-edge (scroll
-    /// forward) direction; `col`/`row` is the held pointer cell, mapped into the
-    /// pane for the mouse-byte encoding. Returns true when something was sent.
-    fn forward_scroll_to_preview(&self, up: bool, col: u16, row: u16) -> bool {
         let Some(cursor) = self.active_preview_cursor() else {
             return false;
         };
-        let Some(key) = wheel_forward_key(&cursor, up, self.preview_text_view.pane, col, row)
-        else {
+        let pane = self.preview_text_view.pane;
+        if self.selected_remote.is_some() && self.remote_live_key() != self.remote_preview_key {
+            let Some((cx, cy)) = wheel_forward_cell(&cursor, pane, col, row) else {
+                return false;
+            };
+            // A pane taller than the preview is shown bottom-anchored.
+            let clipped = cursor.pane_height.saturating_sub(pane.height);
+            self.send_remote_wheel(up, cx - 1, cy - 1 + clipped);
+            return true;
+        }
+        let Some(key) = wheel_forward_key(&cursor, up, pane, col, row) else {
             return false;
         };
         self.send_to_preview_pane(key)
@@ -7066,53 +6984,20 @@ mod tests {
     use crate::session::config::{SessionConfig, ToolSessionConfig};
 
     #[test]
-    fn wheel_mouse_bytes_sgr_maps_cell_and_button() {
-        use ratatui::layout::Rect;
-        // Pane at (10,5), 80x24. Wheel up over screen cell (12,7) maps to
-        // 1-based pane cell (3,3): cx = 12-10+1, cy = 7-5+1.
-        let pane = Rect::new(10, 5, 80, 24);
-        assert_eq!(
-            wheel_mouse_bytes(true, true, pane, 12, 7),
-            b"\x1b[<64;3;3M".to_vec()
-        );
-        // Wheel down flips the button to 65.
-        assert_eq!(
-            wheel_mouse_bytes(false, true, pane, 12, 7),
-            b"\x1b[<65;3;3M".to_vec()
-        );
-        // A cell past the pane edge clamps to the last column/row.
-        assert_eq!(
-            wheel_mouse_bytes(true, true, pane, 999, 999),
-            b"\x1b[<64;80;24M".to_vec()
-        );
-        // An unpopulated rect falls back to the top-left cell.
-        assert_eq!(
-            wheel_mouse_bytes(true, true, Rect::new(0, 0, 0, 0), 40, 40),
-            b"\x1b[<64;1;1M".to_vec()
-        );
-    }
-
-    #[test]
-    fn wheel_mouse_bytes_legacy_encodes_x10() {
+    fn wheel_forward_key_maps_the_cell_into_the_pane() {
         use ratatui::layout::Rect;
         let pane = Rect::new(10, 5, 80, 24);
-        // Legacy X10: ESC [ M then (button+32, col+32, row+32). Cell (3,3),
-        // wheel up (button 64) => 0x60, 0x23, 0x23.
-        assert_eq!(
-            wheel_mouse_bytes(true, false, pane, 12, 7),
-            vec![0x1b, b'[', b'M', 64 + 32, 3 + 32, 3 + 32]
-        );
-        // Wheel down => button 65 => 0x61.
-        assert_eq!(
-            wheel_mouse_bytes(false, false, pane, 12, 7),
-            vec![0x1b, b'[', b'M', 65 + 32, 3 + 32, 3 + 32]
-        );
-        // Coordinates above 223 can't be encoded in one byte; clamp there.
-        let wide = Rect::new(0, 0, 400, 400);
-        assert_eq!(
-            wheel_mouse_bytes(true, false, wide, 300, 300),
-            vec![0x1b, b'[', b'M', 64 + 32, 223 + 32, 223 + 32]
-        );
+        let sgr = cursor_for(true, true, true);
+        let bytes = |up, col, row, pane| match wheel_forward_key(&sgr, up, pane, col, row) {
+            Some(live_send::TmuxKey::HexBytes(b)) => b,
+            other => panic!("expected HexBytes, got {other:?}"),
+        };
+        // Screen cell (12,7) is 1-based pane cell (3,3).
+        assert_eq!(bytes(true, 12, 7, pane), b"\x1b[<64;3;3M");
+        assert_eq!(bytes(false, 12, 7, pane), b"\x1b[<65;3;3M");
+        // Past the edge clamps to the last cell; an unpopulated rect is (1,1).
+        assert_eq!(bytes(true, 999, 999, pane), b"\x1b[<64;80;24M");
+        assert_eq!(bytes(true, 40, 40, Rect::default()), b"\x1b[<64;1;1M");
     }
 
     #[test]
@@ -7327,11 +7212,8 @@ mod tests {
         assert!(mouse_target_rect(&cursor, pane, 2, 3).is_some());
     }
 
-    /// The fix for #2407: a full-screen pane with no mouse tracking must
-    /// forward `PageUp`/`PageDown`, NOT arrow keys (which an app reads as
-    /// cursor / input-history navigation, not scroll) and NOT raw mouse
-    /// bytes. Asserting the key variant guards against a regression to
-    /// either that the preview-offset behavioral test can't catch.
+    /// #2407: a full-screen pane with no mouse tracking gets page keys, not
+    /// arrow keys (cursor / input-history navigation) or mouse bytes.
     #[test]
     fn wheel_forward_key_no_mouse_alt_screen_is_page_key() {
         use ratatui::layout::Rect;
@@ -7339,17 +7221,11 @@ mod tests {
         let cursor = cursor_for(true, false, false);
         assert_eq!(
             wheel_forward_key(&cursor, true, pane, 10, 10),
-            Some(live_send::TmuxKey::NamedRepeat {
-                name: "PageUp".into(),
-                count: WHEEL_PAGE_STEP,
-            })
+            Some(live_send::TmuxKey::HexBytes(b"\x1b[5~".to_vec()))
         );
         assert_eq!(
             wheel_forward_key(&cursor, false, pane, 10, 10),
-            Some(live_send::TmuxKey::NamedRepeat {
-                name: "PageDown".into(),
-                count: WHEEL_PAGE_STEP,
-            })
+            Some(live_send::TmuxKey::HexBytes(b"\x1b[6~".to_vec()))
         );
     }
 

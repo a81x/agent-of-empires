@@ -36,6 +36,13 @@ pub(crate) enum PreviewCommand {
         cols: u16,
         rows: u16,
     },
+    /// One wheel notch at a 0-based pane cell, for a pane this viewer only
+    /// watches; the daemon ignores it unless the pane is full-screen.
+    Wheel {
+        up: bool,
+        col: u16,
+        row: u16,
+    },
     /// Capture `lines` of history plus screen; `fast` while at the live edge.
     Window {
         lines: usize,
@@ -87,6 +94,14 @@ impl RemotePreview {
             tracing::warn!(target: "tui.remote_preview", "worker spawn failed: {e}");
         }
         Self { commands, events }
+    }
+
+    /// A preview with no worker, whose commands land on the returned receiver.
+    #[cfg(test)]
+    pub(crate) fn recording() -> (Self, mpsc::UnboundedReceiver<PreviewCommand>) {
+        let (commands, recorded) = mpsc::unbounded_channel();
+        let (_, events) = std_mpsc::channel();
+        (Self { commands, events }, recorded)
     }
 
     pub(crate) fn send(&self, command: PreviewCommand) {
@@ -287,6 +302,12 @@ async fn run(
             PreviewCommand::Resize { cols, rows } => {
                 if let Some(c) = &conn {
                     c.size(cols, rows).await;
+                }
+            }
+            PreviewCommand::Wheel { up, col, row } => {
+                if let Some(c) = &conn {
+                    c.control(json!({"type": "wheel", "up": up, "col": col, "row": row}))
+                        .await;
                 }
             }
             PreviewCommand::Window { lines, fast } => {

@@ -522,6 +522,41 @@ fn a_remote_preview_scrolls_like_a_local_one_in_preview_and_live_send() {
 
 #[test]
 #[serial]
+fn a_wheel_over_a_full_screen_remote_pane_asks_the_daemon_unless_live_send_drives_it() {
+    use crate::tui::remote_preview::{PreviewCommand, RemotePreview};
+    let mut env = remote_preview_env();
+    let (preview, mut sent) = RemotePreview::recording();
+    env.view.remote_preview = preview;
+    env.view.preview_text_view.pane = ratatui::layout::Rect::new(30, 0, 100, 40);
+    let mut cursor = remote_frame(0, "").cursor;
+    cursor.alternate_on = true;
+    cursor.mouse_tracking = true;
+    cursor.mouse_sgr = true;
+    env.view.remote_preview_cache.session_id = Some("r1".into());
+    env.view.remote_preview_cache.cursor = Some(cursor);
+
+    assert!(env.view.handle_scroll_up(50, 10));
+    assert_eq!(env.view.preview_scroll_offset, 0);
+    assert!(matches!(
+        sent.try_recv(),
+        Ok(PreviewCommand::Wheel {
+            up: true,
+            col: 20,
+            row: 10
+        })
+    ));
+
+    assert!(env.view.activate_selected_session().is_none());
+    while sent.try_recv().is_ok() {}
+    assert!(env.view.handle_scroll_down(50, 10));
+    match sent.try_recv() {
+        Ok(PreviewCommand::Input(bytes)) => assert_eq!(bytes, b"\x1b[<65;21;11M"),
+        _ => panic!("live-send forwards the wheel as its own ordered input"),
+    }
+}
+
+#[test]
+#[serial]
 fn a_scrolled_back_remote_preview_holds_frames_until_it_returns_to_the_live_edge() {
     let mut env = remote_preview_env();
     env.view.remote_preview_frame = Some(remote_frame(200, "old"));

@@ -73,6 +73,13 @@
 //!     keeps capturing while the user reads (the agent runs on); a
 //!     scrolled-up client just asks for a bigger window and renders it
 //!     against a stable position via its spacer model.
+//!   `{"type":"wheel","up":bool,"col":N,"row":N}`: one wheel notch at a
+//!     0-based pane cell, accepted from any viewer that is not read-only so
+//!     a watcher can scroll without taking the pane. The server encodes it
+//!     from the pane's current modes (a wheel mouse report, or
+//!     PageUp/PageDown without mouse tracking) and drops it unless the pane
+//!     is on the alternate screen, whose history only the app can scroll.
+//!     Servers without it ignore the message.
 //!   `{"type":"resync"}`: the client lost patch continuity; the next publish
 //!     is a full frame.
 //!   `{"type":"caps","deflate":bool,"patch":bool}`: client capability
@@ -242,6 +249,8 @@ enum LiveControlMessage {
     /// The client lost patch continuity and needs a full frame.
     #[serde(rename = "resync")]
     Resync,
+    #[serde(rename = "wheel")]
+    Wheel { up: bool, col: u16, row: u16 },
 }
 
 /// Which transport renders a live surface. The agent pane takes the shared VT
@@ -1545,32 +1554,7 @@ async fn handle_live_ws_inner(
                         {
                             continue;
                         }
-                        let send_nudge = Arc::clone(&nudge);
-                        let name = tmux_name.clone();
-                        let bytes = data.to_vec();
-                        // A live VT channel with socket input (ours or another
-                        // surface's) is the pane's single input writer;
-                        // otherwise input goes through tmux send-keys. Cursor
-                        // keys are re-encoded for the pane's DECCKM state
-                        // before either.
-                        let _ = tokio::task::spawn_blocking(move || {
-                            #[cfg(unix)]
-                            let bytes = pane_input_bytes(&name, bytes);
-                            #[cfg(unix)]
-                            if crate::tmux::vt::input_mode(&name).is_some()
-                                && crate::tmux::vt::try_send_input(&name, &bytes)
-                            {
-                                return;
-                            }
-                            let session = crate::tmux::Session::from_name(&name);
-                            if let Err(e) = session.send_raw_bytes(&bytes) {
-                                warn!(target: "terminal.ws", tmux = %name, kind = "live", "send_raw_bytes failed: {}", e);
-                            }
-                        })
-                        .await;
-                        // Capture the echo promptly rather than waiting out
-                        // the current sleep.
-                        send_nudge.notify_one();
+                        write_pane_input(&tmux_name, data.to_vec(), &nudge).await;
                     }
                     Some(Ok(Message::Text(text))) => {
                         let Ok(control) = serde_json::from_str::<LiveControlMessage>(&text) else {
@@ -1711,6 +1695,27 @@ async fn handle_live_ws_inner(
                                 settings.force_full.store(true, Ordering::Relaxed);
                                 nudge.notify_one();
                             }
+                            LiveControlMessage::Wheel { up, col, row } => {
+                                // tmux, not the grid, is the authority here: a
+                                // stale alternate-screen flag would type the
+                                // report into a shell.
+                                let name = tmux_name.clone();
+                                let modes = if read_only {
+                                    None
+                                } else {
+                                    tokio::task::spawn_blocking(move || {
+                                        crate::tmux::Session::from_name(&name).pane_cursor()
+                                    })
+                                    .await
+                                    .ok()
+                                    .flatten()
+                                };
+                                if let Some(bytes) =
+                                    viewer_wheel_bytes(read_only, modes.as_ref(), up, col, row)
+                                {
+                                    write_pane_input(&tmux_name, bytes, &nudge).await;
+                                }
+                            }
                         }
                     }
                     Some(Ok(Message::Close(_))) | None => break,
@@ -1740,6 +1745,51 @@ async fn handle_live_ws_inner(
         .await;
     }
     debug!(target: "terminal.ws", tmux = %tmux_name, kind = "live", "live ws closed");
+}
+
+/// Write input into the pane, then nudge the capture loop so the echo lands
+/// without waiting out its sleep.
+async fn write_pane_input(tmux_name: &str, bytes: Vec<u8>, nudge: &tokio::sync::Notify) {
+    let name = tmux_name.to_string();
+    // A live VT channel with socket input (ours or another surface's) is the
+    // pane's single input writer; otherwise input goes through tmux
+    // send-keys. Cursor keys are re-encoded for the pane's DECCKM state
+    // before either.
+    let _ = tokio::task::spawn_blocking(move || {
+        #[cfg(unix)]
+        let bytes = pane_input_bytes(&name, bytes);
+        #[cfg(unix)]
+        if crate::tmux::vt::input_mode(&name).is_some()
+            && crate::tmux::vt::try_send_input(&name, &bytes)
+        {
+            return;
+        }
+        let session = crate::tmux::Session::from_name(&name);
+        if let Err(e) = session.send_raw_bytes(&bytes) {
+            warn!(target: "terminal.ws", tmux = %name, kind = "live", "send_raw_bytes failed: {}", e);
+        }
+    })
+    .await;
+    nudge.notify_one();
+}
+
+/// The bytes a `wheel` message sends, or `None` when the viewer may not
+/// scroll or the pane is not full-screen. The cell clamps into the pane.
+fn viewer_wheel_bytes(
+    read_only: bool,
+    modes: Option<&crate::tmux::PaneCursor>,
+    up: bool,
+    col: u16,
+    row: u16,
+) -> Option<Vec<u8>> {
+    let modes = modes.filter(|_| !read_only)?;
+    let cell = |v: u16, extent: u16| v.min(extent.saturating_sub(1)) + 1;
+    crate::tmux::mouse::wheel_notch_bytes(
+        modes,
+        up,
+        cell(col, modes.pane_width),
+        cell(row, modes.pane_height),
+    )
 }
 
 /// Serialize one snapshot frame. `rows` (pane height) and `history`
@@ -2173,6 +2223,51 @@ mod tests {
         ));
         let m: LiveControlMessage = serde_json::from_str(r#"{"type":"resync"}"#).unwrap();
         assert!(matches!(m, LiveControlMessage::Resync));
+    }
+
+    #[test]
+    fn a_viewer_wheel_scrolls_only_a_full_screen_pane_and_never_for_read_only() {
+        let m: LiveControlMessage =
+            serde_json::from_str(r#"{"type":"wheel","up":true,"col":4,"row":9}"#).unwrap();
+        assert!(matches!(
+            m,
+            LiveControlMessage::Wheel {
+                up: true,
+                col: 4,
+                row: 9
+            }
+        ));
+        let modes = |alternate_on, mouse_tracking| crate::tmux::PaneCursor {
+            x: 0,
+            y: 0,
+            visible: true,
+            pane_height: 24,
+            history_size: 0,
+            pane_width: 80,
+            alternate_on,
+            mouse_tracking,
+            mouse_sgr: true,
+            mouse_all: false,
+            position_reliable: true,
+            composite_pane0: None,
+        };
+        let mouse = modes(true, true);
+        assert_eq!(
+            viewer_wheel_bytes(false, Some(&mouse), true, 4, 9).as_deref(),
+            Some(b"\x1b[<64;5;10M".as_slice())
+        );
+        assert_eq!(
+            viewer_wheel_bytes(false, Some(&mouse), false, 500, 500).as_deref(),
+            Some(b"\x1b[<65;80;24M".as_slice()),
+            "the cell clamps into the pane"
+        );
+        assert_eq!(viewer_wheel_bytes(true, Some(&mouse), true, 4, 9), None);
+        assert_eq!(
+            viewer_wheel_bytes(false, Some(&modes(false, true)), true, 4, 9),
+            None,
+            "a normal-screen pane gets nothing"
+        );
+        assert_eq!(viewer_wheel_bytes(false, None, true, 4, 9), None);
     }
 
     /// Feed the deflater's binary payloads through one raw-inflate stream
