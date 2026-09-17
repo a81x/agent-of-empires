@@ -1908,6 +1908,7 @@ for line in sys.stdin:
         &serde_json::json!({"kind":"establish_session","method":"session/new","request":{"cwd":home,"mcpServers":[]}}),
     );
     assert_eq!(read_frame(&mut first)["kind"], "session_ready");
+    assert_eq!(read_frame(&mut first)["method"], "_aoe/session_replayed");
     answer(&mut first, false);
     drop(first);
 
