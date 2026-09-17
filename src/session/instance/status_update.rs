@@ -486,79 +486,72 @@ impl Instance {
 mod tests {
     use super::*;
     use crate::session::instance::test_helpers::*;
+    use std::time::{Duration, Instant};
 
     #[test]
-    fn test_skip_capture_requires_a_resolved_proposal() {
-        // The regression this guard reintroduced once: a turn ends, the poll that sees the final
-        // frame proposes Idle and holds it for a confirming poll, and the pane then draws nothing.
-        assert!(
-            !skip_capture(Some(100), Some(100), Some(101), false, true),
-            "a pending proposal must be resolved, not skipped past"
-        );
-        assert!(skip_capture(Some(100), Some(100), Some(101), false, false));
-
-        // A hook write changes the verdict without the pane drawing anything.
-        assert!(!skip_capture(Some(100), Some(100), Some(101), true, false));
-        // Fresh output, or no stamp to compare against at all.
-        assert!(!skip_capture(Some(101), Some(100), Some(102), false, false));
-        assert!(!skip_capture(None, None, Some(101), false, false));
-        assert!(!skip_capture(Some(100), None, Some(101), false, false));
-    }
-
-    #[test]
-    fn skip_capture_waits_for_a_capture_past_the_activity_second() {
-        // `#{window_activity}` is an epoch second and the poll runs twice a second, so two frames
-        // can share one value.
-        assert!(
-            !skip_capture(Some(100), Some(100), Some(100), false, false),
-            "a capture taken inside the activity second proves nothing about \
-             what was drawn later in it"
-        );
-        assert!(
-            !skip_capture(Some(100), Some(100), Some(99), false, false),
-            "nor does one taken before it"
-        );
-        assert!(
-            skip_capture(Some(100), Some(100), Some(101), false, false),
-            "a capture past the second is the proof the stamp claims to be"
-        );
-        // No capture recorded yet: nothing to date the stamp against.
-        assert!(!skip_capture(Some(100), Some(100), None, false, false));
-    }
-
-    #[test]
-    fn archived_row_with_frozen_live_status_settles_to_idle_on_poll() {
-        // A row archived by a build that predates archive()'s status degrade arrives here still
-        // claiming Waiting.
-        for status in [Status::Running, Status::Waiting, Status::Starting] {
-            let mut inst = Instance::new("test", "/tmp/test");
-            inst.status = status;
-            inst.archived_at = Some(Utc::now());
-            inst.update_status_with_metadata(None, None);
-            assert_eq!(inst.status, Status::Idle, "{status:?} must settle");
+    fn skip_capture_requires_an_unchanged_pane_captured_past_its_activity_second() {
+        // (activity, last activity, last capture second, has hook, pending) -> skip
+        for (args, skip) in [
+            ((Some(100), Some(100), Some(101), false, false), true),
+            // A pending proposal must be resolved by a capture, not skipped past.
+            ((Some(100), Some(100), Some(101), false, true), false),
+            ((Some(100), Some(100), Some(101), true, false), false),
+            ((Some(101), Some(100), Some(102), false, false), false),
+            ((None, None, Some(101), false, false), false),
+            ((Some(100), None, Some(101), false, false), false),
+            // A capture inside or before the activity second proves nothing (#3624).
+            ((Some(100), Some(100), Some(100), false, false), false),
+            ((Some(100), Some(100), Some(99), false, false), false),
+            ((Some(100), Some(100), None, false, false), false),
+        ] {
+            let (activity, last, taken, hook, pending) = args;
+            assert_eq!(
+                skip_capture(activity, last, taken, hook, pending),
+                skip,
+                "{args:?}"
+            );
         }
-        // Resting statuses on an archived row stay put.
-        for status in [
-            Status::Idle,
-            Status::Stopped,
-            Status::Error,
-            Status::Unknown,
+    }
+
+    #[test]
+    fn archived_poll_settles_live_status_and_keeps_resting_ones() {
+        for (status, expected) in [
+            (Status::Running, Status::Idle),
+            (Status::Waiting, Status::Idle),
+            (Status::Starting, Status::Idle),
+            (Status::Idle, Status::Idle),
+            (Status::Stopped, Status::Stopped),
+            (Status::Error, Status::Error),
+            (Status::Unknown, Status::Unknown),
         ] {
             let mut inst = Instance::new("test", "/tmp/test");
             inst.status = status;
             inst.archived_at = Some(Utc::now());
             inst.update_status_with_metadata(None, None);
-            assert_eq!(inst.status, status, "{status:?} should survive the poll");
+            assert_eq!(inst.status, expected, "{status:?}");
         }
+
+        // Archiving kills tmux on purpose: no Error for the missing session (#2206).
+        let mut inst = Instance::new("test", "/tmp/test");
+        inst.archive();
+        inst.update_status_with_metadata(None, None);
+        assert_eq!((inst.status, inst.last_error.clone()), (Status::Idle, None));
+
+        // A genuine failure survives archive and unarchive.
+        inst.status = Status::Error;
+        inst.last_error = Some("agent crashed".to_string());
+        inst.update_status_with_metadata(None, None);
+        assert_eq!(inst.status, Status::Error);
+        inst.unarchive();
+        inst.update_status_with_metadata(None, None);
+        assert_eq!(inst.status, Status::Error);
+        assert_eq!(inst.last_error.as_deref(), Some("agent crashed"));
     }
 
     #[test]
-    fn test_confirm_detection_holds_only_unwitnessed_idle() {
-        // The one change a mid-redraw frame produces is a running session reading as a plain Idle,
-        // so that is the only one that waits.
+    fn confirm_detection_holds_only_unwitnessed_idle() {
         let mut inst = Instance::new("test", "/tmp/test");
         inst.status = Status::Running;
-
         assert_eq!(inst.confirm_detection(Status::Idle, false), None);
         assert_eq!(inst.status, Status::Running);
         assert_eq!(
@@ -566,25 +559,19 @@ mod tests {
             Some(Status::Idle)
         );
 
-        // An idle a rule read off the agent's own chrome does not wait.
-        inst.status = Status::Running;
-        assert_eq!(
-            inst.confirm_detection(Status::Idle, true),
-            Some(Status::Idle)
-        );
-
-        // Nor does any other direction: a turn starting or a prompt appearing
-        // must not be a poll late.
-        inst.status = Status::Idle;
-        assert_eq!(
-            inst.confirm_detection(Status::Running, false),
-            Some(Status::Running)
-        );
-        inst.status = Status::Running;
-        assert_eq!(
-            inst.confirm_detection(Status::Waiting, false),
-            Some(Status::Waiting)
-        );
+        // Chrome-witnessed idle and every other direction publish immediately.
+        for (from, to, witnessed) in [
+            (Status::Running, Status::Idle, true),
+            (Status::Idle, Status::Running, false),
+            (Status::Running, Status::Waiting, false),
+        ] {
+            inst.status = from;
+            assert_eq!(
+                inst.confirm_detection(to, witnessed),
+                Some(to),
+                "{from:?}->{to:?}"
+            );
+        }
 
         // A proposal that changes before it is confirmed starts over.
         inst.status = Status::Running;
@@ -597,380 +584,184 @@ mod tests {
     }
 
     #[test]
-    fn test_archived_session_not_marked_error_when_tmux_gone() {
-        // archiving kills the session's tmux on purpose. A subsequent status poll must not flip the
-        // archived row to Error for the missing tmux.
-        let mut inst = Instance::new("test", "/tmp/test");
-        inst.archive();
-        inst.update_status_with_metadata(None, None);
-        assert_ne!(inst.status, Status::Error);
-        assert_eq!(inst.status, Status::Idle);
-        assert_eq!(inst.last_error, None);
-    }
-
-    #[test]
-    fn test_archived_session_preserves_genuine_error() {
-        // #2206 regression guard (passes on both trees): the archived guard never mutates status,
-        // so a genuinely errored session keeps its Error state while archived.
-        let mut inst = Instance::new("test", "/tmp/test");
-        inst.archive();
-        inst.status = Status::Error;
-        inst.last_error = Some("agent crashed".to_string());
-        inst.update_status_with_metadata(None, None);
-        assert_eq!(inst.status, Status::Error);
-        assert_eq!(inst.last_error.as_deref(), Some("agent crashed"));
-    }
-
-    #[test]
-    fn test_archived_unarchived_genuine_error_roundtrips() {
-        // archive then unarchive must stay status-preserving for a real failure.
-        let mut inst = Instance::new("test", "/tmp/test");
-        inst.archive();
-        inst.status = Status::Error;
-        inst.last_error = Some("agent crashed".to_string());
-        inst.update_status_with_metadata(None, None);
-        inst.unarchive();
-        inst.update_status_with_metadata(None, None);
-        assert_eq!(inst.status, Status::Error);
-        assert_eq!(inst.last_error.as_deref(), Some("agent crashed"));
-    }
-
-    /// Regression guard for the false-Error-latch bug.
-    #[test]
     #[serial_test::serial]
-    fn test_confirmed_absent_session_still_latches_error() {
-        let mut inst = Instance::new("test-absent", "/tmp/test-absent");
-        inst.status = Status::Running;
-        inst.last_error = None;
-        inst.last_error_check = None;
+    fn tmux_existence_decides_error_latching() {
+        let never = UNKNOWN_ERROR_WINDOW_NEVER_PRESENT + Duration::from_millis(1);
+        let confirmed = UNKNOWN_ERROR_WINDOW_CONFIRMED_PRESENT + Duration::from_millis(1);
+        // (label, reachable, start status, prior error, ever present, unknown streak,
+        //  expected status, expected error)
+        let cases: [(
+            &str,
+            bool,
+            Status,
+            Option<&str>,
+            bool,
+            Option<Duration>,
+            Status,
+            Option<&str>,
+        ); 7] = [
+            (
+                "confirmed absent latches",
+                true,
+                Status::Running,
+                None,
+                false,
+                None,
+                Status::Error,
+                Some(TMUX_SESSION_GONE_ERROR),
+            ),
+            (
+                "unreachable retains running",
+                false,
+                Status::Running,
+                None,
+                false,
+                None,
+                Status::Running,
+                None,
+            ),
+            (
+                "unreachable keeps a real error",
+                false,
+                Status::Error,
+                Some("agent crashed"),
+                false,
+                None,
+                Status::Error,
+                Some("agent crashed"),
+            ),
+            (
+                "never present escalates past fast window",
+                false,
+                Status::Idle,
+                None,
+                false,
+                Some(never),
+                Status::Error,
+                Some(TMUX_SERVER_UNREACHABLE_ERROR),
+            ),
+            (
+                "never present absorbs a fresh streak",
+                false,
+                Status::Idle,
+                None,
+                false,
+                Some(Duration::from_millis(500)),
+                Status::Idle,
+                None,
+            ),
+            (
+                "confirmed rides out an 11s blip",
+                false,
+                Status::Running,
+                None,
+                true,
+                Some(Duration::from_secs(11)),
+                Status::Running,
+                None,
+            ),
+            (
+                "confirmed escalates past long window",
+                false,
+                Status::Running,
+                None,
+                true,
+                Some(confirmed),
+                Status::Error,
+                Some(TMUX_SERVER_UNREACHABLE_ERROR),
+            ),
+        ];
+        for (label, reachable, status, error, ever, streak, want_status, want_error) in cases {
+            let mut inst = Instance::new("existence", "/tmp/existence");
+            inst.status = status;
+            inst.last_error = error.map(str::to_string);
+            inst.ever_confirmed_present = ever;
+            inst.unknown_since = streak.map(|age| Instant::now() - age);
+            let guard = crate::tmux::SessionCacheGuard::capture();
+            if reachable {
+                guard.force_present(&["some_other_session"]);
+            } else {
+                guard.force_unreachable();
+            }
+            inst.update_status_with_metadata_inner(None, None);
+            assert_eq!(inst.status, want_status, "{label}");
+            assert_eq!(inst.last_error.as_deref(), want_error, "{label}");
+            assert_eq!(
+                inst.last_error_check.is_some(),
+                want_status == Status::Error && status != Status::Error,
+                "{label}"
+            );
+        }
 
+        // Present clears a streak and marks the session confirmed alive.
+        let mut inst = Instance::new("present-clears-unknown", "/tmp/present-clears-unknown");
+        inst.unknown_since = Some(Instant::now() - Duration::from_secs(2));
+        let name = tmux::Session::generate_name(&inst.id, &inst.title);
         let guard = crate::tmux::SessionCacheGuard::capture();
-        // Fresh cache, server reachable, but this instance's tmux session
-        // name is not in it: a confirmed-absent session.
-        guard.force_present(&["some_other_session"]);
-
+        guard.force_present(&[name.as_str()]);
         inst.update_status_with_metadata_inner(None, None);
-
-        assert_eq!(inst.status, Status::Error);
-        assert_eq!(inst.last_error.as_deref(), Some(TMUX_SESSION_GONE_ERROR));
-        assert!(inst.last_error_check.is_some());
+        assert!(inst.ever_confirmed_present);
+        assert_eq!(inst.unknown_since, None);
     }
 
-    /// the poller / serve / ps loops resolve the session's live tmux name once against the batch
-    /// snapshot.
+    /// The poll loops resolve the live tmux name once against the batch snapshot.
     #[test]
     #[serial_test::serial]
     fn update_status_probes_the_resolved_name_not_the_title() {
         let resolved = format!("{}live_elsewhere_00000000", crate::tmux::SESSION_PREFIX);
-
         let guard = crate::tmux::SessionCacheGuard::capture();
 
-        // Force the snapshot immediately before each probe. `#[serial]` only excludes other serial
-        // tests, and the resolved-name pass below spawns tmux for pane metadata and capture.
         let mut inst = Instance::new("resolve-r2", "/tmp/resolve-r2");
         inst.status = Status::Running;
         guard.force_present(&[resolved.as_str()]);
         inst.update_status_with_metadata_inner(None, Some(&resolved));
-        assert!(
-            inst.ever_confirmed_present,
-            "the passed resolved name must be the one probed"
-        );
+        assert!(inst.ever_confirmed_present);
         assert_ne!(inst.status, Status::Error);
 
         let mut untold = Instance::new("resolve-r2", "/tmp/resolve-r2");
         untold.status = Status::Running;
         guard.force_present(&[resolved.as_str()]);
         untold.update_status_with_metadata_inner(None, None);
-        assert_eq!(
-            untold.status,
-            Status::Error,
-            "without the resolved name the title-derived name is absent from the cache"
-        );
+        assert_eq!(untold.status, Status::Error);
         assert_eq!(untold.last_error.as_deref(), Some(TMUX_SESSION_GONE_ERROR));
     }
 
-    /// A tmux-server-unreachable probe (`SessionExistence::Unknown`) must not touch status,
-    /// last_error, or last_error_check at all.
+    /// A passive poll re-anchors `idle_entered_at` only on a transition from a live baseline and
+    /// never writes the user-gesture `last_accessed_at` (#2690, #3465).
     #[test]
     #[serial_test::serial]
-    fn test_unreachable_tmux_server_retains_running_status() {
-        let mut inst = Instance::new("test-unknown", "/tmp/test-unknown");
-        inst.status = Status::Running;
-        inst.last_error = None;
-        inst.last_error_check = None;
-
-        let guard = crate::tmux::SessionCacheGuard::capture();
-        // Fresh cache with no data.
-        guard.force_unreachable();
-
-        inst.update_status_with_metadata_inner(None, None);
-
-        assert_eq!(inst.status, Status::Running);
-        assert_eq!(inst.last_error, None);
-        assert_eq!(inst.last_error_check, None);
-    }
-
-    /// Same `Unknown` retain-behavior, but starting from an already-set genuine `Status::Error`: an
-    /// unreachable tmux server must not clear or overwrite a real prior failure either.
-    #[test]
-    #[serial_test::serial]
-    fn test_unreachable_tmux_server_does_not_clear_existing_error() {
-        let mut inst = Instance::new("test-unknown-error", "/tmp/test-unknown-error");
-        inst.status = Status::Error;
-        inst.last_error = Some("agent crashed".to_string());
-        // None (rather than a stale Instant) so the 30s Error-recheck throttle above this code path
-        // doesn't short-circuit before the probe we're testing ever runs.
-        inst.last_error_check = None;
-
-        let guard = crate::tmux::SessionCacheGuard::capture();
-        guard.force_unreachable();
-
-        inst.update_status_with_metadata_inner(None, None);
-
-        assert_eq!(inst.status, Status::Error);
-        assert_eq!(inst.last_error.as_deref(), Some("agent crashed"));
-        assert_eq!(inst.last_error_check, None);
-    }
-
-    /// A session that has never been confirmed alive (`ever_confirmed_present` still `false`, e.g.
-    /// `aoe add` without `--launch`) has nothing to "blip" from, so `Unknown` escalates to `Error`
-    /// well before the long confirmed-present window.
-    #[test]
-    #[serial_test::serial]
-    fn test_never_confirmed_present_unknown_escalates_after_fast_window() {
-        let mut inst = Instance::new("test-never-present", "/tmp/test-never-present");
-        inst.status = Status::Idle;
-        inst.last_error = None;
-        inst.last_error_check = None;
-        assert!(!inst.ever_confirmed_present);
-        inst.unknown_since = Some(
-            std::time::Instant::now()
-                - UNKNOWN_ERROR_WINDOW_NEVER_PRESENT
-                - std::time::Duration::from_millis(1),
-        );
-
-        let guard = crate::tmux::SessionCacheGuard::capture();
-        guard.force_unreachable();
-
-        inst.update_status_with_metadata_inner(None, None);
-
-        assert_eq!(inst.status, Status::Error);
-        assert_eq!(
-            inst.last_error.as_deref(),
-            Some(TMUX_SERVER_UNREACHABLE_ERROR)
-        );
-        assert!(inst.last_error_check.is_some());
-    }
-
-    /// The never-confirmed-present fast window must still absorb a fresh `Unknown` streak (elapsed
-    /// just under the window), otherwise every freshly-added, not-yet-launched session would flap
-    /// to `Error` on the very first couple of poll ticks before tmux even has a chance to answer.
-    #[test]
-    #[serial_test::serial]
-    fn test_never_confirmed_present_unknown_retains_status_below_fast_window() {
-        let mut inst = Instance::new("test-never-present-fresh", "/tmp/test-never-present-fresh");
-        inst.status = Status::Idle;
-        inst.last_error = None;
-        inst.last_error_check = None;
-        assert!(!inst.ever_confirmed_present);
-        inst.unknown_since =
-            Some(std::time::Instant::now() - std::time::Duration::from_millis(500));
-
-        let guard = crate::tmux::SessionCacheGuard::capture();
-        guard.force_unreachable();
-
-        inst.update_status_with_metadata_inner(None, None);
-
-        assert_eq!(inst.status, Status::Idle);
-        assert_eq!(inst.last_error, None);
-        assert_eq!(inst.last_error_check, None);
-    }
-
-    /// The real production blip case.
-    #[test]
-    #[serial_test::serial]
-    fn test_confirmed_present_unknown_retains_status_below_long_window() {
-        let mut inst = Instance::new("test-confirmed-present", "/tmp/test-confirmed-present");
-        inst.status = Status::Running;
-        inst.last_error = None;
-        inst.last_error_check = None;
-        inst.ever_confirmed_present = true;
-        // 11s: the max blip duration observed in production. Must not latch.
-        inst.unknown_since = Some(std::time::Instant::now() - std::time::Duration::from_secs(11));
-
-        let guard = crate::tmux::SessionCacheGuard::capture();
-        guard.force_unreachable();
-
-        inst.update_status_with_metadata_inner(None, None);
-
-        assert_eq!(inst.status, Status::Running);
-        assert_eq!(inst.last_error, None);
-        assert_eq!(inst.last_error_check, None);
-    }
-
-    /// A session confirmed alive must still eventually latch `Error` once the tmux server has been
-    /// unreachable past the long bounded window.
-    #[test]
-    #[serial_test::serial]
-    fn test_confirmed_present_unknown_escalates_after_long_window() {
-        let mut inst = Instance::new(
-            "test-confirmed-present-dead",
-            "/tmp/test-confirmed-present-dead",
-        );
-        inst.status = Status::Running;
-        inst.last_error = None;
-        inst.last_error_check = None;
-        inst.ever_confirmed_present = true;
-        inst.unknown_since = Some(
-            std::time::Instant::now()
-                - UNKNOWN_ERROR_WINDOW_CONFIRMED_PRESENT
-                - std::time::Duration::from_millis(1),
-        );
-
-        let guard = crate::tmux::SessionCacheGuard::capture();
-        guard.force_unreachable();
-
-        inst.update_status_with_metadata_inner(None, None);
-
-        assert_eq!(inst.status, Status::Error);
-        assert_eq!(
-            inst.last_error.as_deref(),
-            Some(TMUX_SERVER_UNREACHABLE_ERROR)
-        );
-        assert!(inst.last_error_check.is_some());
-    }
-
-    /// `Present` must clear a stale `unknown_since` and flip `ever_confirmed_present` on, so a
-    /// session that recovers from a real outage is treated as confirmed-alive (long window) on its
-    /// next `Unknown` streak rather than falling back to the never-confirmed-present fast window.
-    #[test]
-    #[serial_test::serial]
-    fn test_present_clears_unknown_since_and_marks_ever_confirmed_present() {
-        let mut inst = Instance::new("present-clears-unknown", "/tmp/present-clears-unknown");
-        inst.status = Status::Idle;
-        inst.unknown_since = Some(std::time::Instant::now() - std::time::Duration::from_secs(2));
-        assert!(!inst.ever_confirmed_present);
-        let name = tmux::Session::generate_name(&inst.id, &inst.title);
-
-        let guard = crate::tmux::SessionCacheGuard::capture();
-        guard.force_present(&[name.as_str()]);
-
-        inst.update_status_with_metadata_inner(None, None);
-
-        assert!(inst.ever_confirmed_present);
-        assert_eq!(inst.unknown_since, None);
-    }
-
-    #[test]
-    #[serial_test::serial]
-    fn test_update_status_with_metadata_seeds_baseline_without_restamp() {
-        // a session loaded fresh from disk (e.g. TUI relaunch, or every tick of the daemon's
-        // status_poll_loop) has no live observation history yet: `live_status_baseline` is `None`.
-        let mut inst = Instance::new("test", "/tmp/test");
-        inst.live_status_baseline = None;
-        inst.status = Status::Starting;
-        let stale_idle_entered_at = Some(Utc::now() - chrono::Duration::hours(2));
-        let stale_last_accessed_at = Some(Utc::now() - chrono::Duration::hours(2));
-        inst.idle_entered_at = stale_idle_entered_at;
-        inst.last_accessed_at = stale_last_accessed_at;
-
-        // Force detection to resolve to `Absent` -> Error deterministically: a fresh cache snapshot
-        // that lists some other session but not this instance's.
+    fn status_poll_bookkeeping_never_restamps_user_touch() {
+        let stale = Some(Utc::now() - chrono::Duration::hours(2));
         let _cache = force_session_absent();
+        // (baseline, disk status, expected idle_entered_at after the Error detection)
+        for (baseline, status, idle_after) in [
+            (None, Status::Starting, stale),
+            (Some(Status::Idle), Status::Idle, None),
+            (Some(Status::Error), Status::Error, stale),
+        ] {
+            let mut inst = Instance::new("test", "/tmp/test");
+            assert_eq!(inst.live_status_baseline, None);
+            inst.live_status_baseline = baseline;
+            inst.status = status;
+            inst.idle_entered_at = stale;
+            inst.last_accessed_at = stale;
+            for _ in 0..2 {
+                inst.update_status_with_metadata(None, None);
+                assert_eq!(inst.status, Status::Error);
+                assert_eq!(inst.idle_entered_at, idle_after, "{baseline:?}");
+                assert_eq!(inst.last_accessed_at, stale, "{baseline:?}");
+                assert_eq!(inst.live_status_baseline, Some(Status::Error));
+            }
+        }
 
-        inst.update_status_with_metadata(None, None);
-
-        // Detection confirms the session Absent, resolving to Error, which differs from the stale
-        // disk `Starting`.
-        assert_eq!(inst.status, Status::Error);
-        assert_eq!(
-            inst.idle_entered_at, stale_idle_entered_at,
-            "first check after a fresh load must not clobber a stale-but-real idle_entered_at"
-        );
-        assert_eq!(
-            inst.last_accessed_at, stale_last_accessed_at,
-            "first check after a fresh load must not clobber a stale-but-real last_accessed_at"
-        );
-        assert_eq!(
-            inst.live_status_baseline,
-            Some(Status::Error),
-            "the first check must seed the baseline for subsequent comparisons"
-        );
+        let mut untouched = Instance::new("test", "/tmp/test");
+        untouched.status = Status::Starting;
+        untouched.update_status_with_metadata(None, None);
+        assert_eq!(untouched.last_accessed_at, None);
     }
 
     #[test]
-    #[serial_test::serial]
-    fn test_update_status_with_metadata_keeps_last_accessed_at_on_transition() {
-        // Once a live baseline is established, a real status change still re-anchors
-        // idle_entered_at bookkeeping, but must NOT restamp last_accessed_at.
-        let mut inst = Instance::new("test", "/tmp/test");
-        inst.live_status_baseline = Some(Status::Idle);
-        inst.status = Status::Idle;
-        inst.idle_entered_at = Some(Utc::now() - chrono::Duration::hours(2));
-        let user_touch = Some(Utc::now() - chrono::Duration::hours(2));
-        inst.last_accessed_at = user_touch;
-
-        // Force detection to resolve to `Absent` -> Error deterministically
-        // (see #2936; without this the outcome is schedule-dependent).
-        let _cache = force_session_absent();
-
-        inst.update_status_with_metadata(None, None);
-
-        // Detection confirms the session Absent, resolving to Error: a
-        // genuine transition away from the established Idle baseline.
-        assert_eq!(inst.status, Status::Error);
-        assert_eq!(inst.idle_entered_at, None);
-        assert_eq!(
-            inst.last_accessed_at, user_touch,
-            "a passive transition must not fabricate a user-gesture stamp"
-        );
-        assert_eq!(inst.live_status_baseline, Some(Status::Error));
-    }
-
-    #[test]
-    #[serial_test::serial]
-    fn test_update_status_with_metadata_twice_same_status_never_restamps() {
-        // Two consecutive calls that both detect the same status (session confirmed Absent, so
-        // detection is deterministically Error) must neither restamp.
-        let mut inst = Instance::new("test", "/tmp/test");
-        inst.live_status_baseline = Some(Status::Error);
-        inst.status = Status::Error;
-        let sentinel_idle = Some(Utc::now() - chrono::Duration::hours(3));
-        let sentinel_accessed = Some(Utc::now() - chrono::Duration::hours(3));
-        inst.idle_entered_at = sentinel_idle;
-        inst.last_accessed_at = sentinel_accessed;
-
-        // Force detection to resolve to `Absent` -> Error deterministically
-        // (see #2936; without this the outcome is schedule-dependent).
-        let _cache = force_session_absent();
-
-        inst.update_status_with_metadata(None, None);
-        assert_eq!(inst.status, Status::Error);
-        assert_eq!(
-            inst.idle_entered_at, sentinel_idle,
-            "first call must not restamp"
-        );
-        assert_eq!(
-            inst.last_accessed_at, sentinel_accessed,
-            "first call must not restamp"
-        );
-
-        inst.update_status_with_metadata(None, None);
-        assert_eq!(inst.status, Status::Error);
-        assert_eq!(
-            inst.idle_entered_at, sentinel_idle,
-            "second call must not restamp"
-        );
-        assert_eq!(
-            inst.last_accessed_at, sentinel_accessed,
-            "second call must not restamp"
-        );
-    }
-
-    #[test]
-    fn test_update_status_with_metadata_transitions_never_stamp_last_accessed_at() {
-        // Two back-to-back genuine transitions update the idle_entered_at bookkeeping and re-seed
-        // the baseline between calls, but neither may touch last_accessed_at.
+    fn archived_status_transitions_reanchor_idle_without_touching_last_accessed() {
         let mut inst = Instance::new("test", "/tmp/test");
         inst.archive();
         inst.live_status_baseline = Some(Status::Idle);
@@ -979,48 +770,16 @@ mod tests {
         inst.last_accessed_at = user_touch;
 
         inst.update_status_with_metadata(None, None);
-        assert_eq!(
-            inst.status,
-            Status::Unknown,
-            "archived guard preserves resting status"
-        );
-        assert_eq!(inst.idle_entered_at, None, "non-idle transition clears it");
+        assert_eq!(inst.status, Status::Unknown);
+        assert_eq!(inst.idle_entered_at, None);
         assert_eq!(inst.last_accessed_at, user_touch);
         assert_eq!(inst.live_status_baseline, Some(Status::Unknown));
 
         inst.status = Status::Idle;
         inst.update_status_with_metadata(None, None);
-        assert_eq!(inst.status, Status::Idle);
-        assert!(
-            inst.idle_entered_at.is_some(),
-            "entering Idle re-anchors idle_entered_at"
-        );
+        assert!(inst.idle_entered_at.is_some());
         assert_eq!(inst.last_accessed_at, user_touch);
         assert_eq!(inst.live_status_baseline, Some(Status::Idle));
-    }
-
-    #[test]
-    fn test_instance_new_seeds_live_status_baseline_none() {
-        // #2690 follow-up. A freshly constructed Instance has no live observation yet.
-        let inst = Instance::new("test", "/tmp/test");
-        assert_eq!(inst.live_status_baseline, None);
-    }
-
-    #[test]
-    fn test_first_poll_after_status_write_does_not_fabricate_last_accessed_at() {
-        // #2690 follow-up regression lock. Reproduces the pre-fix bug.
-        let mut inst = Instance::new("test", "/tmp/test");
-        assert_eq!(inst.last_accessed_at, None, "fixture invariant");
-        // Simulate any post-construction status writer, `finalize_launch`
-        // being the canonical one (`src/session/instance/start.rs`).
-        inst.status = Status::Starting;
-
-        inst.update_status_with_metadata(None, None);
-
-        assert_eq!(
-            inst.last_accessed_at, None,
-            "first poll must not fabricate a `last_accessed_at` on an untouched session"
-        );
     }
 
     struct KillTmuxOnDrop(String);
@@ -1039,6 +798,49 @@ mod tests {
             .output()
             .map(|o| o.status.success())
             .unwrap_or(false)
+    }
+
+    fn shell_quote(path: &std::path::Path) -> String {
+        format!("'{}'", path.to_string_lossy().replace('\'', r#"'\''"#))
+    }
+
+    /// Start a detached 120x40 tmux session running `launch`; killed when the guard drops.
+    fn spawn_pane(name: &str, launch: &str) -> KillTmuxOnDrop {
+        let guard = KillTmuxOnDrop(name.to_string());
+        let created = crate::tmux::tmux_command()
+            .args([
+                "new-session",
+                "-d",
+                "-s",
+                name,
+                "-x",
+                "120",
+                "-y",
+                "40",
+                launch,
+            ])
+            .args([";", "set-option", "-t", name, "pane-base-index", "0"])
+            .output()
+            .expect("spawn tmux");
+        assert!(
+            created.status.success(),
+            "tmux new-session failed: {}",
+            String::from_utf8_lossy(&created.stderr)
+        );
+        guard
+    }
+
+    fn wait_for_pane(name: &str, needle: &str) -> bool {
+        for _ in 0..100 {
+            let cap = crate::tmux::tmux_command()
+                .args(["capture-pane", "-p", "-t", name])
+                .output();
+            if cap.is_ok_and(|out| String::from_utf8_lossy(&out.stdout).contains(needle)) {
+                return true;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        false
     }
 
     /// End-to-end regression for #1913 through the real status pipeline.
@@ -1065,73 +867,21 @@ Esc to cancel \u{b7} Tab to amend \u{b7} ctrl+e to explain\n\
         std::fs::write(&pane_file, pane).expect("write pane fixture");
 
         let session_name = tmux::Session::generate_name(&inst.id, &inst.title);
-        let _guard = KillTmuxOnDrop(session_name.clone());
-        // Single-quote the path so a temp dir with spaces or shell metacharacters (e.g. macOS
-        // `$TMPDIR`) can't break the launch command.
-        let quoted_pane_file =
-            format!("'{}'", pane_file.to_string_lossy().replace('\'', r#"'\''"#));
-        let launch = format!("cat {quoted_pane_file}; sleep 300");
-        let created = crate::tmux::tmux_command()
-            .args([
-                "new-session",
-                "-d",
-                "-s",
-                &session_name,
-                "-x",
-                "120",
-                "-y",
-                "40",
-                &launch,
-                ";",
-                "set-option",
-                "-t",
-                &session_name,
-                "pane-base-index",
-                "0",
-            ])
-            .output()
-            .expect("spawn tmux");
-        assert!(
-            created.status.success(),
-            "tmux new-session failed: {}",
-            String::from_utf8_lossy(&created.stderr)
+        let _guard = spawn_pane(
+            &session_name,
+            &format!("cat {}; sleep 300", shell_quote(&pane_file)),
         );
 
         // The clobbered hook state that produced the green row.
-        use std::os::unix::fs::PermissionsExt;
-        let base = crate::hooks::hook_base_path();
-        if !base.exists() {
-            std::fs::create_dir_all(&base).expect("create hook base dir");
-        }
-        std::fs::set_permissions(&base, std::fs::Permissions::from_mode(0o700))
-            .expect("set hook base mode 0700");
-        let dir = crate::hooks::hook_status_dir(&inst.id).expect("hook dir");
-        std::fs::create_dir_all(&dir).expect("create hook dir");
-        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700))
-            .expect("set hook instance mode 0700");
-        std::fs::write(dir.join("status"), "running").expect("write status");
+        write_hook_status(&inst.id, "running");
         assert_eq!(
             crate::hooks::read_hook_status(&inst.id),
-            Some(Status::Running),
-            "precondition: the raw hook signal is the Running that showed green"
+            Some(Status::Running)
         );
-
-        // Wait for the pane to actually paint the cat output before the
-        // authoritative read; a fixed sleep is flaky under parallel test load.
-        let mut painted = false;
-        for _ in 0..50 {
-            let cap = crate::tmux::tmux_command()
-                .args(["capture-pane", "-p", "-t", &session_name])
-                .output();
-            if let Ok(out) = cap {
-                if String::from_utf8_lossy(&out.stdout).contains("Do you want to proceed?") {
-                    painted = true;
-                    break;
-                }
-            }
-            std::thread::sleep(std::time::Duration::from_millis(100));
-        }
-        assert!(painted, "approval prompt never painted into the tmux pane");
+        assert!(
+            wait_for_pane(&session_name, "Do you want to proceed?"),
+            "approval prompt never painted into the tmux pane"
+        );
 
         crate::tmux::refresh_session_cache();
         inst.update_status_with_metadata(None, None);
@@ -1300,52 +1050,18 @@ Esc to cancel \u{b7} Tab to amend \u{b7} ctrl+e to explain\n\
         std::fs::write(&idle_file, format!("{}turn over\n", "\n".repeat(150))).expect("write idle");
 
         let session_name = tmux::Session::generate_name(&inst.id, &inst.title);
-        let _guard = KillTmuxOnDrop(session_name.clone());
-        let quote =
-            |p: &std::path::Path| format!("'{}'", p.to_string_lossy().replace('\'', r#"'\''"#));
-        // The marker file is the test's clock: the pane holds the running
-        // frame until it appears, then draws the idle frame and stops.
+        // The marker file is the test's clock: the pane holds the running frame until it appears.
         let launch = format!(
             "cat {}; until [ -f {} ]; do sleep 0.05; done; cat {}; sleep 300",
-            quote(&running_file),
-            quote(&marker),
-            quote(&idle_file),
+            shell_quote(&running_file),
+            shell_quote(&marker),
+            shell_quote(&idle_file),
         );
-        let created = crate::tmux::tmux_command()
-            .args([
-                "new-session",
-                "-d",
-                "-s",
-                &session_name,
-                "-x",
-                "120",
-                "-y",
-                "40",
-                &launch,
-            ])
-            .output()
-            .expect("spawn tmux");
+        let _guard = spawn_pane(&session_name, &launch);
         assert!(
-            created.status.success(),
-            "tmux new-session failed: {}",
-            String::from_utf8_lossy(&created.stderr)
+            wait_for_pane(&session_name, "Working"),
+            "running frame never painted"
         );
-
-        let wait_for_pane = |needle: &str| {
-            for _ in 0..100 {
-                let cap = crate::tmux::tmux_command()
-                    .args(["capture-pane", "-p", "-t", &session_name])
-                    .output();
-                if let Ok(out) = cap {
-                    if String::from_utf8_lossy(&out.stdout).contains(needle) {
-                        return true;
-                    }
-                }
-                std::thread::sleep(std::time::Duration::from_millis(100));
-            }
-            false
-        };
-        assert!(wait_for_pane("Working"), "running frame never painted");
 
         let cache = crate::tmux::SessionCacheGuard::capture();
         cache.force_present(&[session_name.as_str()]);
@@ -1366,7 +1082,10 @@ Esc to cancel \u{b7} Tab to amend \u{b7} ctrl+e to explain\n\
         inst.detection.activity = Some(shared);
 
         std::fs::File::create(&marker).expect("touch marker");
-        assert!(wait_for_pane("turn over"), "idle frame never painted");
+        assert!(
+            wait_for_pane(&session_name, "turn over"),
+            "idle frame never painted"
+        );
 
         poll(&mut inst, Some(shared));
         assert_eq!(
@@ -1411,41 +1130,11 @@ Esc to cancel \u{b7} Tab to amend \u{b7} ctrl+e to explain\n\
         std::fs::write(&pane_file, pane).expect("write pane fixture");
 
         let session_name = tmux::Session::generate_name(&polled.id, &polled.title);
-        let _guard = KillTmuxOnDrop(session_name.clone());
-        let quoted = format!("'{}'", pane_file.to_string_lossy().replace('\'', r#"'\''"#));
-        let created = crate::tmux::tmux_command()
-            .args([
-                "new-session",
-                "-d",
-                "-s",
-                &session_name,
-                "-x",
-                "120",
-                "-y",
-                "40",
-                &format!("cat {quoted}; sleep 300"),
-            ])
-            .output()
-            .expect("spawn tmux");
-        assert!(
-            created.status.success(),
-            "tmux new-session failed: {}",
-            String::from_utf8_lossy(&created.stderr)
+        let _guard = spawn_pane(
+            &session_name,
+            &format!("cat {}; sleep 300", shell_quote(&pane_file)),
         );
-
-        let mut painted = false;
-        for _ in 0..100 {
-            let cap = crate::tmux::tmux_command()
-                .args(["capture-pane", "-p", "-t", &session_name])
-                .output();
-            if let Ok(out) = cap {
-                if String::from_utf8_lossy(&out.stdout).contains("half typed prompt") {
-                    painted = true;
-                    break;
-                }
-            }
-            std::thread::sleep(std::time::Duration::from_millis(100));
-        }
+        let painted = wait_for_pane(&session_name, "half typed prompt");
         std::fs::remove_file(&pane_file).ok();
         assert!(painted, "parked prompt never painted into the tmux pane");
 
