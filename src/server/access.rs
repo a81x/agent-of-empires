@@ -462,6 +462,9 @@ pub(super) const CITYHALL_MUTATION_DENY: &[(&str, &str)] = &[
     ("PATCH", "/api/settings"),
     ("PATCH", "/api/log-level"),
     ("PUT", "/api/workspace-ordering"),
+    // Device pairing grants a new long-lived credential.
+    ("POST", "/api/pair"),
+    ("POST", "/api/pair/codes"),
 ];
 
 /// Default-deny CityHall reachability boundary. A no-op outside CityHall mode

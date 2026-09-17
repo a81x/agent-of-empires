@@ -108,6 +108,7 @@ pub struct AppState {
     pub token_manager: Arc<TokenManager>,
     pub login_manager: Arc<login::LoginManager>,
     pub rate_limiter: Arc<RateLimiter>,
+    pub pairing: super::pairing::PairingCodes,
     pub behind_tunnel: bool,
     /// Coarse auth mode resolved once at launch (`"token"` / `"passphrase"` /
     /// `"none"`). `/api/about` and the opt-in telemetry snapshot both read this

@@ -8,7 +8,7 @@ use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
-use axum::routing::get;
+use axum::routing::{get, post};
 use axum::{Json, Router};
 use serial_test::parallel;
 use tokio::sync::Notify;
@@ -17,6 +17,8 @@ use crate::harness::{app_dir_in, require_tmux, TuiTestHarness};
 
 const TOKEN: &str = "remote-e2e-token";
 const PANE_OUTPUT: &str = "REMOTE-PANE-OUTPUT";
+const PAIRING_CODE: &str = "K7F-3QX";
+const PAIRED_SESSION: &str = "paired-session-id";
 
 #[derive(Clone, Default)]
 struct Daemon {
@@ -25,6 +27,8 @@ struct Daemon {
     /// Socket events in arrival order: `claim`, `granted`, `input:<text>`.
     events: Arc<Mutex<Vec<String>>>,
     grant: Arc<Notify>,
+    /// Binding secret the client presented when it redeemed the code.
+    paired_binding: Arc<Mutex<Option<String>>>,
 }
 
 impl Daemon {
@@ -47,6 +51,7 @@ impl Daemon {
                 "/api/docker/status",
                 get(|| async { Json(serde_json::json!({"available": false})) }),
             )
+            .route("/api/pair", post(pair))
             .route("/sessions/{id}/live-ws", get(live_ws))
             .with_state(daemon.clone());
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -74,12 +79,31 @@ impl Daemon {
     }
 }
 
-fn authorized(headers: &HeaderMap) -> bool {
-    headers.get("authorization").and_then(|v| v.to_str().ok()) == Some(&format!("Bearer {TOKEN}"))
+impl Daemon {
+    fn authorized(&self, headers: &HeaderMap) -> bool {
+        let header = |name: &str| headers.get(name).and_then(|v| v.to_str().ok());
+        if header("authorization") == Some(&format!("Bearer {TOKEN}")) {
+            return true;
+        }
+        let binding = self.paired_binding.lock().unwrap().clone();
+        header("cookie") == Some(&format!("aoe_session={PAIRED_SESSION}"))
+            && binding.is_some()
+            && header("x-aoe-device-binding") == binding.as_deref()
+    }
 }
 
-async fn sessions(headers: HeaderMap) -> Response {
-    if !authorized(&headers) {
+async fn pair(State(daemon): State<Daemon>, Json(body): Json<serde_json::Value>) -> Response {
+    if body["code"] != PAIRING_CODE {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    *daemon.paired_binding.lock().unwrap() =
+        body["device_binding_secret"].as_str().map(str::to_string);
+    Json(serde_json::json!({"session_id": PAIRED_SESSION, "device_name": body["device_name"]}))
+        .into_response()
+}
+
+async fn sessions(State(daemon): State<Daemon>, headers: HeaderMap) -> Response {
+    if !daemon.authorized(&headers) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
     Json(serde_json::json!({
@@ -102,7 +126,7 @@ async fn live_ws(
         .and_then(|v| v.to_str().ok())
         .map(str::to_string);
     daemon.upgrades.lock().unwrap().push(authorization);
-    if !authorized(&headers) {
+    if !daemon.authorized(&headers) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
     ws.on_upgrade(move |socket| pump(daemon, socket))
@@ -240,4 +264,40 @@ async fn aoe_daemon_url_lists_its_daemon_as_an_unsaved_remote() {
             .exists(),
         "the temporary remote is never saved"
     );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[parallel]
+async fn a_remote_paired_with_a_code_lists_without_a_token() {
+    require_tmux!();
+    let (daemon, url) = Daemon::start().await;
+    let mut harness = TuiTestHarness::new("remote_paired");
+
+    let no_code = harness.run_cli(&["remote", "add", "mini", &url]);
+    assert!(!no_code.status.success());
+    assert!(
+        String::from_utf8_lossy(&no_code.stderr).contains("--code"),
+        "a non-interactive add without credentials asks for --code: {no_code:?}"
+    );
+    let wrong = harness.run_cli(&["remote", "add", "mini", &url, "--code", "ZZZ-ZZZ"]);
+    assert!(!wrong.status.success());
+    assert!(
+        String::from_utf8_lossy(&wrong.stderr).contains("invalid or expired pairing code"),
+        "{wrong:?}"
+    );
+    let added = harness.run_cli(&["remote", "add", "mini", &url, "--code", PAIRING_CODE]);
+    assert!(added.status.success(), "{added:?}");
+
+    let registry =
+        std::fs::read_to_string(app_dir_in(harness.home_path()).join("remotes.toml")).unwrap();
+    assert!(registry.contains(PAIRED_SESSION), "{registry}");
+    assert!(
+        !registry.contains("token"),
+        "no token is stored: {registry}"
+    );
+
+    harness.spawn_tui();
+    harness.wait_for("Remote alpha");
+    harness.assert_screen_contains("mini");
+    assert!(daemon.paired_binding.lock().unwrap().is_some());
 }

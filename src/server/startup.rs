@@ -752,6 +752,7 @@ pub(crate) async fn start_server(
         token_manager: Arc::clone(&token_manager),
         login_manager: Arc::clone(&login_manager),
         rate_limiter: Arc::clone(&rate_limiter),
+        pairing: Default::default(),
         behind_tunnel: remote || behind_proxy,
         auth_mode,
         serve_mode,

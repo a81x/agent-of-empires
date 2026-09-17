@@ -121,6 +121,10 @@ struct LoginSession {
     /// User-agent string captured at login, for a friendly device
     /// label in the devices view. Display-only.
     user_agent: String,
+    /// Set for a session enrolled with a pairing code rather than the
+    /// passphrase. A paired session authenticates without the token and
+    /// survives passphrase changes.
+    device_name: Option<String>,
     /// Deadline value at the last time this session was persisted to
     /// disk. Drives the `REFRESH_PERSIST_THRESHOLD` coalescing so a
     /// sliding refresh only triggers a write once it has moved far
@@ -243,6 +247,35 @@ impl LoginManager {
         created_ip: &str,
         user_agent: &str,
     ) -> String {
+        self.insert_session(binding_secret_bytes, created_ip, user_agent, None)
+            .await
+    }
+
+    /// Create a device-bound session for a client that redeemed a pairing
+    /// code. Same lifetime and binding rules as a passphrase session.
+    pub async fn create_paired_session(
+        &self,
+        binding_secret_bytes: &[u8],
+        created_ip: &str,
+        user_agent: &str,
+        device_name: &str,
+    ) -> String {
+        self.insert_session(
+            binding_secret_bytes,
+            created_ip,
+            user_agent,
+            Some(device_name.to_string()),
+        )
+        .await
+    }
+
+    async fn insert_session(
+        &self,
+        binding_secret_bytes: &[u8],
+        created_ip: &str,
+        user_agent: &str,
+        device_name: Option<String>,
+    ) -> String {
         let session_id = super::generate_token();
         let now = Instant::now();
         let session = LoginSession {
@@ -254,6 +287,7 @@ impl LoginManager {
             created_at: SystemTime::now(),
             created_ip: created_ip.to_string(),
             user_agent: user_agent.to_string(),
+            device_name,
             last_persisted_expires_at: now + SESSION_LIFETIME,
         };
 
@@ -285,8 +319,19 @@ impl LoginManager {
     /// the device-binding secret carries the identity instead. See
     /// #1131.
     pub async fn validate_session(&self, session_id: &str, presented_binding: &[u8]) -> bool {
+        self.validate_session_kind(session_id, presented_binding)
+            .await
+            .is_some()
+    }
+
+    /// [`Self::validate_session`], reporting how the session was enrolled.
+    pub async fn validate_session_kind(
+        &self,
+        session_id: &str,
+        presented_binding: &[u8],
+    ) -> Option<SessionKind> {
         if session_id.is_empty() || presented_binding.len() != BINDING_SECRET_BYTES {
-            return false;
+            return None;
         }
 
         let presented_hash = hash_binding_secret(presented_binding);
@@ -304,19 +349,14 @@ impl LoginManager {
         let mut refreshed_deadline: Option<Instant> = None;
         let valid = {
             let mut sessions = self.sessions.write().await;
-            let Some(session) = sessions.get_mut(session_id) else {
-                return false;
-            };
+            let session = sessions.get_mut(session_id)?;
 
             if Instant::now() > session.expires_at {
                 sessions.remove(session_id);
                 needs_persist = true;
-                false
+                None
             } else if session.binding_hash.ct_eq(&presented_hash).unwrap_u8() == 0 {
-                // Constant-time compare. `Choice::unwrap_u8()` gives a
-                // 0/1 we interpret as `bool` without branching on the
-                // comparison result.
-                false
+                None
             } else {
                 // Sliding window: extend expiry on each valid access.
                 let new_expiry = Instant::now() + SESSION_LIFETIME;
@@ -327,7 +367,11 @@ impl LoginManager {
                     needs_persist = true;
                     refreshed_deadline = Some(new_expiry);
                 }
-                true
+                Some(if session.device_name.is_some() {
+                    SessionKind::Paired
+                } else {
+                    SessionKind::Passphrase
+                })
             }
         };
 
@@ -523,6 +567,7 @@ impl LoginManager {
                     created_at: chrono::DateTime::<chrono::Utc>::from(s.created_at),
                     last_seen: chrono::DateTime::<chrono::Utc>::from(last_seen),
                     current: current_session_id == Some(id.as_str()),
+                    device_name: s.device_name.clone(),
                 }
             })
             .collect();
@@ -585,6 +630,13 @@ impl LoginManager {
     }
 }
 
+/// How a login session was enrolled.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SessionKind {
+    Passphrase,
+    Paired,
+}
+
 /// Hash a device binding secret with SHA-256. The input has 256 bits
 /// of entropy from the client's `crypto.getRandomValues`, so plain
 /// SHA-256 is sufficient and avoids needing a process-scoped secret.
@@ -607,6 +659,9 @@ pub struct DeviceSession {
     /// True for the session making the request, so the UI can label
     /// "this device" and guard self-revocation.
     pub current: bool,
+    /// Name a paired client gave itself; absent for passphrase logins.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub device_name: Option<String>,
 }
 
 /// On-disk shape of `login_sessions.toml`. `passphrase_hash` is the
@@ -640,6 +695,8 @@ struct PersistedSession {
     /// Lockout deadline as Unix epoch milliseconds; 0 means no lockout.
     #[serde(default)]
     elevation_locked_until_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    device_name: Option<String>,
 }
 
 /// Convert an in-memory `Instant` deadline to a wall-clock epoch-ms
@@ -678,6 +735,7 @@ fn build_persisted(
                 .elevation_locked_until
                 .map(|d| instant_deadline_to_ms(d, now_inst, now))
                 .unwrap_or(0),
+            device_name: s.device_name.clone(),
         })
         .collect();
 
@@ -759,26 +817,23 @@ fn load_sessions(
         return Ok(HashMap::new());
     }
 
-    // Without a configured passphrase there is no login gate, so any
-    // persisted sessions are meaningless; start clean.
-    let Some(passphrase) = passphrase else {
-        return Ok(HashMap::new());
+    // Passphrase sessions survive only while the same passphrase is
+    // configured. Paired sessions never depended on it, so they stay.
+    let passphrase_unchanged = match (passphrase, file.passphrase_hash.as_deref()) {
+        (Some(passphrase), Some(hash)) => argon2_verify(passphrase, hash),
+        _ => false,
     };
-    // Drop everything if the passphrase changed since the file was
-    // written (or the file carries no hash to verify against).
-    match file.passphrase_hash.as_deref() {
-        Some(hash) if argon2_verify(passphrase, hash) => {}
-        _ => {
-            let n = file.sessions.len();
-            if n > 0 {
-                tracing::info!(
-                    target: "auth.passphrase",
-                    dropped = n,
-                    "passphrase changed since last run; persisted sessions invalidated"
-                );
-            }
-            return Ok(HashMap::new());
-        }
+    let dropped = file
+        .sessions
+        .iter()
+        .filter(|s| s.device_name.is_none() && !passphrase_unchanged)
+        .count();
+    if dropped > 0 && passphrase.is_some() {
+        tracing::info!(
+            target: "auth.passphrase",
+            dropped,
+            "passphrase changed since last run; persisted sessions invalidated"
+        );
     }
 
     let now_inst = Instant::now();
@@ -787,6 +842,9 @@ fn load_sessions(
 
     let mut out = HashMap::new();
     for ps in file.sessions {
+        if ps.device_name.is_none() && !passphrase_unchanged {
+            continue;
+        }
         // Drop already-expired entries; clamp future deadlines back to
         // the lifetime ceiling (clock skew or tampering).
         if ps.expires_at_ms <= now {
@@ -826,6 +884,7 @@ fn load_sessions(
                 created_at,
                 created_ip: ps.created_ip,
                 user_agent: ps.user_agent,
+                device_name: ps.device_name,
                 last_persisted_expires_at: expires_at,
             },
         );
@@ -1776,6 +1835,37 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn paired_sessions_outlive_passphrase_changes_and_removal() {
+        let dir = tempfile::tempdir().unwrap();
+        let (login, paired) = (binding(0xB3), binding(0xB4));
+        let (login_id, paired_id) = {
+            let mgr = LoginManager::with_persistence(Some("first-pass"), dir.path());
+            (
+                mgr.create_session(&login, "127.0.0.1", "browser").await,
+                mgr.create_paired_session(&paired, "10.0.0.9", "aoe-remote", "laptop")
+                    .await,
+            )
+        };
+
+        for passphrase in [Some("second-pass"), None] {
+            let mgr = LoginManager::with_persistence(passphrase, dir.path());
+            assert!(!mgr.validate_session(&login_id, &login).await);
+            assert_eq!(
+                mgr.validate_session_kind(&paired_id, &paired).await,
+                Some(SessionKind::Paired),
+                "{passphrase:?}"
+            );
+            let devices = mgr.device_snapshot(None).await;
+            assert_eq!(devices.len(), 1);
+            assert_eq!(devices[0].device_name.as_deref(), Some("laptop"));
+        }
+
+        let mgr = LoginManager::with_persistence(None, dir.path());
+        assert_eq!(mgr.logout_all().await, 1);
+        assert!(!mgr.validate_session(&paired_id, &paired).await);
+    }
+
+    #[tokio::test]
     async fn elevation_does_not_survive_restart() {
         // A daemon restart is a legitimate step-up recency break: the
         // session stays valid but must require re-elevation. See #1235.
@@ -1893,6 +1983,7 @@ mod tests {
                 user_agent: "old".to_string(),
                 elevation_failures: 0,
                 elevation_locked_until_ms: 0,
+                device_name: None,
             }],
         };
         write_sessions(&path, &file);

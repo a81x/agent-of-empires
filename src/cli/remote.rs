@@ -44,6 +44,11 @@ pub struct RemoteAddArgs {
     #[arg(long, env = "AOE_REMOTE_PASSPHRASE")]
     pub passphrase: Option<String>,
 
+    /// One-time pairing code from the remote (R, then P in its `aoe`). Used
+    /// when no token or passphrase is given; prompted for on a terminal.
+    #[arg(long, conflicts_with_all = ["token", "passphrase"])]
+    pub code: Option<String>,
+
     /// Send credentials over plain HTTP to a non-loopback URL, for a daemon
     /// on a network you trust. Anyone on that network can read the token and
     /// session.
@@ -80,6 +85,9 @@ async fn add(args: RemoteAddArgs) -> Result<()> {
     }
     let (url, token) = token_from_url(&args.url, args.token.clone())?;
     let url = url.trim_end_matches('/').to_string();
+    if args.code.is_some() && token.is_some() {
+        bail!("the URL carries a token; pass either it or --code, not both");
+    }
     let args = RemoteAddArgs { token, ..args };
     // The same URL and transport rules every later poll applies, so an entry
     // that could never be used is refused now rather than stored.
@@ -104,8 +112,24 @@ async fn add(args: RemoteAddArgs) -> Result<()> {
         insecure: args.insecure,
     };
 
+    let pairing = args.token.is_none() && args.passphrase.is_none();
     let mut no_login_wall = false;
-    if let Some(passphrase) = args.passphrase.as_deref() {
+    if pairing {
+        login::ensure_secure_transport(&url, args.insecure).map_err(|e| match e {
+            LoginError::InsecureTransport => anyhow::anyhow!(plaintext_refused(&url)),
+            other => anyhow::Error::new(other),
+        })?;
+        let code = match args.code.clone() {
+            Some(code) => code,
+            None => prompt_code(&url)?,
+        };
+        let binding = login::new_binding_secret().context("generate device binding secret")?;
+        let credentials = login::pair(&url, &code, &device_name(), &binding, args.insecure)
+            .await
+            .context("pairing failed")?;
+        entry.session = Some(credentials.session);
+        entry.binding = Some(credentials.binding);
+    } else if let Some(passphrase) = args.passphrase.as_deref() {
         let binding = login::new_binding_secret().context("generate device binding secret")?;
         match login::login(
             &url,
@@ -143,12 +167,47 @@ async fn add(args: RemoteAddArgs) -> Result<()> {
         args.name,
         url
     );
-    if args.passphrase.is_none() {
+    if pairing {
+        println!(
+            "Paired as {:?}. Its sessions now list in `aoe`.",
+            device_name()
+        );
+    } else if args.passphrase.is_none() {
         println!(
             "Its sessions now list in `aoe`. Re-add with --passphrase if it has a login wall."
         );
     }
     Ok(())
+}
+
+/// Read a pairing code from the terminal. Without one there is no credential
+/// to add, so a non-interactive run is told how to pass it.
+fn prompt_code(url: &str) -> Result<String> {
+    use std::io::{BufRead, IsTerminal, Write};
+    if !std::io::stdin().is_terminal() {
+        bail!(
+            "no credentials given; pass --code with a pairing code from the remote \
+             (R, then P in its `aoe`), or --token"
+        );
+    }
+    eprint!("Pairing code for {url} (R, then P in the remote's `aoe`): ");
+    std::io::stderr().flush()?;
+    let mut line = String::new();
+    std::io::stdin().lock().read_line(&mut line)?;
+    let code = line.trim().to_string();
+    if code.is_empty() {
+        bail!("no pairing code entered");
+    }
+    Ok(code)
+}
+
+/// How this machine names itself to a daemon it pairs with.
+fn device_name() -> String {
+    nix::unistd::gethostname()
+        .ok()
+        .and_then(|name| name.into_string().ok())
+        .filter(|name| !name.trim().is_empty())
+        .unwrap_or_else(|| "aoe client".to_string())
 }
 
 /// Move a `?token=` query (as `aoe serve --status` and the TUI print it) into

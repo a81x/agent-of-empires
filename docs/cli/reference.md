@@ -346,6 +346,7 @@ Add or update a remote daemon endpoint
 
 * `--token <TOKEN>` — Bearer token the daemon prints at startup
 * `--passphrase <PASSPHRASE>` — Passphrase for a daemon started with `--remote`. Exchanged once for a device-bound session; never stored
+* `--code <CODE>` — One-time pairing code from the remote (R, then P in its `aoe`). Used when no token or passphrase is given; prompted for on a terminal
 * `--insecure` — Send credentials over plain HTTP to a non-loopback URL, for a daemon on a network you trust. Anyone on that network can read the token and session
 
 

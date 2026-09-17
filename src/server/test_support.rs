@@ -128,6 +128,7 @@ fn build_test_app_state_impl(
         token_manager: Arc::new(TokenManager::new(token, Duration::from_secs(3600))),
         login_manager: Arc::new(login::LoginManager::new(None)),
         rate_limiter: Arc::new(RateLimiter::new()),
+        pairing: Default::default(),
         behind_tunnel: false,
         auth_mode: "none",
         serve_mode: "local",

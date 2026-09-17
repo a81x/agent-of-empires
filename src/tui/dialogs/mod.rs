@@ -15,6 +15,7 @@ mod info;
 mod intro;
 mod new_session;
 mod no_agents;
+mod pairing;
 mod permission_response;
 mod plugin_manager;
 mod profile_picker;

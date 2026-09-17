@@ -7,9 +7,20 @@ structured sessions, and create new sessions on them.
 ## Registering a remote
 
 ```sh
+aoe remote add mini https://mini.tailnet.ts.net                  # prompts for a pairing code
+aoe remote add mini https://mini.tailnet.ts.net --code K7F-3QX
 aoe remote add mini https://mini.tailnet.ts.net --token <token>
 AOE_REMOTE_PASSPHRASE=… aoe remote add mini https://mini.tailnet.ts.net --token <token>
 ```
+
+Pairing needs no token. On the remote machine open Remote Access (`R`) and
+press `P`: it shows a single-use code valid for 10 minutes and the
+`aoe remote add` line to run here, which then asks for the code. The entry
+stores a device-bound session instead of a token, so rotating the remote's
+token or changing its passphrase does not affect it, and it passes a
+passphrase wall. The same panel lists paired devices; `X` revokes one. A
+revoked or expired pairing shows as HTTP 401 on the remote's header; run
+`aoe remote add` again with a new code.
 
 The token is the one the remote daemon prints at startup. A URL carrying
 `?token=`, as `aoe serve --status` prints it, also works: the token moves to

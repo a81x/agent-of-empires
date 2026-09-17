@@ -18,6 +18,7 @@ pub(crate) mod idle_reap;
 pub(crate) mod ip_discovery;
 pub mod live_ws;
 pub mod login;
+pub mod pairing;
 mod pane;
 pub(crate) mod peer;
 pub mod push;

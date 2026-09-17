@@ -9,6 +9,9 @@
 //!
 //! The passphrase is used once and never persisted; only the session and the
 //! binding are stored, so a stolen registry cannot mint fresh sessions.
+//!
+//! [`pair`] mints the same kind of session from a one-time pairing code
+//! instead, and needs no token.
 
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
@@ -43,6 +46,12 @@ pub enum LoginError {
     Status(reqwest::StatusCode),
     #[error("login succeeded but the daemon set no session cookie")]
     MissingSession,
+    #[error("this daemon does not support pairing codes (HTTP 404); upgrade it or use --token")]
+    PairingUnsupported,
+    #[error("invalid or expired pairing code; create a new one on the remote")]
+    InvalidCode,
+    #[error("the daemon rejected the pairing request: {0}")]
+    BadRequest(String),
 }
 
 /// Mint a fresh device-binding secret, base64url-encoded the way the server
@@ -66,12 +75,7 @@ pub async fn login(
 ) -> Result<SessionCredential, LoginError> {
     ensure_secure_transport(base_url, allow_plaintext)?;
     let url = format!("{}/api/login", base_url.trim_end_matches('/'));
-    let http = reqwest::Client::builder()
-        .timeout(LOGIN_TIMEOUT)
-        .user_agent(concat!("aoe-remote/", env!("CARGO_PKG_VERSION")))
-        .redirect(reqwest::redirect::Policy::none())
-        .build()
-        .map_err(LoginError::Transport)?;
+    let http = http_client()?;
 
     let mut request = http.post(&url).json(&serde_json::json!({
         "passphrase": passphrase,
@@ -106,9 +110,72 @@ pub async fn login(
     })
 }
 
+/// Redeem a one-time pairing code for a device-bound session.
+pub async fn pair(
+    base_url: &str,
+    code: &str,
+    device_name: &str,
+    binding: &str,
+    allow_plaintext: bool,
+) -> Result<SessionCredential, LoginError> {
+    ensure_secure_transport(base_url, allow_plaintext)?;
+    let url = format!("{}/api/pair", base_url.trim_end_matches('/'));
+    let response = http_client()?
+        .post(&url)
+        .json(&serde_json::json!({
+            "code": code,
+            "device_name": device_name,
+            "device_binding_secret": binding,
+        }))
+        .send()
+        .await
+        .map_err(LoginError::Transport)?;
+
+    #[derive(serde::Deserialize)]
+    struct Paired {
+        session_id: String,
+    }
+    #[derive(serde::Deserialize)]
+    struct Rejection {
+        message: String,
+    }
+    match response.status() {
+        status if status.is_success() => {
+            let paired: Paired = response.json().await.map_err(LoginError::Transport)?;
+            Ok(SessionCredential {
+                session: paired.session_id,
+                binding: binding.to_string(),
+            })
+        }
+        reqwest::StatusCode::NOT_FOUND => Err(LoginError::PairingUnsupported),
+        reqwest::StatusCode::UNAUTHORIZED => Err(LoginError::InvalidCode),
+        reqwest::StatusCode::TOO_MANY_REQUESTS => Err(LoginError::RateLimited),
+        reqwest::StatusCode::BAD_REQUEST => {
+            let message = response
+                .json::<Rejection>()
+                .await
+                .map_or_else(|_| "bad request".to_string(), |r| r.message);
+            Err(LoginError::BadRequest(message))
+        }
+        other => Err(LoginError::Status(other)),
+    }
+}
+
+fn http_client() -> Result<reqwest::Client, LoginError> {
+    reqwest::Client::builder()
+        .timeout(LOGIN_TIMEOUT)
+        .user_agent(concat!("aoe-remote/", env!("CARGO_PKG_VERSION")))
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .map_err(LoginError::Transport)
+}
+
 /// A passphrase is a stronger secret than the token and travels in a body, so
 /// it gets the same transport rule the bearer already has.
-fn ensure_secure_transport(base_url: &str, allow_plaintext: bool) -> Result<(), LoginError> {
+pub(crate) fn ensure_secure_transport(
+    base_url: &str,
+    allow_plaintext: bool,
+) -> Result<(), LoginError> {
     let url = crate::daemon::native_url(base_url).map_err(|error| match error {
         crate::daemon::DaemonClientError::InvalidBaseUrl { reason } => {
             LoginError::InvalidBaseUrl { reason }

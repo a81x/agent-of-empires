@@ -230,6 +230,8 @@ pub struct ServeView {
     /// Destructive action awaiting a second keypress to confirm.
     pending_confirm: Option<(PendingConfirm, Instant)>,
     show_help: bool,
+    /// Pair-a-device panel over the exposed view.
+    pairing: Option<super::pairing::PairingPanel>,
 }
 
 impl Default for ServeView {
@@ -247,6 +249,7 @@ impl ServeView {
             pending_passphrase: load_or_generate_passphrase(),
             pending_confirm: None,
             show_help: false,
+            pairing: None,
         };
         match crate::cli::serve::current_exposure() {
             Some(mode @ (Exposure::Network | Exposure::Tunnel)) => view.show_active(mode),
@@ -281,6 +284,7 @@ impl ServeView {
         };
         self.pending_confirm = None;
         self.show_help = false;
+        self.pairing = None;
     }
 
     fn show_active(&mut self, mode: Exposure) {
@@ -298,6 +302,7 @@ impl ServeView {
         };
         self.pending_confirm = None;
         self.show_help = false;
+        self.pairing = None;
     }
 
     /// Probe tunnel readiness on entering Confirm or pressing `[R]`
@@ -373,6 +378,7 @@ impl ServeView {
         };
         self.pending_confirm = None;
         self.show_help = false;
+        self.pairing = None;
     }
 
     /// Act on a picked exposure: apply it, or open the tunnel confirmation.
@@ -562,6 +568,12 @@ impl ServeView {
                     self.show_help = false;
                     return ServeAction::Continue;
                 }
+                if let Some(panel) = &mut self.pairing {
+                    if matches!(panel.handle_key(key), super::pairing::PanelAction::Close) {
+                        self.pairing = None;
+                    }
+                    return ServeAction::Continue;
+                }
                 let confirmed = self
                     .pending_confirm
                     .take()
@@ -603,6 +615,10 @@ impl ServeView {
                     }
                     KeyCode::Char('e') | KeyCode::Char('E') => {
                         self.show_picker(Some(mode), None);
+                        ServeAction::Continue
+                    }
+                    KeyCode::Char('p') | KeyCode::Char('P') => {
+                        self.pairing = Some(super::pairing::PairingPanel::open());
                         ServeAction::Continue
                     }
                     KeyCode::Tab if urls.len() > 1 => {
@@ -716,6 +732,7 @@ impl ServeView {
                 false
             }
             ServeViewState::Active { .. } => {
+                let panel_changed = self.pairing.as_mut().is_some_and(|panel| panel.tick());
                 let expired = self
                     .pending_confirm
                     .as_ref()
@@ -723,7 +740,7 @@ impl ServeView {
                 if expired {
                     self.pending_confirm = None;
                 }
-                expired
+                expired || panel_changed
             }
             ServeViewState::Error(_) => false,
         }
@@ -787,6 +804,12 @@ impl ServeView {
                     opened_at.elapsed(),
                     self.pending_confirm.as_ref().map(|(a, _)| *a),
                 );
+                if let Some(panel) = &self.pairing {
+                    let url = urls.get(*url_index).or_else(|| urls.first());
+                    let command =
+                        url.and_then(|url| pair_command(&url.url, &this_machine_remote_name()));
+                    panel.render(frame, area, theme, command.as_deref());
+                }
                 if self.show_help {
                     render_help_overlay(frame, area, theme, *mode);
                 }
@@ -847,6 +870,34 @@ fn diagnose_daemon_exit(log: &str, target: Exposure) -> &'static str {
 /// loopback-only. The token moves to `--token` so the stored URL stays clean.
 fn client_command(url: &str, passphrase: Option<&str>, name: &str) -> Option<String> {
     let (base, token) = split_url_and_token(url);
+    let (mut command, insecure) = remote_add_prefix(&base, name)?;
+    if let Some(token) = token {
+        command.push_str(&format!(" --token {token}"));
+    }
+    if let Some(passphrase) = passphrase {
+        let quoted = passphrase.replace('\'', "'\\''");
+        command.push_str(&format!(" --passphrase '{quoted}'"));
+    }
+    if insecure {
+        command.push_str(" --insecure");
+    }
+    Some(command)
+}
+
+/// The credential-free `aoe remote add` line a pairing client runs; it then
+/// prompts for the code.
+fn pair_command(url: &str, name: &str) -> Option<String> {
+    let (base, _) = split_url_and_token(url);
+    let (mut command, insecure) = remote_add_prefix(&base, name)?;
+    if insecure {
+        command.push_str(" --insecure");
+    }
+    Some(command)
+}
+
+/// `aoe remote add <name> <base>` and whether the base is plain HTTP, or
+/// `None` for a loopback URL no other machine can use.
+fn remote_add_prefix(base: &str, name: &str) -> Option<(String, bool)> {
     let base = base.trim_end_matches('/');
     let parsed = reqwest::Url::parse(base).ok()?;
     let host = parsed
@@ -860,18 +911,10 @@ fn client_command(url: &str, passphrase: Option<&str>, name: &str) -> Option<Str
     if loopback {
         return None;
     }
-    let mut command = format!("aoe remote add {name} {base}");
-    if let Some(token) = token {
-        command.push_str(&format!(" --token {token}"));
-    }
-    if let Some(passphrase) = passphrase {
-        let quoted = passphrase.replace('\'', "'\\''");
-        command.push_str(&format!(" --passphrase '{quoted}'"));
-    }
-    if parsed.scheme() == "http" {
-        command.push_str(" --insecure");
-    }
-    Some(command)
+    Some((
+        format!("aoe remote add {name} {base}"),
+        parsed.scheme() == "http",
+    ))
 }
 
 /// This machine's short hostname as a remote name: lowercase, `[a-z0-9-]`.
@@ -1749,6 +1792,8 @@ fn render_active(
             ]);
         }
         spans.extend([
+            Span::styled("P", key_style),
+            Span::styled(": pair  ", desc_style),
             Span::styled("E", key_style),
             Span::styled(": exposure  ", desc_style),
             Span::styled("R", key_style),
@@ -1773,6 +1818,7 @@ fn help_shortcuts(is_tunnel: bool) -> Vec<(&'static str, &'static str)> {
         shortcuts.push(("G", "New random passphrase and restart server"));
     }
     shortcuts.extend([
+        ("P", "Pair a device with a one-time code"),
         ("E", "Change exposure (back to localhost, LAN, tunnel)"),
         ("R", "Restart server (clears all client sessions)"),
         ("Tab", "Cycle URLs (when multiple available)"),
@@ -1785,7 +1831,7 @@ fn help_shortcuts(is_tunnel: bool) -> Vec<(&'static str, &'static str)> {
 fn render_help_overlay(frame: &mut Frame, area: Rect, theme: &Theme, mode: Exposure) {
     let dialog_width: u16 = 72.min(area.width.saturating_sub(4));
     let is_tunnel = mode == Exposure::Tunnel;
-    let dialog_height: u16 = if is_tunnel { 20 } else { 14 };
+    let dialog_height: u16 = if is_tunnel { 21 } else { 15 };
     let dialog_height = dialog_height.min(area.height.saturating_sub(4));
     let x = area.x + (area.width.saturating_sub(dialog_width)) / 2;
     let y = area.y + (area.height.saturating_sub(dialog_height)) / 2;
@@ -2371,6 +2417,23 @@ mod tests {
     }
 
     #[test]
+    fn pair_command_drops_credentials_and_keeps_insecure_for_http() {
+        for (url, expected) in [
+            (
+                "http://192.168.1.20:54321/?token=abc123",
+                Some("aoe remote add box http://192.168.1.20:54321 --insecure"),
+            ),
+            (
+                "https://box.tailnet.ts.net/?token=abc123",
+                Some("aoe remote add box https://box.tailnet.ts.net"),
+            ),
+            ("http://127.0.0.1:54321/?token=abc123", None),
+        ] {
+            assert_eq!(pair_command(url, "box").as_deref(), expected, "{url}");
+        }
+    }
+
+    #[test]
     fn remote_name_for_host_sanitizes_the_short_hostname() {
         for (hostname, expected) in [
             ("MacBook-Pro.local", "macbook-pro"),
@@ -2396,6 +2459,7 @@ mod tests {
             pending_passphrase: "pass".into(),
             pending_confirm: None,
             show_help: false,
+            pairing: None,
         }
     }
 

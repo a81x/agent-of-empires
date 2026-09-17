@@ -218,6 +218,13 @@ impl DaemonClient {
         serde_json::from_slice(&body).map_err(|error| self.decode_error(error))
     }
 
+    /// Authenticated DELETE of an `/api/*` endpoint, discarding the body.
+    pub async fn delete_api(&self, endpoint: &str) -> Result<(), DaemonClientError> {
+        self.request_response(self.http.delete(self.api_url(endpoint)?))
+            .await
+            .map(drop)
+    }
+
     fn api_url(&self, endpoint: &str) -> Result<Url, DaemonClientError> {
         // `sessions_url` ends in `api/sessions`, so a relative join lands on a
         // sibling under the same base path.

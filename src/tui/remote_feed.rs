@@ -228,7 +228,7 @@ pub(crate) fn error_summary(error: &crate::daemon::DaemonClientError) -> String 
         DaemonClientError::Status {
             status: StatusCode::UNAUTHORIZED,
             ..
-        } => "not authorized (HTTP 401); check the token, or re-add with --passphrase".to_string(),
+        } => "not authorized (HTTP 401); pair it again with `aoe remote add`".to_string(),
         DaemonClientError::Status { status, .. } => format!("daemon returned HTTP {status}"),
         other => other.to_string(),
     }

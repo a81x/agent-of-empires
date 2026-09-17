@@ -20,6 +20,51 @@ in the TUI's Remote Access view, `R`). Three transports are accepted:
 Read-only mode (`aoe serve --read-only`) blocks every write endpoint
 with `403 read_only`. Read endpoints work normally.
 
+A device-bound login session also authenticates, with no token: send
+`Cookie: aoe_session=<session_id>` plus `X-Aoe-Device-Binding: <secret>` (on
+a WebSocket upgrade the binding may instead ride as the subprotocol
+`aoe-device.<secret>`). Passphrase login and device pairing both mint one.
+Sessions are listed by `GET /api/devices` and revoked with
+`DELETE /api/login/sessions/{id}` or `POST /api/login/logout-all`; rotating
+the token leaves them valid.
+
+## Device pairing
+
+### POST /api/pair/codes
+
+Mints a single-use pairing code valid for 10 minutes. Only a caller on the
+daemon's owner-checked Unix socket may mint; any TCP caller, loopback
+included, gets `403 forbidden`. At most five codes are live at once (the
+oldest is dropped), and codes do not survive a daemon restart.
+
+```json
+{"code": "K7F-3QX", "expires_in_secs": 600}
+```
+
+### POST /api/pair
+
+Redeems a code. Needs no token or session.
+
+```json
+{"code": "K7F-3QX", "device_name": "laptop", "device_binding_secret": "<base64url of 32 random bytes>"}
+```
+
+Codes are case-insensitive and ignore `-` and spaces. On success the code is
+consumed and the response carries a session presented as described under
+[Authentication](#authentication). It passes a `--passphrase` login wall and
+survives passphrase changes; `GET /api/devices` lists it with its
+`device_name`.
+
+```json
+{"session_id": "<64 hex chars>", "device_name": "laptop"}
+```
+
+| Status | Meaning |
+| --- | --- |
+| `400 bad_request` | Malformed code, missing `device_name`, or a binding that is not 32 bytes |
+| `401 invalid_code` | Unknown, used or expired code. Counts toward the per-IP lockout; 20 wrong codes invalidate every live code |
+| `429 rate_limited` | The caller's IP is locked out (`Retry-After` gives seconds) |
+
 ## Skills
 
 AoE discovers Agent Skills packages from its managed store and supported

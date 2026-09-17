@@ -8,7 +8,7 @@ use super::access::{access_policy, cityhall_gate, security_headers};
 #[cfg(feature = "web")]
 use super::assets::{serve_asset, serve_index, serve_public_file};
 use super::state::AppState;
-use crate::server::{acp_ws, api, auth, live_ws, login, push};
+use crate::server::{acp_ws, api, auth, live_ws, login, pairing, push};
 
 pub(super) fn build_router(state: Arc<AppState>) -> Router {
     use axum::routing::{delete, get, patch, post, put};
@@ -296,6 +296,8 @@ pub(super) fn build_router(state: Arc<AppState>) -> Router {
         // Devices: the connected-devices view is backed by persisted
         // login sessions (#1235), not the old IP/UA request tracker.
         .route("/api/devices", get(login::devices_handler))
+        .route("/api/pair", post(pairing::pair_handler))
+        .route("/api/pair/codes", post(pairing::mint_handler))
         // About (version, auth status, read-only state)
         .route("/api/about", get(api::get_about))
         // Update status (latest release, available flag)

@@ -669,6 +669,12 @@ pub async fn auth_middleware(
             .insert(LocalAuthorization::TcpLoopback);
     }
 
+    // Redeeming a pairing code is how a client without credentials gets one;
+    // the handler applies the lockout itself.
+    if normalize_path(request.uri().path()) == "/api/pair" {
+        return next.run(request).await;
+    }
+
     // Trace structured view ws specifically so we can see whether the
     // browser ever reached the server when the structured view live updates
     // get stuck. Other ws paths (terminal) are not as load-bearing
@@ -747,30 +753,19 @@ pub async fn auth_middleware(
     }
 
     // Steady-state path: a bound device authenticates with its
-    // passphrase session + device binding alone. The token is a
-    // first-device-pairing nonce, NOT a per-request second factor;
-    // we only consult it on bootstrap paths below. This is the
-    // core simplification from #1167: rotation still happens for
-    // URL-leak mitigation of the bootstrap URL, but bound devices
-    // never see the rotation because they don't ride on tokens.
+    // session + device binding alone, never the token (#1167), so token
+    // rotation does not reach it. A paired session is accepted whether or
+    // not passphrase login is enabled.
     let login_enabled = state.login_manager.is_enabled();
-    let presented_session_id = if login_enabled {
-        super::login::extract_login_session(&request)
-    } else {
-        None
-    };
-    let presented_binding = if login_enabled {
-        extract_device_binding(&request)
-    } else {
-        None
-    };
-    let session_valid = if login_enabled {
-        match (&presented_session_id, &presented_binding) {
-            (Some(id), Some(b)) => state.login_manager.validate_session(id, b).await,
-            _ => false,
-        }
-    } else {
-        false
+    let presented_session_id = super::login::extract_login_session(&request);
+    let presented_binding = extract_device_binding(&request);
+    let session_valid = match (&presented_session_id, &presented_binding) {
+        (Some(id), Some(b)) => match state.login_manager.validate_session_kind(id, b).await {
+            Some(super::login::SessionKind::Paired) => true,
+            Some(super::login::SessionKind::Passphrase) => login_enabled,
+            None => false,
+        },
+        _ => false,
     };
 
     if session_valid {
@@ -962,7 +957,8 @@ async fn handle_session_authenticated(
     // authenticated. Without this, a local token-mode browser with a
     // bound session prompts where the passphrase-mode local browser
     // does not (#2610).
-    if requires_elevation(&method, &path)
+    if state.login_manager.is_enabled()
+        && requires_elevation(&method, &path)
         && request.extensions().get::<LocalAuthorization>().is_none()
         && !state.login_manager.is_elevated(&session_id).await
     {
