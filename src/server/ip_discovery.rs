@@ -1,10 +1,6 @@
-//! Classifying and discovering the local addresses the dashboard can be
-//! reached on.
+//! Classifying and discovering the local addresses the dashboard can be reached on.
 
-/// Kind tag for a local IPv4 address. Ordering in this enum is also the
-/// preference order for picking the "primary" URL to show in a QR: when
-/// the user serves on a Tailnet, that's almost always the one they want
-/// a phone (on cellular) to scan, not the LAN IP behind their NAT.
+/// Kind tag for a local IPv4 address.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum IpKind {
     Tailscale,
@@ -22,11 +18,8 @@ impl IpKind {
     }
 }
 
-/// Classify a v4 address into Tailscale (CGNAT 100.64.0.0/10, which is
-/// what Tailscale hands out), regular LAN (RFC1918), or loopback.
-/// Public non-RFC1918 / non-CGNAT addresses are rare on an `aoe serve`
-/// host (would mean serving directly on the open internet) and fall
-/// through to `Lan` so we still surface them.
+/// Classify a v4 address into Tailscale (CGNAT 100.64.0.0/10, which is what Tailscale hands
+/// out), regular LAN (RFC1918), or loopback.
 pub fn classify_ip(ip: std::net::Ipv4Addr) -> IpKind {
     let octets = ip.octets();
     if ip.is_loopback() {
@@ -39,9 +32,8 @@ pub fn classify_ip(ip: std::net::Ipv4Addr) -> IpKind {
     IpKind::Lan
 }
 
-/// Discover non-loopback IPv4 addresses on all network interfaces,
-/// tagged by kind and sorted so the preferred URL (Tailscale > LAN)
-/// is first. Caller decides whether to include loopback.
+/// Discover non-loopback IPv4 addresses on all network interfaces, tagged by kind and
+/// sorted so the preferred URL (Tailscale > LAN) is first.
 pub fn discover_tagged_ips() -> Vec<(IpKind, std::net::Ipv4Addr)> {
     let mut out: Vec<(IpKind, std::net::Ipv4Addr)> = Vec::new();
     if let Ok(addrs) = nix::ifaddrs::getifaddrs() {
@@ -80,9 +72,7 @@ mod tests {
             classify_ip(Ipv4Addr::new(100, 127, 255, 254)),
             IpKind::Tailscale
         );
-        // Boundary: 100.63.x.x is NOT CGNAT, it's just regular public
-        // space — classify as LAN so we still surface it (rare but
-        // possible on a weird home network).
+        // Boundary.
         assert_eq!(classify_ip(Ipv4Addr::new(100, 63, 0, 1)), IpKind::Lan);
         // Boundary: 100.128.x.x is also not CGNAT.
         assert_eq!(classify_ip(Ipv4Addr::new(100, 128, 0, 1)), IpKind::Lan);
@@ -105,9 +95,7 @@ mod tests {
 
     #[test]
     fn ip_kind_ordering_prefers_tailscale() {
-        // This is the "Tailscale first in QR" contract. If the sort order
-        // ever flips, the user's phone would scan a LAN IP from cellular
-        // and hit a timeout — regression test locks it in.
+        // This is the "Tailscale first in QR" contract.
         let mut v = [IpKind::Loopback, IpKind::Lan, IpKind::Tailscale];
         v.sort();
         assert_eq!(v, [IpKind::Tailscale, IpKind::Lan, IpKind::Loopback]);

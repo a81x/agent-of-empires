@@ -1,8 +1,4 @@
 //! IP-based auth failure rate limiting.
-//!
-//! After 5 failed authentication attempts from an IP within 15 minutes,
-//! subsequent requests from that IP are locked out for 15 minutes.
-//! State is in-memory only; restarting the server clears all lockouts.
 
 use std::collections::HashMap;
 use std::net::IpAddr;
@@ -18,16 +14,6 @@ const WINDOW_DURATION: std::time::Duration = std::time::Duration::from_secs(15 *
 const CLEANUP_INTERVAL: std::time::Duration = std::time::Duration::from_secs(60);
 const MAX_TRACKED_IPS: usize = 10_000;
 // Failures within this window of the last recorded failure collapse into one.
-// Prevents a single page load's parallel API calls from burning the whole budget
-// while still blocking serial brute-force attempts.
-//
-// Chosen for 500ms because:
-// - A browser's parallel fetches on mount land within ~10-50ms, so 500ms is
-//   well above the burst window.
-// - A scripted serial attacker still hits lockout in 5 * 500ms = 2.5s, which
-//   is fast enough that brute-force remains impractical.
-// - A human mistyping a passphrase in the login flow waits >500ms between
-//   attempts, so each of their failures counts.
 const COALESCE_WINDOW: std::time::Duration = std::time::Duration::from_millis(500);
 
 struct FailureRecord {
@@ -109,11 +95,7 @@ impl RateLimiter {
             record.first_failure = now;
         }
 
-        // Coalesce bursts: failures landing within COALESCE_WINDOW of the last
-        // recorded failure count as the same attempt. A single page load fires
-        // many parallel API calls; without this, one user burns all 5 slots
-        // instantly. Serial brute-force is unaffected (attackers pace slower
-        // than 500ms/attempt would be pointless).
+        // Coalesce bursts.
         if record.count > 0 && now.duration_since(record.last_failure) < COALESCE_WINDOW {
             record.last_failure = now;
             return false;
