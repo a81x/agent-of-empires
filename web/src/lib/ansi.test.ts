@@ -114,7 +114,11 @@ describe("OSC 8 hyperlinks and other OSC sequences", () => {
       link("https://x.com", `${ESC}[31mred link${ESC}[0m`),
       [{ text: "red link", style: { fg: "#cd3131" }, url: "https://x.com" }],
     ],
-    ["supports a BEL terminator", link("https://x.com", "click", "\x07"), [{ text: "click", style: {}, url: "https://x.com" }]],
+    [
+      "supports a BEL terminator",
+      link("https://x.com", "click", "\x07"),
+      [{ text: "click", style: {}, url: "https://x.com" }],
+    ],
     [
       "skips an id= parameter",
       `${ESC}]8;id=k16z3m;https://x.com/pull/8${ESC}\\click${ESC}]8;;${ESC}\\`,
