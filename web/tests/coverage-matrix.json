@@ -865,17 +865,7 @@
       "id": "wizard",
       "kind": "mocked-playwright",
       "risk": "high",
-      "specs": [
-        "tests/wizard-attach-existing.spec.ts",
-        "tests/wizard-base-branch.spec.ts",
-        "tests/wizard-project-step.spec.ts",
-        "tests/wizard-session-step.spec.ts",
-        "tests/wizard-agent-step.spec.ts",
-        "tests/wizard-single-screen.spec.ts",
-        "tests/wizard-extra-repos.spec.ts",
-        "tests/wizard-custom-agent.spec.ts",
-        "tests/wizard-tooltip-z-index.spec.ts"
-      ],
+      "specs": ["tests/wizard.spec.ts", "tests/wizard-project.spec.ts"],
       "components": [
         "web/src/components/DirectoryBrowser.tsx",
         "web/src/components/session-wizard/SessionWizard.tsx",
@@ -895,11 +885,7 @@
       "id": "wizard.worktree-title-derived-branch",
       "kind": "mocked-playwright",
       "risk": "medium",
-      "specs": [
-        "tests/wizard-form-ui.spec.ts",
-        "tests/wizard-session-step.spec.ts",
-        "tests/wizard-single-screen.spec.ts"
-      ],
+      "specs": ["tests/wizard.spec.ts"],
       "components": [
         "web/src/components/session-wizard/SessionWizard.tsx",
         "web/src/components/session-wizard/sessionNames.ts",
@@ -924,7 +910,7 @@
       "id": "wizard.volume-ignores-globs",
       "kind": "mocked-playwright",
       "risk": "medium",
-      "specs": ["tests/wizard-volume-ignores-globs.spec.ts"],
+      "specs": ["tests/wizard.spec.ts"],
       "components": [
         "web/src/components/session-wizard/SessionWizard.tsx",
         "web/src/components/session-wizard/VolumeIgnoresGlobDialog.tsx"
@@ -934,7 +920,7 @@
       "id": "wizard.hooks-trust",
       "kind": "mocked-playwright",
       "risk": "high",
-      "specs": ["tests/wizard-hooks-trust.spec.ts"],
+      "specs": ["tests/wizard.spec.ts"],
       "components": [
         "web/src/components/session-wizard/SessionWizard.tsx",
         "web/src/components/session-wizard/HooksTrustDialog.tsx"
@@ -1026,21 +1012,21 @@
       "id": "wizard.profile-description",
       "kind": "mocked-playwright",
       "risk": "medium",
-      "specs": ["tests/wizard-agent-step.spec.ts"],
+      "specs": ["tests/wizard.spec.ts"],
       "components": ["web/src/components/session-wizard/steps/AgentStep.tsx"]
     },
     {
       "id": "wizard.scratch-toggle-visible",
       "kind": "mocked-playwright",
       "risk": "medium",
-      "specs": ["tests/wizard-scratch-ui.spec.ts"],
+      "specs": ["tests/wizard-project.spec.ts"],
       "components": ["web/src/components/session-wizard/steps/ProjectStep.tsx"]
     },
     {
       "id": "wizard.scratch-enables-next",
       "kind": "mocked-playwright",
       "risk": "high",
-      "specs": ["tests/wizard-scratch-ui.spec.ts"],
+      "specs": ["tests/wizard-project.spec.ts"],
       "components": [
         "web/src/components/session-wizard/SessionWizard.tsx",
         "web/src/components/session-wizard/steps/ProjectStep.tsx",
@@ -1051,7 +1037,7 @@
       "id": "wizard.scratch-hides-worktree",
       "kind": "mocked-playwright",
       "risk": "medium",
-      "specs": ["tests/wizard-scratch-ui.spec.ts"],
+      "specs": ["tests/wizard-project.spec.ts"],
       "components": ["web/src/components/session-wizard/steps/SessionStep.tsx"]
     },
     {
@@ -1116,7 +1102,7 @@
       "id": "wizard.scratch-shortcut",
       "kind": "mocked-playwright",
       "risk": "medium",
-      "specs": ["tests/wizard-scratch-ui.spec.ts"],
+      "specs": ["tests/wizard-project.spec.ts"],
       "components": [
         "web/src/App.tsx",
         "web/src/hooks/useKeyboardShortcuts.ts",
@@ -1178,7 +1164,7 @@
       "id": "sidebar.scratch-group",
       "kind": "mocked-playwright",
       "risk": "medium",
-      "specs": ["tests/wizard-scratch-ui.spec.ts"],
+      "specs": ["tests/wizard-project.spec.ts"],
       "components": ["web/src/hooks/useRepoGroups.ts", "web/src/components/WorkspaceSidebar.tsx"]
     },
     {
@@ -3273,35 +3259,35 @@
       "id": "story.wizard-tabs-visible",
       "kind": "mocked-playwright",
       "risk": "low",
-      "specs": ["tests/wizard-project-step.spec.ts"],
+      "specs": ["tests/wizard-project.spec.ts"],
       "components": ["web/src/components/session-wizard/steps/ProjectStep.tsx"]
     },
     {
       "id": "story.wizard-clone-url-input",
       "kind": "mocked-playwright",
       "risk": "low",
-      "specs": ["tests/wizard-project-step.spec.ts"],
+      "specs": ["tests/wizard-project.spec.ts"],
       "components": ["web/src/components/session-wizard/steps/ProjectStep.tsx"]
     },
     {
       "id": "story.wizard-saved-projects",
       "kind": "mocked-playwright",
       "risk": "low",
-      "specs": ["tests/wizard-project-step.spec.ts"],
+      "specs": ["tests/wizard-project.spec.ts"],
       "components": ["web/src/components/session-wizard/steps/ProjectStep.tsx"]
     },
     {
       "id": "story.wizard-browse-disk",
       "kind": "mocked-playwright",
       "risk": "low",
-      "specs": ["tests/wizard-project-step.spec.ts"],
+      "specs": ["tests/wizard-project.spec.ts"],
       "components": ["web/src/components/DirectoryBrowser.tsx"]
     },
     {
       "id": "story.wizard-recent-project",
       "kind": "mocked-playwright",
       "risk": "medium",
-      "specs": ["tests/wizard-project-step.spec.ts"],
+      "specs": ["tests/wizard-project.spec.ts"],
       "components": ["web/src/components/session-wizard/steps/ProjectStep.tsx"]
     },
     {
@@ -3315,35 +3301,35 @@
       "id": "story.wizard-prefill-from-group",
       "kind": "mocked-playwright",
       "risk": "medium",
-      "specs": ["tests/wizard-form-ui.spec.ts"],
+      "specs": ["tests/wizard.spec.ts"],
       "components": ["web/src/components/session-wizard/SessionWizard.tsx", "web/src/components/WorkspaceSidebar.tsx"]
     },
     {
       "id": "story.wizard-session-title-edit",
       "kind": "mocked-playwright",
       "risk": "medium",
-      "specs": ["tests/wizard-session-step.spec.ts"],
+      "specs": ["tests/wizard.spec.ts"],
       "components": ["web/src/components/session-wizard/steps/SessionStep.tsx"]
     },
     {
       "id": "story.wizard-worktree-toggle",
       "kind": "mocked-playwright",
       "risk": "medium",
-      "specs": ["tests/wizard-session-step.spec.ts"],
+      "specs": ["tests/wizard.spec.ts"],
       "components": ["web/src/components/session-wizard/steps/SessionStep.tsx"]
     },
     {
       "id": "story.wizard-group-field",
       "kind": "mocked-playwright",
       "risk": "low",
-      "specs": ["tests/wizard-session-step.spec.ts"],
+      "specs": ["tests/wizard.spec.ts"],
       "components": ["web/src/components/session-wizard/steps/SessionStep.tsx"]
     },
     {
       "id": "story.wizard-extra-repos",
       "kind": "mocked-playwright",
       "risk": "medium",
-      "specs": ["tests/wizard-extra-repos.spec.ts"],
+      "specs": ["tests/wizard-project.spec.ts"],
       "components": [
         "web/src/components/session-wizard/steps/ExtraReposPicker.tsx",
         "web/src/components/session-wizard/steps/projectPicker.ts",
@@ -3354,14 +3340,14 @@
       "id": "story.wizard-creating-banner",
       "kind": "mocked-playwright",
       "risk": "medium",
-      "specs": ["tests/wizard-single-screen.spec.ts"],
+      "specs": ["tests/wizard.spec.ts"],
       "components": ["web/src/components/session-wizard/LaunchFooter.tsx"]
     },
     {
       "id": "story.wizard-last-tool-persists",
       "kind": "mocked-playwright",
       "risk": "low",
-      "specs": ["tests/wizard-form-ui.spec.ts"],
+      "specs": ["tests/wizard.spec.ts"],
       "components": ["web/src/components/session-wizard/SessionWizard.tsx"]
     },
     {
@@ -3375,7 +3361,7 @@
       "id": "story.wizard-branch-from-title",
       "kind": "mocked-playwright",
       "risk": "medium",
-      "specs": ["tests/wizard-form-ui.spec.ts"],
+      "specs": ["tests/wizard.spec.ts"],
       "components": [
         "web/src/components/session-wizard/sessionNames.ts",
         "web/src/components/session-wizard/steps/SessionStep.tsx"
