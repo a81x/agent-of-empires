@@ -68,29 +68,42 @@ impl HomeView {
         true
     }
 
-    /// Remotes the new-session dialog can target: each enabled remote whose
-    /// profiles and agents the feed has read.
+    /// Remotes the new-session dialog can target: every enabled remote, ready
+    /// once the feed has read its profiles and agents.
     pub(super) fn remote_dialog_targets(&self) -> Vec<crate::tui::dialogs::RemoteTarget> {
+        use crate::tui::dialogs::{RemoteMachine, RemoteTarget, RemoteUnavailable};
         let remotes = remote_feed::enabled_remotes();
         self.remote_snapshots
             .iter()
             .filter_map(|snapshot| {
-                let meta = snapshot.meta.as_ref()?;
-                let client = remotes.get(&snapshot.name)?.endpoint.daemon_client().ok()?;
-                let mut profiles = meta.profiles.clone();
-                profiles.sort_by_key(|p| !p.is_default);
-                Some(crate::tui::dialogs::RemoteTarget {
+                let entry = remotes.get(&snapshot.name)?;
+                let machine = match (&snapshot.sessions, &snapshot.meta) {
+                    (None, _) => Err(RemoteUnavailable::Connecting),
+                    (Some(Ok(_)), Some(meta)) => entry
+                        .endpoint
+                        .daemon_client()
+                        .map(|client| {
+                            let mut profiles = meta.profiles.clone();
+                            profiles.sort_by_key(|p| !p.is_default);
+                            RemoteMachine {
+                                home: meta.home.clone(),
+                                profiles: profiles.into_iter().map(|p| p.name).collect(),
+                                tools: meta
+                                    .agents
+                                    .iter()
+                                    .filter(|a| a.installed)
+                                    .map(|a| a.name.clone())
+                                    .collect(),
+                                docker_available: meta.container_runtime_available,
+                                client,
+                            }
+                        })
+                        .map_err(|_| RemoteUnavailable::Unreachable),
+                    _ => Err(RemoteUnavailable::Unreachable),
+                };
+                Some(RemoteTarget {
                     name: snapshot.name.clone(),
-                    home: meta.home.clone(),
-                    profiles: profiles.into_iter().map(|p| p.name).collect(),
-                    tools: meta
-                        .agents
-                        .iter()
-                        .filter(|a| a.installed)
-                        .map(|a| a.name.clone())
-                        .collect(),
-                    docker_available: meta.container_runtime_available,
-                    client,
+                    machine,
                 })
             })
             .collect()

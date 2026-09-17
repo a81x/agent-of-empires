@@ -235,7 +235,7 @@ impl NewSessionDialog {
     pub(super) fn recompute_path_ghost(&mut self) {
         // Completion reads this machine's disk; a remote path would complete
         // against the wrong filesystem.
-        if self.active_remote.is_some() {
+        if self.remote_index > 0 {
             self.path_ghost = None;
             return;
         }

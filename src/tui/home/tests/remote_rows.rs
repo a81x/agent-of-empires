@@ -309,16 +309,78 @@ fn enter_on_a_trashed_remote_row_says_where_to_restore_it_instead_of_opening() {
 
 #[test]
 #[serial]
+fn the_dialog_lists_every_enabled_remote_with_why_it_cannot_take_a_session() {
+    use crate::tui::dialogs::RemoteUnavailable;
+    use crate::tui::remote_feed::{RemoteMeta, RemoteProfile};
+    let mut env = create_test_env_with_sessions(1);
+    register_mini();
+    let meta = RemoteMeta {
+        profiles: vec![
+            RemoteProfile {
+                name: "work".into(),
+                is_default: false,
+            },
+            RemoteProfile {
+                name: "main".into(),
+                is_default: true,
+            },
+        ],
+        ..RemoteMeta::default()
+    };
+    let cases = [
+        (None, None, Err(RemoteUnavailable::Connecting)),
+        (
+            Some(Err("refused".to_string())),
+            Some(meta.clone()),
+            Err(RemoteUnavailable::Unreachable),
+        ),
+        (
+            Some(Ok(Vec::new())),
+            None,
+            Err(RemoteUnavailable::Unreachable),
+        ),
+        (Some(Ok(Vec::new())), Some(meta), Ok(vec!["main", "work"])),
+    ];
+    for (sessions, meta, expected) in cases {
+        env.view.remote_snapshots = vec![
+            RemoteSnapshot {
+                name: "mini".into(),
+                sessions,
+                meta,
+            },
+            RemoteSnapshot {
+                name: "unregistered".into(),
+                sessions: None,
+                meta: None,
+            },
+        ];
+        let targets = env.view.remote_dialog_targets();
+        let got: Vec<_> = targets
+            .iter()
+            .map(|t| {
+                let machine = t.machine.as_ref().map(|m| m.profiles.clone());
+                (t.name.as_str(), machine.map_err(|e| *e))
+            })
+            .collect();
+        let expected = expected.map(|p| p.iter().map(|s| s.to_string()).collect());
+        assert_eq!(got, [("mini", expected)]);
+    }
+}
+
+#[test]
+#[serial]
 fn a_remote_submit_closes_the_dialog_and_hands_off_to_the_remote() {
     let mut env = create_test_env_with_sessions(1);
     register_mini();
     let target = crate::tui::dialogs::RemoteTarget {
         name: "mini".into(),
-        home: Some("/Users/remote".into()),
-        profiles: vec!["default".into()],
-        tools: vec!["claude".into()],
-        docker_available: false,
-        client: crate::daemon::DaemonClient::new("https://127.0.0.1:9", Some("tok")).unwrap(),
+        machine: Ok(crate::tui::dialogs::RemoteMachine {
+            home: Some("/Users/remote".into()),
+            profiles: vec!["default".into()],
+            tools: vec!["claude".into()],
+            docker_available: false,
+            client: crate::daemon::DaemonClient::new("https://127.0.0.1:9", Some("tok")).unwrap(),
+        }),
     };
     let mut dialog = NewSessionDialog::new(
         AvailableTools::with_tools(&["claude"]),

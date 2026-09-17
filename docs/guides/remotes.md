@@ -90,11 +90,15 @@ header with the reason.
 
 ## Creating a session on a remote
 
-The new-session dialog lists each remote's profiles after the local ones as
-`profile@remote`. Choosing one switches the dialog to that machine: its
-installed agents, a starting path at its home directory, `Ctrl+P` browsing
-its filesystem, and the sandbox option only when the remote reports a running
-container runtime. The session is created by the remote daemon.
+When a remote is configured, the new-session dialog (`n`) shows a Remote
+picker above Profile. It starts on `Local`; `Left`/`Right` cycles through the
+enabled remotes. Choosing a remote switches the dialog to that machine: its
+profiles (starting on its default), its installed agents, a starting path at
+its home directory, `Ctrl+P` browsing its filesystem, and the sandbox option
+only when the remote reports a running container runtime. The session is
+created by the remote daemon. A remote that is unreachable or still connecting
+is listed with that status and cannot be submitted to; reopen the dialog once
+it connects.
 
 The dialog never approves repository hooks on another machine. If the repo's
 hooks are not yet trusted there, the create is refused (HTTP 403); trust them
