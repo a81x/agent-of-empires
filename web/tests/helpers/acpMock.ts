@@ -161,7 +161,9 @@ export async function mockAcpSession(page: Page, opts: AcpSessionMockOptions = {
     if (body) {
       try {
         handle.telemetryPings.push(JSON.parse(body));
-      } catch {}
+      } catch {
+        // Only well-formed pings are recorded.
+      }
     }
     return r.fulfill({ status: 204 });
   });
