@@ -263,9 +263,7 @@ mod tests {
     /// `(event, status, session_id_capture)` tuple. Issue #1845 acceptance
     /// criterion #4 (byte-for-byte, not "contains the guard substring").
     fn assert_claude_canonical(claude: &Path) {
-        use crate::hooks::{
-            canonical_session_id_command, canonical_status_command_for_event, HookInstallTarget,
-        };
+        use crate::hooks::{hook_command_session_id, status_command_for_event, HookInstallTarget};
         let parsed: Value = serde_json::from_str(&fs::read_to_string(claude).unwrap()).unwrap();
         let hooks = parsed["hooks"].as_object().expect("hooks present");
         // An empty `hooks: {}` would silently pass the per-event loop below.
@@ -307,8 +305,10 @@ mod tests {
                     let mut canonical_set: Vec<String> = Vec::new();
                     for event_def in event_defs {
                         if event_def.identity_field.is_some() {
-                            canonical_set
-                                .push(canonical_session_id_command(HookInstallTarget::Host));
+                            canonical_set.push(hook_command_session_id(
+                                HookInstallTarget::Host,
+                                crate::agents::HookIdentityField::SessionId,
+                            ));
                         }
                         if let Some(status) = event_def.status {
                             let waiting_tools: Vec<String> = event_def
@@ -316,7 +316,7 @@ mod tests {
                                 .iter()
                                 .map(|t| t.to_string())
                                 .collect();
-                            canonical_set.push(canonical_status_command_for_event(
+                            canonical_set.push(status_command_for_event(
                                 status,
                                 &waiting_tools,
                                 HookInstallTarget::Host,
@@ -490,11 +490,11 @@ mod tests {
         // legacy entry is preserved AND v015 still installs the current
         // canonical bytes adjacent to it (so live status detection works
         // for the next session).
-        use crate::hooks::canonical_status_command_for_event;
+        use crate::hooks::status_command_for_event;
         // Claude's PreToolUse is the tool-gated writer (running by default,
         // waiting for AskUserQuestion), so canonicalize through the same
         // selector the installer uses.
-        let canonical_running = canonical_status_command_for_event(
+        let canonical_running = status_command_for_event(
             crate::agents::HookStatus::Running,
             &["AskUserQuestion".to_string()],
             crate::hooks::HookInstallTarget::Host,

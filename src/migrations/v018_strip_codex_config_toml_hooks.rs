@@ -198,7 +198,7 @@ fn read_environment_from_toml(path: &Path) -> Option<Vec<String>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::hooks::{canonical_status_command, HookInstallTarget};
+    use crate::hooks::{hook_command, HookInstallTarget};
     use crate::session::test_support::EnvGuard;
     use std::fs;
     use tempfile::TempDir;
@@ -226,11 +226,11 @@ mod tests {
     }
 
     /// Build a TOML fixture with one AoE-marked `SessionStart` hook.
-    /// Uses the live `canonical_status_command` so the planted bytes
+    /// Uses the live `hook_command` so the planted bytes
     /// carry the same `# aoe-hooks ...` trailing sentinel
     /// [`has_aoe_marker`] looks for.
     fn aoe_session_start_block() -> String {
-        let cmd = canonical_status_command("running", HookInstallTarget::Host);
+        let cmd = hook_command("running", HookInstallTarget::Host);
         format!(
             "[[hooks.SessionStart]]\n\
              [[hooks.SessionStart.hooks]]\n\
@@ -328,7 +328,7 @@ mod tests {
         let (_tmp, home, app_dir) = setup_dirs();
         let codex = home.join(".codex/config.toml");
         fs::create_dir_all(codex.parent().unwrap()).unwrap();
-        let cmd = canonical_status_command("running", HookInstallTarget::Host);
+        let cmd = hook_command("running", HookInstallTarget::Host);
         let original = format!(
             "[[hooks.SessionStart]]\n\
              [[hooks.SessionStart.hooks]]\n\
