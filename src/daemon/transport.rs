@@ -46,14 +46,16 @@ pub(crate) fn prepare_runtime_directory(parent: &Path) -> anyhow::Result<()> {
         Err(error) => return Err(error.into()),
     }
     let owner = nix::unistd::geteuid().as_raw();
+    if let Some(app_dir) = parent.parent() {
+        drop_group_other_write(app_dir, owner)?;
+    }
+    let private_gid = user_private_gid(owner);
     for ancestor in parent.ancestors() {
         let meta = std::fs::symlink_metadata(ancestor)?;
-        let trusted_sticky = meta.uid() == 0 && meta.mode() & 0o1000 != 0;
         anyhow::ensure!(
             meta.is_dir()
                 && !meta.file_type().is_symlink()
-                && (meta.uid() == owner || meta.uid() == 0)
-                && (meta.mode() & 0o022 == 0 || trusted_sticky),
+                && trusted_ancestor(meta.uid(), meta.gid(), meta.mode(), owner, private_gid),
             "Unsafe daemon socket directory: {}",
             ancestor.display()
         );
@@ -64,6 +66,32 @@ pub(crate) fn prepare_runtime_directory(parent: &Path) -> anyhow::Result<()> {
         "Daemon socket directory must be owned by this user with mode0700"
     );
     Ok(())
+}
+
+/// The app dir belongs to aoe, but a umask of 002 creates it group-writable.
+fn drop_group_other_write(dir: &Path, owner: u32) -> anyhow::Result<()> {
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+    let meta = std::fs::symlink_metadata(dir)?;
+    if meta.is_dir() && meta.uid() == owner && meta.mode() & 0o022 != 0 {
+        let mode = meta.mode() & 0o7777 & !0o022;
+        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(mode))?;
+    }
+    Ok(())
+}
+
+/// The owner's primary group when it is a user-private group: same name as
+/// the user and no listed members, as Debian and Ubuntu create by default.
+fn user_private_gid(owner: u32) -> Option<u32> {
+    use nix::unistd::{Group, Uid, User};
+    let user = User::from_uid(Uid::from_raw(owner)).ok()??;
+    let group = Group::from_gid(user.gid).ok()??;
+    (group.name == user.name && group.mem.is_empty()).then(|| user.gid.as_raw())
+}
+
+fn trusted_ancestor(uid: u32, gid: u32, mode: u32, owner: u32, private_gid: Option<u32>) -> bool {
+    let trusted_sticky = uid == 0 && mode & 0o1000 != 0;
+    let private_group_write = uid == owner && mode & 0o002 == 0 && private_gid == Some(gid);
+    (uid == owner || uid == 0) && (mode & 0o022 == 0 || trusted_sticky || private_group_write)
 }
 
 pub(crate) async fn connect_unix(path: &Path) -> Result<tokio::net::UnixStream, DaemonClientError> {
@@ -117,4 +145,46 @@ pub(crate) async fn execute(
     })
     .await
     .map_err(|_| DaemonClientError::Timeout)?
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ancestor_trust_allows_only_owner_private_or_sticky_writes() {
+        const ME: u32 = 1000;
+        const PRIVATE: Option<u32> = Some(1000);
+        let cases = [
+            (ME, 1000, 0o755, PRIVATE, true),
+            (ME, 1000, 0o775, PRIVATE, true),
+            (ME, 1000, 0o775, None, false),
+            (ME, 100, 0o775, PRIVATE, false),
+            (ME, 1000, 0o777, PRIVATE, false),
+            (0, 0, 0o1777, PRIVATE, true),
+            (0, 1000, 0o775, PRIVATE, false),
+            (2000, 2000, 0o755, PRIVATE, false),
+        ];
+        for (uid, gid, mode, private_gid, expected) in cases {
+            assert_eq!(
+                trusted_ancestor(uid, gid, mode, ME, private_gid),
+                expected,
+                "uid={uid} gid={gid} mode={mode:o} private={private_gid:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn group_writable_app_dir_is_tightened_before_the_socket_directory_check() {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        let root = tempfile::tempdir().unwrap();
+        std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        let app = root.path().join("app");
+        std::fs::create_dir(&app).unwrap();
+        std::fs::set_permissions(&app, std::fs::Permissions::from_mode(0o775)).unwrap();
+
+        prepare_runtime_directory(&app.join("daemon")).unwrap();
+
+        assert_eq!(std::fs::metadata(&app).unwrap().mode() & 0o777, 0o755);
+    }
 }
