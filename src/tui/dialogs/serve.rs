@@ -230,8 +230,11 @@ pub struct ServeView {
     /// Destructive action awaiting a second keypress to confirm.
     pending_confirm: Option<(PendingConfirm, Instant)>,
     show_help: bool,
-    /// Pair-a-device panel over the exposed view.
+    /// Pairing code and devices, while exposed.
     pairing: Option<super::pairing::PairingPanel>,
+    /// Narrow terminals show the browser/phone section instead of pairing.
+    show_web: bool,
+    flash: Option<(String, Instant)>,
 }
 
 impl Default for ServeView {
@@ -250,6 +253,8 @@ impl ServeView {
             pending_confirm: None,
             show_help: false,
             pairing: None,
+            show_web: false,
+            flash: None,
         };
         match crate::cli::serve::current_exposure() {
             Some(mode @ (Exposure::Network | Exposure::Tunnel)) => view.show_active(mode),
@@ -302,7 +307,8 @@ impl ServeView {
         };
         self.pending_confirm = None;
         self.show_help = false;
-        self.pairing = None;
+        self.pairing = Some(super::pairing::PairingPanel::open());
+        self.show_web = false;
     }
 
     /// Probe tunnel readiness on entering Confirm or pressing `[R]`
@@ -568,10 +574,11 @@ impl ServeView {
                     self.show_help = false;
                     return ServeAction::Continue;
                 }
-                if let Some(panel) = &mut self.pairing {
-                    if matches!(panel.handle_key(key), super::pairing::PanelAction::Close) {
-                        self.pairing = None;
-                    }
+                if self
+                    .pairing
+                    .as_mut()
+                    .is_some_and(|panel| panel.handle_key(key))
+                {
                     return ServeAction::Continue;
                 }
                 let confirmed = self
@@ -617,8 +624,16 @@ impl ServeView {
                         self.show_picker(Some(mode), None);
                         ServeAction::Continue
                     }
-                    KeyCode::Char('p') | KeyCode::Char('P') => {
-                        self.pairing = Some(super::pairing::PairingPanel::open());
+                    KeyCode::Char('c') | KeyCode::Char('C') => {
+                        let url = urls.get(*url_index).or_else(|| urls.first());
+                        if let Some(command) = url.and_then(|url| client_command(&url.url)) {
+                            crate::tui::clipboard::copy_to_clipboard(&command);
+                            self.flash = Some((format!("Copied: {command}"), Instant::now()));
+                        }
+                        ServeAction::Continue
+                    }
+                    KeyCode::Char('w') | KeyCode::Char('W') => {
+                        self.show_web = !self.show_web;
                         ServeAction::Continue
                     }
                     KeyCode::Tab if urls.len() > 1 => {
@@ -720,6 +735,8 @@ impl ServeView {
                         passphrase: passphrase.take(),
                         opened_at: Instant::now(),
                     };
+                    self.pairing = Some(super::pairing::PairingPanel::open());
+                    self.show_web = false;
                     return true;
                 }
                 if ready_at.is_some_and(|at| at.elapsed() > URL_PUBLISH_TIMEOUT) {
@@ -733,6 +750,13 @@ impl ServeView {
             }
             ServeViewState::Active { .. } => {
                 let panel_changed = self.pairing.as_mut().is_some_and(|panel| panel.tick());
+                let flash_expired = self
+                    .flash
+                    .as_ref()
+                    .is_some_and(|(_, at)| at.elapsed() > FLASH_TTL);
+                if flash_expired {
+                    self.flash = None;
+                }
                 let expired = self
                     .pending_confirm
                     .as_ref()
@@ -740,7 +764,7 @@ impl ServeView {
                 if expired {
                     self.pending_confirm = None;
                 }
-                expired || panel_changed
+                expired || panel_changed || flash_expired
             }
             ServeViewState::Error(_) => false,
         }
@@ -797,19 +821,18 @@ impl ServeView {
                     frame,
                     area,
                     theme,
-                    *mode,
-                    urls,
-                    *url_index,
-                    passphrase.as_deref(),
-                    opened_at.elapsed(),
-                    self.pending_confirm.as_ref().map(|(a, _)| *a),
+                    &ActiveModel {
+                        mode: *mode,
+                        urls,
+                        url_index: *url_index,
+                        passphrase: passphrase.as_deref(),
+                        elapsed: opened_at.elapsed(),
+                        pending_confirm: self.pending_confirm.as_ref().map(|(a, _)| *a),
+                        pairing: self.pairing.as_ref(),
+                        show_web: self.show_web,
+                        flash: self.flash.as_ref().map(|(text, _)| text.as_str()),
+                    },
                 );
-                if let Some(panel) = &self.pairing {
-                    let url = urls.get(*url_index).or_else(|| urls.first());
-                    let command =
-                        url.and_then(|url| pair_command(&url.url, &this_machine_remote_name()));
-                    panel.render(frame, area, theme, command.as_deref());
-                }
                 if self.show_help {
                     render_help_overlay(frame, area, theme, *mode);
                 }
@@ -866,41 +889,11 @@ fn diagnose_daemon_exit(log: &str, target: Exposure) -> &'static str {
     ""
 }
 
-/// `aoe remote add` line for another machine, or `None` when `url` is
-/// loopback-only. The token moves to `--token` so the stored URL stays clean.
-fn client_command(url: &str, passphrase: Option<&str>, name: &str) -> Option<String> {
-    let (base, token) = split_url_and_token(url);
-    let (mut command, insecure) = remote_add_prefix(&base, name)?;
-    if let Some(token) = token {
-        command.push_str(&format!(" --token {token}"));
-    }
-    if let Some(passphrase) = passphrase {
-        let quoted = passphrase.replace('\'', "'\\''");
-        command.push_str(&format!(" --passphrase '{quoted}'"));
-    }
-    if insecure {
-        command.push_str(" --insecure");
-    }
-    Some(command)
-}
-
-/// The credential-free `aoe remote add` line a pairing client runs; it then
-/// prompts for the code.
-fn pair_command(url: &str, name: &str) -> Option<String> {
-    let (base, _) = split_url_and_token(url);
-    let (mut command, insecure) = remote_add_prefix(&base, name)?;
-    if insecure {
-        command.push_str(" --insecure");
-    }
-    Some(command)
-}
-
-/// `aoe remote add <name> <base>` and whether the base is plain HTTP, or
-/// `None` for a loopback URL no other machine can use.
-fn remote_add_prefix(base: &str, name: &str) -> Option<(String, bool)> {
-    let base = base.trim_end_matches('/');
-    let parsed = reqwest::Url::parse(base).ok()?;
-    let host = parsed
+/// The `aoe remote add` line another machine runs, or `None` for a loopback
+/// URL no other machine can use. It prompts for the pairing code.
+fn client_command(url: &str) -> Option<String> {
+    let base = base_url(url)?;
+    let host = base
         .host_str()?
         .trim_start_matches('[')
         .trim_end_matches(']');
@@ -908,42 +901,20 @@ fn remote_add_prefix(base: &str, name: &str) -> Option<(String, bool)> {
         || host
             .parse::<std::net::IpAddr>()
             .is_ok_and(|ip| ip.is_loopback());
-    if loopback {
-        return None;
-    }
-    Some((
-        format!("aoe remote add {name} {base}"),
-        parsed.scheme() == "http",
-    ))
+    (!loopback).then(|| {
+        format!(
+            "aoe remote add {}",
+            crate::daemon::remotes::short_remote_address(base.as_str())
+        )
+    })
 }
 
-/// This machine's short hostname as a remote name: lowercase, `[a-z0-9-]`.
-fn remote_name_for_host(hostname: &str) -> String {
-    let short = hostname.split('.').next().unwrap_or_default();
-    let name: String = short
-        .chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() {
-                c.to_ascii_lowercase()
-            } else {
-                '-'
-            }
-        })
-        .collect();
-    let name = name.trim_matches('-');
-    if name.is_empty() {
-        "aoe".to_string()
-    } else {
-        name.to_string()
-    }
-}
-
-fn this_machine_remote_name() -> String {
-    let hostname = nix::unistd::gethostname()
-        .ok()
-        .and_then(|name| name.into_string().ok())
-        .unwrap_or_default();
-    remote_name_for_host(&hostname)
+/// `url` without its path and query, where a credential may ride.
+fn base_url(url: &str) -> Option<reqwest::Url> {
+    let mut base = reqwest::Url::parse(url).ok()?;
+    base.set_query(None);
+    base.set_path("/");
+    Some(base)
 }
 
 fn log_file_path() -> Option<PathBuf> {
@@ -1484,343 +1455,333 @@ fn render_qr(_url: &str) -> String {
 const API_ONLY_NOTICE: &str =
     "No dashboard bundle in this build: the URL serves the REST API only, and a browser gets a 404.";
 
-/// Rows [`API_ONLY_NOTICE`] needs once wrapped at a usable terminal width.
-const API_ONLY_ROWS: u16 = 2;
+/// Terminal width from which the browser/phone section sits beside pairing.
+const WIDE_ACTIVE_WIDTH: u16 = 90;
 
-#[allow(clippy::too_many_arguments)]
-fn render_active(
-    frame: &mut Frame,
-    area: Rect,
-    theme: &Theme,
+struct ActiveModel<'a> {
     mode: Exposure,
-    urls: &[ServeUrl],
+    urls: &'a [ServeUrl],
     url_index: usize,
-    passphrase: Option<&str>,
+    passphrase: Option<&'a str>,
     elapsed: Duration,
     pending_confirm: Option<PendingConfirm>,
-) {
-    let Some(active_url) = urls.get(url_index).or_else(|| urls.first()) else {
-        render_error(
-            frame,
-            area,
-            theme,
-            "Daemon started but no URL available yet.",
-        );
-        return;
-    };
-    let url = &active_url.url;
-    let kind_label = active_url.label.as_deref();
+    pairing: Option<&'a super::pairing::PairingPanel>,
+    show_web: bool,
+    flash: Option<&'a str>,
+}
 
-    let full_url = url.as_str();
-    let url_prefix = "URL: ";
-    let full_url_len = url_prefix.chars().count() + full_url.chars().count();
-    let (split_url, split_token) = split_url_and_token(full_url);
-    let is_tunnel = mode == Exposure::Tunnel;
-    let command = client_command(
-        full_url,
-        passphrase.filter(|_| is_tunnel),
-        &this_machine_remote_name(),
-    );
-
+/// The exposed daemon: pairing first (code, then the command to run on the
+/// other machine, then paired devices), browser and phone access beside it
+/// when wide or behind `w` when not.
+fn render_active(frame: &mut Frame, area: Rect, theme: &Theme, model: &ActiveModel) {
     frame.render_widget(Clear, area);
-
-    let page = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(3), // header
-            Constraint::Min(10),   // content
-            Constraint::Length(3), // footer
-        ])
-        .split(area);
-
-    // ── Header ───────────────────────────────────────────────────────────
-    let eight_hours = Duration::from_secs(8 * 3600);
-    let title_color = if elapsed >= eight_hours {
-        theme.waiting
-    } else {
-        theme.title
-    };
-    let header_block = Block::default()
-        .borders(Borders::BOTTOM)
-        .border_style(Style::default().fg(theme.border));
-    let header_inner = header_block.inner(page[0]);
-    frame.render_widget(header_block, page[0]);
-
-    let mode_label = match mode {
-        Exposure::Network => "local network",
-        Exposure::Tunnel => "tunnel",
-        Exposure::Localhost => "localhost",
-    };
     // Without the bundle this screen hands out an API endpoint, not a
     // dashboard, so the title says which one the user is looking at.
     let title = if cfg!(feature = "web") {
-        format!(" Remote Access ({mode_label})")
+        " Remote Access "
     } else {
-        format!(" Remote API Access ({mode_label})")
+        " Remote API Access "
     };
-    let mut header_spans = vec![
-        Span::styled(title, Style::default().fg(title_color).bold()),
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(theme.accent))
+        .padding(Padding::horizontal(1))
+        .title(Line::styled(
+            title,
+            Style::default().fg(theme.accent).bold(),
+        ));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let Some(url) = model
+        .urls
+        .get(model.url_index)
+        .or_else(|| model.urls.first())
+    else {
+        frame.render_widget(
+            Paragraph::new("The daemon started but has not published a URL yet.")
+                .style(Style::default().fg(theme.dimmed)),
+            inner,
+        );
+        return;
+    };
+    let command = client_command(&url.url);
+
+    // The exposure line yields before the code and command do.
+    let header_rows = match inner.height {
+        0..7 => 0,
+        7..12 => 1,
+        _ => 2,
+    };
+    let rows = Layout::vertical([
+        Constraint::Length(header_rows),
+        Constraint::Min(1),
+        Constraint::Length(1),
+    ])
+    .split(inner);
+    frame.render_widget(Paragraph::new(exposure_line(theme, model, url)), rows[0]);
+    let wide = inner.width >= WIDE_ACTIVE_WIDTH;
+    let body = rows[1];
+    if wide {
+        let web_width = (inner.width / 2).min(56);
+        let columns = Layout::horizontal([Constraint::Min(1), Constraint::Length(web_width)])
+            .spacing(2)
+            .split(body);
+        render_pairing_column(frame, columns[0], theme, model, command.as_deref());
+        render_web_column(frame, columns[1], theme, model, url);
+    } else if model.show_web {
+        render_web_column(frame, body, theme, model, url);
+    } else {
+        render_pairing_column(frame, body, theme, model, command.as_deref());
+    }
+    render_active_footer(frame, rows[2], theme, model, command.is_some(), wide);
+}
+
+fn exposure_line(theme: &Theme, model: &ActiveModel, url: &ServeUrl) -> Line<'static> {
+    let place = match model.mode {
+        Exposure::Tunnel => "Sharing over the internet",
+        Exposure::Network => "Sharing on local network",
+        Exposure::Localhost => "Sharing on this machine",
+    };
+    let address = base_url(&url.url)
+        .map(|base| crate::daemon::remotes::short_remote_address(base.as_str()))
+        .unwrap_or_default();
+    let eight_hours = Duration::from_secs(8 * 3600);
+    let mut spans = vec![
+        Span::styled("● ", Style::default().fg(theme.running)),
+        Span::styled(place, Style::default().fg(theme.text).bold()),
+        Span::styled(format!(" · {address}"), Style::default().fg(theme.text)),
         Span::styled(
-            format!("  open {}", format_elapsed(elapsed)),
+            format!(" · open {}", format_elapsed(model.elapsed)),
             Style::default().fg(theme.dimmed),
         ),
     ];
-    if elapsed >= eight_hours {
-        header_spans.push(Span::styled(
-            "  still need it?",
+    if model.elapsed >= eight_hours {
+        spans.push(Span::styled(
+            " · still need it?",
             Style::default().fg(theme.waiting),
         ));
     }
-    frame.render_widget(Paragraph::new(Line::from(header_spans)), header_inner);
+    Line::from(spans)
+}
 
-    // ── Content ──────────────────────────────────────────────────────────
-    let content_area = page[1];
-    let inner_width = content_area.width.saturating_sub(2).max(1) as usize;
-    let url_fits_one_line = full_url_len <= inner_width;
-
-    let show_kind_label = kind_label.is_some();
-    let show_split_token = !url_fits_one_line && split_token.is_some();
-    // No bundle means no QR (nothing would answer a scan) and a 404 for any
-    // browser that follows the URL, so the screen says what it is good for.
-    let show_api_only = !cfg!(feature = "web");
-    let command_prefix = "From another aoe: ";
-    let command_rows = command.as_ref().map_or(0, |command| {
-        let chars = command_prefix.chars().count() + command.chars().count();
-        chars.div_ceil(inner_width).min(4) as u16
-    });
-
-    let mut text_height: u16 = 1 /* url */;
-    if show_api_only {
-        text_height += API_ONLY_ROWS;
-    }
-    if show_kind_label {
-        text_height += 1;
-    }
-    if show_split_token {
-        text_height += 1;
-    }
-    if is_tunnel {
-        text_height += 1;
-    }
-    if command_rows > 0 {
-        text_height += 1 + command_rows;
-    }
-    // The URL and command are what the user needs, so the QR yields first on
-    // short terminals.
-    let qr_text = render_qr(url);
-    let qr_lines: Vec<&str> = qr_text.lines().collect();
-    let qr_fits = qr_lines.len() as u16 + 1 + text_height <= content_area.height;
-    let qr_height = if qr_fits { qr_lines.len() as u16 } else { 0 };
-    let inner_height = text_height + if qr_fits { qr_height + 1 } else { 0 };
-
-    let v_pad = content_area.height.saturating_sub(inner_height) / 2;
-
-    let mut constraints = vec![Constraint::Length(v_pad)];
-    if qr_fits {
-        constraints.push(Constraint::Length(qr_height));
-    }
-    if show_api_only {
-        constraints.push(Constraint::Length(API_ONLY_ROWS));
-    }
-    if qr_fits {
-        constraints.push(Constraint::Length(1)); // spacer after QR
-    }
-    if show_kind_label {
-        constraints.push(Constraint::Length(1));
-    }
-    constraints.push(Constraint::Length(1)); // url
-    if show_split_token {
-        constraints.push(Constraint::Length(1));
-    }
-    if is_tunnel {
-        constraints.push(Constraint::Length(1));
-    }
-    if command_rows > 0 {
-        constraints.push(Constraint::Length(1));
-        constraints.push(Constraint::Length(command_rows));
-    }
-    constraints.push(Constraint::Min(0));
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .horizontal_margin(1)
-        .constraints(constraints)
-        .split(content_area);
-
-    let mut idx: usize = 1; // skip top padding
-
-    if qr_fits {
-        let qr_widget: Vec<Line> = qr_lines
-            .iter()
-            .map(|l| Line::from(Span::styled(*l, Style::default().fg(theme.text))))
-            .collect();
-        frame.render_widget(
-            Paragraph::new(qr_widget).alignment(Alignment::Center),
-            chunks[idx],
-        );
-        idx += 1;
-    }
-
-    if show_api_only {
-        frame.render_widget(
-            Paragraph::new(API_ONLY_NOTICE)
-                .style(Style::default().fg(theme.dimmed))
-                .wrap(Wrap { trim: true })
-                .alignment(Alignment::Center),
-            chunks[idx],
-        );
-        idx += 1;
-    }
-
-    if qr_fits {
-        idx += 1;
-    }
-
-    if let Some(label) = kind_label {
-        frame.render_widget(
-            Paragraph::new(Line::from(Span::styled(
-                format!("via {}", label),
-                Style::default().fg(theme.dimmed).italic(),
-            )))
-            .alignment(Alignment::Center),
-            chunks[idx],
-        );
-        idx += 1;
-    }
-
-    if url_fits_one_line {
-        frame.render_widget(
-            Paragraph::new(Line::from(vec![
-                Span::styled(url_prefix, Style::default().fg(theme.dimmed)),
-                Span::styled(full_url, Style::default().fg(theme.accent)),
-            ]))
-            .alignment(Alignment::Center),
-            chunks[idx],
-        );
-        idx += 1;
-    } else {
-        frame.render_widget(
-            Paragraph::new(Line::from(vec![
-                Span::styled(url_prefix, Style::default().fg(theme.dimmed)),
-                Span::styled(split_url.as_str(), Style::default().fg(theme.accent)),
-            ]))
-            .alignment(Alignment::Center),
-            chunks[idx],
-        );
-        idx += 1;
-        if let Some(token) = split_token {
-            frame.render_widget(
-                Paragraph::new(Line::from(vec![
-                    Span::styled("Token: ", Style::default().fg(theme.dimmed)),
-                    Span::styled(token, Style::default().fg(theme.accent)),
-                ]))
-                .alignment(Alignment::Center),
-                chunks[idx],
-            );
-            idx += 1;
-        }
-    }
-
-    if is_tunnel {
-        let (pp_label, pp_style) = match passphrase {
-            Some(pp) => (pp.to_string(), Style::default().fg(theme.accent).bold()),
-            None => (
-                "(set when the daemon started; check the shell that ran `aoe serve`)".to_string(),
-                Style::default().fg(theme.dimmed),
+/// Pairing sections in screen order. On a short terminal the spacing goes
+/// first, then the device list shrinks to a count and disappears, leaving the
+/// code and the command.
+fn render_pairing_column(
+    frame: &mut Frame,
+    area: Rect,
+    theme: &Theme,
+    model: &ActiveModel,
+    command: Option<&str>,
+) {
+    let width = area.width as usize;
+    let dimmed = Style::default().fg(theme.dimmed);
+    let code = model
+        .pairing
+        .map(|panel| panel.code_lines(theme))
+        .unwrap_or_default();
+    let command_lines = match command {
+        Some(command) => vec![
+            Line::styled("On the other machine run", dimmed),
+            Line::styled(
+                format!("  {}", truncate_to_width(command, width.saturating_sub(2))),
+                Style::default().fg(theme.text).bold(),
             ),
-        };
-        frame.render_widget(
-            Paragraph::new(Line::from(vec![
-                Span::styled("Passphrase: ", Style::default().fg(theme.dimmed)),
-                Span::styled(pp_label, pp_style),
-            ]))
-            .alignment(Alignment::Center),
-            chunks[idx],
-        );
-        idx += 1;
-    }
-
-    // Wrapped rather than truncated: the whole line has to be copyable.
-    if let Some(command) = command {
-        idx += 1;
-        let line = Line::from(vec![
-            Span::styled(command_prefix, Style::default().fg(theme.dimmed)),
-            Span::styled(command, Style::default().fg(theme.text)),
-        ]);
-        let paragraph = Paragraph::new(line).wrap(Wrap { trim: false });
-        let paragraph = if command_rows == 1 {
-            paragraph.alignment(Alignment::Center)
-        } else {
-            paragraph
-        };
-        frame.render_widget(paragraph, chunks[idx]);
-    }
-
-    // ── Footer ────────────────────────────────────────────────────────
-    let footer_block = Block::default()
-        .borders(Borders::TOP)
-        .border_style(Style::default().fg(theme.border));
-    let footer_inner = footer_block.inner(page[2]);
-    frame.render_widget(footer_block, page[2]);
-
-    let key_style = Style::default().fg(theme.accent);
-    let desc_style = Style::default().fg(theme.dimmed);
-
-    let footer_line: Line = if let Some(confirm) = pending_confirm {
-        let warn_style = Style::default().fg(theme.waiting).bold();
-        match confirm {
-            PendingConfirm::NewPassphrase => Line::from(Span::styled(
-                "Press G again to confirm new passphrase (clients will need it). Any other key cancels.",
-                warn_style,
-            )),
-            PendingConfirm::Restart => Line::from(Span::styled(
-                "Press R again to confirm restart (clears all sessions). Any other key cancels.",
-                warn_style,
-            )),
-        }
-    } else {
-        let mut spans: Vec<Span> = Vec::new();
-        if urls.len() > 1 {
-            spans.extend([
-                Span::styled("Tab", key_style),
-                Span::styled(": URL  ", desc_style),
-            ]);
-        }
-        if is_tunnel {
-            spans.extend([
-                Span::styled("G", key_style),
-                Span::styled(": new pass  ", desc_style),
-            ]);
-        }
-        spans.extend([
-            Span::styled("P", key_style),
-            Span::styled(": pair  ", desc_style),
-            Span::styled("E", key_style),
-            Span::styled(": exposure  ", desc_style),
-            Span::styled("R", key_style),
-            Span::styled(": restart  ", desc_style),
-            Span::styled("?", key_style),
-            Span::styled(": help  ", desc_style),
-            Span::styled("Esc", key_style),
-            Span::styled(": close", desc_style),
-        ]);
-        Line::from(spans)
+        ],
+        None => vec![Line::styled(
+            "Pick a network exposure (e) so another machine can reach this one.",
+            dimmed,
+        )],
     };
-    frame.render_widget(
-        Paragraph::new(footer_line).alignment(Alignment::Center),
-        footer_inner,
-    );
+    let height = area.height as usize;
+    let fixed = 1 + code.len() + command_lines.len();
+    let device_lines = |rows: usize| {
+        model
+            .pairing
+            .filter(|_| rows > 0)
+            .map(|panel| panel.device_lines(theme, rows.min(6)))
+            .unwrap_or_default()
+    };
+    let full = device_lines(6);
+    let spaced = fixed + 2 + full.len() <= height;
+    let devices = if spaced {
+        full
+    } else {
+        device_lines(height.saturating_sub(fixed))
+    };
+    let mut lines = vec![Line::styled(
+        "Pair another aoe",
+        Style::default().fg(theme.accent).bold(),
+    )];
+    lines.extend(code);
+    if spaced {
+        lines.push(Line::from(""));
+    }
+    lines.extend(command_lines);
+    if !devices.is_empty() {
+        if spaced {
+            lines.push(Line::from(""));
+        }
+        lines.extend(devices);
+    }
+    frame.render_widget(Paragraph::new(lines), area);
+}
+
+/// Browser and phone access: the tokenized URL (and passphrase for a tunnel)
+/// with its QR when there is room.
+fn render_web_column(
+    frame: &mut Frame,
+    area: Rect,
+    theme: &Theme,
+    model: &ActiveModel,
+    url: &ServeUrl,
+) {
+    let width = area.width.max(1) as usize;
+    let dimmed = Style::default().fg(theme.dimmed);
+    let mut text: Vec<Line> = vec![Line::styled(
+        "Browser or phone",
+        Style::default().fg(theme.accent).bold(),
+    )];
+    if !cfg!(feature = "web") {
+        text.push(Line::styled(API_ONLY_NOTICE, dimmed));
+    }
+    if let Some(label) = &url.label {
+        text.push(Line::styled(format!("via {label}"), dimmed.italic()));
+    }
+    text.push(Line::styled(
+        url.url.clone(),
+        Style::default().fg(theme.accent),
+    ));
+    if model.mode == Exposure::Tunnel {
+        text.push(match model.passphrase {
+            Some(passphrase) => Line::from(vec![
+                Span::styled("Passphrase: ", dimmed),
+                Span::styled(
+                    passphrase.to_string(),
+                    Style::default().fg(theme.accent).bold(),
+                ),
+            ]),
+            None => Line::styled(
+                "Passphrase: set when the daemon started; see the shell that ran `aoe serve`",
+                dimmed,
+            ),
+        });
+    }
+    if model.urls.len() > 1 {
+        text.push(Line::styled("Tab: next URL", dimmed));
+    }
+    let text_rows: usize = text
+        .iter()
+        .map(|line| line.width().max(1).div_ceil(width))
+        .sum();
+    let qr = render_qr(&url.url);
+    let qr_lines: Vec<&str> = qr.lines().collect();
+    let qr_width = qr_lines
+        .iter()
+        .map(|line| line.chars().count())
+        .max()
+        .unwrap_or(0);
+    let qr_fits = !qr_lines.is_empty()
+        && qr_width <= width
+        && text_rows + 1 + qr_lines.len() <= area.height as usize;
+    let mut lines = Vec::new();
+    if qr_fits {
+        lines.extend(
+            qr_lines
+                .iter()
+                .map(|line| Line::styled(line.to_string(), Style::default().fg(theme.text))),
+        );
+        lines.push(Line::from(""));
+    }
+    lines.extend(text);
+    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), area);
+}
+
+fn render_active_footer(
+    frame: &mut Frame,
+    area: Rect,
+    theme: &Theme,
+    model: &ActiveModel,
+    has_command: bool,
+    wide: bool,
+) {
+    let warn = Style::default().fg(theme.waiting).bold();
+    let line = if let Some(confirm) = model.pending_confirm {
+        Line::styled(
+            match confirm {
+                PendingConfirm::NewPassphrase => {
+                    "Press G again for a new passphrase (clients need it); any other key cancels"
+                }
+                PendingConfirm::Restart => {
+                    "Press R again to restart (clears all sessions); any other key cancels"
+                }
+            },
+            warn,
+        )
+    } else if model.pairing.is_some_and(|p| p.confirming_revoke()) {
+        Line::styled(
+            "Press x again to revoke this device; any other key cancels",
+            warn,
+        )
+    } else if let Some(flash) = model.flash {
+        Line::styled(flash.to_string(), Style::default().fg(theme.accent))
+    } else {
+        let mut keys: Vec<(&str, &str)> = Vec::new();
+        if has_command {
+            keys.push(("c", "copy"));
+        }
+        if !wide {
+            keys.push(("w", if model.show_web { "pairing" } else { "web/QR" }));
+        }
+        keys.extend([
+            ("x", "revoke"),
+            ("e", "exposure"),
+            ("?", "help"),
+            ("esc", "close"),
+        ]);
+        let render = |keys: &[(&str, &str)]| {
+            let mut spans = Vec::new();
+            for (i, (key, label)) in keys.iter().enumerate() {
+                if i > 0 {
+                    spans.push(Span::styled(" · ", Style::default().fg(theme.dimmed)));
+                }
+                spans.push(Span::styled(
+                    key.to_string(),
+                    Style::default().fg(theme.accent),
+                ));
+                spans.push(Span::styled(
+                    format!(" {label}"),
+                    Style::default().fg(theme.dimmed),
+                ));
+            }
+            Line::from(spans)
+        };
+        // `?` lists everything, so the rarer keys give way first.
+        let mut line = render(&keys);
+        while line.width() > area.width as usize && keys.len() > 2 {
+            keys.remove(keys.len() - 3);
+            line = render(&keys);
+        }
+        line
+    };
+    frame.render_widget(Paragraph::new(line), area);
 }
 
 /// Shortcut rows of the help overlay.
 fn help_shortcuts(is_tunnel: bool) -> Vec<(&'static str, &'static str)> {
-    let mut shortcuts = Vec::new();
+    let mut shortcuts = vec![
+        ("c", "Copy the command for the other machine"),
+        ("w", "Show browser and phone access (narrow terminals)"),
+        ("↑↓ / x", "Select a paired device / revoke it"),
+        ("e", "Change exposure (back to localhost, LAN, tunnel)"),
+        ("r", "Restart server (clears all client sessions)"),
+    ];
     if is_tunnel {
-        shortcuts.push(("G", "New random passphrase and restart server"));
+        shortcuts.push(("g", "New random passphrase and restart server"));
     }
     shortcuts.extend([
-        ("P", "Pair a device with a one-time code"),
-        ("E", "Change exposure (back to localhost, LAN, tunnel)"),
-        ("R", "Restart server (clears all client sessions)"),
         ("Tab", "Cycle URLs (when multiple available)"),
         ("Esc / q", "Close this view (server keeps running)"),
         ("?", "Toggle this help"),
@@ -2125,7 +2086,7 @@ const PASSPHRASE_WORDS: &[&str] = &[
 ];
 
 #[cfg(test)]
-mod qr_seam {
+mod active_screen {
     use super::*;
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
@@ -2134,23 +2095,29 @@ mod qr_seam {
     /// only way to tell a rendered code from an empty panel.
     const QR_GLYPHS: [char; 3] = ['\u{2588}', '\u{2580}', '\u{2584}'];
 
-    fn active_screen(width: u16, height: u16) -> String {
+    fn screen(width: u16, height: u16, show_web: bool) -> String {
         let urls = vec![ServeUrl {
             label: Some("lan".to_string()),
-            url: "http://192.168.1.42:8080/?token=abc123def456".to_string(),
+            url: "http://192.168.1.42:8081/?token=abc123def456".to_string(),
         }];
+        let pairing = super::super::pairing::PairingPanel::ready("K7F-3QX", &["laptop"]);
         let mut term = Terminal::new(TestBackend::new(width, height)).expect("terminal");
         term.draw(|f| {
             render_active(
                 f,
                 f.area(),
                 &Theme::default(),
-                Exposure::Network,
-                &urls,
-                0,
-                None,
-                std::time::Duration::from_secs(42),
-                None,
+                &ActiveModel {
+                    mode: Exposure::Network,
+                    urls: &urls,
+                    url_index: 0,
+                    passphrase: None,
+                    elapsed: Duration::from_secs(42),
+                    pending_confirm: None,
+                    pairing: Some(&pairing),
+                    show_web,
+                    flash: None,
+                },
             )
         })
         .expect("draw");
@@ -2165,52 +2132,85 @@ mod qr_seam {
             .join("\n")
     }
 
-    /// The client command wraps instead of clipping on a narrow terminal,
-    /// and the QR gives way so the URL and command stay on screen.
-    #[test]
-    fn narrow_active_screen_keeps_url_and_command() {
-        let screen = active_screen(48, 24);
-        let flat: String = screen.chars().filter(|c| !c.is_whitespace()).collect();
-        assert!(
-            flat.contains("aoeremoteadd") && flat.contains("--tokenabc123def456--insecure"),
-            "{screen}"
-        );
-        assert!(!screen.chars().any(|c| QR_GLYPHS.contains(&c)), "{screen}");
+    fn position(screen: &str, needle: &str) -> usize {
+        screen
+            .find(needle)
+            .unwrap_or_else(|| panic!("{needle:?} missing:\n{screen}"))
     }
 
-    /// The URL is what a user needs off this screen, so it must survive the
-    /// QR being compiled out. Without the dashboard bundle the code is not
-    /// drawn (nothing would answer a scan of it), and the layout must absorb
-    /// the missing rows rather than leaving a gap or panicking on a
-    /// zero-height chunk.
+    /// The code comes first, then the short command, at every size; the old
+    /// credential-carrying command is gone.
     #[test]
-    fn active_screen_keeps_the_url_and_drops_the_code_without_web() {
-        let screen = active_screen(100, 40);
+    fn the_code_leads_and_the_command_is_short_at_any_size() {
+        for (width, height) in [(120, 40), (100, 30), (60, 20), (60, 12)] {
+            let screen = screen(width, height, false);
+            let code = position(&screen, "K 7 F - 3 Q X");
+            let command = position(&screen, "aoe remote add 192.168.1.42:8081");
+            assert!(code < command, "{width}x{height}:\n{screen}");
+            assert!(!screen.contains("--token"), "{screen}");
+            assert!(!screen.contains("--insecure"), "{screen}");
+        }
+        let roomy = screen(60, 20, false);
         assert!(
-            screen.contains("http://192.168.1.42:8080/?token=abc123def456"),
-            "URL must render in both feature corners:\n{screen}"
+            roomy.contains("Sharing on local network · 192.168.1.42:8081"),
+            "{roomy}"
         );
-        let drawn = screen.chars().any(|c| QR_GLYPHS.contains(&c));
+        assert!(roomy.contains("laptop · 2m ago"), "{roomy}");
+    }
+
+    /// Wide terminals show browser access beside pairing; narrow ones keep it
+    /// behind `w`.
+    #[test]
+    fn web_access_sits_beside_pairing_when_wide_and_behind_w_when_narrow() {
+        let token_url = "http://192.168.1.42:8081/?token=abc123def456";
+        let wide = screen(120, 40, false);
+        assert!(
+            wide.contains(token_url) && wide.contains("K 7 F - 3 Q X"),
+            "{wide}"
+        );
         assert_eq!(
-            drawn,
+            wide.chars().any(|c| QR_GLYPHS.contains(&c)),
             cfg!(feature = "web"),
-            "QR code should be drawn only with the dashboard bundle:\n{screen}"
+            "{wide}"
         );
+        let narrow = screen(60, 20, false);
+        assert!(!narrow.contains("token=abc123"), "{narrow}");
+        assert!(narrow.contains("w web/QR"), "{narrow}");
+        let toggled = screen(60, 20, true);
+        let flat: String = toggled.chars().filter(|c| !c.is_whitespace()).collect();
+        assert!(flat.contains("token=abc123def456"), "{toggled}");
     }
 
     /// A QR-less screen offering a bare URL reads as a dashboard link, and a
-    /// browser following it gets a bodiless 404. Both the title and the panel
-    /// have to say the endpoint is API-only, and neither may say it in a build
-    /// that does embed the bundle.
+    /// browser following it gets a bodiless 404, so both the title and the
+    /// web section say the endpoint is API-only in such a build.
     #[test]
     fn active_screen_says_api_only_without_web() {
-        let screen = active_screen(100, 40);
+        let screen = screen(120, 40, false);
         for needle in ["Remote API Access", "No dashboard bundle in this build:"] {
             assert_eq!(
                 screen.contains(needle),
                 !cfg!(feature = "web"),
                 "{needle:?} belongs on the screen only without the dashboard bundle:\n{screen}"
             );
+        }
+    }
+
+    #[test]
+    fn the_client_command_is_the_short_address_and_never_loopback() {
+        for (url, expected) in [
+            (
+                "http://192.168.1.20:54321/?token=abc123",
+                Some("aoe remote add 192.168.1.20:54321"),
+            ),
+            (
+                "https://aoe-mini.tailnet.ts.net/?token=abc123",
+                Some("aoe remote add aoe-mini.tailnet.ts.net"),
+            ),
+            ("http://127.0.0.1:54321/?token=abc123", None),
+            ("http://[::1]:54321/", None),
+        ] {
+            assert_eq!(client_command(url).as_deref(), expected, "{url}");
         }
     }
 }
@@ -2335,42 +2335,6 @@ mod tests {
         assert_eq!(token, Some("abc123"));
     }
 
-    /// Exercises the fit logic that the render path uses: full URL on
-    /// one line when it fits, split when it doesn't. Copies the arithmetic
-    /// from render_active (url_inner_width = dialog_width - 4).
-    fn url_fits_one_line(url: &str, dialog_width: u16) -> bool {
-        let url_prefix = "URL: ";
-        let full_url_len = url_prefix.chars().count() + url.chars().count();
-        let url_inner_width = dialog_width.saturating_sub(4).max(1) as usize;
-        full_url_len <= url_inner_width
-    }
-
-    #[test]
-    fn url_fits_one_line_on_wide_terminal() {
-        // Typical tunnel URL: ~115 chars including "URL: " prefix.
-        let url = "https://foo-bar.trycloudflare.com/?token=a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2";
-        assert!(
-            url_fits_one_line(url, 120),
-            "120-wide should fit ~115 chars"
-        );
-        assert!(
-            url_fits_one_line(url, 115),
-            "exact-fit boundary should pass"
-        );
-    }
-
-    #[test]
-    fn url_splits_on_narrow_terminal() {
-        // 80-col terminal can't fit the combined tunnel URL; force the
-        // split fallback so the token doesn't clip off the edge.
-        let url = "https://foo-bar.trycloudflare.com/?token=a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2";
-        assert!(!url_fits_one_line(url, 80));
-        // Local URL is shorter (~70 with token) — depends on IP/port.
-        let local = "http://192.168.1.42:54321/?token=a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2";
-        assert!(!url_fits_one_line(local, 80));
-        assert!(url_fits_one_line(local, 110));
-    }
-
     #[test]
     fn diagnose_daemon_exit_recognizes_common_errnos() {
         let unavailable = "ERROR: bind: Cannot assign requested address";
@@ -2389,63 +2353,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn client_command_targets_the_base_url_with_flags() {
-        let token = "?token=abc123";
-        for (url, passphrase, expected) in [
-            (
-                format!("http://192.168.1.20:54321/{token}"),
-                None,
-                Some("aoe remote add box http://192.168.1.20:54321 --token abc123 --insecure"),
-            ),
-            (
-                format!("https://box.tailnet.ts.net/{token}"),
-                Some("four word pass phrase"),
-                Some("aoe remote add box https://box.tailnet.ts.net --token abc123 --passphrase 'four word pass phrase'"),
-            ),
-            ("https://box.example.com/".to_string(), Some("it's"), Some("aoe remote add box https://box.example.com --passphrase 'it'\\''s'")),
-            (format!("http://localhost:54321/{token}"), None, None),
-            (format!("http://127.0.0.1:54321/{token}"), None, None),
-            (format!("http://[::1]:54321/{token}"), None, None),
-        ] {
-            assert_eq!(
-                client_command(&url, passphrase, "box").as_deref(),
-                expected,
-                "{url}"
-            );
-        }
-    }
-
-    #[test]
-    fn pair_command_drops_credentials_and_keeps_insecure_for_http() {
-        for (url, expected) in [
-            (
-                "http://192.168.1.20:54321/?token=abc123",
-                Some("aoe remote add box http://192.168.1.20:54321 --insecure"),
-            ),
-            (
-                "https://box.tailnet.ts.net/?token=abc123",
-                Some("aoe remote add box https://box.tailnet.ts.net"),
-            ),
-            ("http://127.0.0.1:54321/?token=abc123", None),
-        ] {
-            assert_eq!(pair_command(url, "box").as_deref(), expected, "{url}");
-        }
-    }
-
-    #[test]
-    fn remote_name_for_host_sanitizes_the_short_hostname() {
-        for (hostname, expected) in [
-            ("MacBook-Pro.local", "macbook-pro"),
-            ("dev box_1", "dev-box-1"),
-            ("--weird--", "weird"),
-            ("", "aoe"),
-            ("...", "aoe"),
-        ] {
-            assert_eq!(remote_name_for_host(hostname), expected, "{hostname:?}");
-        }
-    }
-
     fn picker(current: Option<Exposure>) -> ServeView {
         ServeView {
             state: ServeViewState::Picker {
@@ -2460,6 +2367,8 @@ mod tests {
             pending_confirm: None,
             show_help: false,
             pairing: None,
+            show_web: false,
+            flash: None,
         }
     }
 

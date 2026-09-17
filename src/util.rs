@@ -105,6 +105,14 @@ pub(crate) fn check_owner_only_file(path: &std::path::Path, label: &str) -> anyh
     }
 }
 
+/// This machine's hostname, when it has a usable one.
+pub fn hostname() -> Option<String> {
+    nix::unistd::gethostname()
+        .ok()
+        .and_then(|name| name.into_string().ok())
+        .filter(|name| !name.trim().is_empty())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

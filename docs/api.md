@@ -51,7 +51,9 @@ Redeems a code. Needs no token or session.
 
 Codes are case-insensitive and ignore `-` and spaces. On success the code is
 consumed and the response carries a session presented as described under
-[Authentication](#authentication). It passes a `--passphrase` login wall and
+[Authentication](#authentication), and `server_name`, the daemon machine's
+hostname (`null` when unknown), which `aoe remote add` uses as the default
+remote name. It passes a `--passphrase` login wall and
 survives passphrase changes; `GET /api/devices` lists it with its
 `device_name`.
 

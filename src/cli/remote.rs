@@ -1,5 +1,7 @@
 //! `aoe remote`: manage the daemon endpoints the TUI can connect to.
 
+use std::io::{BufRead, IsTerminal, Write};
+
 use anyhow::{bail, Context, Result};
 use clap::{Args, Subcommand};
 
@@ -28,12 +30,15 @@ pub enum RemoteCommands {
 
 #[derive(Args)]
 pub struct RemoteAddArgs {
-    /// Short name used to select this remote
-    pub name: String,
+    /// Where the remote daemon listens: `host:port` for a LAN or tailnet
+    /// address (plain HTTP), a hostname (HTTPS), or a full URL. A `?token=`
+    /// query, as `aoe serve --status` prints it, supplies the token.
+    pub address: String,
 
-    /// Base URL, e.g. `https://box.tailnet.ts.net`. A `?token=` query, as
-    /// `aoe serve --status` prints it, supplies the token.
-    pub url: String,
+    /// Short name used to select this remote. Defaults to the remote's
+    /// hostname
+    #[arg(long)]
+    pub name: Option<String>,
 
     /// Bearer token the daemon prints at startup
     #[arg(long)]
@@ -44,14 +49,15 @@ pub struct RemoteAddArgs {
     #[arg(long, env = "AOE_REMOTE_PASSPHRASE")]
     pub passphrase: Option<String>,
 
-    /// One-time pairing code from the remote (R, then P in its `aoe`). Used
-    /// when no token or passphrase is given; prompted for on a terminal.
+    /// One-time pairing code shown in the remote's Remote Access view (R in
+    /// its `aoe`). Used when no token or passphrase is given; prompted for on
+    /// a terminal.
     #[arg(long, conflicts_with_all = ["token", "passphrase"])]
     pub code: Option<String>,
 
     /// Send credentials over plain HTTP to a non-loopback URL, for a daemon
     /// on a network you trust. Anyone on that network can read the token and
-    /// session.
+    /// session. Asked on a terminal when not given.
     #[arg(long)]
     pub insecure: bool,
 }
@@ -80,15 +86,37 @@ pub async fn run(command: RemoteCommands) -> Result<()> {
 }
 
 async fn add(args: RemoteAddArgs) -> Result<()> {
-    if args.name.trim().is_empty() {
+    if args
+        .name
+        .as_deref()
+        .is_some_and(|name| name.trim().is_empty())
+    {
         bail!("remote name must not be empty");
     }
-    let (url, token) = token_from_url(&args.url, args.token.clone())?;
+    let address = remotes::parse_remote_address(&args.address)?;
+    let (url, token) = token_from_url(&address, args.token.clone())?;
     let url = url.trim_end_matches('/').to_string();
     if args.code.is_some() && token.is_some() {
         bail!("the URL carries a token; pass either it or --code, not both");
     }
-    let args = RemoteAddArgs { token, ..args };
+    let insecure = args.insecure
+        || (url.starts_with("http://")
+            && login::ensure_secure_transport(&url, false).is_err()
+            && plaintext_consent(std::io::stdin().is_terminal(), || {
+                eprint!(
+                    "Plain HTTP: the code and session travel unencrypted on this network. \
+                     Continue? [y/N] "
+                );
+                std::io::stderr().flush()?;
+                let mut line = String::new();
+                std::io::stdin().lock().read_line(&mut line)?;
+                Ok(line)
+            })?);
+    let args = RemoteAddArgs {
+        token,
+        insecure,
+        ..args
+    };
     // The same URL and transport rules every later poll applies, so an entry
     // that could never be used is refused now rather than stored.
     let plaintext_refused = |url: &str| {
@@ -103,7 +131,7 @@ async fn add(args: RemoteAddArgs) -> Result<()> {
     };
 
     let mut entry = Remote {
-        name: args.name.clone(),
+        name: String::new(),
         url: url.clone(),
         enabled: true,
         token: args.token.clone(),
@@ -114,6 +142,7 @@ async fn add(args: RemoteAddArgs) -> Result<()> {
 
     let pairing = args.token.is_none() && args.passphrase.is_none();
     let mut no_login_wall = false;
+    let mut server_name = None;
     if pairing {
         login::ensure_secure_transport(&url, args.insecure).map_err(|e| match e {
             LoginError::InsecureTransport => anyhow::anyhow!(plaintext_refused(&url)),
@@ -124,11 +153,12 @@ async fn add(args: RemoteAddArgs) -> Result<()> {
             None => prompt_code(&url)?,
         };
         let binding = login::new_binding_secret().context("generate device binding secret")?;
-        let credentials = login::pair(&url, &code, &device_name(), &binding, args.insecure)
+        let paired = login::pair(&url, &code, &device_name(), &binding, args.insecure)
             .await
             .context("pairing failed")?;
-        entry.session = Some(credentials.session);
-        entry.binding = Some(credentials.binding);
+        entry.session = Some(paired.credential.session);
+        entry.binding = Some(paired.credential.binding);
+        server_name = paired.server_name;
     } else if let Some(passphrase) = args.passphrase.as_deref() {
         let binding = login::new_binding_secret().context("generate device binding secret")?;
         match login::login(
@@ -158,13 +188,24 @@ async fn add(args: RemoteAddArgs) -> Result<()> {
     }
 
     let mut registry = remotes::load()?;
+    entry.name = match args.name.clone() {
+        Some(name) => name,
+        None => {
+            let host = reqwest::Url::parse(&url)
+                .ok()
+                .and_then(|u| u.host_str().map(str::to_string))
+                .unwrap_or_default();
+            registry.name_for(server_name.as_deref().unwrap_or(&host), &url)
+        }
+    };
+    let name = entry.name.clone();
     let replaced = registry.upsert(entry);
     remotes::save(&registry)?;
 
     println!(
         "{} remote {:?} -> {}",
         if replaced { "Updated" } else { "Added" },
-        args.name,
+        name,
         url
     );
     if pairing {
@@ -180,17 +221,32 @@ async fn add(args: RemoteAddArgs) -> Result<()> {
     Ok(())
 }
 
+/// Whether to send credentials over plain HTTP without `--insecure`: only when
+/// someone at a terminal says yes. A script gets the refusal instead.
+fn plaintext_consent(
+    interactive: bool,
+    ask: impl FnOnce() -> std::io::Result<String>,
+) -> Result<bool> {
+    if !interactive {
+        return Ok(false);
+    }
+    let answer = ask()?;
+    Ok(matches!(
+        answer.trim().to_ascii_lowercase().as_str(),
+        "y" | "yes"
+    ))
+}
+
 /// Read a pairing code from the terminal. Without one there is no credential
 /// to add, so a non-interactive run is told how to pass it.
 fn prompt_code(url: &str) -> Result<String> {
-    use std::io::{BufRead, IsTerminal, Write};
     if !std::io::stdin().is_terminal() {
         bail!(
-            "no credentials given; pass --code with a pairing code from the remote \
-             (R, then P in its `aoe`), or --token"
+            "no credentials given; pass --code with the pairing code shown in the remote's \
+             Remote Access view (R in its `aoe`), or --token"
         );
     }
-    eprint!("Pairing code for {url} (R, then P in the remote's `aoe`): ");
+    eprint!("Pairing code for {url} (shown under R in the remote's `aoe`): ");
     std::io::stderr().flush()?;
     let mut line = String::new();
     std::io::stdin().lock().read_line(&mut line)?;
@@ -203,11 +259,7 @@ fn prompt_code(url: &str) -> Result<String> {
 
 /// How this machine names itself to a daemon it pairs with.
 fn device_name() -> String {
-    nix::unistd::gethostname()
-        .ok()
-        .and_then(|name| name.into_string().ok())
-        .filter(|name| !name.trim().is_empty())
-        .unwrap_or_else(|| "aoe client".to_string())
+    crate::util::hostname().unwrap_or_else(|| "aoe client".to_string())
 }
 
 /// Move a `?token=` query (as `aoe serve --status` and the TUI print it) into
@@ -265,7 +317,7 @@ async fn verify(entry: &Remote) -> Result<()> {
 fn list() -> Result<()> {
     let registry = remotes::load()?;
     if registry.remotes().is_empty() {
-        println!("No remotes configured. Add one with `aoe remote add <name> <url>`.");
+        println!("No remotes configured. Add one with `aoe remote add <host:port>`.");
         return Ok(());
     }
     // Credentials are never printed, only whether they are present.
@@ -351,5 +403,19 @@ mod tests {
             assert_eq!((url.as_str(), found), (expected.0, expected.1), "{raw}");
         }
         assert!(token_from_url("http://10.0.0.2:8081/?token=abc", token("other")).is_err());
+    }
+
+    #[test]
+    fn plaintext_needs_a_yes_from_someone_at_a_terminal() {
+        for (interactive, answer, expected) in [
+            (true, "y\n", true),
+            (true, "YES\n", true),
+            (true, "\n", false),
+            (true, "no\n", false),
+            (false, "y\n", false),
+        ] {
+            let consent = plaintext_consent(interactive, || Ok(answer.to_string())).unwrap();
+            assert_eq!(consent, expected, "{interactive} {answer:?}");
+        }
     }
 }

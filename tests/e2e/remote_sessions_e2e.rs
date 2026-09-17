@@ -98,8 +98,12 @@ async fn pair(State(daemon): State<Daemon>, Json(body): Json<serde_json::Value>)
     }
     *daemon.paired_binding.lock().unwrap() =
         body["device_binding_secret"].as_str().map(str::to_string);
-    Json(serde_json::json!({"session_id": PAIRED_SESSION, "device_name": body["device_name"]}))
-        .into_response()
+    Json(serde_json::json!({
+        "session_id": PAIRED_SESSION,
+        "device_name": body["device_name"],
+        "server_name": "Mini.local",
+    }))
+    .into_response()
 }
 
 async fn sessions(State(daemon): State<Daemon>, headers: HeaderMap) -> Response {
@@ -179,8 +183,9 @@ async fn a_registered_remote_lists_inline_and_live_send_waits_for_ownership() {
     let refused = harness.run_cli(&[
         "remote",
         "add",
-        "plain",
         "http://example.test",
+        "--name",
+        "plain",
         "--token",
         TOKEN,
     ]);
@@ -190,13 +195,21 @@ async fn a_registered_remote_lists_inline_and_live_send_waits_for_ownership() {
         "a plaintext bearer must be refused at add time: {refused:?}"
     );
     let wrong_base = format!("{url}/not-the-api");
-    let refused = harness.run_cli(&["remote", "add", "mini", &wrong_base, "--token", TOKEN]);
+    let refused = harness.run_cli(&[
+        "remote",
+        "add",
+        &wrong_base,
+        "--name",
+        "mini",
+        "--token",
+        TOKEN,
+    ]);
     assert!(!refused.status.success());
     assert!(
         String::from_utf8_lossy(&refused.stderr).contains("HTTP 404"),
         "a wrong base path must fail the add: {refused:?}"
     );
-    let added = harness.run_cli(&["remote", "add", "mini", &url, "--token", TOKEN]);
+    let added = harness.run_cli(&["remote", "add", &url, "--name", "mini", "--token", TOKEN]);
     assert!(added.status.success(), "{added:?}");
 
     harness.spawn_tui();
@@ -273,19 +286,20 @@ async fn a_remote_paired_with_a_code_lists_without_a_token() {
     let (daemon, url) = Daemon::start().await;
     let mut harness = TuiTestHarness::new("remote_paired");
 
-    let no_code = harness.run_cli(&["remote", "add", "mini", &url]);
+    let no_code = harness.run_cli(&["remote", "add", &url, "--name", "mini"]);
     assert!(!no_code.status.success());
     assert!(
         String::from_utf8_lossy(&no_code.stderr).contains("--code"),
         "a non-interactive add without credentials asks for --code: {no_code:?}"
     );
-    let wrong = harness.run_cli(&["remote", "add", "mini", &url, "--code", "ZZZ-ZZZ"]);
+    let wrong = harness.run_cli(&["remote", "add", &url, "--name", "mini", "--code", "ZZZ-ZZZ"]);
     assert!(!wrong.status.success());
     assert!(
         String::from_utf8_lossy(&wrong.stderr).contains("invalid or expired pairing code"),
         "{wrong:?}"
     );
-    let added = harness.run_cli(&["remote", "add", "mini", &url, "--code", PAIRING_CODE]);
+    // Without --name the entry is named after the host the daemon reports.
+    let added = harness.run_cli(&["remote", "add", &url, "--code", PAIRING_CODE]);
     assert!(added.status.success(), "{added:?}");
 
     let registry =

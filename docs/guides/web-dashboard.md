@@ -45,7 +45,7 @@ Open it in any browser. The token is set as a cookie on first visit, so you don'
 
 ### Choosing exposure from the TUI
 
-The TUI starts a localhost daemon (token auth, a random high port kept in `serve.last_port`) when none is running. Press `R` to choose how far it is reachable: **Localhost only**, **Local network** (`0.0.0.0`, token auth) or **Internet (HTTPS)** through Tailscale Funnel or Cloudflare with a passphrase. Choosing restarts the daemon with the new exposure and the TUI reconnects on its own; a failed exposed start falls back to localhost. The footer shows `Serving LAN` or `Serving tunnel` while the daemon is exposed. Exposed views show the URL, a QR code and an `aoe remote add` command for another machine (see [Remote Machines](remotes.md)).
+The TUI starts a localhost daemon (token auth, a random high port kept in `serve.last_port`) when none is running. Press `R` to choose how far it is reachable: **Localhost only**, **Local network** (`0.0.0.0`, token auth) or **Internet (HTTPS)** through Tailscale Funnel or Cloudflare with a passphrase. Choosing restarts the daemon with the new exposure and the TUI reconnects on its own; a failed exposed start falls back to localhost. The footer shows `Serving LAN` or `Serving tunnel` while the daemon is exposed. Exposed views show a pairing code and the `aoe remote add` command for another machine, plus the URL and a QR code for a browser or phone (see [Remote Machines](remotes.md)).
 
 ### Private core and recovery
 

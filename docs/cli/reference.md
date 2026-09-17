@@ -335,19 +335,19 @@ Manage remote daemon endpoints the TUI can connect to
 
 Add or update a remote daemon endpoint
 
-**Usage:** `aoe remote add [OPTIONS] <NAME> <URL>`
+**Usage:** `aoe remote add [OPTIONS] <ADDRESS>`
 
 ###### **Arguments:**
 
-* `<NAME>` — Short name used to select this remote
-* `<URL>` — Base URL, e.g. `https://box.tailnet.ts.net`. A `?token=` query, as `aoe serve --status` prints it, supplies the token
+* `<ADDRESS>` — Where the remote daemon listens: `host:port` for a LAN or tailnet address (plain HTTP), a hostname (HTTPS), or a full URL. A `?token=` query, as `aoe serve --status` prints it, supplies the token
 
 ###### **Options:**
 
+* `--name <NAME>` — Short name used to select this remote. Defaults to the remote's hostname
 * `--token <TOKEN>` — Bearer token the daemon prints at startup
 * `--passphrase <PASSPHRASE>` — Passphrase for a daemon started with `--remote`. Exchanged once for a device-bound session; never stored
-* `--code <CODE>` — One-time pairing code from the remote (R, then P in its `aoe`). Used when no token or passphrase is given; prompted for on a terminal
-* `--insecure` — Send credentials over plain HTTP to a non-loopback URL, for a daemon on a network you trust. Anyone on that network can read the token and session
+* `--code <CODE>` — One-time pairing code shown in the remote's Remote Access view (R in its `aoe`). Used when no token or passphrase is given; prompted for on a terminal
+* `--insecure` — Send credentials over plain HTTP to a non-loopback URL, for a daemon on a network you trust. Anyone on that network can read the token and session. Asked on a terminal when not given
 
 
 

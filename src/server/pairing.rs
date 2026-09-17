@@ -285,6 +285,7 @@ pub async fn pair_handler(
     Json(serde_json::json!({
         "session_id": session_id,
         "device_name": device_name,
+        "server_name": crate::util::hostname(),
     }))
     .into_response()
 }

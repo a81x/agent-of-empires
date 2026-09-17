@@ -110,6 +110,13 @@ pub async fn login(
     })
 }
 
+/// A redeemed pairing code.
+pub struct Paired {
+    pub credential: SessionCredential,
+    /// The daemon machine's hostname, when it reports one.
+    pub server_name: Option<String>,
+}
+
 /// Redeem a one-time pairing code for a device-bound session.
 pub async fn pair(
     base_url: &str,
@@ -117,7 +124,7 @@ pub async fn pair(
     device_name: &str,
     binding: &str,
     allow_plaintext: bool,
-) -> Result<SessionCredential, LoginError> {
+) -> Result<Paired, LoginError> {
     ensure_secure_transport(base_url, allow_plaintext)?;
     let url = format!("{}/api/pair", base_url.trim_end_matches('/'));
     let response = http_client()?
@@ -132,8 +139,10 @@ pub async fn pair(
         .map_err(LoginError::Transport)?;
 
     #[derive(serde::Deserialize)]
-    struct Paired {
+    struct Response {
         session_id: String,
+        #[serde(default)]
+        server_name: Option<String>,
     }
     #[derive(serde::Deserialize)]
     struct Rejection {
@@ -141,10 +150,13 @@ pub async fn pair(
     }
     match response.status() {
         status if status.is_success() => {
-            let paired: Paired = response.json().await.map_err(LoginError::Transport)?;
-            Ok(SessionCredential {
-                session: paired.session_id,
-                binding: binding.to_string(),
+            let paired: Response = response.json().await.map_err(LoginError::Transport)?;
+            Ok(Paired {
+                credential: SessionCredential {
+                    session: paired.session_id,
+                    binding: binding.to_string(),
+                },
+                server_name: paired.server_name,
             })
         }
         reqwest::StatusCode::NOT_FOUND => Err(LoginError::PairingUnsupported),

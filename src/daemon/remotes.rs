@@ -116,6 +116,110 @@ impl Registry {
         self.remotes.retain(|r| r.name != name);
         self.remotes.len() != before
     }
+    /// A name for adding `url`: the entry already there keeps its name,
+    /// otherwise `wanted` sanitized and suffixed until no entry has it.
+    pub fn name_for(&self, wanted: &str, url: &str) -> String {
+        if let Some(existing) = self.remotes.iter().find(|r| r.url == url) {
+            return existing.name.clone();
+        }
+        let base = remote_name_for_host(wanted);
+        std::iter::once(base.clone())
+            .chain((2..).map(|n| format!("{base}-{n}")))
+            .find(|name| self.get(name).is_none())
+            .unwrap_or(base)
+    }
+}
+
+/// A hostname as a remote name, lowercase `[a-z0-9-]`: its first label, or
+/// the whole address for an IP.
+pub fn remote_name_for_host(hostname: &str) -> String {
+    let bare = hostname.trim_start_matches('[').trim_end_matches(']');
+    let short = if bare.parse::<std::net::IpAddr>().is_ok() {
+        bare
+    } else {
+        hostname.split('.').next().unwrap_or_default()
+    };
+    let name: String = short
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() {
+                c.to_ascii_lowercase()
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    let name = name.trim_matches('-');
+    if name.is_empty() {
+        "aoe".to_string()
+    } else {
+        name.to_string()
+    }
+}
+
+/// Hosts a daemon serves over plain HTTP: loopback, LAN, link-local, a
+/// tailnet's CGNAT range, and mDNS names. Anything else is assumed to sit
+/// behind TLS.
+fn is_private_host(host: &str) -> bool {
+    use std::net::IpAddr;
+    let host = host.trim_start_matches('[').trim_end_matches(']');
+    if host == "localhost" || host.ends_with(".local") {
+        return true;
+    }
+    match host.parse::<IpAddr>() {
+        Ok(IpAddr::V4(ip)) => {
+            let [a, b, ..] = ip.octets();
+            ip.is_loopback()
+                || ip.is_private()
+                || ip.is_link_local()
+                || (a == 100 && (64..128).contains(&b))
+        }
+        Ok(IpAddr::V6(ip)) => {
+            let first = ip.segments()[0];
+            ip.is_loopback() || (first & 0xfe00) == 0xfc00 || (first & 0xffc0) == 0xfe80
+        }
+        Err(_) => false,
+    }
+}
+
+/// The base URL for what someone typed after `aoe remote add`: a full URL as
+/// given, or `host[:port]` with the scheme a daemon there would use (HTTP for
+/// a private host, HTTPS otherwise). A daemon picks its HTTP port, so a
+/// private host needs one.
+pub fn parse_remote_address(raw: &str) -> Result<String> {
+    let raw = raw.trim().trim_end_matches('/');
+    if raw.contains("://") {
+        return Ok(raw.to_string());
+    }
+    let probe = reqwest::Url::parse(&format!("http://{raw}"))
+        .map_err(|_| anyhow::anyhow!("{raw:?} is not a host, host:port or URL"))?;
+    let host = probe
+        .host_str()
+        .ok_or_else(|| anyhow::anyhow!("{raw:?} has no host"))?;
+    if !is_private_host(host) {
+        return Ok(format!("https://{raw}"));
+    }
+    if probe.port().is_none() {
+        bail!("{raw:?} needs the port its daemon listens on, e.g. {raw}:8080");
+    }
+    Ok(format!("http://{raw}"))
+}
+
+/// The shortest text [`parse_remote_address`] turns back into `base`.
+pub fn short_remote_address(base: &str) -> String {
+    let base = base.trim_end_matches('/');
+    let Ok(url) = reqwest::Url::parse(base) else {
+        return base.to_string();
+    };
+    let short = match (url.host_str(), url.port()) {
+        (Some(host), Some(port)) => format!("{host}:{port}"),
+        (Some(host), None) => host.to_string(),
+        _ => return base.to_string(),
+    };
+    match parse_remote_address(&short) {
+        Ok(round) if round == base => short,
+        _ => base.to_string(),
+    }
 }
 
 pub fn registry_path() -> Result<PathBuf> {
@@ -169,6 +273,67 @@ pub fn save_to(path: &Path, registry: &Registry) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_typed_address_gets_the_scheme_its_daemon_serves() {
+        for (raw, expected) in [
+            ("192.168.1.5:8081", Ok("http://192.168.1.5:8081")),
+            ("100.101.102.103:8080", Ok("http://100.101.102.103:8080")),
+            ("[fd7a:115c::1]:8080", Ok("http://[fd7a:115c::1]:8080")),
+            ("mini.local:8080", Ok("http://mini.local:8080")),
+            ("192.168.1.5", Err("needs the port")),
+            (
+                "aoe-mini.tailnet.ts.net",
+                Ok("https://aoe-mini.tailnet.ts.net"),
+            ),
+            ("box.example.com:8443", Ok("https://box.example.com:8443")),
+            ("http://10.0.0.2:8081/", Ok("http://10.0.0.2:8081")),
+            (
+                "https://box.ts.net/?token=abc",
+                Ok("https://box.ts.net/?token=abc"),
+            ),
+            ("not a host", Err("not a host")),
+        ] {
+            match (parse_remote_address(raw), expected) {
+                (Ok(url), Ok(want)) => assert_eq!(url, want, "{raw}"),
+                (Err(error), Err(want)) => {
+                    assert!(error.to_string().contains(want), "{raw}: {error}")
+                }
+                (got, want) => panic!("{raw}: got {got:?}, want {want:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn the_short_address_round_trips_or_stays_a_url() {
+        for (base, short) in [
+            ("http://192.168.1.5:8081/", "192.168.1.5:8081"),
+            ("https://aoe-mini.tailnet.ts.net", "aoe-mini.tailnet.ts.net"),
+            ("http://box.example.com:8080", "http://box.example.com:8080"),
+            ("https://10.0.0.2:8443", "https://10.0.0.2:8443"),
+        ] {
+            assert_eq!(short_remote_address(base), short, "{base}");
+        }
+    }
+
+    #[test]
+    fn a_derived_name_is_sanitized_reused_for_its_url_and_unique_otherwise() {
+        let mut registry = Registry::default();
+        registry.upsert(Remote {
+            url: "http://192.168.1.5:8081".into(),
+            ..registered(None, None)
+        });
+        for (wanted, url, expected) in [
+            ("MacBook-Pro.local", "http://a:1", "macbook-pro"),
+            ("dev box_1", "http://a:1", "dev-box-1"),
+            ("", "http://a:1", "aoe"),
+            ("192.168.1.9", "http://a:1", "192-168-1-9"),
+            ("mini", "http://192.168.1.5:8081", "mini"),
+            ("mini.example.com", "http://other:1", "mini-2"),
+        ] {
+            assert_eq!(registry.name_for(wanted, url), expected, "{wanted} {url}");
+        }
+    }
 
     fn registered(session: Option<&str>, binding: Option<&str>) -> Remote {
         Remote {

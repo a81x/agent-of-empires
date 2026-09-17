@@ -1772,7 +1772,7 @@ fn tui_serve_dialog_switches_exposure_and_reconnects() {
     h.send_keys("R");
     h.wait_for("How should it be reachable?");
     h.send_keys("2");
-    h.wait_for_timeout("(local network)", Duration::from_secs(30));
+    h.wait_for_timeout("Sharing on local network", Duration::from_secs(30));
     h.assert_screen_contains("aoe remote add");
     assert_eq!(launch()["host"], "0.0.0.0");
     h.send_keys("Escape");
@@ -1780,7 +1780,7 @@ fn tui_serve_dialog_switches_exposure_and_reconnects() {
     h.wait_for_runtime_ready();
 
     h.send_keys("R");
-    h.wait_for("(local network)");
+    h.wait_for("Sharing on local network");
     h.send_keys("E");
     h.wait_for("How should it be reachable?");
     h.send_keys("1");

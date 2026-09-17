@@ -1,18 +1,21 @@
-//! Pair-a-device panel over the serve view: mints a one-time code on the local
-//! daemon and lists the devices already paired, with revoke.
+//! Pairing block of the exposed serve view: keeps a valid one-time code on
+//! screen, minted on the local daemon and replaced when it expires or a device
+//! redeems it, and lists paired devices with revoke.
 
+use std::collections::HashSet;
 use std::time::{Duration, Instant};
 
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::prelude::*;
-use ratatui::widgets::*;
 use serde::Deserialize;
 use tokio::sync::mpsc;
 
 use crate::tui::styles::Theme;
 
 const CONFIRM_WINDOW: Duration = Duration::from_secs(3);
-const MAX_DEVICE_ROWS: usize = 5;
+/// How often the device list is re-read, which is also how soon a redeemed
+/// code is replaced.
+const DEVICE_REFRESH: Duration = Duration::from_secs(3);
 
 enum CodeState {
     Minting,
@@ -24,7 +27,6 @@ enum CodeState {
 struct PairedDevice {
     session_id: String,
     device_name: Option<String>,
-    created_ip: String,
     last_seen: chrono::DateTime<chrono::Utc>,
 }
 
@@ -40,20 +42,18 @@ enum Update {
     Revoked(Result<(), String>),
 }
 
-pub(super) enum PanelAction {
-    Continue,
-    Close,
-}
-
 pub(super) struct PairingPanel {
     code: CodeState,
     /// `None` until the first listing arrives.
     devices: Option<Result<Vec<PairedDevice>, String>>,
+    /// Devices paired before the code on screen; one outside it redeemed it.
+    known_devices: Option<HashSet<String>>,
     selected: usize,
     confirm_revoke: Option<(String, Instant)>,
     runtime: Option<tokio::runtime::Handle>,
     sender: mpsc::UnboundedSender<Update>,
     updates: mpsc::UnboundedReceiver<Update>,
+    next_refresh: Instant,
     drawn_secs: Option<u64>,
 }
 
@@ -65,11 +65,11 @@ async fn local_client() -> Result<crate::daemon::DaemonClient, String> {
 }
 
 impl PairingPanel {
-    /// Open the panel and start minting a code and listing devices.
+    /// Start minting a code and listing devices.
     pub(super) fn open() -> Self {
         let mut panel = Self::detached(tokio::runtime::Handle::try_current().ok());
         panel.mint();
-        panel.refresh_devices();
+        panel.refresh_devices(Instant::now());
         panel
     }
 
@@ -78,13 +78,33 @@ impl PairingPanel {
         Self {
             code: CodeState::Minting,
             devices: None,
+            known_devices: None,
             selected: 0,
             confirm_revoke: None,
             runtime,
             sender,
             updates,
+            next_refresh: Instant::now(),
             drawn_secs: None,
         }
+    }
+
+    #[cfg(test)]
+    pub(super) fn ready(code: &str, devices: &[&str]) -> Self {
+        let mut panel = Self::detached(None);
+        panel.apply(Update::Minted(Ok(Minted {
+            code: code.into(),
+            expires_in_secs: 600,
+        })));
+        panel.apply(Update::Devices(Ok(devices
+            .iter()
+            .map(|name| PairedDevice {
+                session_id: name.to_string(),
+                device_name: Some(name.to_string()),
+                last_seen: chrono::Utc::now() - chrono::Duration::minutes(2),
+            })
+            .collect())));
+        panel
     }
 
     fn spawn(&self, work: impl std::future::Future<Output = Update> + Send + 'static) {
@@ -103,26 +123,28 @@ impl PairingPanel {
             return;
         }
         self.code = CodeState::Minting;
+        self.known_devices = self.device_ids();
         self.spawn(async {
             let result = async {
                 local_client()
                     .await?
                     .post_api::<_, Minted>(&["pair", "codes"], &serde_json::json!({}))
                     .await
-                    .map_err(|e| e.to_string())
+                    .map_err(|e| e.summary())
             };
             Update::Minted(result.await)
         });
     }
 
-    fn refresh_devices(&mut self) {
+    fn refresh_devices(&mut self, now: Instant) {
+        self.next_refresh = now + DEVICE_REFRESH;
         self.spawn(async {
             let result = async {
                 local_client()
                     .await?
                     .get_api::<Vec<PairedDevice>>(&["devices"], &[])
                     .await
-                    .map_err(|e| e.to_string())
+                    .map_err(|e| e.summary())
             };
             Update::Devices(result.await.map(|all| {
                 all.into_iter()
@@ -139,7 +161,7 @@ impl PairingPanel {
                     .await?
                     .delete_api(&["login", "sessions", &session_id])
                     .await
-                    .map_err(|e| e.to_string())
+                    .map_err(|e| e.summary())
             };
             Update::Revoked(result.await)
         });
@@ -149,6 +171,13 @@ impl PairingPanel {
         match &self.devices {
             Some(Ok(devices)) => devices,
             _ => &[],
+        }
+    }
+
+    fn device_ids(&self) -> Option<HashSet<String>> {
+        match &self.devices {
+            Some(Ok(devices)) => Some(devices.iter().map(|d| d.session_id.clone()).collect()),
+            _ => None,
         }
     }
 
@@ -166,21 +195,30 @@ impl PairingPanel {
                 self.selected = self
                     .selected
                     .min(self.device_list().len().saturating_sub(1));
+                let current = self.device_ids();
+                match (&self.known_devices, current) {
+                    (Some(known), Some(current)) if !current.is_subset(known) => {
+                        if matches!(self.code, CodeState::Ready { .. }) {
+                            self.mint();
+                        }
+                    }
+                    (None, current) => self.known_devices = current,
+                    _ => {}
+                }
             }
-            Update::Revoked(Ok(())) => self.refresh_devices(),
+            Update::Revoked(Ok(())) => self.refresh_devices(Instant::now()),
             Update::Revoked(Err(error)) => self.devices = Some(Err(error)),
         }
     }
 
-    pub(super) fn handle_key(&mut self, key: KeyEvent) -> PanelAction {
+    /// Device selection and revoke. Returns whether the key was used.
+    pub(super) fn handle_key(&mut self, key: KeyEvent) -> bool {
         let confirmed = self
             .confirm_revoke
             .take()
             .filter(|(_, at)| at.elapsed() <= CONFIRM_WINDOW)
             .map(|(id, _)| id);
         match key.code {
-            KeyCode::Esc | KeyCode::Char('q') => return PanelAction::Close,
-            KeyCode::Char('n') | KeyCode::Char('N') => self.mint(),
             KeyCode::Up | KeyCode::Char('k') => self.selected = self.selected.saturating_sub(1),
             KeyCode::Down | KeyCode::Char('j') => {
                 let last = self.device_list().len().saturating_sub(1);
@@ -196,33 +234,46 @@ impl PairingPanel {
                     }
                 }
             }
-            _ => {}
+            _ => return false,
         }
-        PanelAction::Continue
+        true
     }
 
-    /// Drain background results and advance the countdown. Returns true when
-    /// a redraw is needed.
+    pub(super) fn confirming_revoke(&self) -> bool {
+        self.confirm_revoke.is_some()
+    }
+
+    /// Drain background results, keep a live code on screen and advance the
+    /// countdown. Returns true when a redraw is needed.
     pub(super) fn tick(&mut self) -> bool {
+        self.tick_at(Instant::now())
+    }
+
+    fn tick_at(&mut self, now: Instant) -> bool {
         let mut changed = false;
         while let Ok(update) = self.updates.try_recv() {
             self.apply(update);
             changed = true;
         }
+        if matches!(&self.code, CodeState::Ready { expires_at, .. } if *expires_at <= now) {
+            self.mint();
+            changed = true;
+        }
+        if now >= self.next_refresh {
+            self.refresh_devices(now);
+        }
         if self
             .confirm_revoke
             .as_ref()
-            .is_some_and(|(_, at)| at.elapsed() > CONFIRM_WINDOW)
+            .is_some_and(|(_, at)| now.saturating_duration_since(*at) > CONFIRM_WINDOW)
         {
             self.confirm_revoke = None;
             changed = true;
         }
         let secs = match &self.code {
-            CodeState::Ready { expires_at, .. } => Some(
-                expires_at
-                    .saturating_duration_since(Instant::now())
-                    .as_secs(),
-            ),
+            CodeState::Ready { expires_at, .. } => {
+                Some(expires_at.saturating_duration_since(now).as_secs())
+            }
             _ => None,
         };
         if secs != self.drawn_secs {
@@ -232,152 +283,77 @@ impl PairingPanel {
         changed
     }
 
-    /// `command` is the `aoe remote add` line for the other machine, when
-    /// the daemon has a non-loopback URL.
-    pub(super) fn render(
-        &self,
-        frame: &mut Frame,
-        area: Rect,
-        theme: &Theme,
-        command: Option<&str>,
-    ) {
-        let lines = self.lines(theme, command);
-        let width = 72.min(area.width.saturating_sub(4));
-        let inner_width = width.saturating_sub(4).max(1) as usize;
-        let rows: usize = lines
-            .iter()
-            .map(|line| line.width().max(1).div_ceil(inner_width))
-            .sum();
-        let height = (rows as u16 + 2).min(area.height.saturating_sub(2));
-        let dialog = Rect {
-            x: area.x + area.width.saturating_sub(width) / 2,
-            y: area.y + area.height.saturating_sub(height) / 2,
-            width,
-            height,
-        };
-        frame.render_widget(Clear, dialog);
-        let block = Block::default()
-            .style(Style::default().bg(theme.background))
-            .borders(Borders::ALL)
-            .border_type(BorderType::Rounded)
-            .border_style(Style::default().fg(theme.border))
-            .padding(Padding::horizontal(1))
-            .title(Line::styled(
-                " Pair a device ",
-                Style::default().fg(theme.accent).bold(),
-            ));
-        let inner = block.inner(dialog);
-        frame.render_widget(block, dialog);
-        frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
+    /// The code, spaced for reading across a room, and its lifetime.
+    pub(super) fn code_lines(&self, theme: &Theme) -> Vec<Line<'static>> {
+        let dimmed = Style::default().fg(theme.dimmed);
+        match &self.code {
+            CodeState::Minting => vec![
+                Line::styled("  · · ·   · · ·", dimmed),
+                Line::styled("  creating a code", dimmed),
+            ],
+            CodeState::Ready { code, expires_at } => {
+                let remaining = expires_at.saturating_duration_since(Instant::now());
+                vec![
+                    Line::styled(
+                        format!("  {}", spaced(code)),
+                        Style::default().fg(theme.accent).bold(),
+                    ),
+                    Line::styled(
+                        format!("  single use · new code in {}", countdown(remaining)),
+                        dimmed,
+                    ),
+                ]
+            }
+            CodeState::Failed(error) => vec![
+                Line::styled(
+                    "  no code available",
+                    Style::default().fg(theme.error).bold(),
+                ),
+                Line::styled(format!("  {error}"), Style::default().fg(theme.error)),
+            ],
+        }
     }
 
-    fn lines(&self, theme: &Theme, command: Option<&str>) -> Vec<Line<'static>> {
+    /// Paired devices in at most `rows` lines; one line counts them when the
+    /// list does not fit.
+    pub(super) fn device_lines(&self, theme: &Theme, rows: usize) -> Vec<Line<'static>> {
         let dimmed = Style::default().fg(theme.dimmed);
         let text = Style::default().fg(theme.text);
-        let mut lines = vec![Line::from("")];
-        match &self.code {
-            CodeState::Minting => {
-                lines.push(Line::styled("creating code...", dimmed).centered());
-                lines.push(Line::from(""));
+        let devices = match &self.devices {
+            None => return vec![Line::styled("Paired: loading", dimmed)],
+            Some(Err(error)) => {
+                return vec![Line::styled(
+                    format!("Paired: {error}"),
+                    Style::default().fg(theme.error),
+                )]
             }
-            CodeState::Ready { code, expires_at } => {
-                lines.push(
-                    Line::styled(spaced(code), Style::default().fg(theme.accent).bold()).centered(),
-                );
-                let remaining = expires_at.saturating_duration_since(Instant::now());
-                lines.push(if remaining.is_zero() {
-                    Line::styled(
-                        "expired; press N for a new code",
-                        Style::default().fg(theme.waiting),
-                    )
-                    .centered()
-                } else {
-                    Line::styled(
-                        format!("single use, expires in {}", countdown(remaining)),
-                        dimmed,
-                    )
-                    .centered()
-                });
-            }
-            CodeState::Failed(error) => {
-                lines.push(
-                    Line::styled(
-                        format!("Could not create a code: {error}"),
-                        Style::default().fg(theme.error),
-                    )
-                    .centered(),
-                );
-                lines.push(Line::from(""));
-            }
-        }
-        lines.push(Line::from(""));
-        match command {
-            Some(command) => {
-                lines.push(Line::styled("On the other machine run", dimmed));
-                lines.push(Line::styled(format!("  {command}"), text));
-                lines.push(Line::styled("and enter the code when asked.", dimmed));
-            }
-            None => lines.push(Line::styled(
-                "Expose this daemon (E) so another machine can reach it.",
-                dimmed,
-            )),
-        }
-        lines.push(Line::from(""));
-        lines.push(Line::styled(
-            "Paired devices",
-            Style::default().fg(theme.accent).bold(),
-        ));
-        match &self.devices {
-            None => lines.push(Line::styled("  loading...", dimmed)),
-            Some(Err(error)) => lines.push(Line::styled(
-                format!("  {error}"),
-                Style::default().fg(theme.error),
-            )),
             Some(Ok(devices)) if devices.is_empty() => {
-                lines.push(Line::styled("  none yet", dimmed))
+                return vec![Line::styled("Paired: none yet", dimmed)]
             }
-            Some(Ok(devices)) => {
-                let now = chrono::Utc::now();
-                let start = self.selected.saturating_sub(MAX_DEVICE_ROWS - 1);
-                for (index, device) in devices.iter().enumerate().skip(start).take(MAX_DEVICE_ROWS)
-                {
-                    let selected = index == self.selected;
-                    let seen = (now - device.last_seen).num_seconds().max(0) as u64;
-                    lines.push(Line::from(vec![
-                        Span::styled(
-                            if selected { "\u{25b8} " } else { "  " },
-                            Style::default().fg(theme.accent),
-                        ),
-                        Span::styled(
-                            device.device_name.clone().unwrap_or_default(),
-                            if selected { text.bold() } else { text },
-                        ),
-                        Span::styled(
-                            format!("  {}  seen {} ago", device.created_ip, ago(seen)),
-                            dimmed,
-                        ),
-                    ]));
-                }
-            }
+            Some(Ok(devices)) => devices,
+        };
+        if rows < 2 {
+            return vec![Line::styled(format!("Paired: {}", devices.len()), dimmed)];
         }
-        lines.push(Line::from(""));
-        let key = Style::default().fg(theme.accent);
-        lines.push(match &self.confirm_revoke {
-            Some(_) => Line::styled(
-                "Press X again to revoke this device. Any other key cancels.",
-                Style::default().fg(theme.waiting).bold(),
-            ),
-            None => Line::from(vec![
-                Span::styled("N", key),
-                Span::styled(": new code  ", dimmed),
-                Span::styled("\u{2191}\u{2193}", key),
-                Span::styled(": select  ", dimmed),
-                Span::styled("X", key),
-                Span::styled(": revoke  ", dimmed),
-                Span::styled("Esc", key),
-                Span::styled(": back", dimmed),
-            ]),
-        });
+        let now = chrono::Utc::now();
+        let shown = rows - 1;
+        let start = self.selected.saturating_sub(shown - 1);
+        let mut lines = vec![Line::styled("Paired", dimmed)];
+        for (index, device) in devices.iter().enumerate().skip(start).take(shown) {
+            let selected = index == self.selected;
+            let seen = (now - device.last_seen).num_seconds().max(0) as u64;
+            lines.push(Line::from(vec![
+                Span::styled(
+                    if selected { "▸ " } else { "  " },
+                    Style::default().fg(theme.accent),
+                ),
+                Span::styled(
+                    device.device_name.clone().unwrap_or_default(),
+                    if selected { text.bold() } else { text },
+                ),
+                Span::styled(format!(" · {} ago", ago(seen)), dimmed),
+            ]));
+        }
         lines
     }
 }
@@ -405,71 +381,37 @@ fn ago(secs: u64) -> String {
 mod tests {
     use super::*;
     use crossterm::event::KeyModifiers;
-    use ratatui::backend::TestBackend;
-    use ratatui::Terminal;
 
-    fn press(panel: &mut PairingPanel, code: KeyCode) -> PanelAction {
+    fn press(panel: &mut PairingPanel, code: KeyCode) -> bool {
         panel.handle_key(KeyEvent::new(code, KeyModifiers::NONE))
     }
 
-    fn device(id: &str, name: &str) -> PairedDevice {
-        PairedDevice {
-            session_id: id.into(),
-            device_name: Some(name.into()),
-            created_ip: "192.168.1.9".into(),
-            last_seen: chrono::Utc::now(),
-        }
-    }
-
-    fn screen(panel: &PairingPanel, command: Option<&str>) -> String {
-        let mut term = Terminal::new(TestBackend::new(80, 30)).unwrap();
-        term.draw(|f| panel.render(f, f.area(), &Theme::default(), command))
-            .unwrap();
-        let buf = term.backend().buffer().clone();
-        (0..buf.area.height)
-            .map(|y| {
-                (0..buf.area.width)
-                    .map(|x| buf[(x, y)].symbol())
-                    .collect::<String>()
-            })
+    fn text(lines: Vec<Line>) -> String {
+        lines
+            .iter()
+            .map(|line| line.to_string())
             .collect::<Vec<_>>()
             .join("\n")
     }
 
-    #[test]
-    fn shows_the_code_countdown_and_client_instruction() {
-        let mut panel = PairingPanel::detached(None);
-        panel.apply(Update::Minted(Ok(Minted {
-            code: "K7F-3QX".into(),
-            expires_in_secs: 600,
-        })));
-        panel.apply(Update::Devices(Ok(vec![device("s1", "laptop")])));
-        let text = screen(
-            &panel,
-            Some("aoe remote add box http://192.168.1.5:8081 --insecure"),
-        );
-        assert!(text.contains("K 7 F - 3 Q X"), "{text}");
-        assert!(text.contains("expires in 9:59") || text.contains("expires in 10:00"));
-        assert!(text.contains("aoe remote add box http://192.168.1.5:8081 --insecure"));
-        assert!(text.contains("laptop"), "{text}");
-        assert!(tick_redraws_once(&mut panel));
-    }
-
-    fn tick_redraws_once(panel: &mut PairingPanel) -> bool {
-        panel.tick() && !panel.tick()
+    fn devices(ids: &[&str]) -> Update {
+        Update::Devices(Ok(ids
+            .iter()
+            .map(|id| PairedDevice {
+                session_id: id.to_string(),
+                device_name: Some(id.to_string()),
+                last_seen: chrono::Utc::now(),
+            })
+            .collect()))
     }
 
     #[test]
     fn revoke_needs_a_second_press_on_the_same_device() {
-        let mut panel = PairingPanel::detached(None);
-        panel.apply(Update::Devices(Ok(vec![
-            device("s1", "laptop"),
-            device("s2", "phone"),
-        ])));
+        let mut panel = PairingPanel::ready("K7F-3QX", &["laptop", "phone"]);
         press(&mut panel, KeyCode::Char('x'));
         assert_eq!(
             panel.confirm_revoke.as_ref().map(|(id, _)| id.as_str()),
-            Some("s1")
+            Some("laptop")
         );
         press(&mut panel, KeyCode::Down);
         assert!(panel.confirm_revoke.is_none(), "any other key cancels");
@@ -477,16 +419,51 @@ mod tests {
         press(&mut panel, KeyCode::Char('x'));
         assert!(panel.confirm_revoke.is_none());
         assert_eq!(panel.selected, 1);
-        assert!(matches!(
-            press(&mut panel, KeyCode::Esc),
-            PanelAction::Close
-        ));
+        assert!(
+            !press(&mut panel, KeyCode::Char('c')),
+            "other keys fall through"
+        );
     }
 
     #[test]
-    fn without_a_runtime_minting_fails_visibly() {
-        let mut panel = PairingPanel::detached(None);
-        press(&mut panel, KeyCode::Char('n'));
-        assert!(screen(&panel, None).contains("Could not create a code"));
+    fn the_code_is_spaced_with_its_countdown_and_devices_collapse_to_a_count() {
+        let panel = PairingPanel::ready("K7F-3QX", &["laptop", "phone"]);
+        let theme = Theme::default();
+        let code = text(panel.code_lines(&theme));
+        assert!(code.contains("K 7 F - 3 Q X"), "{code}");
+        assert!(code.contains("new code in 9:59") || code.contains("new code in 10:00"));
+        let list = text(panel.device_lines(&theme, 3));
+        assert!(
+            list.contains("laptop · 2m ago") && list.contains("phone"),
+            "{list}"
+        );
+        assert_eq!(text(panel.device_lines(&theme, 1)), "Paired: 2");
+    }
+
+    #[tokio::test]
+    async fn a_new_code_replaces_one_that_expired_or_was_redeemed() {
+        let mut panel = PairingPanel::detached(Some(tokio::runtime::Handle::current()));
+        panel.apply(devices(&["laptop"]));
+        panel.apply(Update::Minted(Ok(Minted {
+            code: "K7F-3QX".into(),
+            expires_in_secs: 600,
+        })));
+
+        panel.tick_at(Instant::now() + Duration::from_secs(1));
+        assert!(matches!(panel.code, CodeState::Ready { .. }), "still live");
+        panel.tick_at(Instant::now() + Duration::from_secs(601));
+        assert!(matches!(panel.code, CodeState::Minting), "expired");
+
+        panel.apply(Update::Minted(Ok(Minted {
+            code: "M2P-9TR".into(),
+            expires_in_secs: 600,
+        })));
+        panel.apply(devices(&["laptop"]));
+        assert!(
+            matches!(panel.code, CodeState::Ready { .. }),
+            "no new device"
+        );
+        panel.apply(devices(&["laptop", "phone"]));
+        assert!(matches!(panel.code, CodeState::Minting), "redeemed");
     }
 }

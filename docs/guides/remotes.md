@@ -6,37 +6,49 @@ structured sessions, and create new sessions on them.
 
 ## Registering a remote
 
+On the remote machine, open Remote Access (`R`) and pick **Local network** or
+**Internet (HTTPS)**. The exposed view shows a pairing code and the command to
+run on this machine:
+
 ```sh
-aoe remote add mini https://mini.tailnet.ts.net                  # prompts for a pairing code
-aoe remote add mini https://mini.tailnet.ts.net --code K7F-3QX
-aoe remote add mini https://mini.tailnet.ts.net --token <token>
-AOE_REMOTE_PASSPHRASE=… aoe remote add mini https://mini.tailnet.ts.net --token <token>
+aoe remote add 192.168.1.5:8081          # prompts for the pairing code
+aoe remote add aoe-mini.tailnet.ts.net --code K7F-3QX
+aoe remote add https://mini.example.com --name mini --token <token>
+AOE_REMOTE_PASSPHRASE=… aoe remote add https://mini.example.com --token <token>
 ```
 
-Pairing needs no token. On the remote machine open Remote Access (`R`) and
-press `P`: it shows a single-use code valid for 10 minutes and the
-`aoe remote add` line to run here, which then asks for the code. The entry
-stores a device-bound session instead of a token, so rotating the remote's
-token or changing its passphrase does not affect it, and it passes a
-passphrase wall. The same panel lists paired devices; `X` revokes one. A
-revoked or expired pairing shows as HTTP 401 on the remote's header; run
-`aoe remote add` again with a new code.
+The address is `host:port` for a LAN, link-local or tailnet (`100.64.0.0/10`)
+address or a `.local` name, which is reached over plain HTTP and needs the
+port the remote shows; any other hostname is reached over HTTPS. A full URL
+works too. `c` in the exposed view copies the command.
+
+Pairing needs no token. The code is single use and valid for 10 minutes; the
+view replaces it as soon as it expires or a device redeems it, so the code on
+screen always works. The entry stores a device-bound session instead of a
+token, so rotating the remote's token or changing its passphrase does not
+affect it, and it passes a passphrase wall. The view also lists paired
+devices; select one and press `x` twice to revoke it. A revoked or expired
+pairing shows as HTTP 401 on the remote's header; run `aoe remote add` again
+with a new code.
+
+Without `--name`, the entry is named after the remote's hostname (with a
+numeric suffix if another remote has that name); adding an address that is
+already registered updates that entry.
 
 The token is the one the remote daemon prints at startup. A URL carrying
 `?token=`, as `aoe serve --status` prints it, also works: the token moves to
-`--token` and the stored URL drops the query. When the remote machine exposes
-its daemon from the TUI (`R`, then Local network or Internet), that view shows
-the full `aoe remote add` command to run here, named after the remote's
-hostname. A daemon started
-with `--remote` also has a passphrase wall: `--passphrase` (or
-`AOE_REMOTE_PASSPHRASE`, which keeps it out of `ps`) is exchanged once for a
-device-bound login session. The passphrase itself is never stored; when the
-session expires, add the remote again.
+`--token` and the stored URL drops the query. The exposed view shows that URL,
+with a QR code for a phone, beside the pairing code on a wide terminal or
+behind `w` on a narrow one. A daemon started with `--remote` also has a
+passphrase wall: `--passphrase` (or `AOE_REMOTE_PASSPHRASE`, which keeps it
+out of `ps`) is exchanged once for a device-bound login session. The
+passphrase itself is never stored; when the session expires, add the remote
+again.
 
 `aoe remote add` refuses a URL it could never use: it must be `http` or
 `https` with a host and no credentials, query or fragment, and a token or
-login travels only over HTTPS or a loopback `http://` URL unless you pass
-`--insecure` (see below). It then reads the
+login travels only over HTTPS or a loopback `http://` URL unless you confirm
+plain HTTP when asked or pass `--insecure` (see below). It then reads the
 remote's session list with those credentials and saves the entry only if that
 works, so a wrong base path (HTTP 404) or a rejected token (HTTP 401 or 403)
 fails the add instead of every later refresh.
@@ -62,10 +74,12 @@ listen on port 8081, release builds on 8080):
 On your machine:
 
 ```sh
-aoe remote add box1 http://192.168.1.20:8081 --token <token> --passphrase <passphrase> --insecure
+aoe remote add 192.168.1.20:8081 --token <token> --passphrase <passphrase>
 ```
 
-`--insecure` is stored on that entry only, and `aoe remote list` marks it.
+On a terminal, `aoe remote add` asks before sending anything over plain HTTP;
+`--insecure` gives that answer up front for scripts. The choice is stored on
+that entry only, and `aoe remote list` marks it.
 The token, passphrase and login session travel unencrypted, so anyone who can
 see traffic on that network can read them and run commands as the remote
 user. Use it only on a network you trust.
