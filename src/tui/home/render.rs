@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 use rattles::presets::prelude as spinners;
 
 use super::{
-    get_indent, live_send, HomeView, TerminalMode, ViewMode, ICON_ARCHIVED_SECTION, ICON_COLLAPSED,
+    live_send, HomeView, TerminalMode, ViewMode, ICON_ARCHIVED_SECTION, ICON_COLLAPSED,
     ICON_DELETING, ICON_DORMANT, ICON_ERROR, ICON_EXPANDED, ICON_IDLE, ICON_PINNED, ICON_STOPPED,
     ICON_TRASH_SECTION, ICON_UNKNOWN, ICON_UNREAD,
 };
@@ -1599,7 +1599,7 @@ impl HomeView {
         theme: &Theme,
         list_width: u16,
     ) -> Line<'static> {
-        let indent = get_indent(item.depth());
+        let indent = " ".repeat(item.depth().min(9));
 
         // Attention-mode-gated visuals. Favorite, snooze (decoration), and
         // urgent only render when the user is in Attention sort, so the

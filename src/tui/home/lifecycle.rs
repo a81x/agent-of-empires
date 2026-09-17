@@ -758,43 +758,12 @@ impl HomeView {
         // per-render.
         self.remote_owner_cache.borrow_mut().clear();
 
-        // Remember what the cursor was pointing at so we can follow it
-        let prev_selected_session = self.selected_session.clone();
-        let prev_selected_group = self.selected_group.clone();
-
-        self.rebuild_flat_items();
-
-        // Try to restore cursor to the same session/group after rebuild
-        let mut restored = false;
-        if let Some(ref sid) = prev_selected_session {
-            for (idx, item) in self.flat_items.iter().enumerate() {
-                if let Item::Session { id, .. } = item {
-                    if id == sid {
-                        self.cursor = idx;
-                        restored = true;
-                        break;
-                    }
-                }
-            }
-        } else if let Some(ref gpath) = prev_selected_group {
-            for (idx, item) in self.flat_items.iter().enumerate() {
-                if let Item::Group { path, .. } = item {
-                    if path == gpath {
-                        self.cursor = idx;
-                        restored = true;
-                        break;
-                    }
-                }
-            }
-        }
-        if !restored && self.cursor >= self.flat_items.len() && !self.flat_items.is_empty() {
-            self.cursor = self.flat_items.len() - 1;
-        }
+        self.rebuild_flat_items_keeping_cursor();
 
         // Storage rebuilds and search re-scoring must not move the live-send
         // selection. Teardown reconciles it with the latest projection.
         let preserve_live_selection = self.live_send.as_ref().is_some_and(|state| {
-            prev_selected_session.as_deref() == Some(state.session_id.as_str())
+            self.selected_session.as_deref() == Some(state.session_id.as_str())
         });
 
         if self.search_active && !self.search_query.value().is_empty() {
