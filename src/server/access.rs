@@ -279,11 +279,9 @@ pub(super) fn access_denied() -> axum::response::Response {
 /// with the URI authority as a fallback. See #2735.
 pub(super) async fn access_policy(
     axum::extract::State(state): axum::extract::State<Arc<AppState>>,
-    peer: super::peer::ConnectionPeer,
     request: axum::extract::Request,
     next: axum::middleware::Next,
 ) -> axum::response::Response {
-    use axum::response::IntoResponse;
     let host_header = request
         .headers()
         .get(axum::http::header::HOST)
@@ -302,26 +300,7 @@ pub(super) async fn access_policy(
         &state.allowed_hosts,
         &state.allowed_origins,
     ) {
-        AccessDecision::Allow => {
-            if let super::peer::ConnectionPeer::Tcp(addr) = peer {
-                let mut forwarded = request.headers().get_all("x-forwarded-proto").iter();
-                let secure_proxy = state.behind_tunnel
-                    && addr.ip().is_loopback()
-                    && forwarded
-                        .next()
-                        .is_some_and(|value| value.as_bytes() == b"https")
-                    && forwarded.next().is_none();
-                if !(addr.ip().is_loopback() && !state.behind_tunnel) && !secure_proxy {
-                    return (
-                        axum::http::StatusCode::UPGRADE_REQUIRED,
-                        crate::daemon::ApiErrorCode::TlsRequired.header(),
-                        "Secure ingress is required",
-                    )
-                        .into_response();
-                }
-            }
-            next.run(request).await
-        }
+        AccessDecision::Allow => next.run(request).await,
         AccessDecision::DenyMissingHost => {
             tracing::debug!(target: "http.access", "rejected: missing Host header");
             access_denied()
@@ -1188,6 +1167,7 @@ mod tests {
         let mut good = axum::http::Request::builder()
             .uri("/api/sessions")
             .header("host", "localhost")
+            .header("authorization", "Bearer secret-token")
             .body(axum::body::Body::empty())
             .unwrap();
         good.extensions_mut()
@@ -1195,24 +1175,21 @@ mod tests {
         let resp = app.oneshot(good).await.unwrap();
         assert_eq!(
             resp.status(),
-            axum::http::StatusCode::UPGRADE_REQUIRED,
-            "a listed Host still requires secure off-host ingress before auth"
+            axum::http::StatusCode::OK,
+            "a listed Host over plain HTTP reaches auth and the handler"
         );
     }
 
     #[tokio::test]
-    async fn configured_ingress_requires_https_even_without_credentials() {
+    async fn plain_http_off_host_reaches_auth_without_tls_gate() {
         use axum::http::StatusCode;
         use tower::ServiceExt;
-        for (peer, proto, expected) in [
-            ("127.0.0.1:5555", None, StatusCode::UPGRADE_REQUIRED),
-            ("127.0.0.1:5555", Some("http"), StatusCode::UPGRADE_REQUIRED),
-            (
-                "203.0.113.7:5555",
-                Some("https"),
-                StatusCode::UPGRADE_REQUIRED,
-            ),
-            ("127.0.0.1:5555", Some("https"), StatusCode::OK),
+        for (peer, proto) in [
+            ("127.0.0.1:5555", None),
+            ("127.0.0.1:5555", Some("http")),
+            ("203.0.113.7:5555", None),
+            ("203.0.113.7:5555", Some("http")),
+            ("203.0.113.7:5555", Some("https")),
         ] {
             let state = test_support::build_test_app_state_with_policy_configured(
                 Vec::new(),
@@ -1235,16 +1212,11 @@ mod tests {
                 .oneshot(request)
                 .await
                 .unwrap();
-            assert_eq!(response.status(), expected);
-            if expected == StatusCode::UPGRADE_REQUIRED {
-                assert_eq!(
-                    response
-                        .headers()
-                        .get(crate::daemon::ERROR_CODE_HEADER)
-                        .unwrap(),
-                    "tls_required"
-                );
-            }
+            assert_eq!(
+                response.status(),
+                StatusCode::OK,
+                "{peer} with {proto:?} must not be gated by transport"
+            );
         }
     }
 
