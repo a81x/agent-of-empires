@@ -76,7 +76,7 @@ use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 use tracing::Instrument;
 
 use self::commands::{ClientCmd, ConnectMode};
-use self::connection::run_connection_task;
+use self::connection::{run_connection_task, ConnectionParams, RunnerLink};
 use self::control::{connect_runner_control_v3, ShutdownControlOnDrop};
 use self::delete::ACP_SESSION_DELETE_TIMEOUT;
 use self::handshake::wait_for_handshake;
@@ -117,6 +117,17 @@ struct SessionResources {
     cwd: PathBuf,
     label: String,
     sandbox: Option<SessionSandbox>,
+}
+
+impl SessionResources {
+    /// Sandboxed agents run in-container, so session requests carry the
+    /// container workdir (#2871).
+    fn agent_cwd(&self) -> PathBuf {
+        session_sandbox::agent_request_cwd(
+            self.sandbox.as_ref().map(|s| s.container_workdir.as_path()),
+            &self.cwd,
+        )
+    }
 }
 
 impl AcpClient {
@@ -500,29 +511,23 @@ impl AcpClient {
         tokio::spawn(
             run_connection_task(
                 transport,
-                event_tx,
-                cmd_rx,
-                cwd,
-                session_label.clone(),
-                Some(child_for_task),
-                pending_for_task,
-                resources,
-                None,
-                mode,
-                Some(ready_tx),
-                profile,
-                expected_agent,
-                source_profile,
-                default_effort,
-                default_mode,
-                mcp_servers,
-                // Direct stdio agents have no runner and thus no control
-                // channel; the task owns its own terminal claim and
-                // prompt-in-flight flag and speaks the full protocol over
-                // stdio.
-                None,
-                None,
-                None,
+                ConnectionParams {
+                    event_tx,
+                    cmd_rx,
+                    child: Some(child_for_task),
+                    pending_responders: pending_for_task,
+                    resources,
+                    mode,
+                    ready_tx,
+                    profile,
+                    expected_agent,
+                    source_profile,
+                    default_effort,
+                    default_mode,
+                    mcp_servers,
+                    // Direct stdio has no runner and speaks ACP on its pipes.
+                    runner: None,
+                },
             )
             .instrument(conn_span),
         );
@@ -642,12 +647,9 @@ impl AcpClient {
                 control_path.display()
             ))
         })?;
-        let control_client = Some(control_client);
         let (read_half, write_half) = tokio::io::split(crate_transport);
         let transport = ByteStreams::new(write_half.compat_write(), read_half.compat());
-        let external_terminal_guard = control_client.as_ref().map(|_| guard);
-        let external_prompt_in_flight = control_client.as_ref().map(|_| prompt_in_flight);
-        let mut handshake_control = ShutdownControlOnDrop(control_client.clone());
+        let mut handshake_control = ShutdownControlOnDrop(Some(control_client.clone()));
 
         let (ready_tx, ready_rx) = oneshot::channel::<Result<(), AcpError>>();
 
@@ -658,25 +660,26 @@ impl AcpClient {
         tokio::spawn(
             run_connection_task(
                 transport,
-                event_tx,
-                cmd_rx,
-                cwd,
-                session_label.clone(),
-                None,
-                pending_for_task,
-                resources,
-                None,
-                mode,
-                Some(ready_tx),
-                profile,
-                expected_agent,
-                source_profile,
-                default_effort,
-                default_mode,
-                mcp_servers,
-                external_terminal_guard,
-                external_prompt_in_flight,
-                control_client,
+                ConnectionParams {
+                    event_tx,
+                    cmd_rx,
+                    child: None,
+                    pending_responders: pending_for_task,
+                    resources,
+                    mode,
+                    ready_tx,
+                    profile,
+                    expected_agent,
+                    source_profile,
+                    default_effort,
+                    default_mode,
+                    mcp_servers,
+                    runner: Some(RunnerLink {
+                        control: control_client,
+                        terminal_claim: guard,
+                        prompt_in_flight,
+                    }),
+                },
             )
             .instrument(conn_span),
         );
