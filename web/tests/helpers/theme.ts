@@ -2,10 +2,10 @@
 
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import type { Page } from "@playwright/test";
 import { appDirFor, resolveAoeBinary } from "./aoeServe";
 
-const MINIMAL_THEME_TOML = `appearance = "dark"
+/** Custom themes need the full Theme struct; partial files are filtered out. */
+export const VALID_CUSTOM_THEME_TOML = `appearance = "dark"
 
 background = "#11131c"
 border = "#2b2f3f"
@@ -37,9 +37,6 @@ sandbox = "#c4b5fd"
 shiki_theme = "github-dark"
 `;
 
-/** Custom themes need the full Theme struct; partial files are filtered out. */
-export const VALID_CUSTOM_THEME_TOML = MINIMAL_THEME_TOML;
-
 /** Fails to parse, but discovery still lists the file stem. */
 export const MALFORMED_CUSTOM_THEME_TOML = `appearance = "dark"
 this-is-not = "valid theme schema"
@@ -47,36 +44,9 @@ this-is-not = "valid theme schema"
 shiki_theme = "missing closing bracket"
 `;
 
-export function customThemesDir(home: string, xdg: string): string {
-  const appDir = appDirFor(home, xdg, resolveAoeBinary());
-  return join(appDir, "themes");
-}
-
 /** Write `<name>.toml` into the app dir's themes/ so the server discovers it on boot. */
-export function seedCustomTheme(home: string, xdg: string, name: string, body: string): string {
-  const dir = customThemesDir(home, xdg);
+export function seedCustomTheme(home: string, xdg: string, name: string, body: string): void {
+  const dir = join(appDirFor(home, xdg, resolveAoeBinary()), "themes");
   mkdirSync(dir, { recursive: true });
-  const path = join(dir, `${name}.toml`);
-  writeFileSync(path, body);
-  return path;
-}
-
-export interface ThemeDocumentSnapshot {
-  datasetTheme: string | undefined;
-  datasetAppearance: string | undefined;
-  colorScheme: string;
-  surface900: string;
-}
-
-/** The root element state applyResolvedTheme writes. */
-export async function readThemeFromDocument(page: Page): Promise<ThemeDocumentSnapshot> {
-  return await page.evaluate(() => {
-    const root = document.documentElement;
-    return {
-      datasetTheme: root.dataset.theme,
-      datasetAppearance: root.dataset.themeAppearance,
-      colorScheme: root.style.colorScheme,
-      surface900: root.style.getPropertyValue("--color-surface-900").trim(),
-    };
-  });
+  writeFileSync(join(dir, `${name}.toml`), body);
 }
