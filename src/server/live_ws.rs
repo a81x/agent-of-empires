@@ -1863,7 +1863,22 @@ async fn handle_live_ws_inner(
                             } => {
                                 if let Some(label) = label.filter(|l| !l.trim().is_empty()) {
                                     *settings.label.lock().unwrap_or_else(|e| e.into_inner()) =
-                                        label;
+                                        label.clone();
+                                    // The connect-time claim was made before
+                                    // the client named itself, so re-label the
+                                    // lock we already hold.
+                                    if settings.holds_view.load(Ordering::Relaxed) {
+                                        let name = tmux_name.clone();
+                                        let who = owner_id.clone();
+                                        let _ = tokio::task::spawn_blocking(move || {
+                                            crate::tmux::Session::from_name(&name).claim_size_lock(
+                                                &who,
+                                                &label,
+                                                crate::tmux::SizeMode::View,
+                                            )
+                                        })
+                                        .await;
+                                    }
                                 }
                                 // Set-once: a client never revokes deflate (it
                                 // has no way to reset its inflate stream), so

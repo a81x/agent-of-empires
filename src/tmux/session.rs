@@ -2185,11 +2185,14 @@ impl Session {
             _ => None,
         };
         // An attach beats a stored lock: the terminal is sizing the window
-        // right now, whoever wrote the option last.
+        // right now, whoever wrote the option last. `aoe attach` labels itself
+        // before attaching, so that label is kept when one is there.
         let lock = if attached {
             Some(SizeLock {
                 holder: TERMINAL_ATTACH_LABEL.to_string(),
-                label: TERMINAL_ATTACH_LABEL.to_string(),
+                label: lock
+                    .map(|lock| lock.label)
+                    .unwrap_or_else(|| TERMINAL_ATTACH_LABEL.to_string()),
                 mode: SizeMode::Live,
                 heartbeat_ms: now_ms(),
             })
