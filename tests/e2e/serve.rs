@@ -2568,23 +2568,7 @@ fn cli_serve_daemon_writes_marker_to_debug_log_not_serve_log() {
     let _ = h.run_cli(&["serve", "--stop"]);
 }
 
-/// `--auth=passphrase` is the load-bearing new mode: no URL token, the
-/// passphrase wall is the only human gate. Exercises the wall end-to-end
-/// against a real daemon so the new `run_passphrase_wall` middleware
-/// branch is locked in CI rather than relying on manual smoke tests.
-///
-/// Flow:
-///   1. GET `/api/about` from a simulated non-loopback caller (loopback
-///      socket + `X-Forwarded-For: 10.0.0.5`, which `resolve_client_ip`
-///      trusts because the socket itself is loopback) -> 401
-///      `login_required`. Proves the wall still blocks remote API
-///      traffic after the #1525 loopback bypass landed.
-///   2. POST `/api/login` with the correct passphrase + a fresh
-///      device-binding secret -> 200 with `Set-Cookie: aoe_session=`.
-///   3. GET `/api/about` carrying the session cookie + binding header
-///      (no XFF so the caller is loopback) -> 200, body has
-///      `"auth_mode":"passphrase"`. Proves both the wall handoff and
-///      the `/api/about` mode-derivation surface.
+/// Proxy ingress requires passphrase login and a bound browser session.
 #[test]
 #[parallel]
 fn cli_serve_auth_passphrase_login_round_trip() {
@@ -2592,6 +2576,7 @@ fn cli_serve_auth_passphrase_login_round_trip() {
     let port = pick_free_port();
     let port_s = port.to_string();
 
+    // XFF is trusted only on configured proxy ingress.
     let start = h.run_cli(&[
         "serve",
         "--daemon",
@@ -2601,6 +2586,9 @@ fn cli_serve_auth_passphrase_login_round_trip() {
         "passphrase",
         "--passphrase",
         "e2e-pass",
+        "--behind-proxy",
+        "--allowed-host",
+        "aoe.test",
     ]);
     assert!(
         start.status.success(),
@@ -2631,11 +2619,7 @@ fn cli_serve_auth_passphrase_login_round_trip() {
             .build()
             .map_err(|e| format!("build client: {e}"))?;
 
-        // 1. Unauthenticated GET from a simulated remote caller must
-        //    come back with 401 + login_required body. The daemon
-        //    binds loopback, so `resolve_client_ip` trusts XFF; we
-        //    pin a non-loopback last-hop IP so the #1525 loopback
-        //    bypass does not fire.
+        // Unauthenticated forwarded callers must receive login_required.
         let about_unauth = client
             .get(format!("{base}/api/about"))
             .header("x-forwarded-for", "10.0.0.5")
