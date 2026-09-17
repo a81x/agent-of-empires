@@ -301,7 +301,7 @@ impl HomeView {
     fn apply_remote_frame(&mut self, id: &str, output: Rect) {
         let scroll_offset = self.preview_scroll_offset;
         let window = (
-            capture_lines_for(output.height, scroll_offset),
+            remote_window_lines(&self.remote_preview_cache, id, output.height, scroll_offset),
             scroll_offset == 0,
         );
         if self.remote_window_sent != Some(window) {
@@ -323,7 +323,7 @@ impl HomeView {
             incoming_lines: frame.content.lines().count(),
             empty: frame.content.is_empty(),
             budget: frame.budget,
-            capture_lines: window.0,
+            capture_lines: capture_lines_for(output.height, scroll_offset),
             height: output.height,
             scroll_offset,
         }) else {
@@ -341,6 +341,83 @@ impl HomeView {
         if clamp {
             self.preview_scroll_offset =
                 clamp_scroll_to_capture(scroll_offset, captured_lines, self.preview_visible_rows);
+        }
+    }
+}
+
+/// Lines to ask the remote to capture. Reading scrollback wants the whole
+/// history once; after a snapshot holding all of it is in, every further wide
+/// frame would only be held, so the socket drops back to a screen-sized window
+/// instead of shipping thousands of lines per publish until the read ends.
+fn remote_window_lines(cache: &PreviewCache, id: &str, height: u16, scroll_offset: u16) -> usize {
+    let wanted = capture_lines_for(height, scroll_offset);
+    let complete = scroll_offset > 0
+        && !cache.is_pending_for(id)
+        && cache.cursor.is_some_and(|c| {
+            let pane_lines = c.history_size as usize + c.pane_height as usize;
+            cache.captured_lines >= wanted.min(pane_lines)
+        });
+    if complete {
+        capture_lines_for(height, 0)
+    } else {
+        wanted
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_read_asks_for_the_history_until_a_snapshot_holds_all_of_it() {
+        let live = capture_lines_for(40, 0);
+        let reading = capture_lines_for(40, 30);
+        let cache = |id: &str, captured_lines: usize, history_size: u32| {
+            let mut cache = PreviewCache {
+                session_id: Some(id.to_string()),
+                captured_lines,
+                ..Default::default()
+            };
+            cache.cursor = Some(crate::tmux::PaneCursor {
+                x: 0,
+                y: 0,
+                visible: true,
+                pane_height: 40,
+                history_size,
+                pane_width: 80,
+                alternate_on: false,
+                mouse_tracking: false,
+                mouse_sgr: false,
+                mouse_all: false,
+                position_reliable: true,
+                composite_pane0: None,
+            });
+            cache
+        };
+        let cases = [
+            ("at the live edge", cache("r1", 60, 500), 0, live),
+            ("live capture only", cache("r1", 60, 500), 30, reading),
+            ("another row's snapshot", cache("r2", 540, 500), 30, reading),
+            ("all history held", cache("r1", 540, 500), 30, live),
+            (
+                "the budget's worth held",
+                cache("r1", reading, 9000),
+                30,
+                live,
+            ),
+            (
+                "reading past the budget",
+                cache("r1", reading, 9000),
+                3000,
+                capture_lines_for(40, 3000),
+            ),
+        ];
+        for (what, cache, offset, want) in cases {
+            assert_eq!(
+                remote_window_lines(&cache, "r1", 40, offset),
+                want,
+                "{what}"
+            );
         }
     }
 }

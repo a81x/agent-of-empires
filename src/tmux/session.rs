@@ -1265,10 +1265,11 @@ impl Session {
     /// whose parser can miss a mode reset such as a respawned pane's.
     pub fn pane_cursor(&self) -> Option<PaneCursor> {
         let target = format!("={}:^", self.name);
-        let mut command = crate::tmux::tmux_command();
-        command.args(["display-message", "-p", "-t", &target, "-F", CURSOR_FMT]);
-        let output = crate::tmux::TmuxCommandDeadline::new()
-            .run(&mut command)
+        // A plain fork, like `send_raw_bytes`: the deadline runner polls for
+        // exit every 25ms, which a per-notch probe would feel.
+        let output = crate::tmux::tmux_command()
+            .args(["display-message", "-p", "-t", &target, "-F", CURSOR_FMT])
+            .output()
             .ok()?;
         if !output.status.success() {
             return None;

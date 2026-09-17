@@ -74,7 +74,9 @@ pub struct RemotePreview {
 }
 
 impl RemotePreview {
-    pub fn new() -> Self {
+    /// `wake` is notified with each frame so the TUI paints it without
+    /// waiting for its ticker.
+    pub fn new(wake: std::sync::Arc<tokio::sync::Notify>) -> Self {
         let (commands, command_rx) = mpsc::unbounded_channel();
         let (event_tx, events) = std_mpsc::channel();
         let spawned = std::thread::Builder::new()
@@ -84,7 +86,7 @@ impl RemotePreview {
                     .enable_all()
                     .build()
                 {
-                    Ok(rt) => rt.block_on(run(command_rx, event_tx)),
+                    Ok(rt) => rt.block_on(run(command_rx, event_tx, wake)),
                     Err(e) => {
                         tracing::warn!(target: "tui.remote_preview", "runtime build failed: {e}")
                     }
@@ -110,12 +112,6 @@ impl RemotePreview {
 
     pub(crate) fn try_recv(&self) -> Option<PreviewEvent> {
         self.events.try_recv().ok()
-    }
-}
-
-impl Default for RemotePreview {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
@@ -225,6 +221,7 @@ fn latest_target(
 async fn run(
     mut commands: mpsc::UnboundedReceiver<PreviewCommand>,
     events: std_mpsc::Sender<PreviewEvent>,
+    wake: std::sync::Arc<tokio::sync::Notify>,
 ) {
     let mut conn: Option<Connection> = None;
     let mut rx: Option<mpsc::Receiver<LiveMessage>> = None;
@@ -239,6 +236,7 @@ async fn run(
                 }
                 message = next_message(&mut rx) => {
                     on_message(message, &mut conn, &mut rx, &events).await;
+                    wake.notify_one();
                     continue;
                 }
             },

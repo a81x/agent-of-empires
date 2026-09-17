@@ -198,6 +198,7 @@ impl HomeView {
             handles: HashMap::new(),
         };
 
+        let preview_wake = std::sync::Arc::new(tokio::sync::Notify::new());
         let mut view = Self {
             storages,
             active_profile,
@@ -220,7 +221,7 @@ impl HomeView {
             remotes_configured: false,
             local_machine_collapsed: false,
             collapsed_remotes: std::collections::HashSet::new(),
-            remote_preview: crate::tui::remote_preview::RemotePreview::new(),
+            remote_preview: crate::tui::remote_preview::RemotePreview::new(preview_wake.clone()),
             remote_preview_key: None,
             remote_preview_cache: Default::default(),
             remote_preview_frame: None,
@@ -311,7 +312,7 @@ impl HomeView {
             preview_capture_worker: None,
             preview_capture_target: None,
             preview_worker_pulse: None,
-            preview_wake: std::sync::Arc::new(tokio::sync::Notify::new()),
+            preview_wake,
             live_send_last_resize: None,
             live_send_resize_retry_at: None,
             live_send_pending_leader: false,
