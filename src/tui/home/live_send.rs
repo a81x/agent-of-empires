@@ -1212,6 +1212,11 @@ fn capture_composited_over_grid(
     let Some((_, layout)) = state.layout.as_ref() else {
         return capture_composited(name, lines, forward_empty, deadline);
     };
+    if layout.first_pane_id() != Some(channel.pane_id()) {
+        *state.layout = None;
+        *state.last_pane_probe = None;
+        return capture_composited(name, lines, forward_empty, deadline);
+    }
     let Some(first) = layout.first_pane() else {
         return capture_composited(name, lines, forward_empty, deadline);
     };
@@ -1239,7 +1244,7 @@ fn capture_composited_over_grid(
     cursor.history_size = 0;
     cursor.composite_pane0 = Some(first);
     (
-        Some(layout.composite_with_first_pane_rows(&rows)),
+        Some(layout.composite_with_first_pane_rows(channel.pane_id(), &rows)),
         Some(cursor),
     )
 }
@@ -2315,7 +2320,8 @@ fn dispatch_via_fork(
         }
     }
 
-    let target = format!("={}:^", tmux_name);
+    let target = crate::tmux::Session::from_name(tmux_name)
+        .live_pane_target_with_deadline(&crate::tmux::TmuxCommandDeadline::new())?;
     let mut cmd = crate::tmux::tmux_command();
     cmd.stderr(Stdio::null());
     match action {

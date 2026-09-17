@@ -47,7 +47,7 @@ pub use sessions::{
     abandon_purge, attach_session_project, cancel_creation, create_session, delete_session,
     delete_workspace, ensure_container_terminal, ensure_session, ensure_terminal, ensure_tool,
     force_smart_rename, get_recent_projects, kill_terminal, list_sessions, paste_image,
-    preview_volume_ignores_globs, read_output, rename_session, restore_session,
+    preview_volume_ignores_globs, read_output, rename_session, restart_session, restore_session,
     review_creation_trust, search_sessions, send_message, serve_session_artifact,
     session_diff_file, session_diff_files, session_file, set_worktree_name, start_session,
     stop_auxiliary, stop_session, summarize_session, trash_session, update_session_archive,

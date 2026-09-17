@@ -958,72 +958,90 @@ fn daemon_unreachable_stop_fails_without_a_local_write() {
     );
 }
 
-/// Start through the feed paints the optimistic Starting overlay only once
-/// admitted, and the daemon's Running snapshot settles it: the same pair as
-/// stop, with the overlay as the admitted-side feedback.
 #[test]
 #[serial]
-fn daemon_start_result_settles_starting_without_a_local_write() {
-    let mut env = create_test_env_with_sessions(1);
-    let id = env.view.instance_at(0).id.clone();
-    env.view.mutate_instance(&id, |inst| {
-        inst.status = Status::Stopped;
-    });
+fn restart_attachment_waits_for_its_receipt_and_lifecycle_generation() {
+    use crate::daemon::{
+        MutationReceipt, RestartOutcome, RuntimeCursor, TerminalTarget, TerminalTargetStatus,
+    };
+    use crate::session::{PaneObservation, PanePresence};
 
-    let mut respond = env.view.session_feed.command_driver_for_test();
-    assert!(
-        env.view.submit_daemon_start(&id, None),
-        "an available runtime admits the start"
-    );
-    env.view.mutate_instance(&id, |inst| {
-        inst.status = Status::Starting;
-        inst.last_error = None;
-        inst.last_start_time = Some(std::time::Instant::now());
-    });
-    let submitted = respond(Ok(crate::daemon::RuntimeCursor {
-        epoch: "test".into(),
-        revision: 2,
-    }));
-    assert!(
-        submitted.is_some_and(|(target, mutation)| target == id
-            && matches!(mutation, crate::daemon::SessionMutation::Start(_))),
-        "start must submit SessionMutation::Start for the row"
-    );
+    for (reflected_generation, target_name) in [
+        (5, "restarted-agent"),
+        (6, "restarted-agent"),
+        (5, "renamed-agent"),
+    ] {
+        let mut env = create_test_env_with_sessions(1);
+        let id = env.view.instance_at(0).id.clone();
+        env.view.select_session_by_id(&id);
+        let mut row = daemon_row_in("test", &id, "Running");
+        row.view = crate::session::View::Terminal;
+        row.lifecycle_generation = 4;
+        row.agent_pane = PaneObservation {
+            state: PanePresence::Alive,
+            tmux_session: Some("restarted-agent".into()),
+        };
+        let SessionFeedResult::Snapshot(mut snapshot) = snapshot_of(vec![row]) else {
+            unreachable!()
+        };
+        env.view
+            .session_feed
+            .publish_for_test(SessionFeedResult::Snapshot(snapshot.clone()));
+        env.view.apply_session_feed();
+        let mut respond = env.view.session_feed.restart_driver_for_test();
+        env.view.restart_then_attach(&id, None, false);
 
-    env.view
-        .apply_daemon_status_update(&daemon_row(&id, "Running"));
-    let inst = env.view.get_instance(&id).expect("row still present");
-    assert_eq!(inst.status, Status::Running);
-    assert_eq!(inst.last_error, None);
-}
+        // A still-Running snapshot predating the receipt cannot settle a restart.
+        std::sync::Arc::make_mut(&mut snapshot).cursor.revision = 2;
+        env.view
+            .session_feed
+            .publish_for_test(SessionFeedResult::Snapshot(snapshot.clone()));
+        env.view.apply_session_feed();
+        env.view.apply_restart_results();
+        assert!(env.view.restart_in_flight.contains(&id));
+        assert!(env.view.take_native_attachment().is_none());
 
-/// A refused start submit paints no overlay, writes nothing locally, and
-/// fails loudly with reconnect guidance.
-#[test]
-#[serial]
-fn daemon_unreachable_start_fails_without_a_local_write() {
-    let mut env = create_test_env_with_sessions(1);
-    let id = env.view.instance_at(0).id.clone();
-    env.view.mutate_instance(&id, |inst| {
-        inst.status = Status::Stopped;
-    });
+        assert!(respond(Ok(MutationReceipt {
+            cursor: RuntimeCursor {
+                epoch: "test".into(),
+                revision: 3
+            },
+            outcome: RestartOutcome {
+                lifecycle_generation: 5,
+                profile: "test".into(),
+                target: Some(TerminalTarget {
+                    tmux_session: "restarted-agent".into(),
+                    status: TerminalTargetStatus::Restarted,
+                }),
+            },
+        }))
+        .is_some_and(|(target, _)| target == id));
+        env.view.apply_session_feed();
+        env.view.apply_restart_results();
+        assert!(env.view.restart_in_flight.contains(&id));
+        assert!(env.view.take_native_attachment().is_none());
 
-    // No command driver: the feed has no runtime, so the submit refuses.
-    assert!(
-        !env.view.submit_daemon_start(&id, None),
-        "a disconnected runtime refuses the start"
-    );
-    let dialog = env
-        .view
-        .info_dialog
-        .as_ref()
-        .expect("a refused start surfaces a dialog");
-    assert_eq!(dialog.title(), "Start failed");
-    assert!(
-        dialog.message().contains("Reconnect the runtime"),
-        "a refused start points at reconnect, got: {}",
-        dialog.message()
-    );
-    let inst = env.view.get_instance(&id).expect("row still present");
-    assert_eq!(inst.status, Status::Stopped, "no overlay on refusal");
+        let committed = std::sync::Arc::make_mut(&mut snapshot);
+        committed.cursor.revision = 3;
+        committed.contents.sessions[0].lifecycle_generation = reflected_generation;
+        committed.contents.sessions[0].agent_pane.tmux_session = Some(target_name.into());
+        env.view
+            .session_feed
+            .publish_for_test(SessionFeedResult::Snapshot(snapshot));
+        env.view.apply_session_feed();
+        env.view.apply_restart_results();
+        assert!(!env.view.restart_in_flight.contains(&id));
+        let attachment = env.view.take_native_attachment();
+        if reflected_generation == 5 && target_name == "restarted-agent" {
+            let attachment = attachment.expect("committed restart is attachable");
+            assert_eq!(attachment.id, id);
+            assert_eq!(attachment.tmux_name, "restarted-agent");
+        } else {
+            assert!(
+                attachment.is_none(),
+                "another lifecycle change superseded this receipt"
+            );
+        }
+        assert!(env.view.take_native_attachment().is_none());
+    }
 }

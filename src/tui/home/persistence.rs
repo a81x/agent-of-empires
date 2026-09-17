@@ -302,18 +302,6 @@ impl HomeView {
         })
     }
 
-    /// Move a row between profiles as one dual-locked storage transaction,
-    /// then publish the committed row in memory.
-    pub(in crate::tui) fn move_to_profile(
-        &mut self,
-        id: &str,
-        target: &str,
-        requested: Instance,
-        baseline: Option<&Instance>,
-    ) -> anyhow::Result<()> {
-        self.move_to_profile_with_effect(id, target, requested, baseline, |_| Ok(()))
-    }
-
     /// Cross-profile move: structurally distinct from `mutate_instance`
     /// because the source row and group metadata must be removed in the same
     /// transaction that durably publishes the target row and metadata.

@@ -65,6 +65,7 @@ impl SessionResponse {
             extra_args: inst.extra_args.clone(),
             status: status.wire_str().to_string(),
             lifecycle_reservation: inst.lifecycle_reservation.clone(),
+            lifecycle_generation: inst.lifecycle_generation,
             dormant: inst.is_shown_dormant(),
             idle_dormant_since: inst.idle_dormant_since.map(|t| t.to_rfc3339()),
             pane_dead_observed: inst.pane_dead_observed,

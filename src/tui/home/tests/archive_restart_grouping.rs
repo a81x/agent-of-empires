@@ -209,8 +209,7 @@ fn unarchive_keeps_selection() {
     }
 }
 
-/// `restart_selected_session` must drop the press silently when nothing is
-/// selected. No restart_with_size call, no save, no cooldown insertion.
+/// A restart with no selection neither submits nor reserves a row.
 #[test]
 #[serial]
 fn restart_selected_session_noop_with_no_selection() {
@@ -267,13 +266,11 @@ fn restart_selected_session_skips_snoozed_row_in_attention_sort() {
     );
 }
 
-/// Outside Attention sort, the snooze badge / dim styling / `z ` prefix
-/// are all invisible, so silently swallowing a restart press on a snoozed
-/// row would leave the user staring at an apparently-restartable row that
-/// doesn't restart. Wake the snooze and let the restart proceed instead.
+/// Outside Attention sort, restarting requests an authoritative unsnooze;
+/// the TUI must not clear the snooze before the daemon commits it.
 #[test]
 #[serial]
-fn restart_selected_session_wakes_snooze_outside_attention_sort() {
+fn restart_selected_session_requests_unsnooze_without_a_local_write() {
     use crate::session::config::SortOrder;
 
     let mut env = create_test_env_with_sessions(1);
@@ -287,8 +284,8 @@ fn restart_selected_session_wakes_snooze_outside_attention_sort() {
     let result = env.view.restart_selected_session(None, None, None, None);
     assert!(result.is_ok());
     assert!(
-        !env.view.instance_at(0).is_snoozed(),
-        "Newest sort: restart on a snoozed row must clear the snooze so persisted state matches what's on screen"
+        env.view.instance_at(0).is_snoozed(),
+        "admission must not mutate the authoritative snooze"
     );
     // An admitted daemon submit records the cooldown; the assertion drains
     // the submission so it does not leak into the next test's feed.
@@ -298,8 +295,8 @@ fn restart_selected_session_wakes_snooze_outside_attention_sort() {
             revision: 2,
         }))
         .is_some_and(|(target, mutation)| target == id
-            && matches!(mutation, crate::daemon::SessionMutation::Start(_))),
-        "a proceeding restart submits SessionMutation::Start"
+            && matches!(mutation, crate::daemon::SessionMutation::Restart(body) if body.unsnooze)),
+        "a proceeding restart requests an unsnooze from the daemon"
     );
     assert!(
         env.view.restart_cooldown_at.contains_key(&id),
@@ -321,14 +318,7 @@ fn restart_selected_session_skips_creating_row() {
     assert!(env.view.restart_cooldown_at.is_empty());
 }
 
-/// The cooldown map debounces rapid presses. A second press within the
-/// cooldown window must be dropped before the restart_with_size call
-/// would otherwise tear down a still-booting tmux pane.
-///
-/// We cannot exercise the full restart path under unit tests (no tmux),
-/// so this test confirms the cooldown bookkeeping: after the first call
-/// inserts an entry, a second call with the same id within the window
-/// returns immediately and does not overwrite the timestamp.
+/// Rapid keyboard repeats must not enqueue a second daemon restart.
 #[test]
 #[serial]
 fn restart_selected_session_debounces_via_cooldown_map() {
@@ -336,10 +326,7 @@ fn restart_selected_session_debounces_via_cooldown_map() {
     let id = env.view.instance_at(0).id.clone();
     env.view.selected_session = Some(id.clone());
 
-    // Seed the cooldown so the next press is debounced. This stands in
-    // for the "first restart already ran" precondition: we cannot run
-    // restart_with_size in a unit test (no tmux), but the debounce check
-    // happens before that, on the cooldown map.
+    // Stand in for a recently admitted restart.
     let now = std::time::Instant::now();
     env.view.restart_cooldown_at.insert(id.clone(), now);
 
@@ -350,244 +337,6 @@ fn restart_selected_session_debounces_via_cooldown_map() {
         stored, now,
         "cooldown timestamp must not be overwritten on a debounced press"
     );
-}
-
-/// An engine swap must not carry the old agent's session state to the new
-/// one, in memory OR on disk. Session ids are per-agent namespaces, so a
-/// carried-over sid makes the next launch emit `--resume <foreign-sid>`; and
-/// an in-memory-only reset is reverted by `reconcile_from_disk` (which is why
-/// this asserts the disk row too). Follow-on to #3077, which is what made the
-/// swap reach disk in the first place.
-#[test]
-#[serial]
-fn restart_selected_session_tool_swap_clears_old_agent_session_state() {
-    let mut env = create_test_env_with_sessions(1);
-    let id = env.view.instance_at(0).id.clone();
-    env.view.selected_session = Some(id.clone());
-    let seed = |inst: &mut Instance| {
-        inst.tool = "claude".to_string();
-        inst.agent_session_id = Some("11111111-2222-3333-4444-555555555555".to_string());
-        inst.acp_session_id = Some("acp-sess-1".to_string());
-        inst.agent_name = Some("claude-code".to_string());
-        inst.acp_effort = Some("high".to_string());
-        inst.agent_model = Some("claude-opus-4-7".to_string());
-        // The approval posture is deliberately NOT reset; see the comment in
-        // `Instance::swap_tool`.
-        inst.acp_mode_id = Some("plan".to_string());
-    };
-    env.view.mutate_instance(&id, seed);
-    // Seed the disk row directly rather than through `save()`: `merge_from_tui`
-    // syncs only status + launch config, so a `save()` here would leave these
-    // fields absent on disk and the disk assertions below would pass
-    // vacuously.
-    env.view
-        .storages
-        .get("test")
-        .unwrap()
-        .update(|instances, _groups| {
-            seed(instances.iter_mut().find(|i| i.id == id).unwrap());
-            Ok(())
-        })
-        .unwrap();
-
-    let mut respond = env.view.session_feed.command_driver_for_test();
-    env.view
-        .restart_selected_session(None, Some("codex"), None, None)
-        .unwrap();
-    assert!(
-        respond(Ok(crate::daemon::RuntimeCursor {
-            epoch: "test".into(),
-            revision: 2,
-        }))
-        .is_some_and(|(target, mutation)| target == id
-            && matches!(mutation, crate::daemon::SessionMutation::Start(_))),
-        "a tool swap restart submits SessionMutation::Start"
-    );
-
-    let inst = env.view.instance_at(0);
-    assert_eq!(inst.tool, "codex");
-    assert_eq!(inst.agent_session_id, None, "in-memory sid must be dropped");
-    assert_eq!(inst.acp_session_id, None);
-    assert_eq!(inst.agent_name, None);
-    assert_eq!(inst.acp_effort, None);
-    assert_eq!(
-        inst.agent_model, None,
-        "the old agent's model must be dropped"
-    );
-    assert_eq!(
-        inst.acp_mode_id.as_deref(),
-        Some("plan"),
-        "the approval posture must survive: clearing it resolves the adapter's \
-         bypass mode on a yolo_mode row"
-    );
-
-    let disk = Storage::new_unwatched("test").unwrap().load().unwrap();
-    let row = disk.iter().find(|i| i.id == id).unwrap();
-    assert_eq!(
-        row.agent_session_id, None,
-        "the old engine's sid must be gone from disk too, else reconcile_from_disk \
-         restores it and the new engine launches with --resume <foreign-sid>"
-    );
-    assert_eq!(row.acp_session_id, None);
-    assert_eq!(row.agent_name, None);
-    assert_eq!(row.agent_model, None);
-    assert_eq!(row.acp_mode_id.as_deref(), Some("plan"));
-    // Parked, not discarded: the disk row is the one a swap back reads, so this
-    // is what makes claude -> codex -> claude resumable. Round-trip mechanics
-    // are covered by `swap_tool_parks_and_restores_per_tool_session_ids`.
-    let parked = row.prior_tool_session_ids.get("claude").unwrap();
-    assert_eq!(
-        parked.agent_session_id.as_deref(),
-        Some("11111111-2222-3333-4444-555555555555")
-    );
-    assert_eq!(parked.acp_session_id.as_deref(), Some("acp-sess-1"));
-}
-
-/// The disk row a tool swap writes must resolve `agent_detect_as` against the
-/// session's own profile. `source_profile` is `skip_serializing`, so a
-/// storage-loaded row comes back blank and would key the default profile's
-/// aliases instead; `detect_as` is not in `reconcile_from_disk`'s carry set,
-/// so that wrong value is what the next launch reads.
-#[test]
-#[serial]
-fn restart_selected_session_tool_swap_resolves_detect_as_for_the_row_profile() {
-    // The registries are process-globals and every config resolve in this
-    // test (env boot included) rewrites the touched profiles' entries, so
-    // snapshot before anything runs and restore on the way out.
-    let _registry_test = crate::tmux::status_rules::ProfileRegistryGuard::take("test");
-    let _registry_other = crate::tmux::status_rules::ProfileRegistryGuard::take("other");
-
-    let mut env = create_test_env_with_sessions(1);
-    let id = env.view.instance_at(0).id.clone();
-    env.view.selected_session = Some(id.clone());
-
-    // Pin the resolved default profile to something other than the row's own
-    // profile, so a blank `source_profile` is observably the wrong key.
-    let app_dir = crate::session::get_app_dir().expect("app dir");
-    std::fs::create_dir_all(app_dir.join("profiles").join("other")).expect("other profile");
-    std::fs::write(app_dir.join("config.toml"), "default_profile = \"other\"\n")
-        .expect("global config");
-
-    let mut config = crate::session::Config::default();
-    config
-        .session
-        .agent_detect_as
-        .insert("gjc".to_string(), "claude".to_string());
-    crate::tmux::status_rules::install_from_config("test", &config);
-    crate::tmux::status_rules::install_from_config("other", &crate::session::Config::default());
-
-    let mut respond = env.view.session_feed.command_driver_for_test();
-    env.view
-        .restart_selected_session(None, Some("gjc"), None, None)
-        .unwrap();
-    assert!(
-        respond(Ok(crate::daemon::RuntimeCursor {
-            epoch: "test".into(),
-            revision: 2,
-        }))
-        .is_some_and(|(target, mutation)| target == id
-            && matches!(mutation, crate::daemon::SessionMutation::Start(_))),
-        "a tool swap restart submits SessionMutation::Start"
-    );
-
-    let disk = Storage::new_unwatched("test").unwrap().load().unwrap();
-    let row = disk.iter().find(|i| i.id == id).unwrap();
-    assert_eq!(row.tool, "gjc");
-    assert_eq!(
-        row.detect_as, "claude",
-        "the swap must read profile 'test' aliases, not the default profile's"
-    );
-}
-
-/// Repro for the open CodeRabbit thread on #3509: the tool-swap test above
-/// mutates the process-global `agent_detect_as` registry through
-/// `install_from_config` without restoring prior entries, and the registry
-/// outlives the test, so any later reader of those profiles observes state
-/// its config never contained. Sentinel aliases stand in for entries an
-/// earlier test installed; both must survive the swap test unchanged.
-#[test]
-#[serial]
-fn tool_swap_test_restores_the_detect_as_registry() {
-    // (profile, sentinel agent, target)
-    let sentinels = [
-        ("test", "zz-sentinel-test", "codex"),
-        ("other", "zz-sentinel-other", "claude"),
-    ];
-    // The probe's own seeds must not leak either: restore the pre-probe
-    // entries once the assertion below has run.
-    let _registry_test = crate::tmux::status_rules::ProfileRegistryGuard::take("test");
-    let _registry_other = crate::tmux::status_rules::ProfileRegistryGuard::take("other");
-    for (profile, agent, target) in sentinels {
-        let mut seeded = crate::session::Config::default();
-        seeded
-            .session
-            .agent_detect_as
-            .insert(agent.to_string(), target.to_string());
-        crate::tmux::status_rules::install_from_config(profile, &seeded);
-    }
-
-    // serial_test 4's default-key lock is reentrant, so this serialized test
-    // can be called directly and observed after its nested guards have dropped.
-    restart_selected_session_tool_swap_resolves_detect_as_for_the_row_profile();
-
-    for (profile, agent, target) in sentinels {
-        assert_eq!(
-            crate::tmux::status_rules::effective_detect_as(profile, agent, ""),
-            target,
-            "the tool-swap test clobbered pre-existing alias {agent} in profile '{profile}'"
-        );
-    }
-    assert_eq!(
-        crate::tmux::status_rules::effective_detect_as("test", "gjc", ""),
-        "",
-        "the tool-swap test leaked `gjc -> claude` into profile 'test'"
-    );
-}
-
-#[test]
-#[serial]
-fn daemon_start_settles_the_reservation_and_queues_the_attach() {
-    use crate::session::Status;
-
-    let mut env = create_test_env_with_sessions(1);
-    let id = env.view.instance_at(0).id.clone();
-
-    // The submit half: admitted through the feed with no local write.
-    let mut respond = env.view.session_feed.command_driver_for_test();
-    env.view.restart_then_attach(&id, None, false);
-    assert!(
-        env.view.restart_in_flight.contains(&id),
-        "an admitted daemon start reserves the row"
-    );
-    assert_eq!(
-        env.view.get_instance(&id).unwrap().status,
-        Status::Starting,
-        "the optimistic Starting overlay is local feedback only"
-    );
-    let submitted = respond(Ok(crate::daemon::RuntimeCursor {
-        epoch: "test".into(),
-        revision: 2,
-    }));
-    let is_start = submitted.is_some_and(|(target, mutation)| {
-        target == id && matches!(mutation, crate::daemon::SessionMutation::Start(_))
-    });
-    assert!(
-        is_start,
-        "restart_then_attach must submit SessionMutation::Start for the row"
-    );
-    // While the daemon has not reported back, the reservation holds and no
-    // attach is queued.
-    assert!(!env.view.apply_restart_results());
-    assert!(env.view.take_restarted_attaches().is_empty());
-
-    // The canonical snapshot drives the row live; the drain settles the
-    // reservation and queues the attach without writing status itself.
-    env.view
-        .apply_daemon_status_update(&super::session_feed_tests::daemon_row(&id, "Running"));
-    assert!(env.view.apply_restart_results());
-    assert_eq!(env.view.take_restarted_attaches(), vec![id.clone()]);
-    assert!(env.view.attach_after_restart.is_empty());
-    assert!(env.view.restart_in_flight.is_empty());
 }
 
 #[test]
@@ -608,11 +357,8 @@ fn sending_to_a_session_that_is_gone_is_refused_before_any_pane_work() {
     assert!(refusal.is_err(), "a missing session cannot be prepared");
 }
 
-/// A second restart press while the first cascade is still running on the
-/// poller worker must be dropped. The cascade is off the event loop, so the
-/// 1.5s keyboard-repeat debounce does not cover a deliberate press during a
-/// multi-second pull; without the in-flight guard the worker would enqueue a
-/// duplicate request and restart the row twice.
+/// A second restart is refused while the daemon request remains in flight,
+/// even after the keyboard-repeat cooldown has elapsed.
 #[test]
 #[serial]
 fn restart_selected_session_skips_when_already_in_flight() {
@@ -2168,7 +1914,7 @@ fn profile_move_group_metadata_survives_reload() {
             .entry("beta".to_string())
             .or_insert_with(|| GroupTree::new_with_groups(&[], &[]));
         let requested = view.instances["moved"].clone();
-        view.move_to_profile("moved", "beta", requested, None)
+        view.move_to_profile_with_effect("moved", "beta", requested, None, |_| Ok(()))
             .unwrap();
     }
 

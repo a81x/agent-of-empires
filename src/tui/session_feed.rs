@@ -53,6 +53,7 @@ enum SessionRequest {
 enum CommandReply {
     Mutation(RuntimeCursor),
     Terminal(MutationReceipt<TerminalTarget>),
+    Restart(MutationReceipt<crate::daemon::RestartOutcome>),
     Created(Box<MutationReceipt<crate::daemon::SessionResponse>>),
 }
 
@@ -61,6 +62,7 @@ impl CommandReply {
         match self {
             Self::Mutation(cursor) => cursor,
             Self::Terminal(receipt) => &receipt.cursor,
+            Self::Restart(receipt) => &receipt.cursor,
             Self::Created(receipt) => &receipt.cursor,
         }
     }
@@ -244,6 +246,9 @@ impl SessionFeed {
                             Err("Request cancelled before submission: runtime permission was revoked".into())
                         } else {
                             match request.request {
+                                SessionRequest::Mutation(SessionMutation::Restart(body)) => client
+                                    .restart_session(&request.id, &body, &epoch)
+                                    .await.map(CommandReply::Restart),
                                 SessionRequest::Mutation(mutation) => client
                                     .mutate_session(&request.id, &mutation, &epoch)
                                     .await.map(CommandReply::Mutation),
@@ -468,6 +473,43 @@ impl SessionFeed {
         Ok(NativePreparation { lease, result })
     }
 
+    pub(crate) fn restart_agent(
+        &mut self,
+        id: String,
+        body: crate::daemon::RestartSessionBody,
+    ) -> anyhow::Result<NativePreparation> {
+        let generation = self.native_grant.load(Ordering::SeqCst);
+        anyhow::ensure!(generation & 1 == 1, "Native interaction is unavailable");
+        anyhow::ensure!(
+            self.applied.as_ref().is_some_and(|applied| {
+                matches!(&*self.sender.borrow(), Some(SessionFeedResult::Snapshot(latest))
+                if latest.cursor.epoch == applied.cursor.epoch)
+            }),
+            "Runtime snapshot is not current"
+        );
+        let lease = NativeLease {
+            grant: self.native_grant.clone(),
+            generation,
+            cancelled: Arc::new(AtomicBool::new(false)),
+        };
+        let (ready, result) = tokio::sync::oneshot::channel();
+        self.enqueue(
+            id,
+            SessionRequest::Mutation(SessionMutation::Restart(body)),
+            Some(lease.clone()),
+            Some(PendingTerminal {
+                target: None,
+                cancelled: lease.cancelled.clone(),
+                result: ready,
+            }),
+        )?;
+        Ok(NativePreparation { lease, result })
+    }
+
+    pub(crate) fn has_pending(&self, id: &str) -> bool {
+        self.pending.contains_key(id)
+    }
+
     pub(crate) fn ensure_auxiliary(
         &mut self,
         id: String,
@@ -644,7 +686,15 @@ impl SessionFeed {
                                     // answers (the sampler publishes on its own
                                     // cadence), so the receipt is the proof: it
                                     // names the pane the daemon just ensured.
-                                    None => true,
+                                    None => match reply {
+                                        CommandReply::Restart(receipt) => row.lifecycle_generation == receipt.outcome.lifecycle_generation
+                                            && row.profile == receipt.outcome.profile
+                                            && row.agent_pane.state == crate::session::PanePresence::Alive
+                                            && receipt.outcome.target.as_ref().is_some_and(|target|
+                                                row.agent_pane.tmux_session.as_deref() == Some(target.tmux_session.as_str()))
+                                            && matches!(row.status.as_str(), "Running" | "Waiting" | "Idle"),
+                                        _ => true,
+                                    },
                                     Some(target) => row
                                         .auxiliary
                                         .iter()
@@ -662,8 +712,13 @@ impl SessionFeed {
                             let _ = terminal.send(Err(
                                 "Prepared target no longer matches the applied snapshot".into(),
                             ));
-                        } else if let Some(CommandReply::Terminal(receipt)) = pending.reply.take() {
-                            let _ = terminal.send(Ok(receipt.outcome.tmux_session));
+                        } else {
+                            let name = match pending.reply.take() {
+                                Some(CommandReply::Terminal(receipt)) => Some(receipt.outcome.tmux_session),
+                                Some(CommandReply::Restart(receipt)) => receipt.outcome.target.map(|target| target.tmux_session),
+                                _ => None,
+                            };
+                            let _ = terminal.send(name.ok_or_else(|| "Prepared target unavailable".into()));
                         }
                     }
                     return false;
@@ -702,6 +757,29 @@ impl SessionFeed {
                 .result
                 .send(result.map(CommandReply::Terminal))
                 .is_ok());
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn restart_driver_for_test(
+        &mut self,
+    ) -> impl FnMut(
+        Result<MutationReceipt<crate::daemon::RestartOutcome>, String>,
+    ) -> Option<(String, crate::daemon::RestartSessionBody)> {
+        let (sender, mut receiver) = tokio::sync::mpsc::channel::<SessionCommand>(COMMAND_CAPACITY);
+        self.commands = Some(sender);
+        set_grant(&self.grant, true);
+        set_grant(&self.native_grant, true);
+        move |result| {
+            let command = receiver.try_recv().ok()?;
+            assert!(command
+                .result
+                .send(result.map(CommandReply::Restart))
+                .is_ok());
+            let SessionRequest::Mutation(SessionMutation::Restart(body)) = command.request else {
+                panic!("expected restart");
+            };
+            Some((command.id, body))
         }
     }
 

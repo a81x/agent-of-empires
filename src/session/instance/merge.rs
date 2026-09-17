@@ -841,7 +841,7 @@ mod tests {
     }
 
     #[test]
-    fn test_merge_post_restart_clears_repair_backoff_when_restart_poller_runs() {
+    fn test_merge_post_restart_clears_repair_backoff_when_the_restart_cascade_runs() {
         let mut before = Instance::new("omp-session", "/tmp/test");
         before.omp_capture_generation = Some("generation-a".to_string());
         let now = std::time::Instant::now();

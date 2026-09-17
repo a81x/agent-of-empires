@@ -601,6 +601,7 @@ mod workspace_ordering_tests {
             extra_args: String::new(),
             status: "Idle".to_string(),
             lifecycle_reservation: None,
+            lifecycle_generation: 0,
             dormant: false,
             idle_dormant_since: None,
             pane_dead_observed: false,

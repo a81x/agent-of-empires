@@ -22,7 +22,7 @@ impl Instance {
     // profile storage directly, bypassing the daemon-owned store handle; the
     // store-scoped `reconcile_from_store` above is the equivalent: daemon ownership.
 
-    pub(super) fn reconcile_from_store(
+    pub(crate) fn reconcile_from_store(
         &mut self,
         storage: &dyn crate::session::SessionStore,
     ) -> Result<()> {

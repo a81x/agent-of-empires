@@ -203,6 +203,33 @@ pub struct StartSessionBody {
     pub size: Option<TerminalSize>,
 }
 
+/// Explicit relaunch; omitted launch settings preserve the authoritative values.
+#[derive(Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RestartSessionBody {
+    pub size: Option<TerminalSize>,
+    pub profile: Option<String>,
+    pub tool: Option<String>,
+    pub command_override: Option<String>,
+    pub extra_args: Option<String>,
+    #[serde(default)]
+    pub unsnooze: bool,
+    #[serde(default)]
+    pub skip_on_launch: bool,
+    #[serde(default)]
+    pub bound_hooks: bool,
+    #[serde(default)]
+    pub discard_sandbox_container: bool,
+    pub wake_message: Option<String>,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct RestartOutcome {
+    pub lifecycle_generation: u64,
+    pub profile: String,
+    pub target: Option<TerminalTarget>,
+}
+
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct EnsureToolBody {
@@ -577,6 +604,8 @@ pub struct SessionResponse {
     pub status: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lifecycle_reservation: Option<crate::session::LifecycleReservation>,
+    #[serde(default)]
+    pub lifecycle_generation: u64,
     /// True when the session's structured-view worker was auto-stopped for
     /// inactivity (resumable/dormant), as opposed to a deliberate Stop. Lets
     /// the dashboard render a distinct dormant dot instead of a live-idle one.

@@ -268,14 +268,16 @@ fn collect_descendants_from_map(
     }
 }
 
-/// The live shell PID in the exact session’s pinned agent pane.
+/// The live shell PID in the exact session’s first pane, the agent pane.
 pub fn get_pane_pid(session_name: &str) -> Option<u32> {
-    let target = format!("={session_name}:^");
+    let pane = crate::tmux::first_pane_id(session_name)?;
+    // The pane id must travel alone: `session:%id` reads as a window
+    // spec and falls back to the window's active pane (tmux 3.7c).
     let output = crate::tmux::tmux_command()
         .args([
             "display-message",
             "-t",
-            &target,
+            &pane,
             "-p",
             "#{pane_dead}\t#{pane_pid}",
         ])

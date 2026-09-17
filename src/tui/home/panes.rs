@@ -184,38 +184,52 @@ impl HomeView {
         None
     }
 
-    /// Submit a daemon start for `id` and attach once the canonical snapshot
-    /// reports the agent live (see `take_restarted_attaches`). A refused
-    /// submit surfaces reconnect guidance and never writes locally; an
-    /// admitted submit paints the optimistic Starting overlay, and the
-    /// daemon's canonical snapshot drives the row from there. A start
-    /// already in flight is joined rather than queued twice.
+    /// Attach only after this restart's receipt and its compatible snapshot.
     pub fn restart_then_attach(
         &mut self,
         id: &str,
         size: Option<(u16, u16)>,
-        _skip_on_launch: bool,
+        skip_on_launch: bool,
     ) {
-        if self.get_instance(id).is_none() {
+        if self.restart_in_flight.contains(id) {
             return;
         }
-        // Join a start already in flight rather than submitting twice: the
-        // feed refuses duplicates anyway, and a second submit would surface
-        // a spurious failure dialog on top of the running start.
-        if !self.restart_in_flight.insert(id.to_string()) {
-            self.attach_after_restart.insert(id.to_string());
+        let Some(instance) = self.get_instance(id) else {
             return;
+        };
+        let source_profile = instance.source_profile.clone();
+        self.cancel_native_attachment();
+        let body = crate::daemon::RestartSessionBody {
+            size: size.and_then(|(cols, rows)| {
+                Some(crate::daemon::TerminalSize {
+                    cols: std::num::NonZeroU16::new(cols)?,
+                    rows: std::num::NonZeroU16::new(rows)?,
+                })
+            }),
+            skip_on_launch,
+            wake_message: Some(String::new()),
+            ..Default::default()
+        };
+        match self.session_feed.restart_agent(id.into(), body) {
+            Ok(preparation) => {
+                self.pending_native_attachment = Some(PendingNativeAttachment {
+                    id: id.into(),
+                    profile_filter: self.active_profile.clone(),
+                    source_profile,
+                    view_mode: self.view_mode.clone(),
+                    terminal_mode: self.get_terminal_mode(id),
+                    intent: PaneIntent::Attach,
+                    preparation,
+                });
+                self.restart_in_flight.insert(id.into());
+            }
+            Err(error) => {
+                self.info_dialog = Some(InfoDialog::new(
+                    "Restart failed",
+                    &format!("{error}\nReconnect the runtime and try again."),
+                ))
+            }
         }
-        if !self.submit_daemon_start(id, size) {
-            self.restart_in_flight.remove(id);
-            return;
-        }
-        self.attach_after_restart.insert(id.to_string());
-        self.mutate_instance(id, |inst| {
-            inst.status = crate::session::Status::Starting;
-            inst.last_error = None;
-            inst.last_start_time = Some(std::time::Instant::now());
-        });
     }
 }
 
@@ -246,40 +260,6 @@ impl HomeView {
                     ),
                 ));
                 Ok(false)
-            }
-        }
-    }
-
-    /// Submit a daemon start for `id` at `size`. `true` admits the submit
-    /// (the caller paints the optimistic Starting overlay; the daemon's
-    /// canonical snapshot drives the row from there). `false` refuses it
-    /// with an info dialog and no local status write, and the outcome is
-    /// never replayed.
-    pub(in crate::tui) fn submit_daemon_start(
-        &mut self,
-        id: &str,
-        size: Option<(u16, u16)>,
-    ) -> bool {
-        let terminal_size = size.and_then(|(cols, rows)| {
-            use std::num::NonZeroU16;
-            Some(crate::daemon::TerminalSize {
-                cols: NonZeroU16::new(cols)?,
-                rows: NonZeroU16::new(rows)?,
-            })
-        });
-        match self.session_feed.submit(
-            id.to_string(),
-            crate::daemon::SessionMutation::Start(crate::daemon::StartSessionBody {
-                size: terminal_size,
-            }),
-        ) {
-            Ok(()) => true,
-            Err(error) => {
-                self.info_dialog = Some(InfoDialog::sized_to_fit(
-                    "Start failed",
-                    &format!("Could not start the session: {error}\nReconnect the runtime and try again."),
-                ));
-                false
             }
         }
     }

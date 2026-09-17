@@ -571,7 +571,7 @@ impl StorageTransition {
         validate_target: F,
     ) -> Result<ProfileMoveCommit>
     where
-        F: FnOnce(&[Instance], &[Instance]) -> Result<()>,
+        F: FnOnce(&[Instance], &mut [Instance]) -> Result<()>,
     {
         source.move_instances_to_inner(
             target,
@@ -2044,7 +2044,7 @@ impl Storage {
                 merge_complete_post: false,
                 transition: None,
             },
-            validate_target,
+            |existing, candidates| validate_target(existing, candidates),
             |_| Ok(()),
             sync_resolved_parent_directory,
         )
@@ -2061,7 +2061,7 @@ impl Storage {
         mut sync_target_parent: S,
     ) -> Result<ProfileMoveCommit>
     where
-        F: FnOnce(&[Instance], &[Instance]) -> Result<()>,
+        F: FnOnce(&[Instance], &mut [Instance]) -> Result<()>,
         B: FnOnce(&[Instance]) -> Result<()>,
         S: FnMut(&Path) -> Result<()>,
     {
@@ -2268,8 +2268,10 @@ impl Storage {
                 .into());
             }
         }
-        let moved = &target_instances[moved_start..];
-        validate_target(&target_instances[..moved_start], moved)?;
+        {
+            let (existing, moved) = target_instances.split_at_mut(moved_start);
+            validate_target(existing, moved)?;
+        }
         if let Some(files) = source_files {
             files.verify_current(&self.sessions_path)?;
         }
@@ -2292,6 +2294,7 @@ impl Storage {
         );
         let source_instances_after = serde_json::to_vec_pretty(&source_instances)?;
         let source_groups_after = serde_json::to_vec_pretty(&source_groups)?;
+        let moved = &target_instances[moved_start..];
         let target_instances_after = serde_json::to_vec_pretty(&target_instances)?;
         let target_groups_after = serde_json::to_vec_pretty(&target_groups)?;
         let source_groups_changed = source_groups_after != source_groups_before;

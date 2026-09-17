@@ -275,13 +275,9 @@ impl HomeView {
     ///   the field is updated before respawn so the new agent binary starts
     ///   on the next launch.
     ///
-    /// The start itself runs on the daemon: this submits
-    /// `SessionMutation::Start` through the feed and the daemon's canonical
-    /// snapshot drives the row (Starting, then Running or Error with
-    /// `last_error`). No local outcome is written on success or failure; a
-    /// refused submit surfaces an info dialog with reconnect guidance and
-    /// never replays. The optimistic Starting overlay below (plus the
-    /// in-flight/cooldown guards) is local feedback only.
+    /// Launch edits travel with the restart command. Only the daemon may commit
+    /// them after lifecycle admission; a disconnected or refused request leaves
+    /// both this view and the stored session untouched.
     pub(super) fn restart_selected_session(
         &mut self,
         new_profile: Option<&str>,
@@ -337,8 +333,7 @@ impl HomeView {
             Some(inst) => {
                 let snoozed = inst.is_snoozed();
                 let skip = matches!(inst.status, Status::Creating | Status::Deleting)
-                    || (snoozed && in_attention)
-                    || inst.pane_dead_observed;
+                    || (snoozed && in_attention);
                 let wake_snooze = snoozed && !in_attention;
                 (skip, wake_snooze)
             }
@@ -356,198 +351,33 @@ impl HomeView {
                 return Ok(());
             }
         }
-        let restart_edit_baseline = self
-            .get_instance(&id)
-            .cloned()
-            .ok_or_else(|| anyhow::anyhow!("Session not found"))?;
-        let current_profile = restart_edit_baseline.source_profile.clone();
-        let profile_move_target = new_profile
-            .filter(|target| *target != current_profile.as_str())
-            .map(str::to_string);
-        if let Some(target_profile) = profile_move_target.as_ref() {
-            let profiles = list_profiles()?;
-            if !profiles.contains(target_profile) {
-                anyhow::bail!("Profile '{}' does not exist", target_profile);
-            }
-        }
-
-        // Identity-changing restart edits follow the global order: app-wide
-        // identity, then the session title and authoritative source lifecycle.
-        // Keep these guards through the complete durable profile transaction.
-        let profile_move_identity = if profile_move_target.is_some() {
-            Some(acquire_session_identity_lock()?)
-        } else {
-            None
+        let body = crate::daemon::RestartSessionBody {
+            size: crate::terminal::get_size().and_then(|(cols, rows)| {
+                Some(crate::daemon::TerminalSize {
+                    cols: std::num::NonZeroU16::new(cols)?,
+                    rows: std::num::NonZeroU16::new(rows)?,
+                })
+            }),
+            profile: new_profile.map(str::to_owned),
+            tool: new_tool.map(str::to_owned),
+            extra_args: new_extra_args.map(str::to_owned),
+            command_override: new_command_override.map(str::to_owned),
+            unsnooze: wake_snooze,
+            ..Default::default()
         };
-        let profile_move_guards = if profile_move_target.is_some() {
-            Some(self.lock_session_mutation_and_reload(&id)?)
-        } else {
-            None
-        };
-        let restart_edit_authoritative = self
-            .get_instance(&id)
-            .cloned()
-            .ok_or_else(|| anyhow::anyhow!("Session not found"))?;
-        if let Some(target_profile) = profile_move_target.as_deref() {
-            let target_rows = Storage::open(target_profile, self.file_watch.clone())?.load()?;
-            if is_duplicate_session(
-                target_rows.iter(),
-                &restart_edit_authoritative.title,
-                &restart_edit_authoritative.project_path,
-                None,
-            ) {
-                return Err(duplicate_session_error(&restart_edit_authoritative.title));
-            }
-        }
-
-        // A tool swap is launch config: it is persisted below and the daemon
-        // starts the stored config, so there is no local cascade flag to set.
-        if let Some(target_profile) = profile_move_target.as_deref() {
-            if !self.storages.contains_key(target_profile) {
-                self.storages.insert(
-                    target_profile.to_string(),
-                    Storage::open(target_profile, self.file_watch.clone())?,
-                );
-            }
-
-            let mut requested = restart_edit_authoritative.clone();
-            if wake_snooze {
-                requested.unsnooze();
-            }
-            if let Some(target_tool) = new_tool {
-                if target_tool != restart_edit_authoritative.tool.as_str() {
-                    requested.swap_tool(target_tool);
-                }
-            }
-            if let Some(command) = new_command_override {
-                requested.command = command.to_string();
-            }
-            if let Some(extra) = new_extra_args {
-                requested.extra_args = extra.to_string();
-            }
-            self.move_to_profile(
-                &id,
-                target_profile,
-                requested,
-                Some(&restart_edit_authoritative),
-            )?;
-            self.reload_preserving_profile_move_runtime(std::slice::from_ref(&id))?;
-        } else {
-            // Outside Attention sort, restart on a snoozed row clears the
-            // snooze flag so persisted state matches the visible restart.
-            if wake_snooze {
-                self.mutate_instance(&id, |inst| inst.unsnooze());
-            }
-
-            if let Some(target_tool) = new_tool {
-                let current_tool = self
-                    .get_instance(&id)
-                    .map(|i| i.tool.clone())
-                    .unwrap_or_default();
-                if target_tool != current_tool {
-                    self.mutate_instance(&id, |inst| inst.swap_tool(target_tool));
-                    self.persist_tool_swap(&id, target_tool);
-                }
-            }
-            if let Some(command) = new_command_override {
-                self.mutate_instance(&id, |inst| {
-                    inst.command = command.to_string();
-                });
-            }
-            if let Some(extra) = new_extra_args {
-                self.mutate_instance(&id, |inst| {
-                    inst.extra_args = extra.to_string();
-                });
-            }
-        }
-        self.mutate_instance(&id, |inst| inst.touch_last_accessed());
-
-        // Persist user-selected profile/tool/command changes and the access
-        // timestamp while the durable row still carries its prior lifecycle
-        // state. The Starting overlay below is local feedback only and is
-        // painted after this save, so it never reaches disk; the daemon's
-        // canonical snapshot drives the row from here.
-        self.save()?;
-        // The transaction has already released its canonical profile locks.
-        // Publish the final launch edit while identity/title/lifecycle remain
-        // guarded, then drop identity before releasing the per-session guards.
-        drop(profile_move_identity);
-        drop(profile_move_guards);
-
-        // Submit first: a refused submit leaves the row untouched (no local
-        // status write on failure) and surfaces reconnect guidance. Only an
-        // admitted submit records the cooldown, paints the optimistic
-        // Starting overlay, and reserves the row; the daemon's canonical
-        // snapshot drives the row from there. Never replay: an uncertain
-        // outcome refreshes from the snapshot, it is not re-submitted.
-        let size = crate::terminal::get_size();
-        if !self.submit_daemon_start(&id, size) {
+        if let Err(error) = self
+            .session_feed
+            .submit(id.clone(), crate::daemon::SessionMutation::Restart(body))
+        {
+            self.info_dialog = Some(InfoDialog::new(
+                "Restart failed",
+                &format!("{error}\nReconnect the runtime and try again."),
+            ));
             return Ok(());
         }
         self.restart_cooldown_at.insert(id.clone(), now);
-        self.mutate_instance(&id, |inst| {
-            inst.status = Status::Starting;
-            inst.last_error = None;
-            inst.last_start_time = Some(std::time::Instant::now());
-        });
-        self.restart_in_flight.insert(id.clone());
+        self.restart_in_flight.insert(id);
         Ok(())
-    }
-
-    /// Land an engine swap's session bookkeeping on the disk row.
-    ///
-    /// `save()` syncs `tool`/`command`/`extra_args` through `merge_from_tui`
-    /// but deliberately leaves `agent_session_id` and friends to their CAS
-    /// writers, so the swap needs its own write: without it,
-    /// `reconcile_from_disk` restores the old engine's sid on the launch that
-    /// follows and the new engine spawns with `--resume <foreign-sid>`.
-    ///
-    /// `swap_tool` runs against the disk row rather than copying the in-memory
-    /// result over it, because the capture pollers may have written a fresher
-    /// sid to disk than this snapshot carries; parking whatever disk holds is
-    /// what makes the swap-back restore the real conversation.
-    ///
-    /// Best-effort. A failed write leaves the stale sid on disk (the restart
-    /// still runs, and its resume-probe fallback recovers by starting fresh),
-    /// so it is logged rather than surfaced as a restart failure.
-    fn persist_tool_swap(&self, id: &str, new_tool: &str) {
-        let Some(profile) = self.instances.get(id).map(|i| i.source_profile.clone()) else {
-            return;
-        };
-        let Some(storage) = self.storages.get(&profile) else {
-            tracing::warn!(
-                target: "tui.home",
-                profile = %profile,
-                id = %id,
-                "persist_tool_swap: no storage registered for profile; \
-                 the old engine's session id stays on disk"
-            );
-            return;
-        };
-        let id_owned = id.to_string();
-        let new_tool = new_tool.to_string();
-        let row_profile = profile.clone();
-        if let Err(e) = storage.update(|instances, _groups| {
-            if let Some(disk) = instances.iter_mut().find(|i| i.id == id_owned) {
-                // `source_profile` is `skip_serializing`, so a storage-loaded
-                // row always comes back blank and would resolve the incoming
-                // tool's `agent_detect_as` alias against the default profile.
-                // A tool name aliased differently per profile would then be
-                // pinned to the wrong built-in on disk, and `detect_as` is not
-                // in `reconcile_from_disk`'s carry set, so the next launch
-                // reads that value rather than the in-memory one. Restore it
-                // the same way `reconcile_from_disk` does before the swap.
-                disk.source_profile = row_profile.clone();
-                disk.swap_tool(&new_tool);
-            }
-            Ok(())
-        }) {
-            tracing::error!(
-                target: "tui.home",
-                id = %id,
-                "persist_tool_swap: failed to move the old engine's session state aside: {e}"
-            );
-        }
     }
 
     pub(super) fn delete_selected(&mut self, options: &DeleteOptions) -> anyhow::Result<()> {

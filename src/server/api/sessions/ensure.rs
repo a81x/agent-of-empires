@@ -166,6 +166,7 @@ pub async fn ensure_session(
         id,
         body,
         super::lifecycle::AgentPreparation::Ensure,
+        None,
     )
     .await
 }

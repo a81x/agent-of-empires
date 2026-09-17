@@ -494,46 +494,12 @@ impl HomeView {
         self.update_selected();
     }
 
-    /// Settle an in-flight daemon start once the canonical snapshot reports
-    /// the row live: clear the Starting reservation and queue the pending
-    /// attach, if any. Returns true if any instance changed.
-    ///
-    /// The daemon's snapshot already drove status/`last_error`/observations
-    /// through `apply_daemon_status_update`; this only settles reservations
-    /// and never writes status locally. Rows the daemon reports live clear
-    /// `restart_in_flight`, queue `restarted_attaches` when
-    /// `attach_after_restart` is set, and refresh the rows. Stuck Starting
-    /// rows with no live snapshot stay reserved until the daemon reports.
+    /// Settle from the command lane, never from an unrelated status snapshot.
     pub fn apply_restart_results(&mut self) -> bool {
-        if self.restart_in_flight.is_empty() && self.attach_after_restart.is_empty() {
-            return false;
-        }
-        let mut settled: Vec<String> = Vec::new();
-        for id in self.restart_in_flight.iter() {
-            let live = self
-                .get_instance(id)
-                .is_some_and(|inst| inst.status != crate::session::Status::Starting);
-            if live {
-                settled.push(id.clone());
-            }
-        }
-        if settled.is_empty() {
-            return false;
-        }
-        for session_id in settled {
-            self.restart_in_flight.remove(&session_id);
-            if self.attach_after_restart.remove(&session_id) {
-                self.restarted_attaches.push(session_id);
-            }
-        }
-        self.refresh_rows_preserving_selection();
-        true
-    }
-
-    /// Sessions whose `restart_then_attach` start the daemon reported live,
-    /// for the event loop to attach.
-    pub fn take_restarted_attaches(&mut self) -> Vec<String> {
-        std::mem::take(&mut self.restarted_attaches)
+        let before = self.restart_in_flight.len();
+        self.restart_in_flight
+            .retain(|id| self.session_feed.has_pending(id));
+        before != self.restart_in_flight.len()
     }
 
     /// Identify recovery candidates and spawn a worker pool. Sets

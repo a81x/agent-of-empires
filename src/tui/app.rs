@@ -1933,11 +1933,6 @@ impl App {
                 refresh_needed = true;
                 needs_full_refresh = true;
             }
-            for session_id in self.home.take_restarted_attaches() {
-                self.attach_live_session(&session_id, terminal)?;
-                refresh_needed = true;
-                needs_full_refresh = true;
-            }
 
             if self.home.apply_attach_project_results() {
                 refresh_needed = true;

@@ -8,6 +8,8 @@ The format follows [Conventional Commits](https://www.conventionalcommits.org/).
 
 ### Bug Fixes
 
+- **tui:** Restore explicit daemon restarts, keep refused launch edits off disk, and fence restart attachment on the committed lifecycle and terminal identity. Remove the retired restart worker.
+- **tmux:** Resolve the agent pane independently of the active split for process cleanup and VT capture, retaining its identity through pipe ownership and preview composition.
 - **daemon:** Publish complete committed profile bundles for automatic titles and retain manual and automatic terminal naming jobs through shutdown.
 - **daemon:** Advance snapshot receipts after committed mutations even when concurrent changes cancel each other out.
 - **daemon:** Adopt start and stop lifecycle commits before returning snapshot receipts and honor explicit terminal dimensions on start. Reject fresh peer reservations before terminal, structured, or no-op starts, without changing cached status.

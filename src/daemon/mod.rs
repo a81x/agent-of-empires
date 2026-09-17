@@ -33,11 +33,12 @@ pub use wire::{
     DeleteGroupMode, DeleteGroupOutcome, DeleteProfileQuery, DeleteSessionBody, EnsureToolBody,
     GroupLocation, GroupSessionOutcome, ListSessionsQuery, MoveGroupBody, PendingApproval,
     PlanSummary, PromptAttachmentKind, PromptAttachmentRef, PurgeOutcome, QueuedPromptEntry,
-    RenameProfileBody, RepoBaseInput, SessionResponse, SessionsEnvelope, StartSessionBody,
-    TerminalSize, TerminalTarget, TerminalTargetStatus, TrashOutcome, TrashRelocationOutcome,
-    TrashSessionBody, Tristate, UpdateArchiveBody, UpdateColorBody, UpdateDiffBaseBody,
-    UpdateFavoriteBody, UpdateGroupBody, UpdateNotificationsBody, UpdatePinBody, UpdateSnoozeBody,
-    UpdateUnreadBody, WorkspaceRepoSummary,
+    RenameProfileBody, RepoBaseInput, RestartOutcome, RestartSessionBody, SessionResponse,
+    SessionsEnvelope, StartSessionBody, TerminalSize, TerminalTarget, TerminalTargetStatus,
+    TrashOutcome, TrashRelocationOutcome, TrashSessionBody, Tristate, UpdateArchiveBody,
+    UpdateColorBody, UpdateDiffBaseBody, UpdateFavoriteBody, UpdateGroupBody,
+    UpdateNotificationsBody, UpdatePinBody, UpdateSnoozeBody, UpdateUnreadBody,
+    WorkspaceRepoSummary,
 };
 
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(15);
@@ -289,6 +290,21 @@ impl DaemonClient {
             .await
     }
 
+    pub async fn restart_session(
+        &self,
+        session_id: &str,
+        body: &RestartSessionBody,
+        epoch: &str,
+    ) -> Result<MutationReceipt<RestartOutcome>, DaemonClientError> {
+        let url = format!(
+            "{}/{}/restart",
+            self.sessions_url.as_str().trim_end_matches('/'),
+            session_id
+        );
+        self.request_mutation_with_outcome(self.http.post(url).json(body), epoch)
+            .await
+    }
+
     /// Returns only the cursor; row state is adopted from the runtime stream.
     pub async fn mutate_session(
         &self,
@@ -304,6 +320,7 @@ impl DaemonClient {
         );
         let request = match mutation {
             SessionMutation::Start(body) => self.http.post(url).json(body),
+            SessionMutation::Restart(body) => self.http.post(url).json(body),
             SessionMutation::AbandonPurge(body) => self.http.post(url).json(body),
             SessionMutation::StopAuxiliary(target) => self.http.post(url).json(target),
             SessionMutation::Stop | SessionMutation::Restore => self.http.post(url),

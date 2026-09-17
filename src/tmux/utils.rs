@@ -288,35 +288,60 @@ pub(crate) fn probe_pane(session_name: &str) -> PaneProbe {
 }
 
 /// `#{pane_id}` of the session's first window's first pane, or `None` when
-/// the session has no panes to address. Sorted by pane index: `list-panes`
-/// order follows creation order, not index order, so the lowest index (the
-/// pane `^.0` used to address) is found by explicit sort.
-fn first_pane_id(session_name: &str) -> Option<String> {
+/// the session has no panes to address. `list-panes -s` covers every window,
+/// so the window index is sorted before the pane index: the lowest pane index
+/// alone would follow whichever window owns it, not the first window.
+pub fn first_pane_id(session_name: &str) -> Option<String> {
+    first_pane_id_with_deadline(session_name, &crate::tmux::TmuxCommandDeadline::new())
+}
+
+pub(crate) fn first_pane_id_with_deadline(
+    session_name: &str,
+    deadline: &crate::tmux::TmuxCommandDeadline,
+) -> Option<String> {
+    first_window_pane_ids_with_deadline(session_name, deadline)?
+        .into_iter()
+        .next()
+}
+
+pub(crate) fn first_window_pane_ids_with_deadline(
+    session_name: &str,
+    deadline: &crate::tmux::TmuxCommandDeadline,
+) -> Option<Vec<String>> {
     let target = format!("={session_name}:");
-    let output = crate::tmux::tmux_command()
-        .args([
-            "list-panes",
-            "-s",
-            "-t",
-            &target,
-            "-F",
-            "#{pane_index} #{pane_id}",
-        ])
-        .output()
-        .ok()?;
+    let mut command = crate::tmux::tmux_command();
+    command.args([
+        "list-panes",
+        "-s",
+        "-t",
+        &target,
+        "-F",
+        "#{window_index} #{pane_index} #{pane_id}",
+    ]);
+    let output = deadline.run(&mut command).ok()?;
     if !output.status.success() {
         return None;
     }
-    String::from_utf8(output.stdout)
+    let mut indexed: Vec<_> = String::from_utf8(output.stdout)
         .ok()?
         .lines()
         .filter_map(|line| {
-            let (index, id) = line.split_once(' ')?;
+            let (window, rest) = line.split_once(' ')?;
+            let (index, id) = rest.split_once(' ')?;
+            let window: u32 = window.parse().ok()?;
             let index: u32 = index.parse().ok()?;
-            (id.starts_with('%')).then_some((index, id.to_string()))
+            (id.starts_with('%')).then_some((window, index, id.to_string()))
         })
-        .min_by_key(|(index, _)| *index)
-        .map(|(_, id)| id)
+        .collect();
+    indexed.sort_by_key(|(window, index, _)| (*window, *index));
+    let first_window = indexed.first()?.0;
+    Some(
+        indexed
+            .into_iter()
+            .take_while(|(window, _, _)| *window == first_window)
+            .map(|(_, _, id)| id)
+            .collect(),
+    )
 }
 
 /// Pure classification of one `#{pane_dead}` probe, split out from the real

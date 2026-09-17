@@ -273,6 +273,25 @@ impl Instance {
             hook_result,
         )
     }
+    pub(crate) fn capture_before_restart_in(
+        &mut self,
+        storage: &dyn crate::session::SessionStore,
+    ) -> Result<()> {
+        self.stop_and_flush_poller_lifecycle_locked(storage)?;
+        self.capture_omp_before_restart(storage)
+    }
+
+    pub(crate) fn discard_reserved_restart_container(
+        &mut self,
+        storage: &dyn crate::session::SessionStore,
+        generation: u64,
+    ) -> Result<()> {
+        if let Err(error) = self.discard_stale_sandbox_container() {
+            self.fail_reserved_launch(storage, generation, &error, false);
+            return Err(error);
+        }
+        Ok(())
+    }
 
     pub(crate) fn prepare_reserved_launch_hooks(
         &mut self,

@@ -351,6 +351,25 @@ embedding a bearer token in the query string.
 }
 ```
 
+## POST /api/sessions/{id}/restart
+
+Explicitly relaunch a session, including a running agent. Unlike `/start`, which
+leaves an already-running session alone, `/restart` performs the restart lifecycle.
+Optional `profile`, `tool`, `command_override`, and `extra_args` replace the
+authoritative launch settings within the daemon's admitted operation. Omitted
+settings remain unchanged; a refused operation does not persist these edits.
+
+```json
+{ "command_override": "my-agent", "extra_args": "--verbose", "unsnooze": true }
+```
+
+The response includes the session and an `outcome` containing
+`lifecycle_generation`, `profile`, and the prepared terminal `target` (`null` for
+structured sessions). The receipt cursor is carried in `aoe-runtime-epoch` and
+`aoe-runtime-revision` response headers, not in the JSON body. Native clients
+attach only after applying a snapshot at or beyond that receipt in the same
+epoch, with matching lifecycle generation, profile, and live terminal identity.
+
 ## POST /api/sessions/{id}/send
 
 Type a message into the agent and press Enter, the same way the TUI's

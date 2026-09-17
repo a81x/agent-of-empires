@@ -26,7 +26,7 @@ pub use status_detection::{
 };
 pub use terminal_session::{ContainerTerminalSession, TerminalSession};
 pub use tool_session::ToolSession;
-pub use utils::{attach_return_hint, tmux_prefix_display};
+pub use utils::{attach_return_hint, first_pane_id, tmux_prefix_display};
 
 pub(crate) use session_kind::{append_session_kind_args, SessionKind};
 

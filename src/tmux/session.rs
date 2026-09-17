@@ -251,12 +251,13 @@ fn merge_cursor_probes(
 /// than shifting every later pane's content onto the wrong rectangle.
 fn parse_pane_segments(raw: &str, sentinel: &str) -> Vec<CapturedPane> {
     let mut panes: Vec<CapturedPane> = Vec::new();
-    let mut current: Option<(PaneGeom, Vec<&str>)> = None;
+    let mut current: Option<(String, PaneGeom, Vec<&str>)> = None;
 
-    let flush = |panes: &mut Vec<CapturedPane>, entry: Option<(PaneGeom, Vec<&str>)>| {
-        if let Some((geom, lines)) = entry {
+    let flush = |panes: &mut Vec<CapturedPane>, entry: Option<(String, PaneGeom, Vec<&str>)>| {
+        if let Some((id, geom, lines)) = entry {
             let body = lines.join("\n");
             panes.push(CapturedPane {
+                id,
                 rows: crate::tmux::vt::capture_rows_padded(
                     body.as_bytes(),
                     geom.width,
@@ -270,8 +271,16 @@ fn parse_pane_segments(raw: &str, sentinel: &str) -> Vec<CapturedPane> {
     for line in raw.lines() {
         if let Some(rest) = line.strip_prefix(sentinel) {
             flush(&mut panes, current.take());
-            current = PaneGeom::parse(rest).map(|geom| (geom, Vec::new()));
-        } else if let Some((_, lines)) = current.as_mut() {
+            current = rest
+                .trim_start()
+                .split_once(' ')
+                .and_then(|(id, geometry)| {
+                    if !id.starts_with('%') {
+                        return None;
+                    }
+                    PaneGeom::parse(geometry).map(|geom| (id.to_string(), geom, Vec::new()))
+                });
+        } else if let Some((_, _, lines)) = current.as_mut() {
             lines.push(line);
         }
     }
@@ -798,10 +807,8 @@ impl Session {
             return Ok(String::new());
         }
 
-        // `^` is the window's active pane. `.0` (first by index) would be
-        // base-index sensitive; `#{pane_id}` would be exact but needs a
-        // prior `list-panes` round trip per call. See #435, #488.
-        let target = format!("={}:^", self.name);
+        let target =
+            self.live_pane_target_with_deadline(&crate::tmux::TmuxCommandDeadline::new())?;
         let output = crate::tmux::tmux_command()
             .args([
                 "capture-pane",
@@ -933,21 +940,15 @@ impl Session {
         /// probe proves that the pane row still indexes the captured bytes.
         const AFTER_CURSOR_SENTINEL: &str = "@@aoe-after-cur@@";
 
-        let window = format!("={}:^", self.name);
-        // The active pane is whichever split tmux focused last; pane 0's
-        // bytes must come from the first pane by id order instead.
-        let first = self
-            .all_pane_ids(1)
-            .into_iter()
-            .next()
-            .unwrap_or(format!("={}:^", self.name));
-        let pane0 = first;
+        let pane0 = super::utils::first_pane_id_with_deadline(&self.name, deadline)
+            .ok_or_else(|| anyhow::anyhow!("No agent pane in session {}", self.name))?;
+        let window = &pane0;
         let mut command = crate::tmux::tmux_command();
         command.args([
             "display-message",
             "-p",
             "-t",
-            &window,
+            window,
             "-F",
             &format!(
                 "{WINDOW_SENTINEL} #{{window_panes}} #{{window_width}} #{{window_height}} #{{window_zoomed_flag}}"
@@ -1061,6 +1062,9 @@ impl Session {
         let Some(layout) = self.capture_window_layout_with_deadline(count, deadline) else {
             return Ok((pane0_content, cursor));
         };
+        if layout.first_pane_id() != Some(pane0.as_str()) {
+            return Ok((layout.composite(), None));
+        }
         // Reuse the pane-0 bytes bracketed by the cursor probes above. The
         // layout capture happens in a second tmux invocation, so using its
         // pane-0 copy could otherwise pair the cursor with a later screen and
@@ -1084,7 +1088,7 @@ impl Session {
         });
         let content = pane0_rows.as_deref().map_or_else(
             || layout.composite(),
-            |rows| layout.composite_with_first_pane_rows(rows),
+            |rows| layout.composite_with_first_pane_rows(&pane0, rows),
         );
         Ok((content, cursor))
     }
@@ -1111,33 +1115,16 @@ impl Session {
     /// when `pane-base-index` is 0, and `list-panes` order follows creation
     /// order, so the lowest pane index is found by explicit sort.
     /// Returns fewer ids when panes vanished.
-    fn all_pane_ids(&self, want: usize) -> Vec<String> {
-        let output = crate::tmux::tmux_command()
-            .args([
-                "list-panes",
-                "-s",
-                "-t",
-                &format!("={}:", self.name),
-                "-F",
-                "#{pane_index} #{pane_id}",
-            ])
-            .output();
-        output
-            .ok()
-            .filter(|out| out.status.success())
-            .map(|out| {
-                let mut indexed: Vec<(u32, String)> = String::from_utf8_lossy(&out.stdout)
-                    .lines()
-                    .filter_map(|line| {
-                        let (index, id) = line.split_once(' ')?;
-                        let index: u32 = index.parse().ok()?;
-                        id.starts_with('%').then(|| (index, id.to_string()))
-                    })
-                    .collect();
-                indexed.sort_by_key(|(index, _)| *index);
-                indexed.into_iter().take(want).map(|(_, id)| id).collect()
-            })
+    fn all_pane_ids(
+        &self,
+        want: usize,
+        deadline: &crate::tmux::TmuxCommandDeadline,
+    ) -> Vec<String> {
+        super::utils::first_window_pane_ids_with_deadline(&self.name, deadline)
             .unwrap_or_default()
+            .into_iter()
+            .take(want)
+            .collect()
     }
 
     pub(crate) fn capture_window_layout_with_deadline(
@@ -1154,20 +1141,16 @@ impl Session {
         /// layout is self-contained and needs no separate probe.
         const WINDOW_SENTINEL: &str = "@@aoe-win@@";
 
+        let ids = self.all_pane_ids(count as usize, deadline);
+        let first_id = ids.first()?;
         let mut args: Vec<String> = vec![
             "display-message".to_string(),
             "-p".to_string(),
             "-t".to_string(),
-            format!("={}:^", self.name),
+            first_id.clone(),
             "-F".to_string(),
             format!("{WINDOW_SENTINEL} #{{window_width}} #{{window_height}}"),
         ];
-        // Pane indices (`.0`, `.1`) resolve only when `pane-base-index` is 0,
-        // which unit-test servers do not guarantee. `list-panes -t =name:^`
-        // lists only the ACTIVE pane, so enumerate the session's panes with
-        // `-a` + session filter instead, in index order.
-        let ids = self.all_pane_ids(count as usize);
-        let ids: Vec<String> = ids.into_iter().take(count as usize).collect();
         for id in &ids {
             let target = id.clone();
             args.push(";".to_string());
@@ -1177,7 +1160,7 @@ impl Session {
                 "-t".to_string(),
                 target.clone(),
                 "-F".to_string(),
-                format!("{SENTINEL} #{{pane_left}} #{{pane_top}} #{{pane_width}} #{{pane_height}}"),
+                format!("{SENTINEL} #{{pane_id}} #{{pane_left}} #{{pane_top}} #{{pane_width}} #{{pane_height}}"),
                 ";".to_string(),
                 "capture-pane".to_string(),
                 "-t".to_string(),
@@ -1283,12 +1266,24 @@ impl Session {
         self.capture_pane_with_cursor_with_deadline(lines, &deadline)
     }
 
+    pub(crate) fn live_pane_target_with_deadline(
+        &self,
+        deadline: &crate::tmux::TmuxCommandDeadline,
+    ) -> Result<String> {
+        #[cfg(unix)]
+        if let Some(id) = crate::tmux::vt::channel_pane_id(&self.name) {
+            return Ok(id);
+        }
+        super::utils::first_pane_id_with_deadline(&self.name, deadline)
+            .ok_or_else(|| anyhow::anyhow!("No agent pane in session {}", self.name))
+    }
+
     pub(crate) fn capture_pane_with_cursor_with_deadline(
         &self,
         lines: usize,
         deadline: &crate::tmux::TmuxCommandDeadline,
     ) -> Result<(String, Option<PaneCursor>)> {
-        let target = format!("={}:^", self.name);
+        let target = self.live_pane_target_with_deadline(deadline)?;
         let start = format!("-{}", lines);
         const HEADER_FMT: &str = CURSOR_FMT;
         let mut command = crate::tmux::tmux_command();
@@ -1352,7 +1347,7 @@ impl Session {
         Ok((content.to_string(), merge_cursor_probes(before, after)))
     }
 
-    /// Deliver raw bytes to the session's active pane via `tmux send-keys
+    /// Deliver raw bytes to the session's agent pane via `tmux send-keys
     /// -H`, one hex argument per byte, chunked so a large paste cannot
     /// overflow `execve` ARG_MAX (the same bound the TUI's live-send path
     /// uses; macOS caps total argv at 256KB and per-byte hex args burn it
@@ -1362,10 +1357,8 @@ impl Session {
     /// input path: raw bytes from the browser (printables, CSI sequences,
     /// control bytes) all ride the same encoding.
     pub fn send_raw_bytes(&self, bytes: &[u8]) -> Result<()> {
-        // `^` pins the first window's first pane, matching capture_pane:
-        // a bare session name follows the ACTIVE pane, which would let
-        // input land in a different pane than the one being captured.
-        let target = format!("={}:^", self.name);
+        let target =
+            self.live_pane_target_with_deadline(&crate::tmux::TmuxCommandDeadline::new())?;
         for batch in raw_byte_batches(bytes) {
             let output = crate::tmux::tmux_command()
                 .args(["send-keys", "-t", &target, "-H"])
@@ -1392,7 +1385,8 @@ impl Session {
     /// contract. tmux translates LF to CR in the buffer by default, matching
     /// the raw-byte encoding this replaces.
     pub fn paste_text(&self, text: &str) -> Result<()> {
-        let target = format!("={}:^", self.name);
+        let target =
+            self.live_pane_target_with_deadline(&crate::tmux::TmuxCommandDeadline::new())?;
         Self::send_via_paste_buffer(&target, text)
     }
 
@@ -1432,7 +1426,8 @@ impl Session {
             bail!("Session does not exist: {}", self.name);
         }
 
-        let target = format!("={}:^", self.name);
+        let target =
+            self.live_pane_target_with_deadline(&crate::tmux::TmuxCommandDeadline::new())?;
         let byte_len = text.len();
         let line_count = text.lines().count();
         let max_line = text.lines().map(str::len).max().unwrap_or(0);
@@ -1501,7 +1496,8 @@ impl Session {
             bail!("Session does not exist: {}", self.name);
         }
 
-        let target = format!("={}:^", self.name);
+        let target =
+            self.live_pane_target_with_deadline(&crate::tmux::TmuxCommandDeadline::new())?;
         for token in tokens {
             match token {
                 crate::agents::KeyToken::Literal(text) => {
@@ -2016,17 +2012,19 @@ impl Session {
     pub(crate) fn arm_vt_pipe_if_owner_with_deadline(
         &self,
         owner_id: &str,
+        pane_id: &str,
         flags: &str,
         pipe_command: &str,
         deadline: &crate::tmux::TmuxCommandDeadline,
     ) -> bool {
         let owner_format = Self::tmux_format_literal(owner_id);
         let condition = format!("#{{==:#{{{VT_OWNER_OPT}}},{owner_format}}}");
-        let target = Self::tmux_command_string_literal(&format!("={}:^", self.name));
+        let target = Self::tmux_command_string_literal(pane_id);
+        let session_target = Self::tmux_command_string_literal(&format!("={}:", self.name));
         let pipe_command = Self::tmux_command_string_literal(pipe_command);
         let owner_command = Self::tmux_command_string_literal(owner_id);
         let arm = format!(
-            "pipe-pane {flags} -t {target} {pipe_command} ; set-option -t {target} {VT_PIPE_OWNER_OPT} {owner_command} ; display-message -p aoe-pipe-armed"
+            "pipe-pane {flags} -t {target} {pipe_command} ; set-option -t {session_target} {VT_PIPE_OWNER_OPT} {owner_command} ; display-message -p aoe-pipe-armed"
         );
         let mut command = crate::tmux::tmux_command();
         command.args([
@@ -2064,6 +2062,7 @@ impl Session {
     pub(crate) fn release_vt_pipe_owner_with_deadline(
         &self,
         owner_id: &str,
+        pane_id: &str,
         deadline: &crate::tmux::TmuxCommandDeadline,
     ) {
         let owner_format = Self::tmux_format_literal(owner_id);
@@ -2071,12 +2070,13 @@ impl Session {
             "#{{||:#{{==:#{{{VT_PIPE_OWNER_OPT}}},{owner_format}}},#{{==:#{{{VT_OWNER_OPT}}},{owner_format}}}}}"
         );
         let clear_lease_condition = format!("#{{==:#{{{VT_OWNER_OPT}}},{owner_format}}}");
-        let target = Self::tmux_command_string_literal(&format!("={}:^", self.name));
+        let target = Self::tmux_command_string_literal(pane_id);
+        let session_target = Self::tmux_command_string_literal(&format!("={}:", self.name));
         let clear_lease = format!(
-            "set-option -u -t {target} {VT_OWNER_OPT} ; set-option -u -t {target} {VT_OWNER_HB_OPT}"
+            "set-option -u -t {session_target} {VT_OWNER_OPT} ; set-option -u -t {session_target} {VT_OWNER_HB_OPT}"
         );
         let release = format!(
-            "pipe-pane -t {target} ; set-option -u -t {target} {VT_PIPE_OWNER_OPT} ; if-shell -t {target} -F '{clear_lease_condition}' '{clear_lease}'"
+            "pipe-pane -t {target} ; set-option -u -t {session_target} {VT_PIPE_OWNER_OPT} ; if-shell -t {session_target} -F '{clear_lease_condition}' '{clear_lease}'"
         );
         let mut command = crate::tmux::tmux_command();
         command.args([
@@ -3074,9 +3074,11 @@ mod tests {
     fn pane_segments_split_the_chained_capture_by_sentinel() {
         // Shape of the chained fork's stdout: a geometry line per pane, each
         // followed by that pane's rows.
-        let raw = "@@s@@ 0 0 6 2\nleft1\nleft2\n@@s@@ 7 0 6 2\nright1\nright2\n";
+        let raw = "@@s@@ %17 0 0 6 2\nleft1\nleft2\n@@s@@ %23 7 0 6 2\nright1\nright2\n";
         let panes = parse_pane_segments(raw, "@@s@@");
         assert_eq!(panes.len(), 2);
+        assert_eq!(panes[0].id, "%17");
+        assert_eq!(panes[1].id, "%23");
         assert_eq!(panes[0].geom.left, 0);
         assert_eq!(panes[1].geom.left, 7);
         // Rows come back padded to the pane's width, which is what lets the
@@ -3090,7 +3092,7 @@ mod tests {
     fn pane_segments_drop_a_pane_with_unparseable_geometry() {
         // A bad geometry line must not push its rows onto the next pane's
         // rectangle; the pane is dropped and the rest still parse.
-        let raw = "@@s@@ bogus\norphan\n@@s@@ 0 0 4 1\nkeep\n";
+        let raw = "@@s@@ bogus\norphan\n@@s@@ %23 0 0 4 1\nkeep\n";
         let panes = parse_pane_segments(raw, "@@s@@");
         assert_eq!(panes.len(), 1);
         assert_eq!(panes[0].geom.width, 4);
@@ -3711,15 +3713,10 @@ mod tests {
         assert!(session.claim_size_owner("sz", Duration::from_secs(10)));
         assert!(session.refresh_vt_owner("pid-3"));
 
+        let pane_id = super::super::first_pane_id(guard.name()).expect("agent pane ID");
         let pane_is_piped = || {
             let output = crate::tmux::tmux_command()
-                .args([
-                    "display-message",
-                    "-p",
-                    "-t",
-                    &format!("={}:^", guard.name()),
-                    "#{pane_pipe}",
-                ])
+                .args(["display-message", "-p", "-t", &pane_id, "#{pane_pipe}"])
                 .output()
                 .expect("tmux pane pipe state");
             output.status.success() && String::from_utf8_lossy(&output.stdout).trim() == "1"
@@ -3734,6 +3731,7 @@ mod tests {
         let deadline = crate::tmux::TmuxCommandDeadline::new();
         assert!(session.arm_vt_pipe_if_owner_with_deadline(
             "pid-3",
+            &pane_id,
             "-IO",
             &pipe_command,
             &deadline,
@@ -3747,13 +3745,32 @@ mod tests {
         }
         assert!(pipe_marker.exists(), "quoted pipe command must run intact");
 
-        // Model a replacement that claimed the stale lease but has not armed
-        // yet. Dropping the old generation closes its own pipe without
-        // clearing the replacement's lease.
+        // Change focus before teardown: neither arm nor release may follow it.
+        let split = crate::tmux::tmux_command()
+            .args([
+                "split-window",
+                "-t",
+                &pane_id,
+                "-P",
+                "-F",
+                "#{pane_id}",
+                "sleep 30",
+            ])
+            .output()
+            .expect("split secondary pane");
+        assert!(split.status.success());
+        let secondary_id = String::from_utf8(split.stdout).unwrap().trim().to_string();
+        assert_ne!(
+            pane_id, secondary_id,
+            "agent={pane_id}, active={secondary_id}"
+        );
+        assert!(pane_is_piped(), "agent={pane_id}, active={secondary_id}");
+        // A replacement claimed the lease but has not armed yet. Closing the
+        // old generation's pipe must leave the replacement's lease intact.
         session.set_user_option(VT_OWNER_OPT, "pid-4");
         session.set_user_option(VT_OWNER_HB_OPT, &now_ms().to_string());
         let deadline = crate::tmux::TmuxCommandDeadline::new();
-        session.release_vt_pipe_owner_with_deadline("pid-3", &deadline);
+        session.release_vt_pipe_owner_with_deadline("pid-3", &pane_id, &deadline);
         assert!(session.refresh_vt_owner("pid-4"));
         assert!(!pane_is_piped());
 
@@ -3761,17 +3778,19 @@ mod tests {
         // tear down the replacement's pipe or lease.
         assert!(session.arm_vt_pipe_if_owner_with_deadline(
             "pid-4",
+            &pane_id,
             "-O",
             &pipe_command,
             &deadline,
         ));
         assert!(!session.arm_vt_pipe_if_owner_with_deadline(
             "pid-3",
+            &pane_id,
             "-O",
             &pipe_command,
             &deadline,
         ));
-        session.release_vt_pipe_owner_with_deadline("pid-3", &deadline);
+        session.release_vt_pipe_owner_with_deadline("pid-3", &pane_id, &deadline);
         assert!(session.refresh_vt_owner("pid-4"));
         assert!(pane_is_piped());
 
@@ -3783,7 +3802,7 @@ mod tests {
         assert!(!session.refresh_vt_owner("pid-5"));
         assert!(pane_is_piped());
 
-        session.release_vt_pipe_owner_with_deadline("pid-4", &deadline);
+        session.release_vt_pipe_owner_with_deadline("pid-4", &pane_id, &deadline);
         assert!(!session.refresh_vt_owner("pid-4"));
         assert!(!pane_is_piped());
         session.release_size_owner("sz");
@@ -3845,24 +3864,6 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(100));
         }
         let (content, cursor) = painted;
-
-        for (label, composited, budget) in [("pane", false, 1), ("composited window", true, 2)] {
-            let _ = crate::tmux::fork_probe::take();
-            let probe = crate::tmux::fork_probe::arm();
-            if composited {
-                session
-                    .capture_window_composited_with_cursor(5)
-                    .expect("composited capture");
-            } else {
-                session.capture_pane_with_cursor(5).expect("pane capture");
-            }
-            drop(probe);
-            assert_eq!(
-                crate::tmux::fork_probe::take(),
-                budget,
-                "{label} capture must use one operation deadline and its fork budget ({budget} tmux invocations)",
-            );
-        }
 
         // The capture content is the same text the plain path would return:
         // the cursor line must have been split off, not leak into the body.
@@ -4127,7 +4128,7 @@ mod tests {
         let session = Session::from_name("aoe_test_expired_owner");
         assert!(!session.claim_vt_owner_with_deadline("owner", Duration::from_secs(10), &deadline,));
         session.release_vt_owner_with_deadline("owner", &deadline);
-        session.release_vt_pipe_owner_with_deadline("owner", &deadline);
+        session.release_vt_pipe_owner_with_deadline("owner", "%1", &deadline);
         assert_eq!(
             crate::tmux::TMUX_COMMAND_EXECUTIONS.with(std::cell::Cell::get),
             before,
@@ -4525,7 +4526,9 @@ mod tests {
         // pane active, so select the first pane back: `capture_pane` reads
         // the window's active pane (`^`), and the control below asserts ALPHA.
         split_composite_session(&session, "sh -c 'echo BRAVO; sleep 30'");
-        let first_id = session.all_pane_ids(2).remove(0);
+        let first_id = session
+            .all_pane_ids(2, &crate::tmux::TmuxCommandDeadline::new())
+            .remove(0);
         crate::tmux::tmux_command()
             .args(["select-pane", "-t", &first_id])
             .status()
@@ -4563,10 +4566,10 @@ mod tests {
     /// `.0` is base-index sensitive.
     fn pane0_tmux_geometry(session: &Session) -> (u16, u16, u16, u16) {
         let first = session
-            .all_pane_ids(1)
+            .all_pane_ids(1, &crate::tmux::TmuxCommandDeadline::new())
             .into_iter()
             .next()
-            .unwrap_or(format!("={}:^", session.name));
+            .expect("agent pane ID");
         let out = crate::tmux::tmux_command()
             .args([
                 "display-message",
@@ -4756,7 +4759,7 @@ mod tests {
         );
 
         let zoom_target = session
-            .all_pane_ids(2)
+            .all_pane_ids(2, &crate::tmux::TmuxCommandDeadline::new())
             .into_iter()
             .nth(1)
             .expect("second pane id");
@@ -4873,38 +4876,66 @@ mod tests {
         wait_for_pane_text(&session, "ALPHA");
         split_composite_session(&session, "sh -c 'echo BRAVO; sleep 30'");
         wait_for_composite_text(&session, "BRAVO");
-        // Make the SECOND pane active: pane 0 must still come back first. The
-        // select must be asserted, or a failure leaves pane 0 active and the
-        // assertions below pass for the boring reason, silently retiring the
-        // premise this test exists to check.
-        let selected = crate::tmux::tmux_command()
-            .args(["select-pane", "-t", &format!("{}:^.1", session.name)])
-            .output()
-            .expect("tmux select-pane");
-        assert!(
-            selected.status.success(),
-            "select-pane must land, or this degrades to the pane-0-already-active case"
-        );
-        let active = crate::tmux::tmux_command()
+        let deadline = crate::tmux::TmuxCommandDeadline::new();
+        let ids = session.all_pane_ids(2, &deadline);
+        let agent_id = &ids[0];
+        let secondary_id = &ids[1];
+        // Nonzero indices in the agent window and a different active window
+        // with a lower pane index must not change the canonical first pane.
+        let output = crate::tmux::tmux_command()
             .args([
-                "display-message",
-                "-p",
+                "set-option",
+                "-w",
                 "-t",
-                &format!("{}:^", session.name),
-                "-F",
-                "#{pane_index}",
+                agent_id,
+                "pane-base-index",
+                "7",
+                ";",
+                "move-window",
+                "-s",
+                agent_id,
+                "-t",
+                &format!("={}:5", session.name),
+                ";",
+                "select-pane",
+                "-t",
+                secondary_id,
+                ";",
+                "new-window",
+                "-t",
+                &format!("={}:9", session.name),
+                "sleep 30",
             ])
             .output()
-            .expect("tmux display-message");
+            .expect("rebase and select another window");
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
         assert_eq!(
-            String::from_utf8_lossy(&active.stdout).trim(),
-            "1",
-            "pane 1 should be the active pane before the layout is captured"
+            crate::tmux::first_pane_id(&session.name).as_deref(),
+            Some(agent_id.as_str()),
+            "agent={agent_id}, secondary={secondary_id}"
         );
         let layout = session
-            .capture_window_layout(2)
+            .capture_window_layout(10)
             .expect("layout for a split window");
         assert_eq!(layout.panes.len(), 2);
+        assert_eq!(
+            layout.first_pane_id(),
+            Some(agent_id.as_str()),
+            "agent={agent_id}, secondary={secondary_id}, captured={:?}",
+            layout.first_pane_id()
+        );
+        assert_eq!(layout.panes[1].id, *secondary_id);
+        let (fallback, _) = session
+            .capture_pane_with_cursor(24)
+            .expect("agent capture fallback");
+        assert!(
+            fallback.contains("ALPHA") && !fallback.contains("BRAVO"),
+            "agent={agent_id}, secondary={secondary_id}, fallback={fallback:?}"
+        );
         assert_eq!(layout.window_width, 80);
         let first = layout.first_pane().expect("first pane");
         assert_eq!(
@@ -5030,7 +5061,8 @@ mod tests {
         // Live path, minus the grid: swapping pane 0's own captured rows back
         // in must be a no-op, which is what makes the swap safe to do with
         // fresher rows every frame.
-        let swapped = layout.composite_with_first_pane_rows(&layout.panes[0].rows.clone());
+        let swapped =
+            layout.composite_with_first_pane_rows(&layout.panes[0].id, &layout.panes[0].rows);
 
         assert_eq!(
             fallback,
@@ -5172,6 +5204,10 @@ mod tests {
         assert_eq!(pane_field(&session_name, "#{pane_id}"), split);
         wait_for_pane_command(&agent_pane, "sleep");
         wait_for_pane_command(&split, "bash");
+        let agent_pid = pane_field(&agent_pane, "#{pane_pid}")
+            .parse::<u32>()
+            .expect("agent PID");
+        assert_eq!(crate::process::get_pane_pid(&session_name), Some(agent_pid));
         assert!(
             !is_pane_running_shell(&session_name),
             "status must target the agent, not the active shell"
@@ -5184,6 +5220,7 @@ mod tests {
         wait_for_pane_dead(&split);
         assert_eq!(pane_field(&agent_pane, "#{pane_dead}"), "0");
         assert_eq!(pane_field(&session_name, "#{pane_id}"), split);
+        assert_eq!(crate::process::get_pane_pid(&session_name), Some(agent_pid));
         assert!(
             !is_pane_dead(&session_name),
             "status must target the live agent, not the dead active split"

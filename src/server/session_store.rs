@@ -132,7 +132,7 @@ impl NativeSessionStore {
         validate_target: F,
     ) -> Result<()>
     where
-        F: FnOnce(&[Instance], &[Instance]) -> Result<()>,
+        F: FnOnce(&[Instance], &mut [Instance]) -> Result<()>,
     {
         anyhow::ensure!(
             Arc::ptr_eq(&self.state, &target.state),

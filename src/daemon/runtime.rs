@@ -15,6 +15,7 @@ pub struct RuntimeCursor {
 }
 
 /// An acknowledged operation result; session rows come from runtime snapshots.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MutationReceipt<T> {
     pub cursor: RuntimeCursor,
     pub outcome: T,
@@ -24,6 +25,7 @@ pub struct MutationReceipt<T> {
 #[serde(untagged)]
 pub enum SessionMutation {
     Start(super::StartSessionBody),
+    Restart(super::RestartSessionBody),
     Stop,
     StopAuxiliary(crate::session::AuxiliaryTarget),
     Restore,
@@ -43,6 +45,7 @@ impl SessionMutation {
     pub(crate) fn route(&self) -> &'static str {
         match self {
             Self::Start(_) => "start",
+            Self::Restart(_) => "restart",
             Self::Stop => "stop",
             Self::StopAuxiliary(_) => "auxiliary/stop",
             Self::Restore => "restore",

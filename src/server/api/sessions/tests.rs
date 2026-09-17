@@ -406,6 +406,205 @@ async fn lifecycle_requests_reject_a_peer_reservation_without_acknowledging_it(
 
 #[tokio::test]
 #[serial_test::serial]
+async fn restart_refusal_preserves_authoritative_launch_fields() -> anyhow::Result<()> {
+    for refusal in [
+        "read_only",
+        "cityhall",
+        "degraded",
+        "reserved",
+        "profile_collision",
+    ] {
+        let _home = crate::session::test_support::isolate_app_dir();
+        let mut row = Instance::new("restart refusal", "/tmp/restart-refusal");
+        row.source_profile = "receipt".into();
+        row.tool = "claude".into();
+        row.command = "original-wrapper".into();
+        row.extra_args = "--original".into();
+        row.agent_session_id = Some("original-session".into());
+        row.snooze(30);
+        row.status = Status::Running;
+        if refusal == "reserved" {
+            row.try_acquire_lifecycle_reservation(
+                crate::session::LifecycleOperation::Launch,
+                Instance::LIFECYCLE_RESERVATION_TTL,
+                chrono::Utc::now(),
+            )?;
+        }
+        let before = row.clone();
+        let id = row.id.clone();
+        let state = crate::server::test_support::build_test_app_state_configured(
+            vec![row.clone()],
+            |state| {
+                state.read_only = refusal == "read_only";
+                state.cityhall_mode = refusal == "cityhall";
+            },
+        );
+        let storage = Storage::new("receipt", state.file_watch.clone())?;
+        storage.update(|rows, _| {
+            rows.push(row);
+            Ok(())
+        })?;
+        if refusal == "profile_collision" {
+            Storage::new("target", state.file_watch.clone())?.update(|rows, _| {
+                rows.push(Instance::new("restart refusal", "/tmp/restart-refusal/"));
+                Ok(())
+            })?;
+        }
+        *state.canonical_metadata.write().await =
+            crate::server::reload::load_all_profiles(&state.file_watch)?.metadata;
+        if refusal == "degraded" {
+            *state.canonical_health.write().await = crate::daemon::RuntimeHealth::Degraded {
+                code: crate::daemon::ReloadFailureCode::Metadata,
+                profiles: Vec::new(),
+            };
+        }
+        let response = restart_session(
+            State(state.clone()),
+            Path(id.clone()),
+            Ok(Some(Json(crate::daemon::RestartSessionBody {
+                profile: (refusal == "profile_collision").then(|| "target".into()),
+                tool: Some("codex".into()),
+                command_override: Some("replacement-wrapper".into()),
+                extra_args: Some("--replacement".into()),
+                unsnooze: true,
+                ..Default::default()
+            }))),
+        )
+        .await
+        .into_response();
+        assert!(!response.status().is_success(), "{refusal}");
+        assert!(!response
+            .headers()
+            .contains_key(crate::daemon::RUNTIME_REVISION_HEADER));
+        let stored = storage.load()?;
+        let live = state.instances.read().await;
+        for row in [
+            stored.iter().find(|row| row.id == id).unwrap(),
+            live.iter().find(|row| row.id == id).unwrap(),
+        ] {
+            assert_eq!(row.tool, before.tool, "{refusal}");
+            assert_eq!(row.command, before.command, "{refusal}");
+            assert_eq!(row.extra_args, before.extra_args, "{refusal}");
+            assert_eq!(row.snoozed_until, before.snoozed_until, "{refusal}");
+            assert_eq!(row.agent_session_id, before.agent_session_id, "{refusal}");
+            assert_eq!(
+                row.lifecycle_generation, before.lifecycle_generation,
+                "{refusal}"
+            );
+            assert_eq!(row.status, Status::Running, "{refusal}");
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test]
+#[serial_test::serial]
+async fn running_restart_respawns_while_start_remains_idempotent() -> anyhow::Result<()> {
+    use crate::tmux::test_helpers::{pane_field, TmuxTestSession};
+    use std::time::Duration;
+    if !crate::tmux::is_tmux_available() {
+        return Ok(());
+    }
+    let _home = crate::session::test_support::isolate_app_dir();
+    crate::session::config::update_app_state(|state| {
+        state.has_acknowledged_agent_hooks = true;
+    })?;
+    let project = tempfile::tempdir()?;
+    let mut row = Instance::new("running restart", project.path().to_str().unwrap());
+    row.source_profile = "receipt".into();
+    row.command = "sleep 60".into();
+    row.status = Status::Running;
+    let id = row.id.clone();
+    let generation = row.lifecycle_generation;
+    let name = crate::tmux::Session::generate_name(&id, &row.title);
+    let _pane = TmuxTestSession::from_name(name.clone());
+    row.tmux_session()?.create(
+        project.path().to_str().unwrap(),
+        Some("sleep 60"),
+        "receipt",
+    )?;
+    let original_pid = pane_field(&name, "#{pane_pid}");
+    assert!(!original_pid.is_empty(), "created pane owns a live process");
+    let state = crate::server::test_support::build_test_app_state(vec![row.clone()]);
+    let storage = Storage::new("receipt", state.file_watch.clone())?;
+    storage.update(|rows, _| {
+        rows.push(row);
+        Ok(())
+    })?;
+    *state.canonical_metadata.write().await =
+        crate::server::reload::load_all_profiles(&state.file_watch)?.metadata;
+
+    let started = start_session(State(state.clone()), Path(id.clone()), Ok(None))
+        .await
+        .into_response();
+    assert_eq!(started.status(), StatusCode::OK);
+    assert_eq!(pane_field(&name, "#{pane_pid}"), original_pid);
+    assert_eq!(
+        storage
+            .load()?
+            .iter()
+            .find(|row| row.id == id)
+            .unwrap()
+            .lifecycle_generation,
+        generation
+    );
+
+    let restarted = restart_session(
+        State(state.clone()),
+        Path(id.clone()),
+        Ok(Some(Json(crate::daemon::RestartSessionBody {
+            wake_message: Some(String::new()),
+            ..Default::default()
+        }))),
+    )
+    .await
+    .into_response();
+    assert_eq!(restarted.status(), StatusCode::OK);
+    let revision = restarted.headers()[crate::daemon::RUNTIME_REVISION_HEADER]
+        .to_str()?
+        .parse::<u64>()?;
+    let bytes = axum::body::to_bytes(restarted.into_body(), usize::MAX).await?;
+    let body: serde_json::Value = serde_json::from_slice(&bytes)?;
+    let outcome: crate::daemon::RestartOutcome = serde_json::from_value(body["outcome"].clone())?;
+    assert!(outcome.lifecycle_generation > generation);
+    assert_eq!(outcome.target.as_ref().unwrap().tmux_session, name);
+    let respawn_deadline = std::time::Instant::now() + Duration::from_secs(10);
+    let respawned_pid = loop {
+        let pid = pane_field(&name, "#{pane_pid}");
+        if !pid.is_empty() && pid != original_pid {
+            break pid;
+        }
+        assert!(
+            std::time::Instant::now() < respawn_deadline,
+            "pane never respawned after restart"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    assert!(!respawned_pid.is_empty());
+    let snapshot = state.runtime.snapshot(&state).await?;
+    assert_eq!(snapshot.value.cursor.revision, revision);
+    let published = snapshot
+        .value
+        .contents
+        .sessions
+        .iter()
+        .find(|row| row.id == id)
+        .unwrap();
+    assert_eq!(published.lifecycle_generation, outcome.lifecycle_generation);
+    assert_eq!(
+        storage
+            .load()?
+            .iter()
+            .find(|row| row.id == id)
+            .unwrap()
+            .lifecycle_generation,
+        outcome.lifecycle_generation
+    );
+    Ok(())
+}
+
+#[tokio::test]
+#[serial_test::serial]
 async fn structured_stop_start_receipts_include_the_committed_peer_bundle() -> anyhow::Result<()> {
     let _guard = crate::session::test_support::isolate_app_dir();
     let mut row = Instance::new("lifecycle receipt", "/tmp/lifecycle-receipt");
@@ -3346,7 +3545,7 @@ fn apply_post_restart_sync_propagates_agent_session_id() {
 }
 
 #[test]
-fn apply_post_restart_identity_sync_clears_repair_backoff_when_restart_poller_runs() {
+fn apply_post_restart_identity_sync_clears_repair_backoff_when_the_restart_cascade_runs() {
     let mut before = make_test_instance();
     before.omp_capture_generation = Some("generation-a".to_string());
     let now = std::time::Instant::now();

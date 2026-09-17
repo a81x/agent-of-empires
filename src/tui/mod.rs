@@ -20,7 +20,6 @@ pub(crate) mod plugin_ui;
 mod reconcile_poller;
 pub(crate) mod remote_home;
 pub(crate) mod responsive;
-mod restart_poller;
 mod session_feed;
 pub mod settings;
 mod store_move_poller;
