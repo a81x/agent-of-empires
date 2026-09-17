@@ -995,8 +995,9 @@ impl HomeView {
             return;
         }
 
-        // Serve view takes over the whole screen
-        if let Some(ref serve) = self.serve_view {
+        // The serve view takes over the whole screen, except the exposed
+        // daemon's card, which sits over the home view like other dialogs.
+        if let Some(serve) = self.serve_view.as_ref().filter(|s| s.covers_screen()) {
             self.divider_col = None;
             self.main_area_width = 0;
             serve.render(frame, area, theme);
@@ -1189,6 +1190,9 @@ impl HomeView {
             // gated rename/delete attempt).
             context_menu,
         );
+        if let Some(serve) = &self.serve_view {
+            serve.render(frame, area, theme);
+        }
     }
 
     /// Dock the diagnostics strip under the session-list column: carve

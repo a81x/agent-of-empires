@@ -674,6 +674,12 @@ impl ServeView {
         }
     }
 
+    /// Whether this view replaces the home screen; the exposed daemon's card
+    /// is drawn over it instead.
+    pub fn covers_screen(&self) -> bool {
+        !matches!(self.state, ServeViewState::Active { .. })
+    }
+
     /// Drive flashes, confirmations and the background exposure change.
     /// Returns true when a redraw is needed.
     pub fn tick(&mut self) -> bool {
@@ -817,6 +823,11 @@ impl ServeView {
                 opened_at,
                 ..
             } => {
+                let qr = urls
+                    .get(*url_index)
+                    .or_else(|| urls.first())
+                    .map(|url| render_qr(&url.url))
+                    .unwrap_or_default();
                 render_active(
                     frame,
                     area,
@@ -831,6 +842,7 @@ impl ServeView {
                         pairing: self.pairing.as_ref(),
                         show_web: self.show_web,
                         flash: self.flash.as_ref().map(|(text, _)| text.as_str()),
+                        qr: &qr,
                     },
                 );
                 if self.show_help {
@@ -1452,11 +1464,14 @@ fn render_qr(_url: &str) -> String {
 }
 
 /// Shown in place of the QR when the dashboard bundle is not embedded.
-const API_ONLY_NOTICE: &str =
-    "No dashboard bundle in this build: the URL serves the REST API only, and a browser gets a 404.";
+const API_ONLY_NOTICE: &str = "This build has no dashboard; the link serves the REST API only.";
 
-/// Terminal width from which the browser/phone section sits beside pairing.
-const WIDE_ACTIVE_WIDTH: u16 = 90;
+/// Narrowest content the card lays out for; below it lines are truncated.
+const CARD_MIN_WIDTH: usize = 50;
+/// Widest a single column grows before lines are truncated.
+const CARD_MAX_WIDTH: usize = 76;
+/// Columns between the pairing column and the QR column.
+const COLUMN_GAP: usize = 3;
 
 struct ActiveModel<'a> {
     mode: Exposure,
@@ -1468,21 +1483,541 @@ struct ActiveModel<'a> {
     pairing: Option<&'a super::pairing::PairingPanel>,
     show_web: bool,
     flash: Option<&'a str>,
+    /// The selected URL's QR code, empty when this build draws none.
+    qr: &'a str,
 }
 
-/// The exposed daemon: pairing first (code, then the command to run on the
-/// other machine, then paired devices), browser and phone access beside it
-/// when wide or behind `w` when not.
+/// A card row and how early it gives way on a short terminal: rows with the
+/// highest `yields` go first, and 0 never does.
+struct Row {
+    line: Line<'static>,
+    yields: u8,
+}
+
+const KEEP: u8 = 0;
+/// A device other than the selected one.
+const OTHER_DEVICE: u8 = 1;
+const EXPOSURE_NOTE: u8 = 2;
+const GAP: u8 = 3;
+const EXPLAIN: u8 = 4;
+
+impl Row {
+    fn keep(line: impl Into<Line<'static>>) -> Self {
+        Self::yields(line, KEEP)
+    }
+
+    fn yields(line: impl Into<Line<'static>>, yields: u8) -> Self {
+        Self {
+            line: line.into(),
+            yields,
+        }
+    }
+
+    fn gap() -> Self {
+        Self::yields(Line::from(""), GAP)
+    }
+}
+
+/// Drop the most expendable rows until `rows` fits `height`, then tidy the
+/// gaps the drops left at the edges or doubled up.
+fn fit_rows(mut rows: Vec<Row>, height: usize, width: usize) -> Vec<Line<'static>> {
+    while rows.len() > height {
+        let Some(most) = rows
+            .iter()
+            .map(|row| row.yields)
+            .max()
+            .filter(|y| *y > KEEP)
+        else {
+            break;
+        };
+        let at = rows.iter().rposition(|row| row.yields == most).unwrap_or(0);
+        rows.remove(at);
+    }
+    let mut lines: Vec<Line<'static>> = Vec::with_capacity(rows.len());
+    for row in rows {
+        let blank = row.line.width() == 0;
+        if blank && lines.last().is_none_or(|last| last.width() == 0) {
+            continue;
+        }
+        lines.push(clip(row.line, width));
+    }
+    while lines.last().is_some_and(|last| last.width() == 0) {
+        lines.pop();
+    }
+    lines
+}
+
+/// `text` word-wrapped to `width` after `indent`, every row yielding as an
+/// explanation.
+fn explain(theme: &Theme, indent: &str, text: &str, width: usize) -> Vec<Row> {
+    let room = width.saturating_sub(indent.len()).max(1);
+    let mut lines: Vec<String> = Vec::new();
+    for word in text.split_whitespace() {
+        match lines.last_mut() {
+            Some(line) if line.chars().count() + 1 + word.chars().count() <= room => {
+                line.push(' ');
+                line.push_str(word);
+            }
+            _ => lines.push(word.to_string()),
+        }
+    }
+    lines
+        .into_iter()
+        .map(|line| {
+            Row::yields(
+                Line::styled(format!("{indent}{line}"), Style::default().fg(theme.dimmed)),
+                EXPLAIN,
+            )
+        })
+        .collect()
+}
+
+/// `line` cut to `width` columns, keeping each span's style.
+fn clip(line: Line<'static>, width: usize) -> Line<'static> {
+    if line.width() <= width {
+        return line;
+    }
+    let mut room = width.saturating_sub(1);
+    let mut spans = Vec::new();
+    for span in line.spans {
+        if room == 0 {
+            break;
+        }
+        let text: String = span.content.chars().take(room).collect();
+        room -= text.chars().count();
+        spans.push(Span::styled(text, span.style));
+    }
+    spans.push(Span::raw("…"));
+    Line::from(spans)
+}
+
+fn heading(theme: &Theme, text: &str) -> Row {
+    Row::keep(Line::styled(
+        text.to_string(),
+        Style::default().fg(theme.accent).bold(),
+    ))
+}
+
+/// `text` broken into lines of at most `width` characters, for values like a
+/// tokenized URL that are useless truncated.
+fn chunked(text: &str, width: usize) -> Vec<String> {
+    let chars: Vec<char> = text.chars().collect();
+    chars
+        .chunks(width.max(1))
+        .map(|chunk| chunk.iter().collect())
+        .collect()
+}
+
+/// Status first: where this machine is shared, since when, and what that
+/// lets other machines do.
+fn status_rows(theme: &Theme, model: &ActiveModel, url: &ServeUrl, width: usize) -> Vec<Row> {
+    let (place, meaning) = match model.mode {
+        Exposure::Tunnel => (
+            "Sharing over the internet",
+            "Anyone with the link and passphrase, or a paired aoe, can connect.",
+        ),
+        Exposure::Network => (
+            "Sharing on local network",
+            "Other aoe clients on this network can connect once paired.",
+        ),
+        Exposure::Localhost => (
+            "Sharing on this machine only",
+            "Nothing else can connect until you change the exposure.",
+        ),
+    };
+    let address = base_url(&url.url)
+        .map(|base| crate::daemon::remotes::short_remote_address(base.as_str()))
+        .unwrap_or_default();
+    let mut spans = vec![
+        Span::styled("● ", Style::default().fg(theme.running)),
+        Span::styled(place, Style::default().fg(theme.text).bold()),
+        Span::styled(format!(" · {address}"), Style::default().fg(theme.text)),
+        Span::styled(
+            format!(" · up {}", format_elapsed(model.elapsed)),
+            Style::default().fg(theme.dimmed),
+        ),
+    ];
+    if model.elapsed >= Duration::from_secs(8 * 3600) {
+        spans.push(Span::styled(
+            " · still need it?",
+            Style::default().fg(theme.waiting),
+        ));
+    }
+    let mut rows = vec![Row::keep(Line::from(spans))];
+    rows.extend(explain(theme, "", meaning, width));
+    rows
+}
+
+/// The code and the two steps that use it, led by any lockout, since a
+/// locked-out machine cannot pair at all.
+fn pair_rows(theme: &Theme, model: &ActiveModel, command: Option<&str>, width: usize) -> Vec<Row> {
+    let dimmed = Style::default().fg(theme.dimmed);
+    let hint = Style::default().fg(theme.hint);
+    let text = Style::default().fg(theme.text);
+    let mut rows = vec![heading(theme, "Pair a device")];
+    let Some(panel) = model.pairing else {
+        return rows;
+    };
+    for (ip, left) in panel.lockouts() {
+        rows.push(Row::keep(Line::from(vec![
+            Span::styled(format!("  {ip}"), Style::default().fg(theme.waiting)),
+            Span::styled(
+                format!(" locked out · {} left  ", super::pairing::ago(left)),
+                dimmed,
+            ),
+            Span::styled("u", hint),
+            Span::styled(" unblock", dimmed),
+        ])));
+    }
+    match panel.code() {
+        super::pairing::CodeView::Minting => {
+            rows.push(Row::keep(Line::styled("  creating a code…", dimmed)));
+        }
+        super::pairing::CodeView::Ready { spaced, expires_in } => {
+            let code = Span::styled(
+                format!("  {spaced}"),
+                Style::default().fg(theme.accent).bold(),
+            );
+            let expiry = format!("single use · new code in {expires_in}");
+            if code.width() + 3 + expiry.chars().count() <= width {
+                rows.push(Row::keep(Line::from(vec![
+                    code,
+                    Span::styled(format!("   {expiry}"), dimmed),
+                ])));
+            } else {
+                rows.push(Row::keep(Line::from(code)));
+                rows.push(Row::keep(Line::styled(format!("  {expiry}"), dimmed)));
+            }
+        }
+        super::pairing::CodeView::Failed(error) => {
+            rows.push(Row::keep(Line::styled(
+                truncate_to_width(&format!("  No code: {error}"), width),
+                Style::default().fg(theme.error),
+            )));
+        }
+    }
+    let Some(command) = command else {
+        rows.push(Row::keep(Line::styled(
+            "  Other machines cannot reach this one; press e to share it.",
+            text,
+        )));
+        return rows;
+    };
+    let lead = "  1. On the other machine run  ";
+    let copy = "  c copies";
+    let command_style = text.bold();
+    if lead.len() + command.len() + copy.len() <= width {
+        rows.push(Row::keep(Line::from(vec![
+            Span::styled(lead, text),
+            Span::styled(command.to_string(), command_style),
+            Span::styled("  c", hint),
+            Span::styled(" copies", dimmed),
+        ])));
+    } else {
+        rows.push(Row::keep(Line::from(vec![
+            Span::styled("  1. On the other machine run", text),
+            Span::styled("  c", hint),
+            Span::styled(" copies", dimmed),
+        ])));
+        rows.push(Row::keep(Line::styled(
+            truncate_to_width(&format!("     {command}"), width),
+            command_style,
+        )));
+    }
+    rows.push(Row::keep(Line::styled(
+        "  2. Enter the code above when it asks",
+        text,
+    )));
+    rows
+}
+
+fn device_rows(theme: &Theme, model: &ActiveModel, width: usize) -> Vec<Row> {
+    let dimmed = Style::default().fg(theme.dimmed);
+    let mut rows = vec![heading(theme, "Paired devices")];
+    let devices = match model.pairing.map(|panel| panel.devices()) {
+        None | Some(Err(None)) => {
+            rows.push(Row::keep(Line::styled("  loading…", dimmed)));
+            return rows;
+        }
+        Some(Err(Some(error))) => {
+            rows.push(Row::keep(Line::styled(
+                truncate_to_width(&format!("  {error}"), width),
+                Style::default().fg(theme.error),
+            )));
+            return rows;
+        }
+        Some(Ok(devices)) if devices.is_empty() => {
+            rows.push(Row::keep(Line::styled("  No devices paired yet.", dimmed)));
+            return rows;
+        }
+        Some(Ok(devices)) => devices,
+    };
+    let name_width = devices
+        .iter()
+        .map(|d| d.name.chars().count())
+        .max()
+        .unwrap_or(0)
+        .min(20);
+    for device in devices {
+        let name_style = if device.selected {
+            Style::default().fg(theme.text).bold()
+        } else {
+            Style::default().fg(theme.text)
+        };
+        let mut spans = vec![
+            Span::styled(
+                if device.selected { "▸ " } else { "  " },
+                Style::default().fg(theme.accent),
+            ),
+            Span::styled(
+                format!("{:name_width$}", truncate_to_width(device.name, name_width)),
+                name_style,
+            ),
+            Span::styled(
+                format!("  {} · seen {}", device.address, device.seen),
+                dimmed,
+            ),
+        ];
+        if device.armed {
+            spans.push(Span::styled(
+                format!("  press x again to revoke {}", device.name),
+                Style::default().fg(theme.waiting).bold(),
+            ));
+        } else if device.selected {
+            spans.push(Span::styled("  x", Style::default().fg(theme.hint)));
+            spans.push(Span::styled(format!(" revoke {}", device.name), dimmed));
+        }
+        let line = Line::from(spans);
+        let line = if line.width() > width {
+            Line::styled(truncate_to_width(&line.to_string(), width), name_style)
+        } else {
+            line
+        };
+        rows.push(Row::yields(
+            line,
+            if device.selected { KEEP } else { OTHER_DEVICE },
+        ));
+    }
+    rows
+}
+
+/// The dashboard link, what it is for, and the passphrase a tunnel adds.
+fn web_rows(theme: &Theme, model: &ActiveModel, url: &ServeUrl, width: usize) -> Vec<Row> {
+    let dimmed = Style::default().fg(theme.dimmed);
+    let mut rows = vec![heading(theme, "Browser or phone")];
+    if cfg!(feature = "web") {
+        rows.extend(explain(
+            theme,
+            "  ",
+            "Open the dashboard in a browser or scan the QR with a phone. The link \
+             carries the token, which grants full access.",
+            width,
+        ));
+    } else {
+        for row in explain(theme, "  ", API_ONLY_NOTICE, width) {
+            rows.push(Row::keep(row.line));
+        }
+    }
+    if let Some(label) = &url.label {
+        rows.push(Row::yields(
+            Line::styled(format!("  via {label}"), dimmed.italic()),
+            EXPLAIN,
+        ));
+    }
+    for chunk in chunked(&url.url, width.saturating_sub(2)) {
+        rows.push(Row::keep(Line::styled(
+            format!("  {chunk}"),
+            Style::default().fg(theme.accent),
+        )));
+    }
+    if model.mode == Exposure::Tunnel {
+        rows.push(Row::keep(match model.passphrase {
+            Some(passphrase) => Line::from(vec![
+                Span::styled("  Passphrase ", dimmed),
+                Span::styled(
+                    passphrase.to_string(),
+                    Style::default().fg(theme.accent).bold(),
+                ),
+            ]),
+            None => Line::styled("  Passphrase: see the shell that ran `aoe serve`", dimmed),
+        }));
+    }
+    rows
+}
+
+fn exposure_row(theme: &Theme, width: usize) -> Row {
+    let full = " change exposure: localhost only, local network, or internet";
+    let label = if full.len() < width {
+        full
+    } else {
+        " change exposure"
+    };
+    Row::yields(
+        Line::from(vec![
+            Span::styled("e", Style::default().fg(theme.hint)),
+            Span::styled(label, Style::default().fg(theme.dimmed)),
+        ]),
+        EXPOSURE_NOTE,
+    )
+}
+
+fn qr_lines(theme: &Theme, qr: &str) -> Vec<Line<'static>> {
+    qr.lines()
+        .map(|line| Line::styled(line.to_string(), Style::default().fg(theme.text)))
+        .collect()
+}
+
+/// How the card arranges itself for the space it has.
+#[derive(Debug, PartialEq)]
+enum CardLayout {
+    /// Pairing, devices and the link in one column.
+    Single,
+    /// The QR beside everything else.
+    Beside,
+    /// The link and QR alone, toggled with `w` where they do not fit beside.
+    Web,
+}
+
+fn card_layout(model: &ActiveModel, area: Rect, qr: (usize, usize)) -> CardLayout {
+    let (qr_width, qr_height) = qr;
+    if qr_width == 0 {
+        return CardLayout::Single;
+    }
+    let beside = CARD_MIN_WIDTH + COLUMN_GAP + qr_width.max(CARD_MIN_WIDTH / 2) + 4;
+    if area.width as usize >= beside && area.height as usize >= qr_height + 8 {
+        CardLayout::Beside
+    } else if model.show_web {
+        CardLayout::Web
+    } else {
+        CardLayout::Single
+    }
+}
+
+/// The exposed daemon as a centered card sized to its content: status, then
+/// pairing, paired devices and browser access, with the key hints last.
 fn render_active(frame: &mut Frame, area: Rect, theme: &Theme, model: &ActiveModel) {
-    frame.render_widget(Clear, area);
-    // Without the bundle this screen hands out an API endpoint, not a
-    // dashboard, so the title says which one the user is looking at.
     let title = if cfg!(feature = "web") {
         " Remote Access "
     } else {
         " Remote API Access "
     };
-    let block = Block::default()
+    let Some(url) = model
+        .urls
+        .get(model.url_index)
+        .or_else(|| model.urls.first())
+    else {
+        let card = centered(area, 60, 3);
+        frame.render_widget(Clear, card);
+        frame.render_widget(
+            Paragraph::new("The daemon started but has not published a URL yet.")
+                .style(Style::default().fg(theme.dimmed))
+                .block(card_block(theme, title)),
+            card,
+        );
+        return;
+    };
+    let command = client_command(&url.url);
+    let qr = qr_lines(theme, model.qr);
+    let qr_size = (qr.iter().map(Line::width).max().unwrap_or(0), qr.len());
+    let layout = card_layout(model, area, qr_size);
+
+    // Borders take two columns and two rows, the padding two columns, and the
+    // footer one row.
+    let max_width = (area.width as usize).saturating_sub(4).max(1);
+    let max_rows = (area.height as usize).saturating_sub(3).max(1);
+    let (width, left, right, right_width) = match layout {
+        CardLayout::Beside => {
+            let right_width = qr_size.0.max(CARD_MIN_WIDTH / 2);
+            let left_width = (max_width - COLUMN_GAP - right_width).min(CARD_MAX_WIDTH);
+            let mut left = status_rows(theme, model, url, left_width);
+            left.push(Row::gap());
+            left.extend(pair_rows(theme, model, command.as_deref(), left_width));
+            left.push(Row::gap());
+            left.extend(device_rows(theme, model, left_width));
+            left.push(Row::gap());
+            left.extend(web_rows(theme, model, url, left_width));
+            left.push(Row::gap());
+            left.push(exposure_row(theme, left_width));
+            let mut right: Vec<Row> = qr.into_iter().map(Row::keep).collect();
+            right.push(Row::keep(Line::styled(
+                "Scan with a phone to open the link",
+                Style::default().fg(theme.dimmed),
+            )));
+            let left = fit_rows(left, max_rows, left_width);
+            let right = fit_rows(right, max_rows, right_width);
+            let used = left.iter().map(Line::width).max().unwrap_or(0);
+            (
+                used + COLUMN_GAP + right_width,
+                left,
+                Some(right),
+                right_width,
+            )
+        }
+        CardLayout::Web => {
+            let width = max_width.min(CARD_MAX_WIDTH);
+            let mut rows = status_rows(theme, model, url, width);
+            rows.push(Row::gap());
+            rows.extend(web_rows(theme, model, url, width));
+            if qr_size.0 <= width && rows.len() + 1 + qr_size.1 <= max_rows {
+                rows.push(Row::gap());
+                rows.extend(qr.into_iter().map(Row::keep));
+            } else {
+                rows.push(Row::keep(Line::styled(
+                    "  The terminal is too small for the QR.",
+                    Style::default().fg(theme.dimmed),
+                )));
+            }
+            (width, fit_rows(rows, max_rows, width), None, 0)
+        }
+        CardLayout::Single => {
+            let width = max_width.min(CARD_MAX_WIDTH);
+            let mut rows = status_rows(theme, model, url, width);
+            rows.push(Row::gap());
+            rows.extend(pair_rows(theme, model, command.as_deref(), width));
+            rows.push(Row::gap());
+            rows.extend(device_rows(theme, model, width));
+            rows.push(Row::gap());
+            rows.extend(web_rows(theme, model, url, width));
+            rows.push(Row::gap());
+            rows.push(exposure_row(theme, width));
+            let lines = fit_rows(rows, max_rows, width);
+            let used = lines.iter().map(Line::width).max().unwrap_or(0);
+            (used.clamp(CARD_MIN_WIDTH.min(width), width), lines, None, 0)
+        }
+    };
+    let footer = active_footer(
+        theme,
+        model,
+        command.is_some(),
+        &layout,
+        qr_size.0 > 0,
+        width,
+    );
+    let body_rows = left.len().max(right.as_ref().map_or(0, Vec::len));
+    let card = centered(area, width as u16 + 4, body_rows as u16 + 3);
+    frame.render_widget(Clear, card);
+    let block = card_block(theme, title);
+    let inner = block.inner(card);
+    frame.render_widget(block, card);
+    let [body, foot] = Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).areas(inner);
+    match right {
+        Some(right) => {
+            let [left_area, _, right_area] = Layout::horizontal([
+                Constraint::Min(1),
+                Constraint::Length(COLUMN_GAP as u16),
+                Constraint::Length(right_width as u16),
+            ])
+            .areas(body);
+            frame.render_widget(Paragraph::new(left), left_area);
+            frame.render_widget(Paragraph::new(right), right_area);
+        }
+        None => frame.render_widget(Paragraph::new(left), body),
+    }
+    frame.render_widget(Paragraph::new(footer), foot);
+}
+
+fn card_block(theme: &Theme, title: &'static str) -> Block<'static> {
+    Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(theme.accent))
@@ -1490,386 +2025,169 @@ fn render_active(frame: &mut Frame, area: Rect, theme: &Theme, model: &ActiveMod
         .title(Line::styled(
             title,
             Style::default().fg(theme.accent).bold(),
-        ));
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
-
-    let Some(url) = model
-        .urls
-        .get(model.url_index)
-        .or_else(|| model.urls.first())
-    else {
-        frame.render_widget(
-            Paragraph::new("The daemon started but has not published a URL yet.")
-                .style(Style::default().fg(theme.dimmed)),
-            inner,
-        );
-        return;
-    };
-    let command = client_command(&url.url);
-
-    // The exposure line yields before the code and command do.
-    let header_rows = match inner.height {
-        0..7 => 0,
-        7..12 => 1,
-        _ => 2,
-    };
-    let rows = Layout::vertical([
-        Constraint::Length(header_rows),
-        Constraint::Min(1),
-        Constraint::Length(1),
-    ])
-    .split(inner);
-    frame.render_widget(Paragraph::new(exposure_line(theme, model, url)), rows[0]);
-    let wide = inner.width >= WIDE_ACTIVE_WIDTH;
-    let body = rows[1];
-    if wide {
-        let web_width = (inner.width / 2).min(56);
-        let columns = Layout::horizontal([Constraint::Min(1), Constraint::Length(web_width)])
-            .spacing(2)
-            .split(body);
-        render_pairing_column(frame, columns[0], theme, model, command.as_deref());
-        render_web_column(frame, columns[1], theme, model, url);
-    } else if model.show_web {
-        render_web_column(frame, body, theme, model, url);
-    } else {
-        render_pairing_column(frame, body, theme, model, command.as_deref());
-    }
-    render_active_footer(frame, rows[2], theme, model, command.is_some(), wide);
+        ))
 }
 
-fn exposure_line(theme: &Theme, model: &ActiveModel, url: &ServeUrl) -> Line<'static> {
-    let place = match model.mode {
-        Exposure::Tunnel => "Sharing over the internet",
-        Exposure::Network => "Sharing on local network",
-        Exposure::Localhost => "Sharing on this machine",
-    };
-    let address = base_url(&url.url)
-        .map(|base| crate::daemon::remotes::short_remote_address(base.as_str()))
-        .unwrap_or_default();
-    let eight_hours = Duration::from_secs(8 * 3600);
-    let mut spans = vec![
-        Span::styled("● ", Style::default().fg(theme.running)),
-        Span::styled(place, Style::default().fg(theme.text).bold()),
-        Span::styled(format!(" · {address}"), Style::default().fg(theme.text)),
-        Span::styled(
-            format!(" · open {}", format_elapsed(model.elapsed)),
-            Style::default().fg(theme.dimmed),
-        ),
-    ];
-    if model.elapsed >= eight_hours {
-        spans.push(Span::styled(
-            " · still need it?",
-            Style::default().fg(theme.waiting),
-        ));
+fn centered(area: Rect, width: u16, height: u16) -> Rect {
+    let width = width.min(area.width);
+    let height = height.min(area.height);
+    Rect {
+        x: area.x + (area.width - width) / 2,
+        y: area.y + (area.height - height) / 2,
+        width,
+        height,
     }
-    Line::from(spans)
 }
 
-/// Pairing sections in screen order. On a short terminal the spacing goes
-/// first, then the device list shrinks to a count and disappears, leaving the
-/// code and the command.
-fn render_pairing_column(
-    frame: &mut Frame,
-    area: Rect,
-    theme: &Theme,
-    model: &ActiveModel,
-    command: Option<&str>,
-) {
-    let width = area.width as usize;
-    let dimmed = Style::default().fg(theme.dimmed);
-    let code = model
-        .pairing
-        .map(|panel| panel.code_lines(theme))
-        .unwrap_or_default();
-    let command_lines = match command {
-        Some(command) => vec![
-            Line::styled("On the other machine run", dimmed),
-            Line::styled(
-                format!("  {}", truncate_to_width(command, width.saturating_sub(2))),
-                Style::default().fg(theme.text).bold(),
-            ),
-        ],
-        None => vec![Line::styled(
-            "Pick a network exposure (e) so another machine can reach this one.",
-            dimmed,
-        )],
-    };
-    let height = area.height as usize;
-    let fixed = 1 + code.len() + command_lines.len();
-    let device_lines = |rows: usize| {
-        model
-            .pairing
-            .filter(|_| rows > 0)
-            .map(|panel| panel.device_lines(theme, rows.min(6)))
-            .unwrap_or_default()
-    };
-    let full = device_lines(6);
-    let spaced = fixed + 2 + full.len() <= height;
-    let devices = if spaced {
-        full
-    } else {
-        device_lines(height.saturating_sub(fixed))
-    };
-    let lockouts = model
-        .pairing
-        .map(|panel| panel.lockout_lines(theme))
-        .unwrap_or_default();
-    let mut lines = vec![Line::styled(
-        "Pair another aoe",
-        Style::default().fg(theme.accent).bold(),
-    )];
-    // A locked-out IP cannot pair at all, so it outranks the code.
-    lines.extend(lockouts);
-    lines.extend(code);
-    if spaced {
-        lines.push(Line::from(""));
-    }
-    lines.extend(command_lines);
-    if !devices.is_empty() {
-        if spaced {
-            lines.push(Line::from(""));
-        }
-        lines.extend(devices);
-    }
-    frame.render_widget(Paragraph::new(lines), area);
-}
-
-/// Browser and phone access: the tokenized URL (and passphrase for a tunnel)
-/// with its QR when there is room.
-fn render_web_column(
-    frame: &mut Frame,
-    area: Rect,
-    theme: &Theme,
-    model: &ActiveModel,
-    url: &ServeUrl,
-) {
-    let width = area.width.max(1) as usize;
-    let dimmed = Style::default().fg(theme.dimmed);
-    let mut text: Vec<Line> = vec![Line::styled(
-        "Browser or phone",
-        Style::default().fg(theme.accent).bold(),
-    )];
-    if !cfg!(feature = "web") {
-        text.push(Line::styled(API_ONLY_NOTICE, dimmed));
-    }
-    if let Some(label) = &url.label {
-        text.push(Line::styled(format!("via {label}"), dimmed.italic()));
-    }
-    text.push(Line::styled(
-        url.url.clone(),
-        Style::default().fg(theme.accent),
-    ));
-    if model.mode == Exposure::Tunnel {
-        text.push(match model.passphrase {
-            Some(passphrase) => Line::from(vec![
-                Span::styled("Passphrase: ", dimmed),
-                Span::styled(
-                    passphrase.to_string(),
-                    Style::default().fg(theme.accent).bold(),
-                ),
-            ]),
-            None => Line::styled(
-                "Passphrase: set when the daemon started; see the shell that ran `aoe serve`",
-                dimmed,
-            ),
-        });
-    }
-    if model.urls.len() > 1 {
-        text.push(Line::styled("Tab: next URL", dimmed));
-    }
-    let text_rows: usize = text
-        .iter()
-        .map(|line| line.width().max(1).div_ceil(width))
-        .sum();
-    let qr = render_qr(&url.url);
-    let qr_lines: Vec<&str> = qr.lines().collect();
-    let qr_width = qr_lines
-        .iter()
-        .map(|line| line.chars().count())
-        .max()
-        .unwrap_or(0);
-    let qr_fits = !qr_lines.is_empty()
-        && qr_width <= width
-        && text_rows + 1 + qr_lines.len() <= area.height as usize;
-    let mut lines = Vec::new();
-    if qr_fits {
-        lines.extend(
-            qr_lines
-                .iter()
-                .map(|line| Line::styled(line.to_string(), Style::default().fg(theme.text))),
-        );
-        lines.push(Line::from(""));
-    }
-    lines.extend(text);
-    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), area);
-}
-
-fn render_active_footer(
-    frame: &mut Frame,
-    area: Rect,
+/// Key hints in reading order, at most `width` wide: the least needed go
+/// first, and `?` lists every key with what it does.
+fn active_footer(
     theme: &Theme,
     model: &ActiveModel,
     has_command: bool,
-    wide: bool,
-) {
-    let warn = Style::default().fg(theme.waiting).bold();
-    let line = if let Some(confirm) = model.pending_confirm {
-        Line::styled(
+    layout: &CardLayout,
+    has_qr: bool,
+    width: usize,
+) -> Line<'static> {
+    if let Some(confirm) = model.pending_confirm {
+        return Line::styled(
             match confirm {
                 PendingConfirm::NewPassphrase => {
-                    "Press G again for a new passphrase (clients need it); any other key cancels"
+                    "Press g again for a new passphrase (clients need it); any other key cancels"
                 }
                 PendingConfirm::Restart => {
-                    "Press R again to restart (clears all sessions); any other key cancels"
+                    "Press r again to restart (clears all sessions); any other key cancels"
                 }
             },
-            warn,
-        )
-    } else if model.pairing.is_some_and(|p| p.confirming_revoke()) {
-        Line::styled(
-            "Press x again to revoke this device; any other key cancels",
-            warn,
-        )
-    } else if let Some(flash) = model.flash {
-        Line::styled(flash.to_string(), Style::default().fg(theme.accent))
+            Style::default().fg(theme.waiting).bold(),
+        );
+    }
+    if let Some(flash) = model.flash {
+        return Line::styled(flash.to_string(), Style::default().fg(theme.accent));
+    }
+    let panel = model.pairing;
+    let has_devices = panel.is_some_and(|p| p.devices().is_ok_and(|d| !d.is_empty()));
+    // (key, label, keep rank): higher ranks survive a narrow footer.
+    let mut keys: Vec<(&str, &str, u8)> = Vec::new();
+    if *layout == CardLayout::Web {
+        keys.push(("w", "back to pairing", 7));
     } else {
-        let mut keys: Vec<(&str, &str)> = Vec::new();
         if has_command {
-            keys.push(("c", "copy"));
+            keys.push(("c", "copy command", 7));
         }
-        if !wide {
-            keys.push(("w", if model.show_web { "pairing" } else { "web/QR" }));
+        if has_devices {
+            keys.push(("↑↓", "select device", 1));
+            keys.push(("x", "revoke device", 5));
         }
-        if model.pairing.is_some_and(|p| p.has_lockouts()) {
-            keys.push(("u", "unblock"));
+        if panel.is_some_and(|p| !p.lockouts().is_empty()) {
+            keys.push(("u", "unblock IPs", 6));
         }
-        keys.extend([
-            ("x", "revoke"),
-            ("e", "exposure"),
-            ("?", "help"),
-            ("esc", "close"),
-        ]);
-        let render = |keys: &[(&str, &str)]| {
-            let mut spans = Vec::new();
-            for (i, (key, label)) in keys.iter().enumerate() {
-                if i > 0 {
-                    spans.push(Span::styled(" · ", Style::default().fg(theme.dimmed)));
-                }
-                spans.push(Span::styled(
-                    key.to_string(),
-                    Style::default().fg(theme.accent),
-                ));
-                spans.push(Span::styled(
-                    format!(" {label}"),
-                    Style::default().fg(theme.dimmed),
-                ));
+        if has_qr && *layout == CardLayout::Single {
+            keys.push(("w", "show QR", 4));
+        }
+    }
+    if model.urls.len() > 1 {
+        keys.push(("Tab", "next URL", 2));
+    }
+    keys.extend([
+        ("e", "change exposure", 3),
+        ("?", "help", 8),
+        ("Esc", "back to sessions", 9),
+    ]);
+    let render = |keys: &[(&str, &str, u8)]| {
+        let mut spans = Vec::new();
+        for (i, (key, label, _)) in keys.iter().enumerate() {
+            if i > 0 {
+                spans.push(Span::raw("  "));
             }
-            Line::from(spans)
-        };
-        // `?` lists everything, so the rarer keys give way first.
-        let mut line = render(&keys);
-        while line.width() > area.width as usize && keys.len() > 2 {
-            keys.remove(keys.len() - 3);
-            line = render(&keys);
+            spans.push(Span::styled(
+                key.to_string(),
+                Style::default().fg(theme.hint),
+            ));
+            spans.push(Span::styled(
+                format!(" {label}"),
+                Style::default().fg(theme.dimmed),
+            ));
         }
-        line
+        Line::from(spans)
     };
-    frame.render_widget(Paragraph::new(line), area);
+    let mut line = render(&keys);
+    while line.width() > width && keys.len() > 1 {
+        let lowest = keys
+            .iter()
+            .enumerate()
+            .min_by_key(|(_, (_, _, rank))| *rank)
+            .map_or(0, |(at, _)| at);
+        keys.remove(lowest);
+        line = render(&keys);
+    }
+    line
 }
 
-/// Shortcut rows of the help overlay.
+/// Every key the exposed view takes, with what it does.
 fn help_shortcuts(is_tunnel: bool) -> Vec<(&'static str, &'static str)> {
     let mut shortcuts = vec![
-        ("c", "Copy the command for the other machine"),
-        ("w", "Show browser and phone access (narrow terminals)"),
-        ("↑↓ / x", "Select a paired device / revoke it"),
-        ("u", "Let IPs locked out by failed attempts try again"),
-        ("e", "Change exposure (back to localhost, LAN, tunnel)"),
-        ("r", "Restart server (clears all client sessions)"),
+        ("c", "Copy the command for the other machine."),
+        ("↑↓  j k", "Select a paired device."),
+        ("x", "Revoke the selected device (press twice)."),
+        ("u", "Let locked-out IPs try pairing again."),
+        ("w", "Show the browser link and QR code."),
+        ("Tab", "Show the next URL, when there are several."),
+        ("e", "Change exposure: this machine, LAN, internet."),
+        ("r", "Restart the server, ending sessions (twice)."),
     ];
     if is_tunnel {
-        shortcuts.push(("g", "New random passphrase and restart server"));
+        shortcuts.push(("g", "New passphrase and restart (press twice)."));
     }
     shortcuts.extend([
-        ("Tab", "Cycle URLs (when multiple available)"),
-        ("Esc / q", "Close this view (server keeps running)"),
-        ("?", "Toggle this help"),
+        ("?", "Show or hide this help."),
+        ("Esc  q", "Back to sessions; the server keeps running."),
     ]);
     shortcuts
 }
 
 fn render_help_overlay(frame: &mut Frame, area: Rect, theme: &Theme, mode: Exposure) {
-    let dialog_width: u16 = 72.min(area.width.saturating_sub(4));
     let is_tunnel = mode == Exposure::Tunnel;
-    let dialog_height: u16 = if is_tunnel { 22 } else { 16 };
-    let dialog_height = dialog_height.min(area.height.saturating_sub(4));
-    let x = area.x + (area.width.saturating_sub(dialog_width)) / 2;
-    let y = area.y + (area.height.saturating_sub(dialog_height)) / 2;
-    let dialog_area = Rect {
-        x,
-        y,
-        width: dialog_width,
-        height: dialog_height,
-    };
-
+    let key_width = 9;
+    let mut lines: Vec<Line> = help_shortcuts(is_tunnel)
+        .into_iter()
+        .map(|(key, desc)| {
+            Line::from(vec![
+                Span::styled(format!("{key:key_width$}"), Style::default().fg(theme.hint)),
+                Span::styled(desc, Style::default().fg(theme.text)),
+            ])
+        })
+        .collect();
+    if is_tunnel {
+        lines.push(Line::from(""));
+        lines.push(Line::styled(
+            "The passphrase is a second factor for the tunnel",
+            Style::default().fg(theme.dimmed),
+        ));
+        lines.push(Line::styled(
+            "and persists across restarts.",
+            Style::default().fg(theme.dimmed),
+        ));
+    }
+    lines.push(Line::from(""));
+    lines.push(Line::styled(
+        "Press any key to close",
+        Style::default().fg(theme.dimmed),
+    ));
+    let width = lines.iter().map(Line::width).max().unwrap_or(0) as u16 + 4;
+    let dialog_area = centered(area, width, lines.len() as u16 + 2);
     frame.render_widget(Clear, dialog_area);
     let block = Block::default()
         .style(Style::default().bg(theme.background))
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(theme.border))
-        .title(" Remote Access Help ")
-        .title_style(
-            Style::default()
-                .fg(theme.accent)
-                .add_modifier(Modifier::BOLD),
-        );
-    let inner = block.inner(dialog_area);
-    frame.render_widget(block, dialog_area);
-
-    let mut lines: Vec<Line> = vec![
-        Line::from(""),
-        Line::from(Span::styled(
-            "Keyboard Shortcuts",
-            Style::default()
-                .fg(theme.accent)
-                .add_modifier(Modifier::BOLD),
-        )),
-        Line::from(""),
-    ];
-    for (key, desc) in help_shortcuts(is_tunnel) {
-        lines.push(Line::from(vec![
-            Span::styled(format!("  {:14}", key), Style::default().fg(theme.waiting)),
-            Span::styled(desc, Style::default().fg(theme.text)),
-        ]));
-    }
-    lines.push(Line::from(""));
-    if is_tunnel {
-        lines.extend([
-            Line::from(Span::styled(
-                "About the passphrase",
-                Style::default()
-                    .fg(theme.accent)
-                    .add_modifier(Modifier::BOLD),
-            )),
-            Line::from(Span::styled(
-                "  Second factor for internet-exposed tunnels.",
-                Style::default().fg(theme.text),
-            )),
-            Line::from(Span::styled(
-                "  Persists across restarts. Press G to rotate.",
-                Style::default().fg(theme.text),
-            )),
-        ]);
-    }
-    lines.push(Line::from(""));
-    lines.push(Line::from(Span::styled(
-        "  Press any key to close",
-        Style::default().fg(theme.dimmed),
-    )));
-
-    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
+        .padding(Padding::horizontal(1))
+        .title(Line::styled(
+            " Remote Access Keys ",
+            Style::default().fg(theme.accent).bold(),
+        ));
+    frame.render_widget(Paragraph::new(lines).block(block), dialog_area);
 }
 
 /// Split a URL of the form `https://host/?token=XYZ` into a "clean" base
@@ -2098,48 +2416,85 @@ const PASSPHRASE_WORDS: &[&str] = &[
 #[cfg(test)]
 mod active_screen {
     use super::*;
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
 
-    /// Unicode half-blocks the QR renderer draws with. Their presence is the
-    /// only way to tell a rendered code from an empty panel.
-    const QR_GLYPHS: [char; 3] = ['\u{2588}', '\u{2580}', '\u{2584}'];
+    const TOKEN_URL: &str = "http://192.168.1.42:8081/?token=abc123def456";
 
-    fn screen(width: u16, height: u16, show_web: bool) -> String {
-        let urls = vec![ServeUrl {
-            label: Some("lan".to_string()),
-            url: "http://192.168.1.42:8081/?token=abc123def456".to_string(),
-        }];
-        let pairing = super::super::pairing::PairingPanel::ready("K7F-3QX", &["laptop"]);
-        let mut term = Terminal::new(TestBackend::new(width, height)).expect("terminal");
-        term.draw(|f| {
-            render_active(
-                f,
-                f.area(),
-                &Theme::default(),
-                &ActiveModel {
-                    mode: Exposure::Network,
-                    urls: &urls,
-                    url_index: 0,
-                    passphrase: None,
-                    elapsed: Duration::from_secs(42),
-                    pending_confirm: None,
-                    pairing: Some(&pairing),
-                    show_web,
-                    flash: None,
-                },
-            )
-        })
-        .expect("draw");
-        let buf = term.backend().buffer().clone();
-        (0..buf.area.height)
-            .map(|y| {
-                (0..buf.area.width)
-                    .map(|x| buf[(x, y)].symbol())
-                    .collect::<String>()
+    struct Setup {
+        width: u16,
+        height: u16,
+        show_web: bool,
+        qr: String,
+        panel: super::super::pairing::PairingPanel,
+        mode: Exposure,
+    }
+
+    fn setup(width: u16, height: u16) -> Setup {
+        Setup {
+            width,
+            height,
+            show_web: false,
+            qr: String::new(),
+            panel: super::super::pairing::PairingPanel::ready("K7F-3QX", &["laptop"]),
+            mode: Exposure::Network,
+        }
+    }
+
+    /// A stand-in the size of the QR a tokenized LAN URL draws.
+    fn fake_qr() -> String {
+        vec!["█".repeat(45); 23].join("\n")
+    }
+
+    impl Setup {
+        fn draw(&self) -> (String, Rect) {
+            let urls = vec![ServeUrl {
+                label: Some("lan".to_string()),
+                url: TOKEN_URL.to_string(),
+            }];
+            let mut term =
+                Terminal::new(TestBackend::new(self.width, self.height)).expect("terminal");
+            term.draw(|f| {
+                render_active(
+                    f,
+                    f.area(),
+                    &Theme::default(),
+                    &ActiveModel {
+                        mode: self.mode,
+                        urls: &urls,
+                        url_index: 0,
+                        passphrase: Some("amber copper navy teal"),
+                        elapsed: Duration::from_secs(42),
+                        pending_confirm: None,
+                        pairing: Some(&self.panel),
+                        show_web: self.show_web,
+                        flash: None,
+                        qr: &self.qr,
+                    },
+                )
             })
-            .collect::<Vec<_>>()
-            .join("\n")
+            .expect("draw");
+            let buf = term.backend().buffer().clone();
+            let rows: Vec<String> = (0..buf.area.height)
+                .map(|y| {
+                    (0..buf.area.width)
+                        .map(|x| buf[(x, y)].symbol())
+                        .collect::<String>()
+                })
+                .collect();
+            let top = rows.iter().position(|r| r.contains('╭')).expect("card");
+            let bottom = rows.iter().rposition(|r| r.contains('╰')).expect("card");
+            let left = rows[top].chars().position(|c| c == '╭').unwrap_or(0);
+            let right = rows[top].chars().position(|c| c == '╮').unwrap_or(0);
+            let card = Rect::new(
+                left as u16,
+                top as u16,
+                (right - left + 1) as u16,
+                (bottom - top + 1) as u16,
+            );
+            (rows.join("\n"), card)
+        }
     }
 
     fn position(screen: &str, needle: &str) -> usize {
@@ -2148,60 +2503,148 @@ mod active_screen {
             .unwrap_or_else(|| panic!("{needle:?} missing:\n{screen}"))
     }
 
-    /// The code comes first, then the short command, at every size; the old
-    /// credential-carrying command is gone.
+    fn inner_rows(screen: &str, card: Rect) -> Vec<String> {
+        screen
+            .lines()
+            .skip(card.y as usize + 1)
+            .take(card.height.saturating_sub(2) as usize)
+            .map(|row| {
+                row.chars()
+                    .skip(card.x as usize + 1)
+                    .take(card.width.saturating_sub(2) as usize)
+                    .collect()
+            })
+            .collect()
+    }
+
+    /// At every size the card reads status, then the code and its steps,
+    /// then devices, with described hints; nothing is clipped and it carries
+    /// no stretch of empty rows.
     #[test]
-    fn the_code_leads_and_the_command_is_short_at_any_size() {
-        for (width, height) in [(120, 40), (100, 30), (60, 20), (60, 12)] {
-            let screen = screen(width, height, false);
-            let code = position(&screen, "K 7 F - 3 Q X");
-            let command = position(&screen, "aoe remote add 192.168.1.42:8081");
-            assert!(code < command, "{width}x{height}:\n{screen}");
-            assert!(!screen.contains("--token"), "{screen}");
-            assert!(!screen.contains("--insecure"), "{screen}");
+    fn the_card_reads_in_order_at_every_size_without_dead_space() {
+        for (width, height) in [(60, 20), (100, 30), (140, 40)] {
+            let (screen, card) = setup(width, height).draw();
+            let order = [
+                "● Sharing on local network · 192.168.1.42:8081",
+                "Pair a device",
+                "K 7 F - 3 Q X",
+                "1. On the other machine run",
+                "aoe remote add 192.168.1.42:8081",
+                "2. Enter the code above when it asks",
+                "Paired devices",
+                "laptop  192.168.1.9 · seen 2m ago",
+            ];
+            let positions: Vec<usize> = order.iter().map(|n| position(&screen, n)).collect();
+            assert!(
+                positions.windows(2).all(|w| w[0] < w[1]),
+                "{width}x{height}:\n{screen}"
+            );
+            for hint in [
+                "c copy command",
+                "? help",
+                "Esc back to sessions",
+                "x revoke laptop",
+            ] {
+                position(&screen, hint);
+            }
+            assert!(
+                !screen.contains('…'),
+                "clipped at {width}x{height}:\n{screen}"
+            );
+            let rows = inner_rows(&screen, card);
+            let blank = rows.iter().filter(|r| r.trim().is_empty()).count();
+            assert!(
+                blank <= 4,
+                "{blank} blank rows at {width}x{height}:\n{screen}"
+            );
+            assert!(
+                !rows
+                    .windows(2)
+                    .any(|w| w[0].trim().is_empty() && w[1].trim().is_empty()),
+                "{width}x{height}:\n{screen}"
+            );
+            assert!(card.width <= width && card.height <= height);
         }
-        let roomy = screen(60, 20, false);
-        assert!(
-            roomy.contains("Sharing on local network · 192.168.1.42:8081"),
-            "{roomy}"
+        let roomy = setup(100, 30).draw().0;
+        position(
+            &roomy,
+            "Other aoe clients on this network can connect once paired.",
         );
-        assert!(roomy.contains("laptop · 2m ago"), "{roomy}");
+        position(
+            &roomy,
+            "e change exposure: localhost only, local network, or internet",
+        );
     }
 
-    /// Wide terminals show browser access beside pairing; narrow ones keep it
-    /// behind `w`.
     #[test]
-    fn web_access_sits_beside_pairing_when_wide_and_behind_w_when_narrow() {
-        let token_url = "http://192.168.1.42:8081/?token=abc123def456";
-        let wide = screen(120, 40, false);
-        assert!(
-            wide.contains(token_url) && wide.contains("K 7 F - 3 Q X"),
-            "{wide}"
-        );
-        assert_eq!(
-            wide.chars().any(|c| QR_GLYPHS.contains(&c)),
-            cfg!(feature = "web"),
-            "{wide}"
-        );
-        let narrow = screen(60, 20, false);
-        assert!(!narrow.contains("token=abc123"), "{narrow}");
-        assert!(narrow.contains("w web/QR"), "{narrow}");
-        let toggled = screen(60, 20, true);
-        let flat: String = toggled.chars().filter(|c| !c.is_whitespace()).collect();
-        assert!(flat.contains("token=abc123def456"), "{toggled}");
+    fn devices_show_an_empty_state_an_armed_revoke_and_lockouts() {
+        let mut empty = setup(100, 30);
+        empty.panel = super::super::pairing::PairingPanel::ready("K7F-3QX", &[]);
+        let screen = empty.draw().0;
+        position(&screen, "No devices paired yet.");
+        assert!(!screen.contains("revoke"), "{screen}");
+
+        let mut armed = setup(100, 30);
+        armed
+            .panel
+            .handle_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));
+        position(&armed.draw().0, "press x again to revoke laptop");
+
+        let mut locked = setup(100, 30);
+        locked.panel = super::super::pairing::PairingPanel::ready("K7F-3QX", &["laptop"])
+            .with_lockout("100.89.98.53", 725);
+        let screen = locked.draw().0;
+        let lockout = position(&screen, "100.89.98.53 locked out · 12m left  u unblock");
+        assert!(lockout < position(&screen, "K 7 F - 3 Q X"), "{screen}");
+        position(&screen, "u unblock IPs");
     }
 
-    /// A QR-less screen offering a bare URL reads as a dashboard link, and a
-    /// browser following it gets a bodiless 404, so both the title and the
-    /// web section say the endpoint is API-only in such a build.
+    /// The QR sits beside pairing when both fit; otherwise it waits behind `w`,
+    /// which swaps the card to the link and QR.
+    #[test]
+    fn the_qr_sits_beside_pairing_when_it_fits_and_behind_w_when_not() {
+        let mut wide = setup(140, 40);
+        wide.qr = fake_qr();
+        let (screen, card) = wide.draw();
+        let row = screen
+            .lines()
+            .find(|row| row.contains("Pair a device"))
+            .expect("pairing row");
+        assert!(row.contains('█'), "beside:\n{screen}");
+        assert!(card.width < 140, "{screen}");
+
+        let mut narrow = setup(100, 30);
+        narrow.qr = fake_qr();
+        let screen = narrow.draw().0;
+        assert!(!screen.contains('█'), "{screen}");
+        position(&screen, "w show QR");
+        narrow.show_web = true;
+        let screen = narrow.draw().0;
+        position(&screen, "Browser or phone");
+        position(&screen, "w back to pairing");
+        assert!(!screen.contains("Pair a device"), "{screen}");
+    }
+
+    /// A tunnel adds its passphrase to the link section.
+    #[test]
+    fn a_tunnel_shows_its_passphrase_with_the_link() {
+        let mut tunnel = setup(100, 30);
+        tunnel.mode = Exposure::Tunnel;
+        let screen = tunnel.draw().0;
+        position(&screen, "Passphrase amber copper navy teal");
+        position(&screen, "Sharing over the internet");
+    }
+
+    /// Without the bundle the title and the link section say the endpoint is
+    /// API-only, since a browser following the link gets a 404.
     #[test]
     fn active_screen_says_api_only_without_web() {
-        let screen = screen(120, 40, false);
-        for needle in ["Remote API Access", "No dashboard bundle in this build:"] {
+        let screen = setup(120, 40).draw().0;
+        for needle in ["Remote API Access", "This build has no dashboard"] {
             assert_eq!(
                 screen.contains(needle),
                 !cfg!(feature = "web"),
-                "{needle:?} belongs on the screen only without the dashboard bundle:\n{screen}"
+                "{needle:?}:\n{screen}"
             );
         }
     }
@@ -2509,41 +2952,37 @@ localhost\thttp://localhost:54321/?token=abc\n";
         assert_eq!(out[1].url, "http://no-label-here/");
     }
 
-    /// The help overlay has a fixed width. Every shortcut line must fit
-    /// within `dialog_width - borders(2) - padding(0)` columns so text
-    /// doesn't clip. This test catches the bug before it ships.
+    /// Help names every key the exposed view takes and still fits the
+    /// smallest supported terminal.
     #[test]
-    fn help_overlay_text_fits_within_dialog_width() {
-        let dialog_width: usize = 72;
-        // Inner width = dialog_width - 2 (left/right border)
-        let inner_width = dialog_width - 2;
-        let key_col: usize = 14; // format!("{:14}", key)
-        let indent: usize = 2; // leading "  "
-
-        let descriptions: Vec<&str> = help_shortcuts(true)
-            .into_iter()
-            .map(|(_, desc)| desc)
-            .chain([
-                "Keyboard Shortcuts",
-                "About the passphrase",
-                "Second factor for internet-exposed tunnels.",
-                "Persists across restarts. Press G to rotate.",
-                "Press any key to close",
-            ])
+    fn help_lists_every_key_and_fits_a_small_terminal() {
+        for tunnel in [false, true] {
+            let keys: Vec<&str> = help_shortcuts(tunnel).iter().map(|(k, _)| *k).collect();
+            for key in [
+                "c",
+                "↑↓  j k",
+                "x",
+                "u",
+                "w",
+                "Tab",
+                "e",
+                "r",
+                "?",
+                "Esc  q",
+            ] {
+                assert!(keys.contains(&key), "{key} missing: {keys:?}");
+            }
+            assert_eq!(keys.contains(&"g"), tunnel);
+        }
+        let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(60, 20)).unwrap();
+        term.draw(|f| render_help_overlay(f, f.area(), &Theme::default(), Exposure::Tunnel))
+            .unwrap();
+        let buf = term.backend().buffer().clone();
+        let screen: String = (0..20)
+            .map(|y| (0..60).map(|x| buf[(x, y)].symbol()).collect::<String>() + "\n")
             .collect();
-
-        for desc in descriptions {
-            let line_len = indent + key_col + desc.len();
-            assert!(
-                line_len <= inner_width,
-                "Help text clips: {:?} needs {} cols but only {} available \
-                 (dialog_width={}, inner={})",
-                desc,
-                line_len,
-                inner_width,
-                dialog_width,
-                inner_width,
-            );
+        for (_, desc) in help_shortcuts(true) {
+            assert!(screen.contains(desc), "{desc:?} clipped:\n{screen}");
         }
     }
 }

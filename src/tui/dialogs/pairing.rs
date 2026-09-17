@@ -7,11 +7,8 @@ use std::collections::HashSet;
 use std::time::{Duration, Instant};
 
 use crossterm::event::{KeyCode, KeyEvent};
-use ratatui::prelude::*;
 use serde::Deserialize;
 use tokio::sync::mpsc;
-
-use crate::tui::styles::Theme;
 
 const CONFIRM_WINDOW: Duration = Duration::from_secs(3);
 /// How often the device list is re-read, which is also how soon a redeemed
@@ -28,6 +25,8 @@ enum CodeState {
 struct PairedDevice {
     session_id: String,
     device_name: Option<String>,
+    #[serde(default)]
+    created_ip: String,
     last_seen: chrono::DateTime<chrono::Utc>,
 }
 
@@ -114,10 +113,20 @@ impl PairingPanel {
             .map(|name| PairedDevice {
                 session_id: name.to_string(),
                 device_name: Some(name.to_string()),
+                created_ip: "192.168.1.9".to_string(),
                 last_seen: chrono::Utc::now() - chrono::Duration::minutes(2),
             })
             .collect())));
         panel
+    }
+
+    #[cfg(test)]
+    pub(super) fn with_lockout(mut self, ip: &str, remaining_secs: u64) -> Self {
+        self.apply(Update::Lockouts(vec![Lockout {
+            ip: ip.into(),
+            remaining_secs,
+        }]));
+        self
     }
 
     fn spawn(&self, work: impl std::future::Future<Output = Update> + Send + 'static) {
@@ -285,27 +294,17 @@ impl PairingPanel {
         !self.lockouts.0.is_empty()
     }
 
-    /// One line per locked-out IP with the time left, longest first.
-    pub(super) fn lockout_lines(&self, theme: &Theme) -> Vec<Line<'static>> {
+    /// Locked-out IPs with the seconds left, longest first.
+    pub(super) fn lockouts(&self) -> Vec<(&str, u64)> {
         let (lockouts, read_at) = &self.lockouts;
         let elapsed = read_at.elapsed().as_secs();
         lockouts
             .iter()
             .filter_map(|lockout| {
                 let left = lockout.remaining_secs.checked_sub(elapsed)?.max(1);
-                Some(Line::from(vec![
-                    Span::styled(lockout.ip.clone(), Style::default().fg(theme.waiting)),
-                    Span::styled(
-                        format!(" locked out · {} left", ago(left)),
-                        Style::default().fg(theme.dimmed),
-                    ),
-                ]))
+                Some((lockout.ip.as_str(), left))
             })
             .collect()
-    }
-
-    pub(super) fn confirming_revoke(&self) -> bool {
-        self.confirm_revoke.is_some()
     }
 
     /// Drain background results, keep a live code on screen and advance the
@@ -348,79 +347,61 @@ impl PairingPanel {
         changed
     }
 
-    /// The code, spaced for reading across a room, and its lifetime.
-    pub(super) fn code_lines(&self, theme: &Theme) -> Vec<Line<'static>> {
-        let dimmed = Style::default().fg(theme.dimmed);
+    pub(super) fn code(&self) -> CodeView<'_> {
         match &self.code {
-            CodeState::Minting => vec![
-                Line::styled("  · · ·   · · ·", dimmed),
-                Line::styled("  creating a code", dimmed),
-            ],
-            CodeState::Ready { code, expires_at } => {
-                let remaining = expires_at.saturating_duration_since(Instant::now());
-                vec![
-                    Line::styled(
-                        format!("  {}", spaced(code)),
-                        Style::default().fg(theme.accent).bold(),
-                    ),
-                    Line::styled(
-                        format!("  single use · new code in {}", countdown(remaining)),
-                        dimmed,
-                    ),
-                ]
-            }
-            CodeState::Failed(error) => vec![
-                Line::styled(
-                    "  no code available",
-                    Style::default().fg(theme.error).bold(),
-                ),
-                Line::styled(format!("  {error}"), Style::default().fg(theme.error)),
-            ],
+            CodeState::Minting => CodeView::Minting,
+            CodeState::Ready { code, expires_at } => CodeView::Ready {
+                spaced: spaced(code),
+                expires_in: countdown(expires_at.saturating_duration_since(Instant::now())),
+            },
+            CodeState::Failed(error) => CodeView::Failed(error),
         }
     }
 
-    /// Paired devices in at most `rows` lines; one line counts them when the
-    /// list does not fit.
-    pub(super) fn device_lines(&self, theme: &Theme, rows: usize) -> Vec<Line<'static>> {
-        let dimmed = Style::default().fg(theme.dimmed);
-        let text = Style::default().fg(theme.text);
+    /// Paired devices as rows, or why there are none to show: `Err(None)`
+    /// while the first listing loads.
+    pub(super) fn devices(&self) -> Result<Vec<DeviceRow<'_>>, Option<&str>> {
         let devices = match &self.devices {
-            None => return vec![Line::styled("Paired: loading", dimmed)],
-            Some(Err(error)) => {
-                return vec![Line::styled(
-                    format!("Paired: {error}"),
-                    Style::default().fg(theme.error),
-                )]
-            }
-            Some(Ok(devices)) if devices.is_empty() => {
-                return vec![Line::styled("Paired: none yet", dimmed)]
-            }
+            None => return Err(None),
+            Some(Err(error)) => return Err(Some(error)),
             Some(Ok(devices)) => devices,
         };
-        if rows < 2 {
-            return vec![Line::styled(format!("Paired: {}", devices.len()), dimmed)];
-        }
         let now = chrono::Utc::now();
-        let shown = rows - 1;
-        let start = self.selected.saturating_sub(shown - 1);
-        let mut lines = vec![Line::styled("Paired", dimmed)];
-        for (index, device) in devices.iter().enumerate().skip(start).take(shown) {
-            let selected = index == self.selected;
-            let seen = (now - device.last_seen).num_seconds().max(0) as u64;
-            lines.push(Line::from(vec![
-                Span::styled(
-                    if selected { "▸ " } else { "  " },
-                    Style::default().fg(theme.accent),
-                ),
-                Span::styled(
-                    device.device_name.clone().unwrap_or_default(),
-                    if selected { text.bold() } else { text },
-                ),
-                Span::styled(format!(" · {} ago", ago(seen)), dimmed),
-            ]));
-        }
-        lines
+        let armed = self
+            .confirm_revoke
+            .as_ref()
+            .filter(|(_, at)| at.elapsed() <= CONFIRM_WINDOW)
+            .map(|(id, _)| id.as_str());
+        Ok(devices
+            .iter()
+            .enumerate()
+            .map(|(index, device)| DeviceRow {
+                name: device.device_name.as_deref().unwrap_or_default(),
+                address: device.created_ip.as_str(),
+                seen: match (now - device.last_seen).num_seconds().max(0) as u64 {
+                    0..60 => "just now".to_string(),
+                    secs => format!("{} ago", ago(secs)),
+                },
+                selected: index == self.selected,
+                armed: armed == Some(device.session_id.as_str()),
+            })
+            .collect())
     }
+}
+
+pub(super) enum CodeView<'a> {
+    Minting,
+    Ready { spaced: String, expires_in: String },
+    Failed(&'a str),
+}
+
+pub(super) struct DeviceRow<'a> {
+    pub(super) name: &'a str,
+    pub(super) address: &'a str,
+    pub(super) seen: String,
+    pub(super) selected: bool,
+    /// The first `x` landed on it; a second revokes.
+    pub(super) armed: bool,
 }
 
 /// `K7F-3QX` as `K 7 F - 3 Q X`, easier to read across a room.
@@ -433,7 +414,7 @@ fn countdown(remaining: Duration) -> String {
     format!("{}:{:02}", secs / 60, secs % 60)
 }
 
-fn ago(secs: u64) -> String {
+pub(super) fn ago(secs: u64) -> String {
     match secs {
         0..60 => "<1m".to_string(),
         60..3600 => format!("{}m", secs / 60),
@@ -451,20 +432,13 @@ mod tests {
         panel.handle_key(KeyEvent::new(code, KeyModifiers::NONE))
     }
 
-    fn text(lines: Vec<Line>) -> String {
-        lines
-            .iter()
-            .map(|line| line.to_string())
-            .collect::<Vec<_>>()
-            .join("\n")
-    }
-
     fn devices(ids: &[&str]) -> Update {
         Update::Devices(Ok(ids
             .iter()
             .map(|id| PairedDevice {
                 session_id: id.to_string(),
                 device_name: Some(id.to_string()),
+                created_ip: String::new(),
                 last_seen: chrono::Utc::now(),
             })
             .collect()))
@@ -474,10 +448,9 @@ mod tests {
     fn revoke_needs_a_second_press_on_the_same_device() {
         let mut panel = PairingPanel::ready("K7F-3QX", &["laptop", "phone"]);
         press(&mut panel, KeyCode::Char('x'));
-        assert_eq!(
-            panel.confirm_revoke.as_ref().map(|(id, _)| id.as_str()),
-            Some("laptop")
-        );
+        let rows = panel.devices().unwrap();
+        assert!(rows[0].armed && !rows[1].armed);
+        assert_eq!(rows[0].seen, "2m ago");
         press(&mut panel, KeyCode::Down);
         assert!(panel.confirm_revoke.is_none(), "any other key cancels");
         press(&mut panel, KeyCode::Char('x'));
@@ -491,21 +464,6 @@ mod tests {
     }
 
     #[test]
-    fn the_code_is_spaced_with_its_countdown_and_devices_collapse_to_a_count() {
-        let panel = PairingPanel::ready("K7F-3QX", &["laptop", "phone"]);
-        let theme = Theme::default();
-        let code = text(panel.code_lines(&theme));
-        assert!(code.contains("K 7 F - 3 Q X"), "{code}");
-        assert!(code.contains("new code in 9:59") || code.contains("new code in 10:00"));
-        let list = text(panel.device_lines(&theme, 3));
-        assert!(
-            list.contains("laptop · 2m ago") && list.contains("phone"),
-            "{list}"
-        );
-        assert_eq!(text(panel.device_lines(&theme, 1)), "Paired: 2");
-    }
-
-    #[test]
     fn lockouts_count_down_and_u_lets_them_back_in() {
         let mut panel = PairingPanel::ready("K7F-3QX", &[]);
         assert!(!press(&mut panel, KeyCode::Char('u')), "nothing to unblock");
@@ -513,13 +471,9 @@ mod tests {
             ip: "100.89.98.53".into(),
             remaining_secs: 725,
         }]));
-        let theme = Theme::default();
-        assert_eq!(
-            text(panel.lockout_lines(&theme)),
-            "100.89.98.53 locked out · 12m left"
-        );
+        assert_eq!(panel.lockouts(), [("100.89.98.53", 725)]);
         assert!(press(&mut panel, KeyCode::Char('u')));
-        assert!(panel.lockout_lines(&theme).is_empty());
+        assert!(panel.lockouts().is_empty());
     }
 
     #[tokio::test]
