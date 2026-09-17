@@ -94,14 +94,13 @@ describe("mergeRegisteredProjects", () => {
         ["/work/beta", 0, ["global"]],
       ],
     ],
-    [
-      "never pins synthetic buckets",
-      [repoGroup(MULTI_REPO_GROUP_ID)],
-      [project(MULTI_REPO_GROUP_ID)],
-      [[MULTI_REPO_GROUP_ID, 1, []]],
-    ],
   ])("%s", (_name, groups, projects, expected) => {
     expect(summary(mergeRegisteredProjects(groups, projects))).toEqual(expected);
+  });
+
+  it("never attaches registrations to synthetic buckets", () => {
+    const merged = mergeRegisteredProjects([repoGroup(MULTI_REPO_GROUP_ID)], [project(MULTI_REPO_GROUP_ID)]);
+    expect(merged.find((g) => g.id === MULTI_REPO_GROUP_ID)!.registeredProjects).toEqual([]);
   });
 
   it("applies resolved alias/color/collapse to appended groups", () => {
