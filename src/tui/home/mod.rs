@@ -571,6 +571,9 @@ pub struct HomeView {
     /// `(remote, session id)` of the selected remote row. Kept apart from
     /// `selected_session` so no local action can resolve a remote id.
     pub(super) selected_remote: Option<(String, String)>,
+    /// Display instances for remote rows, by remote then session id, so they
+    /// sort and render through the local row code.
+    pub(super) remote_instances: super::remote_feed::RemoteInstances,
     /// `group_by` came from the default rather than a saved choice; see
     /// [`Self::effective_group_by`].
     pub(super) group_by_is_default: bool,

@@ -7,7 +7,7 @@ use reqwest::StatusCode;
 
 use crate::daemon::login::{self, LoginError};
 use crate::daemon::remotes::{self, Remote};
-use crate::daemon::{DaemonClient, DaemonClientError, SessionCredential};
+use crate::daemon::{DaemonClient, DaemonClientError};
 
 #[derive(Subcommand)]
 pub enum RemoteCommands {
@@ -238,17 +238,7 @@ fn token_from_url(raw: &str, token: Option<String>) -> Result<(String, Option<St
 /// Read the session list with the entry's credentials, so a wrong base path,
 /// a missing login or an unreachable host fails the add instead of every poll.
 async fn verify(entry: &Remote) -> Result<()> {
-    let login = entry
-        .session
-        .clone()
-        .zip(entry.binding.clone())
-        .map(|(session, binding)| SessionCredential { session, binding });
-    let client = DaemonClient::with_login(
-        &entry.url,
-        entry.token.as_deref(),
-        login.as_ref(),
-        entry.insecure,
-    )?;
+    let client = entry.endpoint().daemon_client()?;
     match client.list_sessions(None).await {
         Ok(_) => Ok(()),
         Err(DaemonClientError::Status { status, .. }) if status == StatusCode::NOT_FOUND => bail!(
@@ -265,8 +255,8 @@ async fn verify(entry: &Remote) -> Result<()> {
                 status.as_u16()
             )
         }
-        Err(DaemonClientError::Status { status, .. }) => {
-            bail!("the daemon at {} returned HTTP {status}", entry.url)
+        Err(error @ DaemonClientError::Status { .. }) => {
+            bail!("the daemon at {}: {}", entry.url, error.summary())
         }
         Err(e) => Err(e).with_context(|| format!("could not reach a daemon at {}", entry.url)),
     }

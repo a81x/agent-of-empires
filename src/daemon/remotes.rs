@@ -60,6 +60,19 @@ impl Remote {
     pub fn has_login(&self) -> bool {
         self.session.is_some() && self.binding.is_some()
     }
+
+    /// The endpoint every client of this entry connects through.
+    pub(crate) fn endpoint(&self) -> crate::acp::client::discovery::DaemonEndpoint {
+        use crate::acp::client::discovery::{DaemonEndpoint, Source};
+        let login = self
+            .session
+            .clone()
+            .zip(self.binding.clone())
+            .map(|(session, binding)| crate::daemon::SessionCredential { session, binding });
+        DaemonEndpoint::new(self.url.clone(), self.token.clone(), Source::Remote)
+            .with_login(login)
+            .with_plaintext_allowed(self.insecure)
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -156,6 +169,55 @@ pub fn save_to(path: &Path, registry: &Registry) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn registered(session: Option<&str>, binding: Option<&str>) -> Remote {
+        Remote {
+            name: "mini".into(),
+            url: "https://mini.example.ts.net".into(),
+            enabled: true,
+            token: Some("tok-secret".into()),
+            session: session.map(str::to_string),
+            binding: binding.map(str::to_string),
+            insecure: false,
+        }
+    }
+
+    #[test]
+    fn an_endpoint_carries_a_login_only_when_both_halves_are_present() {
+        assert!(registered(None, None).endpoint().login().is_none());
+        assert!(registered(Some("s"), None).endpoint().login().is_none());
+        let endpoint = registered(Some("s"), Some("b")).endpoint();
+        let login = endpoint.login().expect("login present");
+        assert_eq!((login.session.as_str(), login.binding.as_str()), ("s", "b"));
+    }
+
+    #[test]
+    fn only_an_insecure_entry_allows_plaintext() {
+        let remote = registered(None, None);
+        assert!(!remote.endpoint().allows_plaintext());
+        let insecure = Remote {
+            insecure: true,
+            ..remote
+        };
+        let endpoint = insecure.endpoint();
+        assert!(endpoint.allows_plaintext());
+        assert!(format!("{endpoint:?}").contains("allow_plaintext: true"));
+    }
+
+    #[test]
+    fn debug_output_never_carries_credentials() {
+        let remote = registered(Some("sess-secret"), Some("bind-secret"));
+        let endpoint = remote.endpoint();
+        for rendered in [
+            format!("{remote:?}"),
+            format!("{endpoint:?}"),
+            format!("{:?}", endpoint.login()),
+        ] {
+            for secret in ["tok-secret", "sess-secret", "bind-secret"] {
+                assert!(!rendered.contains(secret), "{secret} leaked: {rendered}");
+            }
+        }
+    }
 
     fn remote(name: &str) -> Remote {
         Remote {

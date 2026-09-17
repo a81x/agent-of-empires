@@ -373,6 +373,7 @@ impl HomeView {
             remote_snapshots: Vec::new(),
             remote_fingerprint: Vec::new(),
             selected_remote: None,
+            remote_instances: Default::default(),
             sidebar_source: crate::tui::session_feed::SidebarSource::Disconnected,
             deletion_poller: DeletionPoller::new(),
             trash_poller: crate::tui::trash_poller::TrashPoller::new(),

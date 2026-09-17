@@ -10,8 +10,7 @@ use super::live_send;
 use super::preview::PreviewCache;
 use super::render::{capture_apply_step, capture_lines_for, clamp_scroll_to_capture, CaptureFit};
 use super::HomeView;
-use crate::daemon::SessionResponse;
-use crate::session::{Instance, RemoteShelf, SandboxInfo, Status, View, WorktreeInfo};
+use crate::session::RemoteShelf;
 use crate::tui::app::Action;
 use crate::tui::components::preview::{self, CachedPreview, Preview};
 use crate::tui::remote_feed::shelf_of;
@@ -26,56 +25,10 @@ pub(in crate::tui) struct RemoteFrame {
     pub(in crate::tui) budget: usize,
 }
 
-/// A render-only `Instance` for the info panel. Never enters the instance map:
-/// it exists so the remote row reuses the local preview renderer verbatim.
-pub(in crate::tui) fn remote_display_instance(remote: &str, row: &SessionResponse) -> Instance {
-    let mut inst = Instance::new(&row.title, &row.project_path);
-    inst.id = row.id.clone();
-    inst.tool = row.tool.clone();
-    inst.source_profile = if row.profile.is_empty() {
-        remote.to_string()
-    } else {
-        format!("{}@{remote}", row.profile)
-    };
-    inst.status = Status::from_api_str(&row.status).unwrap_or(Status::Unknown);
-    inst.last_error = row.last_error.clone();
-    inst.worktree_info = match (&row.branch, &row.main_repo_path) {
-        (Some(branch), Some(main_repo_path)) => Some(WorktreeInfo {
-            branch: branch.clone(),
-            main_repo_path: main_repo_path.clone(),
-            managed_by_aoe: row.has_managed_worktree,
-            created_at: chrono::Utc::now(),
-            base_branch: row
-                .base_branch_override
-                .clone()
-                .or_else(|| row.base_branch.clone()),
-        }),
-        _ => None,
-    };
-    // The wire row says whether a sandbox exists, not which container.
-    inst.sandbox_info = row.is_sandboxed.then(|| SandboxInfo {
-        enabled: true,
-        container_id: None,
-        image: String::new(),
-        container_name: format!("container on {remote}"),
-        extra_env: None,
-        custom_instruction: None,
-        container_workdir: None,
-        before_start_env: Vec::new(),
-    });
-    inst
-}
-
-fn remote_endpoint(name: &str) -> Option<crate::acp::client::discovery::DaemonEndpoint> {
-    crate::tui::remote_feed::enabled_remotes()
-        .get(name)
-        .map(|entry| entry.endpoint.clone())
-}
-
 impl HomeView {
     fn remote_row_watchable(&self, key: &RemoteKey) -> bool {
-        self.remote_session(&key.0, &key.1)
-            .is_some_and(|row| shelf_of(row) == RemoteShelf::Live && row.view != View::Structured)
+        self.remote_instance(&key.0, &key.1)
+            .is_some_and(|inst| shelf_of(inst) == RemoteShelf::Live && !inst.is_structured())
     }
 
     /// Point the preview socket at the selected remote row, or drop it. Cheap
@@ -102,7 +55,7 @@ impl HomeView {
             self.remote_preview.send(PreviewCommand::Stop);
             return;
         };
-        match remote_endpoint(&key.0) {
+        match crate::tui::remote_feed::remote_endpoint(&key.0) {
             Some(endpoint) => {
                 self.remote_preview_error = None;
                 let lines = capture_lines_for(self.preview_visible_rows as u16, 0);
@@ -189,8 +142,8 @@ impl HomeView {
     /// route keys to it. Rows that cannot take input explain why instead.
     pub(super) fn start_remote_live_send(&mut self) -> Option<Action> {
         let (remote, id) = self.selected_remote.clone()?;
-        let row = self.remote_session(&remote, &id)?;
-        if row.view == View::Structured {
+        let row = self.remote_instance(&remote, &id)?;
+        if row.is_structured() {
             return Some(Action::SetTransientStatus(
                 "A structured session has no terminal to live-send into; press Enter to open it"
                     .to_string(),
@@ -270,10 +223,9 @@ impl HomeView {
         let Some((remote, id)) = self.selected_remote.clone() else {
             return;
         };
-        let Some(row) = self.remote_session(&remote, &id).cloned() else {
+        let Some(inst) = self.remote_instance(&remote, &id).cloned() else {
             return;
         };
-        let inst = remote_display_instance(&remote, &row);
         let layout = preview::PreviewLayout::compute(
             inner,
             compact,
@@ -294,18 +246,11 @@ impl HomeView {
             }
         }
 
-        let hint = if row.view == View::Structured {
-            Some(format!(
-                "Press Enter to open this structured session on {remote}"
-            ))
-        } else if shelf_of(&row) != RemoteShelf::Live {
-            Some(format!("Restore this session on {remote} to preview it"))
-        } else {
-            self.remote_preview_error
-                .as_ref()
-                .filter(|_| self.remote_preview_cache.is_pending_for(&id))
-                .map(|e| format!("{remote}: {e}"))
-        };
+        let hint = self
+            .remote_preview_error
+            .as_ref()
+            .filter(|_| self.remote_preview_cache.is_pending_for(&id))
+            .map(|e| format!("{remote}: {e}"));
         if let Some(hint) = hint {
             if let Some(info) = layout.info {
                 Preview::render_info(frame, info, &inst, theme, self.idle_decay_window);
@@ -390,48 +335,5 @@ impl HomeView {
             self.preview_scroll_offset =
                 clamp_scroll_to_capture(scroll_offset, captured_lines, self.preview_visible_rows);
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn the_info_panel_instance_carries_the_remote_rows_details() {
-        let row: SessionResponse = serde_json::from_value(serde_json::json!({
-            "id": "r1",
-            "title": "refactor",
-            "project_path": "/Users/me/scm/app-wt",
-            "tool": "codex",
-            "status": "Running",
-            "profile": "work",
-            "branch": "feature/x",
-            "main_repo_path": "/Users/me/scm/app",
-            "base_branch": "main",
-            "is_sandboxed": true,
-        }))
-        .unwrap();
-
-        let inst = remote_display_instance("mini", &row);
-        assert_eq!(inst.id, "r1");
-        assert_eq!(inst.tool, "codex");
-        assert_eq!(inst.source_profile, "work@mini");
-        assert_eq!(inst.status, Status::Running);
-        let wt = inst.worktree_info.expect("worktree shown");
-        assert_eq!(wt.branch, "feature/x");
-        assert_eq!(wt.main_repo_path, "/Users/me/scm/app");
-        assert_eq!(wt.base_branch.as_deref(), Some("main"));
-        assert!(inst.sandbox_info.is_some_and(|s| s.enabled));
-    }
-
-    #[test]
-    fn a_row_without_worktree_or_sandbox_shows_neither() {
-        let row: SessionResponse =
-            serde_json::from_value(serde_json::json!({"id": "r1", "title": "t"})).unwrap();
-        let inst = remote_display_instance("mini", &row);
-        assert!(inst.worktree_info.is_none());
-        assert!(inst.sandbox_info.is_none());
-        assert_eq!(inst.source_profile, "mini");
     }
 }

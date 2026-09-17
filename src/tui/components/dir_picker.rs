@@ -33,8 +33,8 @@ pub struct DirPicker {
     selected: usize,
     cwd: PathBuf,
     dirs: Vec<String>,
-    /// True when read_dir failed (e.g. permission denied)
-    read_error: bool,
+    /// Why the directory could not be listed.
+    read_error: Option<String>,
     show_hidden: bool,
     show_help: bool,
     /// The remote listing in flight, if any. Replacing it drops the receiver,
@@ -80,7 +80,7 @@ fn browse_remote(
                 .and_then(|runtime| {
                     runtime
                         .block_on(client.get_api::<Listing>(
-                            "filesystem/browse",
+                            &["filesystem", "browse"],
                             &[
                                 ("path", path.as_str()),
                                 ("limit", "1000"),
@@ -95,7 +95,7 @@ fn browse_remote(
                                 .map(|entry| entry.name)
                                 .collect()
                         })
-                        .map_err(|e| crate::tui::remote_feed::error_summary(&e))
+                        .map_err(|e| e.summary())
                 });
             let _ = tx.send(result);
         });
@@ -120,7 +120,7 @@ impl DirPicker {
             selected: 0,
             cwd: PathBuf::new(),
             dirs: Vec::new(),
-            read_error: false,
+            read_error: None,
             show_hidden: false,
             show_help: false,
             remote_listing: None,
@@ -200,19 +200,23 @@ impl DirPicker {
         if dir != self.cwd || show_hidden != self.show_hidden {
             return false;
         }
+        self.set_listing(result);
+        true
+    }
+
+    /// Show a listing from either source, sorted the same way.
+    fn set_listing(&mut self, result: ListingResult) {
         match result {
             Ok(mut dirs) => {
-                self.read_error = false;
                 dirs.sort_by_key(|a| a.to_lowercase());
+                self.read_error = None;
                 self.dirs = dirs;
             }
-            Err(e) => {
-                tracing::debug!(target: "tui.dir_picker", "remote browse failed: {e}");
-                self.read_error = true;
+            Err(error) => {
+                self.read_error = Some(error);
                 self.dirs = Vec::new();
             }
         }
-        true
     }
 
     fn refresh_dirs(&mut self) {
@@ -223,33 +227,24 @@ impl DirPicker {
                 show_hidden: self.show_hidden,
                 rx,
             });
-            self.read_error = false;
+            self.read_error = None;
             self.dirs = Vec::new();
             return;
         }
         self.remote_listing = None;
-        let mut dirs = Vec::new();
-        match std::fs::read_dir(&self.cwd) {
-            Ok(entries) => {
-                self.read_error = false;
-                for entry in entries.flatten() {
+        let listing = std::fs::read_dir(&self.cwd)
+            .map(|entries| {
+                entries
+                    .flatten()
                     // Follow symlinks: entry.path().is_dir() resolves symlinks,
                     // unlike entry.file_type().is_dir() which does not.
-                    if entry.path().is_dir() {
-                        if let Some(name) = entry.file_name().to_str() {
-                            if self.show_hidden || !name.starts_with('.') {
-                                dirs.push(name.to_string());
-                            }
-                        }
-                    }
-                }
-            }
-            Err(_) => {
-                self.read_error = true;
-            }
-        }
-        dirs.sort_by_key(|a| a.to_lowercase());
-        self.dirs = dirs;
+                    .filter(|entry| entry.path().is_dir())
+                    .filter_map(|entry| entry.file_name().to_str().map(str::to_string))
+                    .filter(|name| self.show_hidden || !name.starts_with('.'))
+                    .collect()
+            })
+            .map_err(|_| "permission denied".to_string());
+        self.set_listing(listing);
     }
 
     fn filtered_dirs(&self) -> Vec<String> {
@@ -450,14 +445,9 @@ impl DirPicker {
         let scroll = super::scroll::calculate_scroll(filtered.len(), self.selected, visible_height);
 
         let mut lines: Vec<Line> = Vec::new();
-        let remote = matches!(self.source, DirSource::Remote(_));
-        if self.read_error {
+        if let Some(error) = &self.read_error {
             lines.push(Line::from(Span::styled(
-                if remote {
-                    "  (could not list this directory on the remote)"
-                } else {
-                    "  (permission denied)"
-                },
+                format!("  ({error})"),
                 Style::default().fg(theme.dimmed),
             )));
         } else if self.is_loading() && self.dirs.is_empty() {
@@ -611,7 +601,7 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
         assert!(!picker.is_loading());
-        assert!(picker.read_error);
+        assert!(picker.read_error.is_some());
         assert!(picker.dirs.is_empty());
     }
 
@@ -1022,7 +1012,7 @@ mod tests {
         // Activate on a path that doesn't exist to trigger read_dir failure
         picker.cwd = PathBuf::from("/nonexistent_path_that_should_not_exist");
         picker.refresh_dirs();
-        assert!(picker.read_error);
+        assert!(picker.read_error.is_some());
         assert!(picker.dirs.is_empty());
     }
 

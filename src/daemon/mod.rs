@@ -163,6 +163,36 @@ pub enum DaemonClientError {
     InvalidMutationReceipt,
 }
 
+impl DaemonClientError {
+    /// One line for a person, built from the status and the `AoE-Error-Code`
+    /// header, never from a response body.
+    pub fn summary(&self) -> String {
+        match self {
+            Self::Status {
+                code: Some(code), ..
+            } => match code {
+                ApiErrorCode::ReadOnly => "the daemon is read-only",
+                ApiErrorCode::AccessPolicyDenied => "the daemon's access policy denied this",
+                ApiErrorCode::CityhallMode => "the daemon is in city hall mode",
+                ApiErrorCode::LifecycleLocked => "the session is busy with another operation",
+                ApiErrorCode::PendingTargetGone => "the target no longer exists",
+                ApiErrorCode::RuntimeEpochMismatch => "the daemon restarted; retry",
+                ApiErrorCode::ResumeFailed => "the session could not be resumed",
+                ApiErrorCode::CreationTrustChanged => "the repo's configuration changed; retry",
+                ApiErrorCode::CreationCancelled => "the create was cancelled",
+                ApiErrorCode::CreationNotPending => "the session is no longer being created",
+            }
+            .to_string(),
+            Self::Status {
+                status: StatusCode::UNAUTHORIZED,
+                ..
+            } => "not authorized (HTTP 401); pair it again with `aoe remote add`".to_string(),
+            Self::Status { status, .. } => format!("daemon returned HTTP {status}"),
+            other => other.to_string(),
+        }
+    }
+}
+
 impl DaemonClient {
     /// Build a client with a 15-second timeout and redirects disabled.
     ///
@@ -194,42 +224,47 @@ impl DaemonClient {
         })
     }
 
-    /// Authenticated GET of an `/api/*` endpoint beside the sessions list, such
-    /// as `"profiles"` or `"filesystem/browse"`.
+    /// Authenticated GET of an `/api/*` endpoint beside the sessions list,
+    /// named by its path segments, such as `["filesystem", "browse"]`.
     pub async fn get_api<T: serde::de::DeserializeOwned>(
         &self,
-        endpoint: &str,
+        path: &[&str],
         query: &[(&str, &str)],
     ) -> Result<T, DaemonClientError> {
-        self.request_json(self.http.get(self.api_url(endpoint)?).query(query))
+        self.request_json(self.http.get(self.api_url(path)?).query(query))
             .await
     }
 
-    /// Authenticated JSON POST to an `/api/*` endpoint beside the sessions
-    /// list, allowed the long create timeout.
+    /// Authenticated JSON POST to an `/api/*` endpoint beside the sessions list.
     pub async fn post_api<B: serde::Serialize, T: serde::de::DeserializeOwned>(
         &self,
-        endpoint: &str,
+        path: &[&str],
         body: &B,
     ) -> Result<T, DaemonClientError> {
-        let request = self.http.post(self.api_url(endpoint)?).json(body);
-        let mut response = self.send(request, CREATE_TIMEOUT).await?;
-        let body = read_bounded_body(&mut response, MAX_SUCCESS_BODY_BYTES).await?;
-        serde_json::from_slice(&body).map_err(|error| self.decode_error(error))
+        self.request_json(self.http.post(self.api_url(path)?).json(body))
+            .await
     }
 
     /// Authenticated DELETE of an `/api/*` endpoint, discarding the body.
-    pub async fn delete_api(&self, endpoint: &str) -> Result<(), DaemonClientError> {
-        self.request_response(self.http.delete(self.api_url(endpoint)?))
+    pub async fn delete_api(&self, path: &[&str]) -> Result<(), DaemonClientError> {
+        self.request_response(self.http.delete(self.api_url(path)?))
             .await
             .map(drop)
     }
 
-    fn api_url(&self, endpoint: &str) -> Result<Url, DaemonClientError> {
+    /// Each segment is escaped, so an id can never change the route.
+    fn api_url(&self, path: &[&str]) -> Result<Url, DaemonClientError> {
+        let mut relative = String::new();
+        for segment in path {
+            if !relative.is_empty() {
+                relative.push('/');
+            }
+            relative.push_str(&transport::path_segment(segment)?.to_string());
+        }
         // `sessions_url` ends in `api/sessions`, so a relative join lands on a
         // sibling under the same base path.
         self.sessions_url
-            .join(endpoint)
+            .join(&relative)
             .map_err(|_| DaemonClientError::InvalidBaseUrl {
                 reason: "invalid API endpoint",
             })
@@ -257,11 +292,7 @@ impl DaemonClient {
     }
 
     pub async fn runtime_info(&self) -> Result<RuntimeInfo, DaemonClientError> {
-        let url = self
-            .sessions_url
-            .join("runtime")
-            .map_err(|_| DaemonClientError::Transport)?;
-        self.request_json(self.http.get(url)).await
+        self.get_api(&["runtime"], &[]).await
     }
 
     pub(crate) async fn local_runtime_ready(
@@ -309,6 +340,19 @@ impl DaemonClient {
         self.request_mutation_with_outcome(
             self.http.post(self.sessions_url.clone()).json(body),
             epoch,
+        )
+        .await
+    }
+
+    /// Create a row on a daemon whose runtime this client does not track, so
+    /// no epoch is pinned.
+    pub async fn create_session_unpinned(
+        &self,
+        body: &CreateSessionBody,
+    ) -> Result<SessionResponse, DaemonClientError> {
+        self.request_json_within(
+            self.http.post(self.sessions_url.clone()).json(body),
+            CREATE_TIMEOUT,
         )
         .await
     }
@@ -706,7 +750,15 @@ impl DaemonClient {
         &self,
         request: reqwest::RequestBuilder,
     ) -> Result<T, DaemonClientError> {
-        let mut response = self.request_response(request).await?;
+        self.request_json_within(request, DEFAULT_TIMEOUT).await
+    }
+
+    async fn request_json_within<T: serde::de::DeserializeOwned>(
+        &self,
+        request: reqwest::RequestBuilder,
+        timeout: Duration,
+    ) -> Result<T, DaemonClientError> {
+        let mut response = self.send(request, timeout).await?;
         let body = read_bounded_body(&mut response, MAX_SUCCESS_BODY_BYTES).await?;
         serde_json::from_slice(&body).map_err(|error| self.decode_error(error))
     }

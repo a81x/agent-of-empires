@@ -4117,9 +4117,9 @@ impl HomeView {
         if let Some((remote, id)) = self.selected_remote.clone() {
             // No tmux attach across machines: a terminal row live-sends in the
             // preview pane, a structured row opens against its daemon.
-            let structured = self.remote_session(&remote, &id).is_some_and(|row| {
-                row.view == crate::session::View::Structured
-                    && crate::tui::remote_feed::shelf_of(row) == crate::session::RemoteShelf::Live
+            let structured = self.remote_instance(&remote, &id).is_some_and(|inst| {
+                inst.is_structured()
+                    && crate::tui::remote_feed::shelf_of(inst) == crate::session::RemoteShelf::Live
             });
             if structured {
                 return Some(Action::OpenRemoteStructuredView { remote, id });
@@ -4311,16 +4311,18 @@ impl HomeView {
     /// the session is no longer in the flat list (e.g., collapsed under a
     /// group header).
     pub(super) fn reseat_cursor_after_rebuild(&mut self) {
-        if let Some(sid) = self.selected_session.clone() {
-            for (idx, item) in self.flat_items.iter().enumerate() {
-                if let Item::Session { id, .. } = item {
-                    if *id == sid {
-                        self.cursor = idx;
-                        self.update_selected();
-                        return;
-                    }
-                }
-            }
+        let selected = self.flat_items.iter().position(|item| match item {
+            Item::Session { id, .. } => self.selected_session.as_ref() == Some(id),
+            Item::RemoteSession { remote, id, .. } => self
+                .selected_remote
+                .as_ref()
+                .is_some_and(|(r, i)| r == remote && i == id),
+            _ => false,
+        });
+        if let Some(idx) = selected {
+            self.cursor = idx;
+            self.update_selected();
+            return;
         }
         if self.flat_items.is_empty() {
             self.cancel_native_attachment();
@@ -6470,7 +6472,7 @@ impl HomeView {
         if let Some((remote, id)) = state.remote_key() {
             // The socket reports a pane that goes away; only the row can vanish here.
             return self
-                .remote_session(&remote, &id)
+                .remote_instance(&remote, &id)
                 .is_none()
                 .then_some("Session was deleted while live mode was active.");
         }
@@ -6791,7 +6793,22 @@ impl HomeView {
     /// retains stale indices into the old list, and `n`/`N` cycles jump
     /// to wrong sessions (row highlights follow the stale indices too).
     /// See #2676.
+    /// Text a search matches a sidebar row against.
+    fn item_haystack(&self, item: &Item) -> Option<String> {
+        Some(match item {
+            Item::Group { name, path, .. } => format!("{name} {path}"),
+            Item::RemoteGroup { name, .. } => name.clone(),
+            Item::LocalGroup { .. } => "local".to_string(),
+            Item::Session { .. } => Self::search_haystack_for(self.row_instance(item)?),
+            Item::RemoteSession { remote, .. } => format!(
+                "{} {remote}",
+                Self::search_haystack_for(self.row_instance(item)?)
+            ),
+        })
+    }
+
     pub(super) fn rebuild_flat_items(&mut self) {
+        self.remote_instances = crate::tui::remote_feed::display_instances(&self.remote_snapshots);
         self.flat_items = self.build_flat_items_with_remotes();
         if !self.search_matches.is_empty() {
             self.refresh_search_matches();
@@ -6822,23 +6839,8 @@ impl HomeView {
         let mut buf = Vec::new();
 
         for (idx, item) in self.flat_items.iter().enumerate() {
-            let haystack = match item {
-                Item::Session { id, .. } => {
-                    if let Some(inst) = self.get_instance(id) {
-                        Self::search_haystack_for(inst)
-                    } else {
-                        continue;
-                    }
-                }
-                Item::Group { name, path, .. } => {
-                    format!("{} {}", name, path)
-                }
-                Item::RemoteGroup { name, .. } => name.clone(),
-                Item::LocalGroup { .. } => "local".to_string(),
-                Item::RemoteSession { remote, id, .. } => match self.remote_session(remote, id) {
-                    Some(row) => format!("{} {} {}", row.title, remote, row.project_path),
-                    None => continue,
-                },
+            let Some(haystack) = self.item_haystack(item) else {
+                continue;
             };
 
             let haystack_utf32 = Utf32Str::new(&haystack, &mut buf);
@@ -6882,23 +6884,8 @@ impl HomeView {
         let mut buf = Vec::new();
 
         for (idx, item) in self.flat_items.iter().enumerate() {
-            let haystack = match item {
-                Item::Session { id, .. } => {
-                    if let Some(inst) = self.get_instance(id) {
-                        Self::search_haystack_for(inst)
-                    } else {
-                        continue;
-                    }
-                }
-                Item::Group { name, path, .. } => {
-                    format!("{} {}", name, path)
-                }
-                Item::RemoteGroup { name, .. } => name.clone(),
-                Item::LocalGroup { .. } => "local".to_string(),
-                Item::RemoteSession { remote, id, .. } => match self.remote_session(remote, id) {
-                    Some(row) => format!("{} {} {}", row.title, remote, row.project_path),
-                    None => continue,
-                },
+            let Some(haystack) = self.item_haystack(item) else {
+                continue;
             };
 
             let haystack_utf32 = Utf32Str::new(&haystack, &mut buf);

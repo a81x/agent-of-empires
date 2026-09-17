@@ -495,7 +495,7 @@ async fn daemon_client_api_errors_classify_from_status_and_header_only() {
         Duration::from_secs(2),
         DaemonClient::new(&origin, Some("secret-token"))
             .unwrap()
-            .post_api::<_, serde_json::Value>("sessions", &serde_json::json!({"title": "t"})),
+            .post_api::<_, serde_json::Value>(&["pair", "codes"], &serde_json::json!({})),
     )
     .await
     .expect("an authenticated error must not wait for its body")
@@ -524,7 +524,7 @@ async fn daemon_client_api_errors_classify_from_status_and_header_only() {
     .await;
     let error = DaemonClient::with_login(&origin, None, Some(&login), false)
         .unwrap()
-        .get_api::<serde_json::Value>("profiles", &[])
+        .get_api::<serde_json::Value>(&["profiles"], &[])
         .await
         .unwrap_err();
     assert!(
@@ -557,7 +557,7 @@ async fn daemon_client_api_errors_classify_from_status_and_header_only() {
     assert!(matches!(
         DaemonClient::new(&origin, Some("secret-token"))
             .unwrap()
-            .get_api::<serde_json::Value>("agents", &[])
+            .get_api::<serde_json::Value>(&["agents"], &[])
             .await,
         Err(DaemonClientError::ResponseTooLarge { limit: 16_777_216 })
     ));

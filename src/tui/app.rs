@@ -3395,11 +3395,7 @@ impl App {
         let Some((remote, id)) = self.pending_remote_structured_open.take() else {
             return Ok(());
         };
-        let Some(entry) = crate::tui::remote_feed::enabled_remotes()
-            .entries
-            .into_iter()
-            .find(|entry| entry.name == remote)
-        else {
+        let Some(endpoint) = crate::tui::remote_feed::remote_endpoint(&remote) else {
             self.update_status = Some(UpdateStatus::transient(format!(
                 "{remote} is no longer configured"
             )));
@@ -3413,7 +3409,7 @@ impl App {
             terminal,
             event_stream,
             &self.theme,
-            entry.endpoint,
+            endpoint,
             &id,
         )
         .await;

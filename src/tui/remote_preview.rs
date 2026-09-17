@@ -8,7 +8,6 @@
 
 use std::collections::VecDeque;
 use std::sync::mpsc as std_mpsc;
-use std::time::Duration;
 
 use serde_json::json;
 use tokio::sync::mpsc;
@@ -19,8 +18,6 @@ use crate::tui::live_socket::{self, LiveMessage};
 
 /// `(remote name, session id)`.
 pub(crate) type RemoteKey = (String, String);
-
-const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
 pub(crate) enum PreviewCommand {
     Watch {
@@ -247,10 +244,8 @@ async fn run(
                     old.close();
                 }
                 rx = None;
-                match tokio::time::timeout(CONNECT_TIMEOUT, live_socket::connect(&endpoint, &key.1))
-                    .await
-                {
-                    Ok(Ok(socket)) => {
+                match live_socket::connect(&endpoint, &key.1).await {
+                    Ok(socket) => {
                         let next = Connection {
                             key,
                             tx: socket.tx,
@@ -261,16 +256,10 @@ async fn run(
                         rx = Some(socket.rx);
                         conn = Some(next);
                     }
-                    Ok(Err(e)) => {
+                    Err(e) => {
                         let _ = events.send(PreviewEvent::Closed {
                             key,
                             reason: format!("{e:#}"),
-                        });
-                    }
-                    Err(_) => {
-                        let _ = events.send(PreviewEvent::Closed {
-                            key,
-                            reason: "timed out connecting to the live terminal".into(),
                         });
                     }
                 }

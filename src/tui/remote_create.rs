@@ -7,7 +7,7 @@ use std::sync::mpsc::TryRecvError;
 
 use reqwest::StatusCode;
 
-use crate::daemon::{CreateSessionBody, DaemonClient, DaemonClientError, SessionResponse};
+use crate::daemon::{CreateSessionBody, DaemonClient, DaemonClientError};
 use crate::tui::dialogs::NewSessionData;
 use crate::tui::worker::Worker;
 
@@ -33,11 +33,7 @@ impl RemoteCreate {
             worker: Worker::spawn("aoe-remote-create", move |request: CreateRequest| {
                 let outcome = match runtime.as_ref() {
                     Ok(rt) => rt
-                        .block_on(
-                            request
-                                .client
-                                .post_api::<_, SessionResponse>("sessions", &request.body),
-                        )
+                        .block_on(request.client.create_session_unpinned(&request.body))
                         .map(|created| created.id)
                         .map_err(|e| create_failure_message(&e)),
                     Err(e) => Err(format!("no runtime: {e}")),
@@ -81,7 +77,7 @@ fn create_failure_message(error: &DaemonClientError) -> String {
         } => "the daemon rejected the create (HTTP 400); check the path, branch and profile \
               on that machine"
             .to_string(),
-        other => crate::tui::remote_feed::error_summary(other),
+        other => other.summary(),
     }
 }
 

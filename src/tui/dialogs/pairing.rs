@@ -107,7 +107,7 @@ impl PairingPanel {
             let result = async {
                 local_client()
                     .await?
-                    .post_api::<_, Minted>("pair/codes", &serde_json::json!({}))
+                    .post_api::<_, Minted>(&["pair", "codes"], &serde_json::json!({}))
                     .await
                     .map_err(|e| e.to_string())
             };
@@ -120,7 +120,7 @@ impl PairingPanel {
             let result = async {
                 local_client()
                     .await?
-                    .get_api::<Vec<PairedDevice>>("devices", &[])
+                    .get_api::<Vec<PairedDevice>>(&["devices"], &[])
                     .await
                     .map_err(|e| e.to_string())
             };
@@ -137,7 +137,7 @@ impl PairingPanel {
             let result = async {
                 local_client()
                     .await?
-                    .delete_api(&format!("login/sessions/{session_id}"))
+                    .delete_api(&["login", "sessions", &session_id])
                     .await
                     .map_err(|e| e.to_string())
             };

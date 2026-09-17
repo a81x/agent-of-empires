@@ -8,7 +8,7 @@
 use std::sync::mpsc::TryRecvError;
 
 use crate::daemon::SessionResponse;
-use crate::session::{Item, RemoteShelf};
+use crate::session::{Instance, Item, RemoteShelf, SandboxInfo, Status, WorktreeInfo};
 use crate::tui::worker::Worker;
 
 /// One remote's contribution to the sidebar.
@@ -49,34 +49,86 @@ pub(crate) struct RemoteMeta {
 const META_TTL: std::time::Duration = std::time::Duration::from_secs(300);
 
 impl RemoteSnapshot {
-    /// Cheap change detector: id, title, status, and view per row. The sidebar
-    /// rebuilds only when this moves, so an idle remote costs no redraws.
+    /// Change detector: the rows as read. The sidebar rebuilds only when this
+    /// moves, so an idle remote costs no redraws.
     fn fingerprint(&self) -> SnapshotPrint {
-        (
-            self.name.clone(),
-            self.sessions.as_ref().map(|read| {
-                read.as_ref().map_err(Clone::clone).map(|rows| {
-                    rows.iter()
-                        .map(|r| {
-                            (
-                                r.id.clone(),
-                                r.title.clone(),
-                                r.status.clone(),
-                                r.view == crate::session::View::Structured,
-                                shelf_of(r),
-                            )
-                        })
-                        .collect()
-                })
-            }),
-        )
+        (self.name.clone(), self.sessions.clone())
     }
 }
 
-/// `(id, title, status, structured, shelf)` for one row.
-type RowPrint = (String, String, String, bool, RemoteShelf);
-type SnapshotPrint = (String, Option<Result<Vec<RowPrint>, String>>);
+type SnapshotPrint = (String, Option<Result<Vec<SessionResponse>, String>>);
 pub(crate) type RemoteFingerprint = Vec<SnapshotPrint>;
+
+/// A render-only `Instance` for the info panel. Never enters the instance map:
+/// it exists so the remote row reuses the local preview renderer verbatim.
+pub(crate) fn remote_display_instance(remote: &str, row: &SessionResponse) -> Instance {
+    let time = |raw: &str| {
+        chrono::DateTime::parse_from_rfc3339(raw)
+            .ok()
+            .map(|t| t.with_timezone(&chrono::Utc))
+    };
+    let mut inst = Instance::new(&row.title, &row.project_path);
+    inst.id = row.id.clone();
+    inst.tool = row.tool.clone();
+    inst.view = row.view;
+    inst.created_at = time(&row.created_at).unwrap_or(inst.created_at);
+    inst.last_accessed_at = row.last_accessed_at.as_deref().and_then(time);
+    inst.idle_entered_at = row.idle_entered_at.as_deref().and_then(time);
+    inst.idle_dormant_since = row.idle_dormant_since.as_deref().and_then(time);
+    inst.archived_at = row.archived_at.as_deref().and_then(time);
+    inst.trashed_at = row.trashed_at.as_deref().and_then(time);
+    inst.snoozed_until = row.snoozed_until.as_deref().and_then(time);
+    inst.favorited_at = row.favorited_at.as_deref().and_then(time);
+    inst.pinned_at = row.pinned_at.as_deref().and_then(time);
+    inst.unread = row.unread;
+    inst.source_profile = if row.profile.is_empty() {
+        remote.to_string()
+    } else {
+        format!("{}@{remote}", row.profile)
+    };
+    inst.status = Status::from_api_str(&row.status).unwrap_or(Status::Unknown);
+    inst.last_error = row.last_error.clone();
+    inst.worktree_info = match (&row.branch, &row.main_repo_path) {
+        (Some(branch), Some(main_repo_path)) => Some(WorktreeInfo {
+            branch: branch.clone(),
+            main_repo_path: main_repo_path.clone(),
+            managed_by_aoe: row.has_managed_worktree,
+            created_at: chrono::Utc::now(),
+            base_branch: row
+                .base_branch_override
+                .clone()
+                .or_else(|| row.base_branch.clone()),
+        }),
+        _ => None,
+    };
+    // The wire row says whether a sandbox exists, not which container.
+    inst.sandbox_info = row.is_sandboxed.then(|| SandboxInfo {
+        enabled: true,
+        container_id: None,
+        image: String::new(),
+        container_name: format!("container on {remote}"),
+        extra_env: None,
+        custom_instruction: None,
+        container_workdir: None,
+        before_start_env: Vec::new(),
+    });
+    inst
+}
+
+/// Display instances for every row read from `snapshots`.
+pub(crate) fn display_instances(snapshots: &[RemoteSnapshot]) -> RemoteInstances {
+    snapshots
+        .iter()
+        .filter_map(|snapshot| {
+            let rows = snapshot.sessions.as_ref()?.as_ref().ok()?;
+            let instances = rows
+                .iter()
+                .map(|row| (row.id.clone(), remote_display_instance(&snapshot.name, row)))
+                .collect();
+            Some((snapshot.name.clone(), instances))
+        })
+        .collect()
+}
 
 /// Placeholder snapshots for configured remotes nothing has been read from yet,
 /// so their headers show at once instead of the list reshaping seconds later.
@@ -93,10 +145,10 @@ pub(crate) fn pending(names: impl IntoIterator<Item = String>) -> Vec<RemoteSnap
 
 /// A remote row's place in the sidebar. `/api/sessions` with no `state`
 /// returns every session, so the split happens here.
-pub(crate) fn shelf_of(row: &SessionResponse) -> RemoteShelf {
-    if row.trashed_at.is_some() {
+pub(crate) fn shelf_of(inst: &Instance) -> RemoteShelf {
+    if inst.is_trashed() {
         RemoteShelf::Trashed
-    } else if row.archived_at.is_some() {
+    } else if inst.is_archived() {
         RemoteShelf::Archived
     } else {
         RemoteShelf::Live
@@ -115,7 +167,9 @@ pub(crate) fn fingerprint(snapshots: &[RemoteSnapshot]) -> RemoteFingerprint {
 /// a reachable but idle daemon reads differently from an unconfigured one.
 pub(crate) fn remote_items(
     snapshots: &[RemoteSnapshot],
+    instances: &RemoteInstances,
     collapsed: &CollapsedRemotes,
+    sort_order: crate::session::config::SortOrder,
 ) -> Vec<Item> {
     let mut items = Vec::new();
     for snapshot in snapshots {
@@ -131,18 +185,12 @@ pub(crate) fn remote_items(
         };
         match &snapshot.sessions {
             None => items.push(header(0, true, None)),
-            Some(Ok(rows)) => {
-                let live: Vec<_> = rows
-                    .iter()
-                    .filter(|r| shelf_of(r) == RemoteShelf::Live)
-                    .collect();
+            Some(Ok(_)) => {
+                let mut live = shelved(instances, &snapshot.name, RemoteShelf::Live);
+                crate::session::sort_sessions(&mut live, sort_order);
                 items.push(header(live.len(), false, None));
                 if !is_collapsed {
-                    items.extend(live.into_iter().map(|row| Item::RemoteSession {
-                        remote: snapshot.name.clone(),
-                        id: row.id.clone(),
-                        depth: 1,
-                    }));
+                    items.extend(session_rows(&snapshot.name, &live, 1));
                 }
             }
             Some(Err(error)) => items.push(header(
@@ -155,98 +203,79 @@ pub(crate) fn remote_items(
     items
 }
 
+/// Display instances of remote rows, by remote name then session id.
+pub(crate) type RemoteInstances =
+    std::collections::HashMap<String, std::collections::HashMap<String, Instance>>;
+
+fn shelved<'a>(
+    instances: &'a RemoteInstances,
+    remote: &str,
+    shelf: RemoteShelf,
+) -> Vec<&'a Instance> {
+    let mut rows: Vec<_> = instances.get(remote).map_or_else(Vec::new, |rows| {
+        rows.values()
+            .filter(|inst| shelf_of(inst) == shelf)
+            .collect()
+    });
+    // A stable base order, so equal sort keys never shuffle between rebuilds.
+    rows.sort_by(|a, b| {
+        a.title
+            .to_lowercase()
+            .cmp(&b.title.to_lowercase())
+            .then(a.id.cmp(&b.id))
+    });
+    rows
+}
+
+fn session_rows(remote: &str, rows: &[&Instance], depth: usize) -> Vec<Item> {
+    rows.iter()
+        .map(|inst| Item::RemoteSession {
+            remote: remote.to_string(),
+            id: inst.id.clone(),
+            depth,
+        })
+        .collect()
+}
+
 /// Rows for one shelf (`Archived` or `Trashed`): a depth-1 sub-header per
 /// remote that has any, then those sessions most recent first, as the local
 /// shelf orders them. Returns the rows and the session total, which the
 /// caller adds to the local section header's count.
 pub(crate) fn remote_shelf_items(
     snapshots: &[RemoteSnapshot],
+    instances: &RemoteInstances,
     shelf: RemoteShelf,
     collapsed: &CollapsedRemotes,
 ) -> (Vec<Item>, usize) {
     let mut items = Vec::new();
     let mut total = 0;
     for snapshot in snapshots {
-        let Some(Ok(rows)) = &snapshot.sessions else {
-            continue;
-        };
-        let mut shelved: Vec<&SessionResponse> =
-            rows.iter().filter(|r| shelf_of(r) == shelf).collect();
-        if shelved.is_empty() {
+        let mut rows = shelved(instances, &snapshot.name, shelf);
+        if rows.is_empty() {
             continue;
         }
-        shelved.sort_by(|a, b| {
-            let stamp = |r: &SessionResponse| match shelf {
-                RemoteShelf::Trashed => r.trashed_at.clone(),
-                _ => r.archived_at.clone(),
-            };
-            stamp(b).cmp(&stamp(a))
+        rows.sort_by_key(|inst| {
+            std::cmp::Reverse(match shelf {
+                RemoteShelf::Trashed => inst.trashed_at,
+                _ => inst.archived_at,
+            })
         });
-        total += shelved.len();
+        total += rows.len();
         let is_collapsed = collapsed.contains(&(snapshot.name.clone(), shelf));
         items.push(Item::RemoteGroup {
             name: snapshot.name.clone(),
             depth: 1,
-            session_count: shelved.len(),
+            session_count: rows.len(),
             collapsed: is_collapsed,
             connecting: false,
             error: None,
             shelf,
         });
         if !is_collapsed {
-            items.extend(shelved.into_iter().map(|row| Item::RemoteSession {
-                remote: snapshot.name.clone(),
-                id: row.id.clone(),
-                depth: 2,
-            }));
+            items.extend(session_rows(&snapshot.name, &rows, 2));
         }
     }
     (items, total)
-}
-
-/// One line for a failed daemon call, built from the status and the
-/// `AoE-Error-Code` header, never from a response body.
-pub(crate) fn error_summary(error: &crate::daemon::DaemonClientError) -> String {
-    use crate::daemon::{ApiErrorCode, DaemonClientError};
-    use reqwest::StatusCode;
-    match error {
-        DaemonClientError::Status {
-            code: Some(code), ..
-        } => match code {
-            ApiErrorCode::ReadOnly => "the daemon is read-only",
-            ApiErrorCode::AccessPolicyDenied => "the daemon's access policy denied this",
-            ApiErrorCode::CityhallMode => "the daemon is in city hall mode",
-            ApiErrorCode::LifecycleLocked => "the session is busy with another operation",
-            ApiErrorCode::PendingTargetGone => "the target no longer exists",
-            ApiErrorCode::RuntimeEpochMismatch => "the daemon restarted; retry",
-            ApiErrorCode::ResumeFailed => "the session could not be resumed",
-            ApiErrorCode::CreationTrustChanged => "the repo's configuration changed; retry",
-            ApiErrorCode::CreationCancelled => "the create was cancelled",
-            ApiErrorCode::CreationNotPending => "the session is no longer being created",
-        }
-        .to_string(),
-        DaemonClientError::Status {
-            status: StatusCode::UNAUTHORIZED,
-            ..
-        } => "not authorized (HTTP 401); pair it again with `aoe remote add`".to_string(),
-        DaemonClientError::Status { status, .. } => format!("daemon returned HTTP {status}"),
-        other => other.to_string(),
-    }
-}
-
-/// Endpoint for one registry entry.
-pub(crate) fn endpoint_for(
-    remote: &crate::daemon::remotes::Remote,
-) -> crate::acp::client::discovery::DaemonEndpoint {
-    use crate::acp::client::discovery::{DaemonEndpoint, Source};
-    let login = remote
-        .session
-        .clone()
-        .zip(remote.binding.clone())
-        .map(|(session, binding)| crate::daemon::SessionCredential { session, binding });
-    DaemonEndpoint::new(remote.url.clone(), remote.token.clone(), Source::Remote)
-        .with_login(login)
-        .with_plaintext_allowed(remote.insecure)
 }
 
 /// A remote the TUI can reach, by the name its rows carry.
@@ -270,6 +299,15 @@ impl EnabledRemotes {
     }
 }
 
+/// The endpoint of the enabled remote named `name`.
+pub(crate) fn remote_endpoint(name: &str) -> Option<crate::acp::client::discovery::DaemonEndpoint> {
+    enabled_remotes()
+        .entries
+        .into_iter()
+        .find(|entry| entry.name == name)
+        .map(|entry| entry.endpoint)
+}
+
 /// Enabled registry entries, then the `AOE_DAEMON_URL` daemon as a temporary
 /// remote that is never saved.
 pub(crate) fn enabled_remotes() -> EnabledRemotes {
@@ -279,7 +317,7 @@ pub(crate) fn enabled_remotes() -> EnabledRemotes {
                 .enabled()
                 .map(|remote| RemoteEntry {
                     name: remote.name.clone(),
-                    endpoint: endpoint_for(remote),
+                    endpoint: remote.endpoint(),
                 })
                 .collect(),
             registry_error: None,
@@ -340,10 +378,10 @@ async fn fetch_meta(client: &crate::daemon::DaemonClient) -> Option<RemoteMeta> 
         available: bool,
     }
     let (home, profiles, agents, docker) = tokio::join!(
-        client.get_api::<Home>("filesystem/home", &[]),
-        client.get_api::<Vec<RemoteProfile>>("profiles", &[]),
-        client.get_api::<Vec<RemoteAgent>>("agents", &[]),
-        client.get_api::<DockerStatus>("docker/status", &[]),
+        client.get_api::<Home>(&["filesystem", "home"], &[]),
+        client.get_api::<Vec<RemoteProfile>>(&["profiles"], &[]),
+        client.get_api::<Vec<RemoteAgent>>(&["agents"], &[]),
+        client.get_api::<DockerStatus>(&["docker", "status"], &[]),
     );
     Some(RemoteMeta {
         home: home.ok().map(|h| h.path),
@@ -360,7 +398,7 @@ async fn fetch_one(remote: RemoteEntry, cached: Option<RemoteMeta>) -> RemoteSna
         Err(e) => {
             return RemoteSnapshot {
                 name,
-                sessions: Some(Err(error_summary(&e))),
+                sessions: Some(Err(e.summary())),
                 meta: cached,
             }
         }
@@ -373,7 +411,7 @@ async fn fetch_one(remote: RemoteEntry, cached: Option<RemoteMeta>) -> RemoteSna
             rows.sort_by_key(|row| row.title.to_lowercase());
             rows
         })
-        .map_err(|e| error_summary(&e));
+        .map_err(|e| e.summary());
     let meta = match cached {
         Some(meta) => Some(meta),
         None if sessions.is_ok() => fetch_meta(&client).await,
@@ -511,8 +549,63 @@ mod tests {
     }
 
     #[test]
+    fn the_info_panel_instance_carries_the_remote_rows_details() {
+        let row: SessionResponse = serde_json::from_value(serde_json::json!({
+            "id": "r1",
+            "title": "refactor",
+            "project_path": "/Users/me/scm/app-wt",
+            "tool": "codex",
+            "status": "Running",
+            "profile": "work",
+            "branch": "feature/x",
+            "main_repo_path": "/Users/me/scm/app",
+            "base_branch": "main",
+            "is_sandboxed": true,
+        }))
+        .unwrap();
+
+        let inst = remote_display_instance("mini", &row);
+        assert_eq!(inst.id, "r1");
+        assert_eq!(inst.tool, "codex");
+        assert_eq!(inst.source_profile, "work@mini");
+        assert_eq!(inst.status, Status::Running);
+        let wt = inst.worktree_info.expect("worktree shown");
+        assert_eq!(wt.branch, "feature/x");
+        assert_eq!(wt.main_repo_path, "/Users/me/scm/app");
+        assert_eq!(wt.base_branch.as_deref(), Some("main"));
+        assert!(inst.sandbox_info.is_some_and(|s| s.enabled));
+    }
+
+    #[test]
+    fn a_row_without_worktree_or_sandbox_shows_neither() {
+        let row: SessionResponse =
+            serde_json::from_value(serde_json::json!({"id": "r1", "title": "t"})).unwrap();
+        let inst = remote_display_instance("mini", &row);
+        assert!(inst.worktree_info.is_none());
+        assert!(inst.sandbox_info.is_none());
+        assert_eq!(inst.source_profile, "mini");
+    }
+
+    fn items(snaps: &[RemoteSnapshot], collapsed: &CollapsedRemotes) -> Vec<Item> {
+        remote_items(
+            snaps,
+            &display_instances(snaps),
+            collapsed,
+            crate::session::config::SortOrder::AZ,
+        )
+    }
+
+    fn shelf(
+        snaps: &[RemoteSnapshot],
+        shelf: RemoteShelf,
+        collapsed: &CollapsedRemotes,
+    ) -> (Vec<Item>, usize) {
+        remote_shelf_items(snaps, &display_instances(snaps), shelf, collapsed)
+    }
+
+    #[test]
     fn a_reachable_remote_lists_a_header_then_its_sessions_one_level_in() {
-        let items = remote_items(
+        let items = items(
             &[snap(
                 "mini",
                 Some(Ok(vec![row("a", "alpha"), row("b", "beta")])),
@@ -538,9 +631,34 @@ mod tests {
     }
 
     #[test]
+    fn remote_rows_follow_the_sidebar_sort_order() {
+        use crate::session::config::SortOrder;
+        let snaps = [snap(
+            "mini",
+            Some(Ok(vec![row("a", "alpha"), row("b", "beta")])),
+        )];
+        for (order, expected) in [(SortOrder::AZ, ["a", "b"]), (SortOrder::ZA, ["b", "a"])] {
+            let items = remote_items(
+                &snaps,
+                &display_instances(&snaps),
+                &CollapsedRemotes::new(),
+                order,
+            );
+            let ids: Vec<_> = items[1..]
+                .iter()
+                .map(|i| match i {
+                    Item::RemoteSession { id, .. } => id.as_str(),
+                    other => panic!("unexpected {other:?}"),
+                })
+                .collect();
+            assert_eq!(ids, expected, "{order:?}");
+        }
+    }
+
+    #[test]
     fn a_collapsed_remote_keeps_its_header_and_count_but_hides_rows() {
         let collapsed: CollapsedRemotes = [("mini".to_string(), RemoteShelf::Live)].into();
-        let items = remote_items(
+        let items = items(
             &[snap("mini", Some(Ok(vec![row("a", "alpha")])))],
             &collapsed,
         );
@@ -557,7 +675,7 @@ mod tests {
 
     #[test]
     fn an_unread_remote_is_connecting_and_an_unreachable_one_carries_its_first_error_line() {
-        let items = remote_items(
+        let items = items(
             &[
                 snap("new", None),
                 snap(
@@ -609,12 +727,11 @@ mod tests {
     }
 
     #[test]
-    fn fingerprint_ignores_fields_the_sidebar_does_not_show() {
+    fn fingerprint_moves_with_any_row_change() {
         let mut a = row("a", "alpha");
         let before = fingerprint(&[snap("m", Some(Ok(vec![a.clone()])))]);
-        a.project_path = "/elsewhere".into();
         assert_eq!(before, fingerprint(&[snap("m", Some(Ok(vec![a.clone()])))]));
-        a.status = "Running".into();
+        a.unread = true;
         assert_ne!(before, fingerprint(&[snap("m", Some(Ok(vec![a])))]));
         assert_ne!(
             fingerprint(&[snap("m", None)]),
@@ -648,7 +765,7 @@ mod tests {
         let snaps = [snap("mini", Some(Ok(rows)))];
         let collapsed = CollapsedRemotes::new();
 
-        let live = remote_items(&snaps, &collapsed);
+        let live = items(&snaps, &collapsed);
         assert!(matches!(
             &live[0],
             Item::RemoteGroup {
@@ -658,8 +775,7 @@ mod tests {
         ));
         assert_eq!(live.len(), 2);
 
-        let (archived, archived_total) =
-            remote_shelf_items(&snaps, RemoteShelf::Archived, &collapsed);
+        let (archived, archived_total) = shelf(&snaps, RemoteShelf::Archived, &collapsed);
         assert_eq!(archived_total, 1);
         assert!(matches!(
             &archived[0],
@@ -671,7 +787,7 @@ mod tests {
         ));
         assert!(matches!(&archived[1], Item::RemoteSession { id, depth: 2, .. } if id == "old"));
 
-        let (trashed, trashed_total) = remote_shelf_items(&snaps, RemoteShelf::Trashed, &collapsed);
+        let (trashed, trashed_total) = shelf(&snaps, RemoteShelf::Trashed, &collapsed);
         assert_eq!(trashed_total, 2);
         let ids: Vec<_> = trashed[1..]
             .iter()
@@ -686,59 +802,9 @@ mod tests {
     #[test]
     fn a_remote_with_nothing_shelved_adds_no_shelf_rows() {
         let snaps = [snap("mini", Some(Ok(vec![row("live", "live")])))];
-        let (items, total) =
-            remote_shelf_items(&snaps, RemoteShelf::Trashed, &CollapsedRemotes::new());
+        let (items, total) = shelf(&snaps, RemoteShelf::Trashed, &CollapsedRemotes::new());
         assert!(items.is_empty());
         assert_eq!(total, 0);
-    }
-
-    fn registered(session: Option<&str>, binding: Option<&str>) -> crate::daemon::remotes::Remote {
-        crate::daemon::remotes::Remote {
-            name: "mini".into(),
-            url: "https://mini.example.ts.net".into(),
-            enabled: true,
-            token: Some("tok-secret".into()),
-            session: session.map(str::to_string),
-            binding: binding.map(str::to_string),
-            insecure: false,
-        }
-    }
-
-    #[test]
-    fn an_endpoint_carries_a_login_only_when_both_halves_are_present() {
-        assert!(endpoint_for(&registered(None, None)).login().is_none());
-        assert!(endpoint_for(&registered(Some("s"), None)).login().is_none());
-        let endpoint = endpoint_for(&registered(Some("s"), Some("b")));
-        let login = endpoint.login().expect("login present");
-        assert_eq!((login.session.as_str(), login.binding.as_str()), ("s", "b"));
-    }
-
-    #[test]
-    fn only_an_insecure_entry_allows_plaintext() {
-        let remote = registered(None, None);
-        assert!(!endpoint_for(&remote).allows_plaintext());
-        let insecure = crate::daemon::remotes::Remote {
-            insecure: true,
-            ..remote
-        };
-        let endpoint = endpoint_for(&insecure);
-        assert!(endpoint.allows_plaintext());
-        assert!(format!("{endpoint:?}").contains("allow_plaintext: true"));
-    }
-
-    #[test]
-    fn debug_output_never_carries_credentials() {
-        let remote = registered(Some("sess-secret"), Some("bind-secret"));
-        let endpoint = endpoint_for(&remote);
-        for rendered in [
-            format!("{remote:?}"),
-            format!("{endpoint:?}"),
-            format!("{:?}", endpoint.login()),
-        ] {
-            for secret in ["tok-secret", "sess-secret", "bind-secret"] {
-                assert!(!rendered.contains(secret), "{secret} leaked: {rendered}");
-            }
-        }
     }
 
     #[test]

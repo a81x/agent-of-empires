@@ -3,7 +3,6 @@
 use std::sync::mpsc::TryRecvError;
 
 use super::HomeView;
-use crate::daemon::SessionResponse;
 use crate::session::config::GroupByMode;
 use crate::session::Item;
 use crate::tui::remote_feed::{self, RemoteFeed};
@@ -115,12 +114,16 @@ impl HomeView {
         remote: String,
         data: &crate::tui::dialogs::NewSessionData,
     ) {
-        let client = remote_feed::enabled_remotes()
-            .get(&remote)
-            .and_then(|entry| entry.endpoint.daemon_client().ok());
-        let Some(client) = client else {
-            self.flash_status(format!("{remote} is no longer configured"));
-            return;
+        let client = match remote_feed::remote_endpoint(&remote).map(|e| e.daemon_client()) {
+            Some(Ok(client)) => client,
+            Some(Err(error)) => {
+                self.flash_status(format!("{remote}: {}", error.summary()));
+                return;
+            }
+            None => {
+                self.flash_status(format!("{remote} is no longer configured"));
+                return;
+            }
         };
         self.remote_create
             .request(crate::tui::remote_create::CreateRequest {
@@ -164,17 +167,31 @@ impl HomeView {
         }
     }
 
-    pub(in crate::tui) fn remote_session(
+    /// The instance a sidebar session row renders: the local session, or the
+    /// display instance built from a remote row.
+    pub(in crate::tui) fn row_instance(&self, item: &Item) -> Option<&crate::session::Instance> {
+        match item {
+            Item::Session { id, .. } => self.get_instance(id),
+            Item::RemoteSession { remote, id, .. } => self.remote_instance(remote, id),
+            _ => None,
+        }
+    }
+
+    /// [`Self::row_instance`] for the selected row.
+    pub(in crate::tui) fn selected_row_instance(&self) -> Option<&crate::session::Instance> {
+        match (&self.selected_session, &self.selected_remote) {
+            (Some(id), _) => self.get_instance(id),
+            (None, Some((remote, id))) => self.remote_instance(remote, id),
+            _ => None,
+        }
+    }
+
+    pub(in crate::tui) fn remote_instance(
         &self,
         remote: &str,
         id: &str,
-    ) -> Option<&SessionResponse> {
-        self.remote_snapshots
-            .iter()
-            .find(|s| s.name == remote)
-            .and_then(|s| s.sessions.as_ref())
-            .and_then(|read| read.as_ref().ok())
-            .and_then(|rows| rows.iter().find(|r| r.id == id))
+    ) -> Option<&crate::session::Instance> {
+        self.remote_instances.get(remote)?.get(id)
     }
 
     /// [`Self::build_flat_items`] with the remote sessions placed.
@@ -200,7 +217,9 @@ impl HomeView {
         if matches!(self.view_mode, super::ViewMode::Structured) {
             items.extend(remote_feed::remote_items(
                 &self.remote_snapshots,
+                &self.remote_instances,
                 &self.collapsed_remotes,
+                self.sort_order,
             ));
         }
         crate::session::append_archived_section(&mut items, &pool, self.archived_section_collapsed);
@@ -234,6 +253,7 @@ impl HomeView {
         ] {
             let (rows, total) = remote_feed::remote_shelf_items(
                 &self.remote_snapshots,
+                &self.remote_instances,
                 shelf,
                 &self.collapsed_remotes,
             );
@@ -288,7 +308,12 @@ impl HomeView {
         {
             return;
         }
-        let remote = remote_feed::remote_items(&self.remote_snapshots, &self.collapsed_remotes);
+        let remote = remote_feed::remote_items(
+            &self.remote_snapshots,
+            &self.remote_instances,
+            &self.collapsed_remotes,
+            self.sort_order,
+        );
         let at = items
             .iter()
             .position(|it| match it {

@@ -981,22 +981,12 @@ pub fn flatten_local_machine(
     sort_order: SortOrder,
     collapsed: bool,
 ) -> Vec<Item> {
-    let rows: Vec<String> = if sort_order == SortOrder::Attention {
-        flatten_sessions_by_attention(instances)
-            .into_iter()
-            .filter_map(|item| match item {
-                Item::Session { id, .. } => Some(id),
-                _ => None,
-            })
-            .collect()
-    } else {
-        let mut live: Vec<&Instance> = instances
-            .iter()
-            .filter(|i| !i.is_archived() && !i.is_trashed())
-            .collect();
-        sort_sessions(&mut live, sort_order);
-        live.into_iter().map(|i| i.id.clone()).collect()
-    };
+    let mut live: Vec<&Instance> = instances
+        .iter()
+        .filter(|i| !i.is_archived() && !i.is_trashed())
+        .collect();
+    sort_sessions(&mut live, sort_order);
+    let rows: Vec<String> = live.into_iter().map(|i| i.id.clone()).collect();
     let mut items = vec![Item::LocalGroup {
         depth: 0,
         session_count: rows.len(),
