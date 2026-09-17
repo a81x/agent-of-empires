@@ -1,10 +1,4 @@
 // @vitest-environment jsdom
-//
-// Contract test for the SecuritySettings panel. SecuritySettings is
-// purely a read-only view over the /api/about response; this suite
-// mocks fetchAbout and asserts the rendered badges match each
-// permutation of auth_mode, passphrase_enabled, read_only, behind_tunnel,
-// and version. Part of #1217.
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { render, waitFor } from "@testing-library/react";

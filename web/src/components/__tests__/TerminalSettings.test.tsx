@@ -1,9 +1,4 @@
 // @vitest-environment jsdom
-//
-// Contract test for the TerminalSettings panel. Unlike the panels under
-// settings/, this one persists through useWebSettings + localStorage
-// (key `aoe-web-settings`) rather than PATCH /api/settings. The contract
-// here is the JSON shape written to that key. Part of #1217.
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render } from "@testing-library/react";

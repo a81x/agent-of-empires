@@ -1,9 +1,4 @@
 // @vitest-environment jsdom
-//
-// Vitest coverage for the sidebar Projects section (#2212): row rendering,
-// read-only gating, the add affordance, the empty state, and the row context
-// menu (edit / remove). Drives the keyboard + create paths CodeRabbit flagged
-// as uncovered.
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";

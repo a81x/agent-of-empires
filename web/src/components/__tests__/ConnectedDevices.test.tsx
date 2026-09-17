@@ -1,16 +1,4 @@
 // @vitest-environment jsdom
-//
-// Tests for ConnectedDevices. The component fetches the list of signed-in
-// devices on mount (via a deferred setTimeout, plus a 10s polling interval
-// and a visibilitychange listener), renders a loading / empty / populated /
-// error state, and exposes per-device "Revoke" and a global "Sign out all"
-// affordance, both elevation-gated through api helpers we mock here.
-//
-// Fake timers drive the deferred first load and the polling interval
-// deterministically. testing-library's `waitFor` polls on a real-timer
-// interval that never advances under fake timers, so instead of `waitFor`
-// we flush the component's own timers + microtasks with
-// `act(() => vi.advanceTimersByTimeAsync(...))` and then assert synchronously.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";

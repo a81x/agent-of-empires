@@ -1,9 +1,4 @@
 // @vitest-environment jsdom
-//
-// Tests for ElevationPrompt. The prompt is hidden until the global
-// ELEVATION_REQUIRED_EVENT fires (dispatched by the fetch interceptor on a
-// 403 elevation_required). Submitting the passphrase calls elevateLogin; on
-// success the modal closes, on failure it shows the error and stays open.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";

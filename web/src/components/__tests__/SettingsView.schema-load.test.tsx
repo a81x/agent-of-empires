@@ -1,8 +1,4 @@
 // @vitest-environment jsdom
-//
-// Regression for the schema-load failure path (#1692 / CodeRabbit): if
-// getSettingsSchema() fails, the schema-driven Worktree tab must show an error
-// and a Retry that recovers, instead of rendering a permanently blank tab.
 
 import { describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";

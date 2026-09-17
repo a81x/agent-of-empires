@@ -1,10 +1,4 @@
 // @vitest-environment jsdom
-//
-// Contract test for PairedShellPane's "Starting session..." placeholder and
-// shell-mode controls. The full mounted-terminal path is exercised by the
-// Playwright suites; this renders the early branches and asserts the loading
-// copy and shell picker are present. PairedShellPane is the body of the
-// "terminal" dock pane (previously the lower half of RightPanel).
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render, screen } from "@testing-library/react";

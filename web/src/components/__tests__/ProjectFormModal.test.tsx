@@ -1,9 +1,4 @@
 // @vitest-environment jsdom
-//
-// Vitest coverage for the extracted project add/edit form (#2212), migrated
-// from the former ProjectsView test: the add form sends `default_base_branch`
-// only when filled, and edit mode PATCHes the registration (including clearing
-// the base branch to null).
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";

@@ -1,10 +1,4 @@
 // @vitest-environment jsdom
-//
-// Unit tests for MobileTerminalToolbar's keyboard wiring (#1432). The strip
-// is never rendered under the chromium Playwright coverage run (pointer:coarse
-// does not match there), so these exercise it directly: the paste button and
-// the Ctrl latch. The parent (a live terminal
-// view) always owns the keyboard inset now, so the strip carries none.
 
 import { useState } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";

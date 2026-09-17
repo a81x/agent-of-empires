@@ -1,11 +1,4 @@
 // @vitest-environment jsdom
-//
-// Contract test for the MCP servers settings panel (#1996). The live
-// Playwright spec covers the read/provenance/redaction happy path against a
-// real backend; this locks in the mutation handlers (conflict resolve, keep,
-// drop) and their notice branches, which the live coverage does not feed into
-// the Vitest patch lane. The api module is mocked so each handler's
-// success / stale / failure path is driven deterministically.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";

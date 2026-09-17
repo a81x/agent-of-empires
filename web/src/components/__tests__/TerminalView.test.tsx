@@ -1,10 +1,4 @@
 // @vitest-environment jsdom
-//
-// Contract test for TerminalView's pending / error early-return
-// branches. The full mounted-terminal path is exercised by the
-// Playwright suites; this test just asserts the loading placeholder
-// and the error retry surface render correctly without touching the
-// xterm.js mount chain.
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { render, screen, waitFor, act } from "@testing-library/react";

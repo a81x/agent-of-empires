@@ -1,12 +1,4 @@
 // @vitest-environment jsdom
-//
-// The theme is a global preference: the Settings theme tab must route the
-// global-only fields (theme name, color mode) to the dedicated PATCH /api/theme
-// endpoint, while a profile-overridable row in the same tab (idle decay) still
-// writes the selected profile. Pins `saveThemeField`'s per-field routing so a
-// regression can't quietly send the theme back into a profile (the
-// empire->rose-pine flip). The end-to-end persist path lives in
-// web/tests/live/settings-persistence-theme.spec.ts.
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";

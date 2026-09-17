@@ -1,10 +1,4 @@
 // @vitest-environment jsdom
-//
-// Covers the mobile single-pane container (#1452): the back header, the
-// agent / paired / diff layers with their inert + visibility toggling, the
-// structured view vs terminal agent branch, the diff list vs viewer branch, and the
-// send-comments dialog. Heavy children are stubbed; this asserts the
-// container's own branching, which the Playwright suite then exercises live.
 
 import { describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen } from "@testing-library/react";

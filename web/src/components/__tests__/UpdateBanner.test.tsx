@@ -1,9 +1,4 @@
 // @vitest-environment jsdom
-//
-// Tests for UpdateBanner. The banner polls `/api/system/update-status` on
-// mount and renders a top-of-app notice when an update is available and the
-// check mode is not `auto`/`off`. Dismiss persists server-side via
-// dismissUpdate (keyed by latest_version) and hides the banner optimistically.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";

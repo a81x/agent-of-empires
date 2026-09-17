@@ -1,9 +1,4 @@
 // @vitest-environment jsdom
-//
-// Covers ToastProvider + ToastBusBridge: rendering info/error variants,
-// the auto-dismiss timer, manual dismiss, the empty state, the
-// service-worker push -> in-app toast path, and the clickable
-// session-jump toast.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, fireEvent, render, screen } from "@testing-library/react";

@@ -1,11 +1,4 @@
 // @vitest-environment jsdom
-//
-// Contract test for the NotificationSettings panel. The real Web Push
-// flow is non-trivial to run in jsdom (no ServiceWorker, no PushManager,
-// no Notification.requestPermission), so this suite mocks the
-// usePushSubscription hook entirely and asserts the rendered UI matches
-// the hook state plus that user actions invoke the corresponding hook
-// primitives. Part of #1217.
 
 import { describe, expect, it, vi } from "vitest";
 import { fireEvent, render } from "@testing-library/react";
