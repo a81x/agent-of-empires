@@ -57,6 +57,13 @@ fn serve_unavailable_error(cli: &Cli) -> Option<clap::Error> {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // Experimental branch: its migrations are one-way, so only a debug build,
+    // which keeps its own app dir and tmux socket, may run.
+    anyhow::ensure!(
+        cfg!(debug_assertions),
+        "This experimental build runs only as a debug build (`cargo build`, then ./target/debug/aoe)"
+    );
+
     // Hidden internal helper for the VT live-preview path (`[tmux] vt_live`,
     // default on): `aoe __vt-pipe <socket>` forwards a tmux pipe-pane stream to
     // a unix socket. Handled before clap so it never appears on the CLI/docs
