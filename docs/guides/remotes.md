@@ -11,7 +11,12 @@ aoe remote add mini https://mini.tailnet.ts.net --token <token>
 AOE_REMOTE_PASSPHRASE=… aoe remote add mini https://mini.tailnet.ts.net --token <token>
 ```
 
-The token is the one the remote daemon prints at startup. A daemon started
+The token is the one the remote daemon prints at startup. A URL carrying
+`?token=`, as `aoe serve --status` prints it, also works: the token moves to
+`--token` and the stored URL drops the query. When the remote machine exposes
+its daemon from the TUI (`R`, then Local network or Internet), that view shows
+the full `aoe remote add` command to run here, named after the remote's
+hostname. A daemon started
 with `--remote` also has a passphrase wall: `--passphrase` (or
 `AOE_REMOTE_PASSPHRASE`, which keeps it out of `ps`) is exchanged once for a
 device-bound login session. The passphrase itself is never stored; when the

@@ -31,7 +31,8 @@ pub struct RemoteAddArgs {
     /// Short name used to select this remote
     pub name: String,
 
-    /// Base URL, e.g. `https://box.tailnet.ts.net`
+    /// Base URL, e.g. `https://box.tailnet.ts.net`. A `?token=` query, as
+    /// `aoe serve --status` prints it, supplies the token.
     pub url: String,
 
     /// Bearer token the daemon prints at startup
@@ -77,7 +78,9 @@ async fn add(args: RemoteAddArgs) -> Result<()> {
     if args.name.trim().is_empty() {
         bail!("remote name must not be empty");
     }
-    let url = args.url.trim_end_matches('/').to_string();
+    let (url, token) = token_from_url(&args.url, args.token.clone())?;
+    let url = url.trim_end_matches('/').to_string();
+    let args = RemoteAddArgs { token, ..args };
     // The same URL and transport rules every later poll applies, so an entry
     // that could never be used is refused now rather than stored.
     let plaintext_refused = |url: &str| {
@@ -146,6 +149,31 @@ async fn add(args: RemoteAddArgs) -> Result<()> {
         );
     }
     Ok(())
+}
+
+/// Move a `?token=` query (as `aoe serve --status` and the TUI print it) into
+/// the token, so the stored URL stays a base URL. A different `--token` is
+/// refused rather than silently preferred.
+fn token_from_url(raw: &str, token: Option<String>) -> Result<(String, Option<String>)> {
+    let Ok(mut url) = reqwest::Url::parse(raw) else {
+        return Ok((raw.to_string(), token));
+    };
+    let (found, rest): (Vec<_>, Vec<_>) = url
+        .query_pairs()
+        .map(|(key, value)| (key.into_owned(), value.into_owned()))
+        .partition(|(key, _)| key == "token");
+    let Some((_, found)) = found.into_iter().next_back() else {
+        return Ok((raw.to_string(), token));
+    };
+    if token.as_ref().is_some_and(|token| *token != found) {
+        bail!("the URL carries a different token than --token; pass only one");
+    }
+    if rest.is_empty() {
+        url.set_query(None);
+    } else {
+        url.query_pairs_mut().clear().extend_pairs(rest);
+    }
+    Ok((url.to_string(), Some(found)))
 }
 
 /// Read the session list with the entry's credentials, so a wrong base path,
@@ -238,4 +266,41 @@ fn toggle(args: RemoteToggleArgs) -> Result<()> {
         if enabled { "enabled" } else { "disabled" }
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn token_from_url_moves_the_query_token_into_the_token() {
+        let token = |t: &str| Some(t.to_string());
+        for (raw, flag, expected) in [
+            (
+                "http://10.0.0.2:8081/?token=abc",
+                None,
+                ("http://10.0.0.2:8081/", token("abc")),
+            ),
+            (
+                "http://10.0.0.2:8081/?token=abc",
+                token("abc"),
+                ("http://10.0.0.2:8081/", token("abc")),
+            ),
+            (
+                "https://box.ts.net/?a=1&token=abc",
+                None,
+                ("https://box.ts.net/?a=1", token("abc")),
+            ),
+            (
+                "https://box.ts.net",
+                token("xyz"),
+                ("https://box.ts.net", token("xyz")),
+            ),
+            ("not a url", None, ("not a url", None)),
+        ] {
+            let (url, found) = token_from_url(raw, flag).unwrap();
+            assert_eq!((url.as_str(), found), (expected.0, expected.1), "{raw}");
+        }
+        assert!(token_from_url("http://10.0.0.2:8081/?token=abc", token("other")).is_err());
+    }
 }

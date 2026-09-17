@@ -340,7 +340,7 @@ Add or update a remote daemon endpoint
 ###### **Arguments:**
 
 * `<NAME>` — Short name used to select this remote
-* `<URL>` — Base URL, e.g. `https://box.tailnet.ts.net`
+* `<URL>` — Base URL, e.g. `https://box.tailnet.ts.net`. A `?token=` query, as `aoe serve --status` prints it, supplies the token
 
 ###### **Options:**
 
