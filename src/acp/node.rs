@@ -1,34 +1,18 @@
 //! Node.js runtime resolution for acp-worker subprocesses.
-//!
-//! Resolve order (matches the v4 design doc):
-//! 1. `AOE_ACP_NODE` env var.
-//! 2. `acp.node_path` from settings.
-//! 3. `node` on `PATH` (must satisfy minimum version).
-//! 4. Previously-downloaded Node at
-//!    `$AOE_DATA_DIR/acp/node-v22.21.0/bin/node`.
-//! 5. (Future) download from nodejs.org/dist on first use.
-//!
-//! For 5 we have a real `download` function, but it is opt-in: the
-//! caller must explicitly invoke it. Resolving at session-spawn time
-//! returns a typed error if no Node is present, and the CLI surfaces
-//! the doctor's `[!! ] Node runtime missing` message.
 
 use std::path::{Path, PathBuf};
 
 use thiserror::Error;
 use tracing::{debug, info, warn};
 
-/// The Node major floor for every adapter. With `MIN_NODE_MINOR` it is
-/// pinned to the `engines.node` field in `acp-worker/aoe-agent/package.json`
-/// by `package_engines_matches_min_node_major`.
+/// The Node major floor for every adapter.
 pub const MIN_NODE_MAJOR: u32 = 22;
 /// Minor floor, within `MIN_NODE_MAJOR`, for adapters that ship sources:
 /// `--experimental-strip-types`, which runs the bundled `aoe-agent`, arrived
-/// in 22.6. The npm adapters accept any `MIN_NODE_MAJOR`.
+/// in 22.6.
 pub const MIN_NODE_MINOR: u32 = 6;
 
 /// The pinned Node version aoe downloads when no host Node is found.
-/// Bumping this requires bumping the SHA-256 below at the same time.
 pub const PINNED_NODE_VERSION: &str = "22.21.0";
 
 #[derive(Debug, Error)]
@@ -61,9 +45,7 @@ pub enum NodeSource {
     Bundled,
 }
 
-/// Resolve Node.js for structured view use. `settings_node_path` is the value
-/// configured in `acp.node_path` (empty when unset). `app_dir` is
-/// where the bundled tarball would be extracted.
+/// Resolve Node.js for structured view use.
 pub fn resolve(settings_node_path: &str, app_dir: &Path) -> Result<ResolvedNode, NodeError> {
     resolve_for(settings_node_path, app_dir, false)
 }
@@ -140,9 +122,6 @@ fn parse_major_minor(raw: &str) -> Option<(u32, u32)> {
 }
 
 /// Whether a raw `node --version` string satisfies [`MIN_NODE_MAJOR`].
-/// `None` for unrecognisable output, which callers must treat as "not
-/// proven compatible" rather than as a pass. The spawn path and
-/// `aoe acp doctor` share this so their verdicts cannot diverge.
 pub fn meets_minimum(raw: &str) -> Option<bool> {
     parse_major_minor(raw).map(|(major, _)| major >= MIN_NODE_MAJOR)
 }
@@ -175,11 +154,9 @@ pub fn bundled_node_path(app_dir: &Path) -> PathBuf {
 }
 
 /// Pinned platform-specific tarball SHA-256 values for
-/// `PINNED_NODE_VERSION`. Fetched once from nodejs.org's SHASUMS256.txt
-/// and committed here. Bumping `PINNED_NODE_VERSION` requires
-/// refreshing every entry in this table.
+/// `PINNED_NODE_VERSION`.
 struct PlatformTarball {
-    /// e.g., "linux-x64". Forms the filename: node-vX.Y.Z-{slug}.tar.xz
+    /// e.g., "linux-x64".
     slug: &'static str,
     /// Hex-encoded SHA-256 of the tarball.
     sha256: &'static str,
@@ -223,8 +200,7 @@ pub enum NodePlatform {
     DarwinX64,
     DarwinArm64,
     /// Windows uses a .zip; we don't support it via auto-download
-    /// today (would need a zip extractor). Users on Windows must
-    /// install Node themselves.
+    /// today (would need a zip extractor).
     WindowsUnsupported,
 }
 
@@ -249,11 +225,7 @@ fn pinned_for(platform: NodePlatform) -> Option<&'static PlatformTarball> {
 }
 
 /// Download the pinned Node tarball from nodejs.org/dist and extract
-/// to the bundled location. Verifies SHA-256 against the embedded
-/// value before extracting.
-///
-/// On Windows, returns NoNode because tarball auto-download is not
-/// implemented for .zip; users must install Node themselves.
+/// to the bundled location.
 pub async fn download(app_dir: &Path) -> Result<ResolvedNode, NodeError> {
     let platform = detect_platform();
     let tarball = pinned_for(platform).ok_or_else(|| {
@@ -292,9 +264,7 @@ pub async fn download(app_dir: &Path) -> Result<ResolvedNode, NodeError> {
     }
     info!(target: "acp.node", "downloaded {} bytes; SHA-256 verified", bytes.len());
 
-    // Extract under app_dir/acp/. The tarball's top-level dir is
-    // `node-vX.Y.Z-{slug}` so we extract into the parent and then
-    // rename/symlink to `node-vX.Y.Z` for a stable bundled-path lookup.
+    // Extract under app_dir/acp/.
     let acp_dir = app_dir.join("acp");
     std::fs::create_dir_all(&acp_dir)?;
 
@@ -369,10 +339,6 @@ mod tests {
 
     #[test]
     fn package_engines_matches_min_node_major() {
-        // package.json cannot read a Rust const, so `engines.node` is the
-        // one restatement of the floor outside this module. Assert it
-        // tracks the gate so a bump that forgets one side fails CI instead
-        // of letting a host pass `aoe acp doctor` and fail at spawn.
         let manifest = include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/acp-worker/aoe-agent/package.json"
@@ -389,8 +355,6 @@ mod tests {
             "engines.node is {engines:?}"
         );
 
-        // The runtime we download when the host has none must clear the
-        // same bar, including the source adapters' floor.
         assert_eq!(meets_minimum(PINNED_NODE_VERSION), Some(true));
         assert!(supports_strip_types(PINNED_NODE_VERSION));
     }

@@ -1,26 +1,3 @@
-//! Per-session tracing tee: mirrors session-scoped events into each
-//! session's `acp-workers/<id>.log` so `aoe acp logs --session <id>`
-//! surfaces the daemon's watchdog/cancel breadcrumbs, not just the
-//! startup marker plus agent stderr. Additive: events still flow to the
-//! shared `debug.log`. See issue #1864.
-//!
-//! Capture. Events are routed by their `session` (or rare `session_id`)
-//! field. A `tracing::info_span!("acp_session", session = %id)` wraps
-//! each daemon per-session connection task, so events that do not set the
-//! field explicitly still inherit it through the span scope. The layer
-//! reads the event's own fields first, then walks the span scope.
-//!
-//! I/O. Synchronous best-effort writes through a `SizeRotatingWriter` per
-//! session, mirroring the shared `debug.log` writer (same rare-rotation
-//! stall profile, so no new failure class). Writers are bounded by count
-//! and the least-recently-used one is evicted, so a long-lived daemon
-//! does not leak file handles. No background thread, no channel: dropping
-//! a breadcrumb during a spike would lose exactly the diagnostics this
-//! exists to capture.
-//!
-//! Re-entrancy. The writer never emits tracing; events with target
-//! `acp.tee` are skipped so any future self-reporting cannot loop.
-
 use std::collections::HashMap;
 use std::io::Write;
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -35,22 +12,14 @@ use tracing_subscriber::Layer;
 use crate::logging::{RotationPolicy, SizeRotatingWriter};
 use crate::session::config::RotationKind;
 
-// The layer is installed generically (un-boxed) in the daemon subscriber
-// stack so its `Layer<S> for any S` impl resolves against the full layered
-// subscriber type, which a `Box<dyn Layer<Registry>>` could not name.
-
-/// Span name carrying the session id for scope-based capture. Entered at
-/// the daemon per-session connection task so nested events inherit the
-/// `session` field even when they do not set it explicitly.
+/// Span name carrying the session id for scope-based capture.
 pub const SESSION_SPAN: &str = "acp_session";
 
 /// Target reserved for the tee's own diagnostics; skipped on the event
 /// path to prevent re-entrancy.
 const TEE_TARGET: &str = "acp.tee";
 
-/// Cap on simultaneously-open per-session log files. Realistic concurrent
-/// session counts sit well under this; the bound only matters for a
-/// daemon that churns through many sessions over days.
+/// Cap on simultaneously-open per-session log files.
 const MAX_OPEN_SESSION_LOGS: usize = 64;
 const PER_SESSION_MAX_BYTES: u64 = 10 * 1024 * 1024;
 const PER_SESSION_KEEP: u8 = 2;
@@ -92,8 +61,6 @@ impl SessionTeeLayer {
     }
 
     /// Resolve (or open) the per-session writer, updating LRU bookkeeping.
-    /// Returns `None` when the session id is unsafe or the file cannot be
-    /// opened; the caller silently drops the line in that case.
     fn writer_for(&self, session: &str) -> Option<Arc<Mutex<SizeRotatingWriter>>> {
         let mut cache = lock(&self.writers);
         cache.tick += 1;
@@ -104,11 +71,7 @@ impl SessionTeeLayer {
         }
         let path = crate::process::worker_registry::log_path_for(session).ok()?;
         // At capacity: evict the oldest entry whose writer is idle
-        // (`strong_count == 1`, only the cache holds it). Evicting a writer
-        // still in flight on another thread would let this call open a
-        // second `SizeRotatingWriter` on the same file and race its appends
-        // and rotation. If every cached writer is in flight, drop this event
-        // rather than open a racing writer.
+        // (`strong_count == 1`, only the cache holds it).
         if cache.map.len() >= MAX_OPEN_SESSION_LOGS {
             let evict = cache
                 .map
@@ -191,14 +154,14 @@ where
 }
 
 /// Lock that never panics on poison: a writer panic must not propagate
-/// out of the tracing event path. Recovers the inner guard instead.
+/// out of the tracing event path.
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
 }
 
 /// Debug-formatted values arrive quoted (`"abc"`); strip surrounding
 /// quotes so `session` values pass `log_path_for` validation and the
-/// rendered line reads cleanly. Mirrors `StageRecorder` in `deletion.rs`.
+/// rendered line reads cleanly.
 fn unquote(s: &str) -> String {
     s.trim_matches('"').to_string()
 }
@@ -228,9 +191,7 @@ impl Visit for SessionVisitor {
 }
 
 /// Visitor that both finds the session id and collects the renderable
-/// message plus remaining fields for the per-session line. The session
-/// field itself is not echoed into the line: the file is already
-/// per-session, so repeating it would be noise.
+/// message plus remaining fields for the per-session line.
 #[derive(Default)]
 struct LineVisitor {
     session: Option<String>,
@@ -350,8 +311,6 @@ mod tests {
             with_default(sub, || {
                 let span = tracing::info_span!("acp_session", session = %"sess-span");
                 let _g = span.enter();
-                // Event carries no explicit `session` field; it must be
-                // attributed via the enclosing span scope.
                 tracing::warn!(target: "acp.protocol", "inherited via span");
             });
             let body = read_log("sess-span");

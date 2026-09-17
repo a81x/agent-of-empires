@@ -60,9 +60,7 @@ struct ResolvedPath {
 }
 
 /// Display form of a tool-call path, matching the web structured view's
-/// `relativeDisplayPath` helper. Paths under a workspace repo are prefixed
-/// with the repo name, paths under the session worktree or main repo are shown
-/// bare relative, and paths outside every known root stay unchanged.
+/// `relativeDisplayPath` helper.
 pub fn relative_display_path(raw: &str, roots: Option<&SessionPathRoots>) -> String {
     let Some(roots) = roots else {
         return raw.to_string();

@@ -1,33 +1,4 @@
 //! Background async sub-agent transcript tailer.
-//!
-//! Claude's `Task` tool, when launched with `isAsync`, completes
-//! immediately on the parent ACP stream and runs off-protocol. The
-//! parent stream never reports the sub-agent's progress or completion;
-//! that lives only in an on-disk JSONL transcript (the launch payload's
-//! `outputFile`, a symlink into `~/.claude/projects/<proj>/subagents/`).
-//!
-//! For each launch the daemon spawns one [`spawn_tailer`] task that
-//! follows that transcript and emits `BackgroundAgentProgress` /
-//! `BackgroundAgentCompleted` events so the web "Background agents" panel
-//! and the inline Task card can show live status, activity, and result.
-//!
-//! Design (see the design debate on this feature):
-//!
-//! - One task per agent, keyed by the launch. It self-terminates on
-//!   completion, on a hard-idle cap, or when `event_tx` closes (the
-//!   session went away), so it can never outlive its session.
-//! - Completion is set on a terminal `end_turn` assistant message, or, at
-//!   the idle timeout, inferred from a substantial final text block with
-//!   no dangling tool call (Claude Code doesn't always tag the true final
-//!   record `end_turn`; see `infer_idle_outcome`, #3232). A genuine hang
-//!   (no final text, or a tool call never resolved) still reports
-//!   `Stalled`, never faked as done.
-//! - Progress is a throttled, coalesced snapshot (tool count + last
-//!   action), not one event per transcript line, so the SQLite event log
-//!   stays bounded while a mid-run reload still sees in-flight agents.
-//! - Parsing is fully defensive: the transcript is an undocumented Claude
-//!   SDK format. Malformed lines are counted and skipped; a format we
-//!   cannot read at all degrades to a visible warning, never a panic.
 
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
@@ -49,32 +20,11 @@ const STALL_AFTER: Duration = Duration::from_secs(90);
 const ABORT_AFTER: Duration = Duration::from_secs(300);
 /// Give the transcript file this long to appear after launch.
 const WAIT_FILE_FOR: Duration = Duration::from_secs(30);
-/// Bound on a single `docker`/`podman exec` used to read the transcript.
-///
-/// Both reads are awaited outside the tailer's `tokio::select!`, so a wedged
-/// container runtime would block the loop before it could observe
-/// `event_tx.closed()` or its own idle timeout, holding the task's
-/// `ActiveGuard` (and therefore the off-protocol work grace) indefinitely.
-/// Paired with `kill_on_drop`, so a timed-out exec is reaped rather than left
-/// behind. Comfortably above a healthy exec while still well under
-/// `POLL_INTERVAL * a few`, so a slow runtime degrades to fewer reads rather
-/// than a stuck tailer.
 const CONTAINER_EXEC_TIMEOUT: Duration = Duration::from_secs(10);
 /// Cap on the assistant-text preview carried in progress/result.
 const TEXT_PREVIEW_CHARS: usize = 240;
 
 /// Where a sub-agent transcript lives, and how to read it.
-///
-/// A host session's transcript is an ordinary file the daemon reads
-/// directly. A sandboxed session's transcript lives inside the container's
-/// home directory (`~/.claude/.../subagents/`), which is NOT one of the
-/// session's mounted volumes, so there is no host path to read and no mount
-/// to translate through. It must be read across the container boundary via
-/// the runtime's `exec`, exactly as `terminal_handler` runs sandboxed
-/// commands. Before this existed the tailer always used host `tokio::fs`, so
-/// a sandboxed sub-agent's transcript "never appeared" and every async Task
-/// in a sandbox reported a spurious error. See the module docs and #(sandbox
-/// sub-agent transcript).
 #[derive(Clone)]
 pub enum TranscriptSource {
     /// Read the transcript directly from the host filesystem.
@@ -90,9 +40,7 @@ pub enum TranscriptSource {
 }
 
 impl TranscriptSource {
-    /// Whether the transcript file exists yet. The launch payload's
-    /// `outputFile` is a symlink into the subagents dir; `test -e` and the
-    /// host `metadata` call both follow it to the real target.
+    /// Whether the transcript file exists yet.
     async fn exists(&self, path: &str) -> bool {
         match self {
             TranscriptSource::Host => tokio::fs::metadata(path).await.is_ok(),
@@ -111,10 +59,7 @@ impl TranscriptSource {
         }
     }
 
-    /// Read the bytes appended since `offset` (0-based). Returns an empty
-    /// vec when nothing is new or the file is momentarily unreadable, so the
-    /// poll loop keeps waiting rather than aborting; mirrors the host
-    /// open-failure path.
+    /// Read the bytes appended since `offset` (0-based).
     async fn read_from(&self, path: &str, offset: u64) -> Vec<u8> {
         match self {
             TranscriptSource::Host => {
@@ -132,8 +77,7 @@ impl TranscriptSource {
             }
             TranscriptSource::Container { runtime, container } => {
                 // `tail -c +N` prints bytes from the 1-based byte offset N to
-                // EOF, so a 0-based `offset` maps to `+(offset + 1)`. On the
-                // first read (offset 0) this is `+1`, i.e. the whole file.
+                // EOF, so a 0-based `offset` maps to `+(offset + 1)`.
                 let start = format!("+{}", offset.saturating_add(1));
                 let mut cmd = tokio::process::Command::new(runtime);
                 cmd.args(["exec", container, "tail", "-c", &start, path])
@@ -150,10 +94,7 @@ impl TranscriptSource {
 }
 
 /// Removes an agent from the shared in-flight set on any tailer exit
-/// (terminal event, hard-idle abort, or `event_tx` close). The
-/// between-prompt idle watchdog treats a non-empty set as work in flight,
-/// so this drop guard is what lets the session end once the sub-agent is
-/// done, on every exit path. See #2573.
+/// (terminal event, hard-idle abort, or `event_tx` close).
 struct ActiveGuard {
     active: Arc<Mutex<HashSet<String>>>,
     agent_id: String,
@@ -167,11 +108,7 @@ impl Drop for ActiveGuard {
     }
 }
 
-/// Spawn the tailer for one async sub-agent. Returns immediately; the
-/// task runs until the agent reaches a terminal state or `event_tx`
-/// closes. `output_file` is the launch payload's transcript path.
-/// `active` is the connection's in-flight background-agent set: the id is
-/// inserted here and removed when the tailer task exits (see `ActiveGuard`).
+/// Spawn the tailer for one async sub-agent.
 pub fn spawn_tailer(
     agent_id: String,
     output_file: String,
@@ -184,8 +121,7 @@ pub fn spawn_tailer(
         .expect("bg-agent active set mutex poisoned")
         .insert(agent_id.clone());
     if output_file.is_empty() {
-        // No transcript path: we can never tail it. Mark it so the panel
-        // doesn't show a forever-running agent.
+        // No transcript path: we can never tail it.
         tokio::spawn(async move {
             let _guard = ActiveGuard {
                 active,
@@ -222,8 +158,7 @@ struct ToolEntry {
 }
 
 /// Hard cap on per-agent tool entries carried in events, so a runaway
-/// sub-agent can't bloat the snapshot payload. Excess keeps the count
-/// accurate (`tool_count`) but stops growing the detailed list.
+/// sub-agent can't bloat the snapshot payload.
 const MAX_TOOLS: usize = 250;
 
 /// Running accumulator for one agent's parsed transcript state.
@@ -231,7 +166,7 @@ const MAX_TOOLS: usize = 250;
 struct Snapshot {
     tool_count: u32,
     /// Individual tool calls in order, with outcomes filled in from
-    /// matching tool_result records. Capped at `MAX_TOOLS`.
+    /// matching tool_result records.
     tools: Vec<ToolEntry>,
     last_tool: Option<String>,
     last_text: Option<String>,
@@ -242,16 +177,9 @@ struct Snapshot {
     parse_errors: u32,
     parsed_any: bool,
     /// True when the most recently folded content block was `text`, false
-    /// when it was `tool_use`. Claude Code's async-Task transcripts don't
-    /// always tag the final assistant record `stop_reason: "end_turn"`, so
-    /// this is the fallback signal an idle-timeout uses to tell "the
-    /// sub-agent finished speaking" from "it's mid tool-call". See
-    /// `infer_idle_outcome`.
+    /// when it was `tool_use`.
     last_was_text: bool,
-    /// Tool-use ids with no matching `tool_result` yet. Tracked separately
-    /// from `tools`, which stops growing at `MAX_TOOLS` to bound the event
-    /// payload; completion state must stay accurate past that cap, so it
-    /// cannot be derived from the truncated list. Never sent on the wire.
+    /// Tool-use ids with no matching `tool_result` yet.
     unresolved_tools: HashSet<String>,
 }
 
@@ -262,8 +190,7 @@ async fn run_tailer(
     event_tx: Sender<Event>,
 ) {
     // Wait for the transcript to appear (the SDK writes it shortly after
-    // the launch event). Bail to Error if it never shows. For a sandboxed
-    // session this checks inside the container, not the host.
+    // the launch event).
     let mut waited = Duration::ZERO;
     while !source.exists(&output_file).await {
         if waited >= WAIT_FILE_FOR {
@@ -301,8 +228,7 @@ async fn run_tailer(
         }
 
         if snap.done {
-            // The explicit end_turn completion path. The idle timeout
-            // below can also infer completion; see infer_idle_outcome.
+            // The explicit end_turn completion path.
             let warning = format_warning(&snap);
             let _ = event_tx
                 .send(completed(
@@ -318,9 +244,7 @@ async fn run_tailer(
 
         let idle = (now - last_growth).to_std().unwrap_or(Duration::ZERO);
         if idle >= ABORT_AFTER {
-            // Stopped tracking. No end_turn marker was ever seen, but the
-            // transcript may still show the sub-agent actually finished;
-            // see infer_idle_outcome.
+            // Stopped tracking.
             let (status, result, warning) = infer_idle_outcome(&snap);
             let _ = event_tx
                 .send(completed(
@@ -369,8 +293,7 @@ async fn run_tailer(
 }
 
 /// Read any bytes appended since `offset`, splitting on newlines and
-/// folding complete JSONL records into `snap`. Returns true if the file
-/// grew. A partial trailing line stays in `line_buf` for the next poll.
+/// folding complete JSONL records into `snap`.
 async fn read_new_lines(
     source: &TranscriptSource,
     path: &str,
@@ -396,10 +319,7 @@ async fn read_new_lines(
     true
 }
 
-/// Parse one JSONL transcript line and fold it into the snapshot. Fully
-/// defensive: any shape we don't recognize is ignored, not fatal.
-/// Assistant lines carry `tool_use` (a tool call) and `text`; user lines
-/// carry `tool_result` (the outcome), matched back by `tool_use_id`.
+/// Parse one JSONL transcript line and fold it into the snapshot.
 fn fold_line(line: &str, snap: &mut Snapshot) {
     let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
         snap.parse_errors += 1;
@@ -450,9 +370,7 @@ fn fold_line(line: &str, snap: &mut Snapshot) {
     }
 }
 
-/// Record a tool call. Bumps the count and the unresolved set always;
-/// appends a detailed entry only until the cap, so a huge sub-agent can't
-/// bloat the event payload.
+/// Record a tool call.
 fn fold_tool_use(block: &serde_json::Value, snap: &mut Snapshot) {
     snap.tool_count += 1;
     snap.last_was_text = false;
@@ -555,11 +473,7 @@ fn format_warning(snap: &Snapshot) -> Option<String> {
 
 /// Decide what an idle-timeout (`ABORT_AFTER`, no `end_turn` ever seen)
 /// really means: a genuine hang, or a sub-agent that finished speaking and
-/// simply stopped writing. Claude Code's async-Task transcripts don't
-/// always tag the final assistant record `stop_reason: "end_turn"` (see
-/// #3232), so a substantial final text block with no dangling tool call is
-/// treated as done, not stalled. A tool call still awaiting its result
-/// (`ok: None`) means the sub-agent was mid-action, never done.
+/// simply stopped writing.
 fn infer_idle_outcome(snap: &Snapshot) -> (BackgroundAgentStatus, Option<String>, Option<String>) {
     let dangling_tool = !snap.unresolved_tools.is_empty();
     if snap.last_was_text && snap.last_text.is_some() && !dangling_tool {
@@ -610,10 +524,6 @@ fn completed(
 mod tests {
     use super::*;
 
-    /// The host read path returns only bytes appended since `offset`, and
-    /// `read_new_lines` folds each complete line while a partial trailing
-    /// line waits for the next poll. This is the same offset contract the
-    /// container `tail -c +N` path mirrors, so pinning it here guards both.
     #[tokio::test]
     async fn host_read_new_lines_reads_from_offset_and_buffers_partials() {
         let dir = tempfile::tempdir().unwrap();
@@ -632,8 +542,6 @@ mod tests {
         assert_eq!(snap.tool_count, 0, "a partial line must not fold");
         assert_eq!(offset, line.len() as u64);
 
-        // Append the newline plus a second full line; the read starts at the
-        // saved offset, so the first line completes and the second folds too.
         tokio::fs::write(&path, format!("{line}\n{line}\n"))
             .await
             .unwrap();
@@ -735,10 +643,6 @@ mod tests {
         assert!(p.chars().count() <= TEXT_PREVIEW_CHARS + 1);
     }
 
-    /// #3232: Claude Code's async-Task transcripts don't always tag the
-    /// final assistant record `stop_reason: "end_turn"`. `infer_idle_outcome`
-    /// is what an `ABORT_AFTER` idle-timeout falls back on to tell a
-    /// sub-agent that actually finished from one genuinely hung.
     #[test]
     fn infer_idle_outcome_distinguishes_finished_from_hung() {
         // (lines, expected status, expected result, warning substring, case)
@@ -797,10 +701,6 @@ mod tests {
         }
     }
 
-    /// `tools` stops growing at `MAX_TOOLS` to bound the event payload, so
-    /// completion state cannot be read off it: a call issued past the cap
-    /// would be invisible and a trailing text block would wrongly infer
-    /// `Completed`. `unresolved_tools` is uncapped for exactly this reason.
     #[test]
     fn infer_idle_outcome_sees_unresolved_tool_past_the_display_cap() {
         let mut snap = Snapshot::default();
@@ -812,8 +712,6 @@ mod tests {
                 &mut snap,
             );
         }
-        // Resolve every call the capped display list actually holds, so the
-        // only unresolved one is the call past the cap.
         for i in 0..MAX_TOOLS {
             fold_line(
                 &format!(

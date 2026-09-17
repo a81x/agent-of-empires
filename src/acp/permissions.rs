@@ -1,13 +1,4 @@
 //! Permission UI bridge.
-//!
-//! When an agent emits ACP `session/request_permission`, the structured view
-//! creates an `Approval` (with a server-side `Nonce`) and surfaces it via
-//! `state::Event::ApprovalRequested`. The client renders the approval card
-//! and the user taps allow/deny. The client posts back with the nonce and
-//! decision; the server resolves via `state::Event::ApprovalResolved`.
-//!
-//! This module isolates the bridge so the actor in `state.rs` doesn't have
-//! to know about UI semantics.
 
 use chrono::Utc;
 
@@ -16,9 +7,7 @@ use super::approvals::{
 };
 use super::state::ToolCall;
 
-/// Build a fresh `Approval` for an incoming permission request. Generates
-/// a server-side nonce, decides destructive/benign classification, and
-/// classifies the agent's option list (see `is_choice_list`).
+/// Build a fresh `Approval` for an incoming permission request.
 pub fn build_approval(tool_call: ToolCall, options: Vec<ApprovalOption>) -> Approval {
     let destructive = is_destructive(&tool_call.name, &tool_call.args_preview);
     Approval {

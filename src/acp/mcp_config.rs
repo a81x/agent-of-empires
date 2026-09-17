@@ -1,12 +1,4 @@
 //! ACP boundary for MCP server forwarding.
-//!
-//! Parsing, layering, provenance, and the precedence merge all live in the
-//! always-compiled `session::mcp::mcp_model` resolver, which the unified management
-//! surface (#1996), the CLI, and the TUI also read. This module is the thin
-//! edge that converts the resolver's winning set into ACP `McpServer`
-//! wire values and drops any transport the agent did not advertise. Sharing one
-//! resolver across forwarding and display guarantees what the user sees equals
-//! what the agent receives.
 
 use agent_client_protocol::schema::v1::{
     EnvVariable, HttpHeader, McpCapabilities, McpServer, McpServerHttp, McpServerSse,
@@ -19,8 +11,7 @@ use crate::session::mcp::project_mcp::{ProjectMcpServer, ProjectMcpTransport};
 
 /// Convert resolved, transport-typed servers (parsed and merged by
 /// `session::mcp::mcp_model`) into ACP `McpServer` values for forwarding through
-/// `session/new` and `session/load`. The caller passes the winning set of the
-/// precedence merge, so the converted list is exactly what reaches the agent.
+/// `session/new` and `session/load`.
 pub fn project_servers_to_acp(servers: Vec<ProjectMcpServer>) -> Vec<McpServer> {
     servers
         .into_iter()
@@ -55,9 +46,7 @@ fn to_headers(headers: BTreeMap<String, String>) -> Vec<HttpHeader> {
 
 /// Drop servers the agent cannot accept: `stdio` is always supported, but
 /// `http` / `sse` are only valid when the agent advertised the matching
-/// capability in its `initialize` response. Forwarding an unadvertised remote
-/// transport is a protocol violation, so drop (with a warning) rather than
-/// send. Unknown future transports are dropped for the same reason.
+/// capability in its `initialize` response.
 pub fn filter_for_capabilities(
     servers: Vec<McpServer>,
     caps: &McpCapabilities,

@@ -1,9 +1,5 @@
 //! Server-owned prompt dispatch: whether an incoming prompt is sent now,
 //! steered into the running turn, or parked on the server queue.
-//!
-//!
-//! This is a daemon decision because it depends on daemon control and worker
-//! state. Clients render the returned disposition.
 
 use super::state::AcpState;
 
@@ -20,62 +16,32 @@ pub enum PromptDispatch {
     Queued { reason: QueueReason },
 }
 
-/// Why a prompt was parked. Named per gate so a client can explain the wait
-/// and so the incident table below reads as prose.
+/// Why a prompt was parked.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum QueueReason {
     /// A non-steerable turn is running.
     TurnActive,
-    /// A cancel is pending on the running turn (#1727).
+    /// A cancel is pending on the running turn.
     Cancelling,
-    /// A `/compact` is running (#3219).
+    /// A `/compact` is running.
     Compacting,
     /// No live worker, and not the idle-dormant case this POST would wake.
     WorkerDown,
 }
 
-/// Worker-liveness inputs the endpoint already computes. Kept separate from
-/// `AcpState` because liveness is supervisor/instance state, not something the
-/// event fold observes.
+/// Worker-liveness inputs the endpoint already computes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct WorkerLiveness {
     /// The supervisor holds a live (or mid-respawn) worker for this session.
     pub running: bool,
-    /// The session was auto-stopped for inactivity. The prompt POST is itself
-    /// the wake path, so this is emphatically not "worker down".
+    /// The session was auto-stopped for inactivity.
     pub idle_dormant: bool,
-    /// The session is parked on the rate-limit redelivery cap. Same shape as
-    /// `idle_dormant`: no worker, but the POST is the documented recovery, so
-    /// it must not park on "worker down".
+    /// The session is parked on the rate-limit redelivery cap.
     pub rate_limit_exhausted: bool,
 }
 
 /// Decide what to do with a prompt arriving for `state`.
-///
-/// The four gates, each a fixed incident:
-///
-/// - **#1689**: an idle-dormant worker must not park on "not running". The
-///   POST clears dormancy, the reconciler respawns, and `send_turn` waits for
-///   the fresh worker. Parking instead leaves the prompt in a queue whose
-///   drain is waiting for the very worker nothing is going to start.
-/// - **#3688**: nor may a session parked on the rate-limit redelivery cap.
-///   That park is terminal by design, so nothing un-parks it on a timer and
-///   the queue drain would wait forever; the banner tells the user a fresh
-///   prompt recovers it, and this is the gate that makes that true.
-/// - **#2805**: a steerable agent takes a mid-turn prompt directly. Parking it
-///   reintroduces the queue-after behavior steering exists to replace.
-/// - **#1727**: except while a cancel is pending. The daemon reads a prompt
-///   arriving mid-cancel as a wedged agent and **restarts the runner**, so
-///   Stop-then-type must park or it respawns the worker.
-/// - **#3219**: and except during `/compact`. The adapter answers `Injected`
-///   and swallows the message into a turn that never replies to it, with no
-///   retry affordance.
-///
-/// The failure modes are asymmetric: wrongly sending where the old code parked
-/// can restart a worker, while wrongly parking only delays a turn. So every
-/// path that is not positively classified as sendable falls through to
-/// `Queued`.
 pub fn decide(state: &AcpState, worker: WorkerLiveness) -> PromptDispatch {
     if !worker.running && !worker.idle_dormant && !worker.rate_limit_exhausted {
         return PromptDispatch::Queued {
@@ -128,8 +94,7 @@ mod tests {
         s
     }
 
-    /// The decision table, keyed by the incident each row exists for. A future
-    /// edit that reintroduces one of these fails the row that names it.
+    /// The decision table, keyed by the incident each row exists for.
     #[test]
     fn dispatch_table_covers_every_incident_by_name() {
         let queued = |r| PromptDispatch::Queued { reason: r };
@@ -245,8 +210,7 @@ mod tests {
         }
     }
 
-    /// The wire shape the clients switch on. Externally visible contract, so
-    /// pin it rather than let a serde attribute change it silently.
+    /// The wire shape the clients switch on.
     #[test]
     fn dispatch_serializes_to_the_documented_wire_shape() {
         let cases = [

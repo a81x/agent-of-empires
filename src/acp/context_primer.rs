@@ -1,22 +1,5 @@
 //! Synthesises a markdown "context primer" from a structured view session's
-//! persisted event log. Used by `GET /api/sessions/{id}/acp/
-//! context-primer` after a `session/load` failure: the agent's model
-//! context is empty, but our SQLite event store still has the visible
-//! transcript, so the user can opt in to sending a compact recap of the
-//! prior turns as the next user message. See #1004.
-//!
-//! Design (see `history/plan-context-primer.md`):
-//!   - Group events into turns bounded by `UserPromptSent` and `Stopped`.
-//!   - Render newest-first under a global character cap (default 24k);
-//!     drop whole older turns when the budget runs out, only truncate
-//!     within the newest turn if it alone exceeds the budget.
-//!   - Tool calls: merge `ToolCallStarted` + `ToolCallUpdated` +
-//!     `ToolCallCompleted` by id, render as a single one-liner with
-//!     kind-aware key extraction (`path`, `command`, ...) and bulk-key
-//!     elision (`new_string`, `file_text`, `content`, ...).
-//!   - Keep `PlanUpdated` + `TodoListUpdated` as compact plan lines.
-//!   - Drop `ThinkingStarted`/`ThinkingEnded`/`UsageUpdated`/mode events
-//!     and other ambient noise.
+//! persisted event log.
 
 use super::state::{Event, ToolCall};
 
@@ -26,8 +9,7 @@ pub const MAX_TOOL_SUMMARY_CHARS: usize = 300;
 pub const MAX_ASSISTANT_TAIL_CHARS: usize = 6_000;
 
 /// Tool argument keys whose values are bulk content (file bodies,
-/// patches, stdout/stderr). Always elided in the primer, both in
-/// kind-aware extraction and in the generic JSON fallback.
+/// patches, stdout/stderr).
 const BULK_KEYS: &[&str] = &[
     "content",
     "file_text",
@@ -46,8 +28,7 @@ const BULK_KEYS: &[&str] = &[
 ];
 
 /// Tool argument keys whose values are small identifiers we want to
-/// surface (paths, commands, URLs, patterns). Order matters: the
-/// kind-aware extractor checks the first matching key.
+/// surface (paths, commands, URLs, patterns).
 const IMPORTANT_KEYS: &[&str] = &[
     "file_path",
     "path",
@@ -63,8 +44,7 @@ const IMPORTANT_KEYS: &[&str] = &[
 
 #[derive(Debug, Clone)]
 pub struct PrimerOptions {
-    /// Only consider events with `seq < before_seq`. Used to exclude
-    /// the `SessionContextReset` event itself and any post-reset noise.
+    /// Only consider events with `seq < before_seq`.
     pub before_seq: Option<u64>,
     pub max_chars: usize,
     pub max_turns: usize,
@@ -91,11 +71,7 @@ pub struct ContextPrimer {
     pub max_chars: usize,
     /// The user's most recent `UserPromptSent` text WHEN the session
     /// ended in a non-success terminal state (rate_limit park, or
-    /// `AgentStartupError`). The prompt never reached the agent, so it
-    /// is excluded from the rendered transcript and returned here for
-    /// the frontend to drop into the composer as the user's pending
-    /// request. None when the session ended normally or the trailing
-    /// turn had real agent activity. See #1281 / #1282.
+    /// `AgentStartupError`).
     pub unprocessed_prompt: Option<String>,
 }
 
@@ -104,7 +80,7 @@ struct Turn {
     user_text: String,
     assistant_text: String,
     /// Tool calls keyed by `id` so updates/completes merge with their
-    /// starting event. Render order matches insertion order.
+    /// starting event.
     tool_order: Vec<String>,
     tools: std::collections::HashMap<String, ToolSummary>,
     plan_lines: Vec<String>,
@@ -126,16 +102,11 @@ enum ToolStatus {
     Failed,
 }
 
-/// Build a markdown primer from the given events. Events should be in
-/// ascending seq order.
+/// Build a markdown primer from the given events.
 pub fn build_context_primer(events: &[(u64, Event)], opts: PrimerOptions) -> ContextPrimer {
     let mut turns: Vec<Turn> = Vec::new();
     let mut current: Option<Turn> = None;
     let mut included_event_count = 0usize;
-    // Tracks whether the session ended in a non-success terminal state
-    // (rate-limit park or AgentStartupError) so the post-loop step can
-    // recover the user's unsent prompt rather than rendering it as if
-    // the agent had processed it. See #1281 / #1282.
     let mut ended_non_success = false;
 
     for (seq, event) in events {
@@ -156,10 +127,6 @@ pub fn build_context_primer(events: &[(u64, Event)], opts: PrimerOptions) -> Con
                     ..Turn::default()
                 });
                 included_event_count += 1;
-                // A new user prompt resets the terminal-error tracking:
-                // if the prior turn ended in a rate-limit but the user
-                // then sent and completed another turn, that prior
-                // unsent prompt is no longer the trailing state.
                 ended_non_success = false;
             }
             Event::UserDiffCommentsPrompt {
@@ -252,8 +219,6 @@ pub fn build_context_primer(events: &[(u64, Event)], opts: PrimerOptions) -> Con
                 ));
                 // Include the step titles so the model knows what the
                 // plan actually was, not just the bucket counts.
-                // Truncate per-step so a huge plan can't monopolise the
-                // budget. See review feedback on #1004.
                 for step in &plan.steps {
                     let marker = match step.status {
                         super::state::PlanStepStatus::Done => "[x]",
@@ -280,32 +245,16 @@ pub fn build_context_primer(events: &[(u64, Event)], opts: PrimerOptions) -> Con
                     turns.push(t);
                 }
                 included_event_count += 1;
-                // Track rate-limit terminal so the post-loop step can
-                // recover the user's unsent prompt as
-                // `unprocessed_prompt` instead of rendering it in the
-                // transcript as if the agent had processed it. The
-                // redelivery cap publishes a second `Stopped` over the
-                // adapter's, and the prompt is no more processed for it
-                // (#3688), so that reason carries the flag too.
                 ended_non_success = reason == "rate_limited"
                     || reason == crate::server::acp_reconciler::RATE_LIMIT_EXHAUSTED_RETRIES_REASON;
             }
             Event::AgentStartupError { .. } => {
-                // Startup errors are also non-success terminals: the
-                // user's pending prompt (if any) never reached an
-                // agent. Same recovery semantics as rate_limit.
                 if let Some(t) = current.take() {
                     turns.push(t);
                 }
                 included_event_count += 1;
                 ended_non_success = true;
             }
-            // Everything else (Thinking*, UsageUpdated, ModeChanged,
-            // ModesAvailable, CurrentModeChanged, AvailableCommandsUpdated,
-            // RawAgentUpdate, ApprovalRequested/Resolved, DiffEmitted,
-            // RateLimit, AcpSessionAssigned, SessionContextReset,
-            // WakeupScheduled, ToolCallContent, AgentSwitched) is
-            // either ambient state or already represented elsewhere; skip.
             _ => {}
         }
     }
@@ -313,13 +262,6 @@ pub fn build_context_primer(events: &[(u64, Event)], opts: PrimerOptions) -> Con
         turns.push(t);
     }
 
-    // If the session ended in a non-success terminal (rate-limit park
-    // or AgentStartupError) and the trailing turn has only the user's
-    // prompt (no assistant text, no tool calls, no plan updates), the
-    // adapter never actually processed it. Pop the turn off the recap
-    // and surface its text as `unprocessed_prompt` so the recovery
-    // path can drop it back into the composer as the user's pending
-    // request after a switch / retry. See #1281 / #1282.
     let mut unprocessed_prompt: Option<String> = None;
     if ended_non_success {
         if let Some(last) = turns.last() {
@@ -345,11 +287,7 @@ pub fn build_context_primer(events: &[(u64, Event)], opts: PrimerOptions) -> Con
         };
     }
 
-    // Render newest-first under the char/turn budget. We render each
-    // turn into a fully-formed markdown block (including its header),
-    // then walk newest-to-oldest stuffing complete blocks into the
-    // budget. If a single newest turn alone overflows, we truncate
-    // within it to keep at least the user prompt + assistant tail.
+    // Render newest-first under the char/turn budget.
 
     let total_turns = turns.len();
     let max_take = opts.max_turns.min(total_turns);
@@ -366,22 +304,11 @@ pub fn build_context_primer(events: &[(u64, Event)], opts: PrimerOptions) -> Con
     let footer = render_primer_footer();
     let transcript_heading = "## Transcript\n\n";
     let truncation_notice = "_Older transcript entries were omitted to fit the primer budget._\n\n";
-    // Reserve space for every fixed-shape string we will write before
-    // and after the variable turn bodies, including the truncation
-    // notice (assume it MAY be needed, so its slot is reserved up
-    // front; if no truncation happens we just don't write it and the
-    // headroom turns into slack). The exact `### Turn N\n\n` header
-    // length depends on the digit count, so it's accounted for
-    // per-iteration below.
     let fixed_overhead =
         header.len() + transcript_heading.len() + truncation_notice.len() + footer.len();
 
     if fixed_overhead >= opts.max_chars {
-        // Budget too small to fit even the chrome. Emit a stub that
-        // still ends with the "Current request" footer (we never want
-        // to drop the user-visible "send me a prompt" cue), then
-        // hard-cap. The pre-allocation below is bounded by max_chars,
-        // so the result always satisfies len <= max_chars.
+        // Budget too small to fit even the chrome.
         let mut text = String::with_capacity(opts.max_chars);
         text.push_str(&header);
         if text.chars().count() < opts.max_chars {
@@ -403,9 +330,7 @@ pub fn build_context_primer(events: &[(u64, Event)], opts: PrimerOptions) -> Con
     let body_budget = opts.max_chars - fixed_overhead;
 
     // Walk newest first, accumulate complete turns until adding the
-    // next-oldest would exceed budget. Each turn carries its own
-    // `### Turn N\n\n` header; we conservatively reserve 20 chars for
-    // that (covers any plausible 1-3 digit turn count).
+    // next-oldest would exceed budget.
     let mut accepted_rev: Vec<String> = Vec::new();
     let mut accepted_chars: usize = 0;
     let turn_header_reserve = 20usize;
@@ -415,7 +340,7 @@ pub fn build_context_primer(events: &[(u64, Event)], opts: PrimerOptions) -> Con
     for (i, body) in bodies.iter().enumerate().rev() {
         let estimated = body.len() + turn_header_reserve;
         if accepted_rev.is_empty() && estimated > body_budget {
-            // Newest turn alone overflows. Truncate within the turn.
+            // Newest turn alone overflows.
             let inner_budget = body_budget.saturating_sub(turn_header_reserve);
             let truncated_body = truncate_turn_body(body, inner_budget);
             accepted_chars += truncated_body.len() + turn_header_reserve;
@@ -452,10 +377,6 @@ pub fn build_context_primer(events: &[(u64, Event)], opts: PrimerOptions) -> Con
     }
     text.push_str(&footer);
 
-    // Final hard cap: the per-turn estimate is conservative but a
-    // pathological combination of long titles + many tool lines can
-    // still push us a few chars over. Clip safely on a char boundary
-    // so callers can rely on `len(primer) <= max_chars`.
     if text.chars().count() > opts.max_chars {
         text = clip_chars(&text, opts.max_chars);
     }
@@ -541,8 +462,7 @@ fn clip_assistant_text(s: &str) -> String {
         return s.to_string();
     }
     // Keep the tail (most recent assistant output is what continues
-    // the conversation); prepend an elision marker. Skip by chars so
-    // multi-byte UTF-8 boundaries are respected.
+    // the conversation); prepend an elision marker.
     let skip = total_chars - MAX_ASSISTANT_TAIL_CHARS;
     let tail: String = s.chars().skip(skip).collect();
     format!("[...earlier assistant text omitted]\n{}", tail)
@@ -620,7 +540,6 @@ fn describe_tool(name: &str, kind: &str, args_preview: &str) -> String {
     }
 
     // args_preview is not JSON-shaped, likely already a string preview.
-    // Keep a short fragment if it's not obviously bulk.
     let arg_trim = args_preview.trim();
     if arg_trim.is_empty() {
         format!("Tool: {}", trimmed_name)
@@ -661,12 +580,7 @@ fn scalar_to_string(value: &serde_json::Value) -> Option<String> {
     }
 }
 
-/// UTF-8-safe clip to at most `max` characters total. Appends `...`
-/// when clipped, but only when there's room (max >= 3 and the marker
-/// fits). Used everywhere we need to bound a user/agent-supplied
-/// string by length without risking a panic on a multi-byte boundary
-/// (which `String::truncate` and direct `&s[..n]` slicing both can).
-/// Guarantees: output char count <= `max`.
+/// UTF-8-safe clip to at most `max` characters total.
 fn clip_chars(s: &str, max: usize) -> String {
     if max == 0 {
         return String::new();
@@ -982,8 +896,7 @@ mod tests {
     #[test]
     fn drops_oldest_turns_when_over_budget() {
         let mut events = Vec::new();
-        // Build 30 small turns, each ~100 chars of assistant text. The
-        // 24k char default fits roughly 20.
+        // Build 30 small turns, each ~100 chars of assistant text.
         let mut seq = 1u64;
         for i in 0..30 {
             events.push(user_event(seq, &format!("user prompt #{i}")));
@@ -1015,9 +928,6 @@ mod tests {
             assistant_event(2, &huge),
             stopped_event(3),
         ];
-        // The clipped-assistant tail is ~6k chars; pick a max_chars
-        // below that so the newest turn alone still exceeds the budget
-        // and forces the in-place truncation branch.
         let opts = PrimerOptions {
             max_chars: 4_000,
             ..PrimerOptions::default()
@@ -1054,8 +964,7 @@ mod tests {
 
     #[test]
     fn tiny_max_chars_does_not_panic_and_respects_cap() {
-        // Pathological budget smaller than the chrome alone. Builder
-        // must not panic and must keep `text.len() <= max_chars`.
+        // Pathological budget smaller than the chrome alone.
         let events = vec![
             user_event(1, "hi"),
             assistant_event(2, "ok"),
@@ -1078,10 +987,6 @@ mod tests {
 
     #[test]
     fn handles_non_ascii_assistant_text_without_panicking() {
-        // Each emoji takes 4 UTF-8 bytes; a naive byte-based slice
-        // around `MAX_ASSISTANT_TAIL_CHARS` would land in the middle
-        // of one and panic on `&s[idx..]`. Exercise that path with a
-        // string of 4-byte emoji to force a multi-byte boundary.
         let unit = "🦀"; // 4 bytes
         let total_chars = MAX_ASSISTANT_TAIL_CHARS + 100;
         let mut text = String::with_capacity(total_chars * 4);
@@ -1141,12 +1046,6 @@ mod tests {
 
     #[test]
     fn unprocessed_prompt_popped_when_session_ends_rate_limited() {
-        // User typed prompt -> /acp/prompt published UserPromptSent
-        // -> adapter hit rate-limit before processing it. The bare
-        // prompt at the end of the transcript must NOT be rendered as
-        // history (the agent never saw it), and instead surface as
-        // `unprocessed_prompt` for the recovery flow to prefill into
-        // the composer. See #1281 / #1282.
         let events = vec![
             user_event(1, "earlier turn"),
             assistant_event(2, "earlier reply"),
@@ -1170,11 +1069,6 @@ mod tests {
 
     #[test]
     fn unprocessed_prompt_survives_the_redelivery_cap_park() {
-        // #3688: the cap publishes a second `Stopped` over the adapter's
-        // `rate_limited` one. The prompt is no more processed for it, and the
-        // give-up banner's own "Continue in another agent" CTA reads this
-        // primer, so losing it here hands the new backend a recap that shows
-        // the pending request as answered history.
         let events = vec![
             user_event(1, "earlier turn"),
             assistant_event(2, "earlier reply"),
@@ -1202,8 +1096,6 @@ mod tests {
 
     #[test]
     fn unprocessed_prompt_popped_when_session_ends_in_startup_error() {
-        // Same semantic for AgentStartupError: the user's last prompt
-        // never landed because the agent failed to come online.
         let events = vec![
             user_event(1, "try this"),
             (
@@ -1221,10 +1113,6 @@ mod tests {
 
     #[test]
     fn unprocessed_prompt_none_when_trailing_turn_had_agent_activity() {
-        // The trailing turn had assistant text before the rate-limit
-        // landed (e.g. mid-stream cutoff). Don't pop it; the agent
-        // did process some of the prompt and the user wouldn't expect
-        // their question to re-appear in the composer.
         let events = vec![
             user_event(1, "say hi"),
             assistant_event(2, "hi back"),
@@ -1238,11 +1126,6 @@ mod tests {
 
     #[test]
     fn unprocessed_prompt_resets_when_followed_by_successful_turn() {
-        // The transcript shows a rate-limit recovery in the past:
-        // user's earlier prompt was unsent, but they then sent it
-        // again and the agent did reply. The earlier failed prompt
-        // shouldn't leak into unprocessed_prompt because the trailing
-        // state is a successful turn.
         let events = vec![
             user_event(1, "first try"),
             rate_limited_stop(2),

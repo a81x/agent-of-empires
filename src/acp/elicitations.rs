@@ -1,29 +1,4 @@
 //! Form-mode ACP elicitation, normalized for the structured view.
-//!
-//! claude-agent-acp (>=0.44) re-enables the built-in `AskUserQuestion`
-//! tool only when the client advertises `elicitation.form`, then routes
-//! the question(s) to us as an `elicitation/create` request carrying a
-//! JSON-Schema form. The same `elicitation.form` capability also lets an
-//! MCP server attached to the agent collect arbitrary structured input,
-//! which arrives through the identical path with a richer schema (number,
-//! integer, boolean fields; length / range / pattern / format
-//! constraints; defaults). This module owns the boundary between that raw
-//! ACP schema and a clean, web-facing view model:
-//!
-//! - [`parse_elicitation`] turns a [`CreateElicitationRequest`] into a
-//!   normalized [`Elicitation`] (a list of questions with options),
-//!   classifying each form field by its JSON-Schema shape rather than by
-//!   the adapter's specific field keys, so the structured view never has
-//!   to understand `oneOf`/`anyOf`/`enum`.
-//! - [`build_response`] validates the user's selection against that
-//!   normalized model (never trusting the browser to send valid option
-//!   values back into a tool result) and builds the
-//!   [`CreateElicitationResponse`] the agent expects.
-//!
-//! The server generates a single-use [`Nonce`] for each elicitation,
-//! mirroring the approval flow: it travels client -> server only on
-//! resolution, so a malicious agent can neither synthesize nor replay a
-//! resolution.
 
 use std::collections::BTreeMap;
 
@@ -37,22 +12,19 @@ use serde::{Deserialize, Serialize};
 
 use super::approvals::Nonce;
 
-/// A pending or resolved elicitation. Held in
-/// `AcpState::pending_elicitations` until it is resolved through
-/// `apply_event(Event::ElicitationResolved { ... })`.
+/// A pending or resolved elicitation.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Elicitation {
     pub nonce: Nonce,
-    /// Human-readable prompt. For a single AskUserQuestion this is the
-    /// question text; for multiple it is a short lead-in.
+    /// Human-readable prompt.
     pub message: String,
     /// Optional schema-level title (MCP elicitations may set one;
-    /// AskUserQuestion does not). Rendered as the form heading.
+    /// AskUserQuestion does not).
     pub title: Option<String>,
     /// Optional schema-level description, rendered under the message.
     pub description: Option<String>,
     /// Tool call this elicitation belongs to, when the agent scoped it to
-    /// one. Lets the UI render the card under the originating tool.
+    /// one.
     pub tool_call_id: Option<String>,
     pub questions: Vec<ElicitationQuestion>,
     pub requested_at: DateTime<Utc>,
@@ -62,8 +34,7 @@ pub struct Elicitation {
 /// One field of the elicitation form.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ElicitationQuestion {
-    /// Schema property key (`question_0`, `question_0_custom`, ...). Echoed
-    /// back verbatim as the answer key in the response content.
+    /// Schema property key (`question_0`, `question_0_custom`, ...).
     pub field_key: String,
     pub title: Option<String>,
     pub description: Option<String>,
@@ -111,14 +82,12 @@ pub enum ElicitationFieldKind {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ElicitationOption {
-    /// Value echoed back to the agent. For AskUserQuestion the adapter
-    /// uses the option label as the value.
+    /// Value echoed back to the agent.
     pub value: String,
     /// Human-readable label.
     pub label: String,
     /// Optional per-option description (e.g. AskUserQuestion's pros/cons
-    /// text). `None` for a bare enum/string option, which has no slot for
-    /// one in the wire schema.
+    /// text).
     pub description: Option<String>,
 }
 
@@ -128,12 +97,7 @@ pub struct ResolvedElicitation {
     pub resolved_at: DateTime<Utc>,
 }
 
-/// One answered question, rendered for the transcript. `question` is the
-/// human-readable prompt (the question title, or the field key as a
-/// fallback); `answer` is the display value the user submitted. Computed
-/// server-side at resolve time and carried on `Event::ElicitationResolved`
-/// so the structured view can show what the user picked after the card
-/// closes. See #2209.
+/// One answered question, rendered for the transcript.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ElicitationAnswer {
     pub question: String,
@@ -142,16 +106,11 @@ pub struct ElicitationAnswer {
 
 /// Separator the claude-agent-acp adapter wedges between an AskUserQuestion
 /// option's label and its description when flattening into the enum title
-/// (`"<label> <sep> <description>"`). Written as an escape so the em dash
-/// never appears literally in source. Mirrors the web card's separator.
+/// (`"<label> <sep> <description>"`).
 const OPTION_DESC_SEP: &str = " \u{2014} ";
 
 /// Render the user's submitted answers into display-ready pairs, in the
-/// form's question order. Only answered questions are included (an optional
-/// question left blank is omitted). Select values are mapped to their option
-/// label; for AskUserQuestion the value is already the label (and `label` may
-/// carry a trailing description, which is dropped), while a generic MCP form
-/// maps its machine token to the human label.
+/// form's question order.
 pub fn summarize_answers(
     elicitation: &Elicitation,
     answers: &BTreeMap<String, AnswerValue>,
@@ -161,11 +120,7 @@ pub fn summarize_answers(
         let Some(value) = answers.get(&question.field_key) else {
             continue;
         };
-        // Map a selected option value to its human label. For a generic MCP
-        // form the value is a machine token and the label the display text; for
-        // AskUserQuestion the value is already the label (and `label` may carry
-        // a `"value <sep> description"` form, so we keep the bare value there).
-        // Mirrors `optionParts` in the web AskUserQuestionCard. See #2209.
+        // Map a selected option value to its human label.
         let label_for = |raw: &str| -> String {
             match question.options.iter().find(|o| o.value == raw) {
                 Some(o) if !o.label.starts_with(&format!("{raw}{OPTION_DESC_SEP}")) => {
@@ -207,21 +162,17 @@ pub enum ElicitationOutcome {
     /// User skipped (ACP `decline`): the agent continues with no answer.
     Declined,
     /// Cancelled (ACP `cancel`), or torn down without a user decision
-    /// (daemon restart, agent cancel). The agent's tool call aborts.
+    /// (daemon restart, agent cancel).
     Cancelled,
 }
 
 /// Reason a form schema could not be normalized for the structured view.
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum ElicitationParseError {
-    /// URL-mode elicitation. The structured view only renders forms; we
-    /// do not advertise `elicitation.url`, so this should not occur, but
-    /// reject loudly rather than rendering nothing.
+    /// URL-mode elicitation.
     #[error("elicitation is not form-mode")]
     NotFormMode,
     /// A field used a JSON-Schema kind the structured view cannot render.
-    /// All of the kinds the ACP schema currently defines are handled; this
-    /// guards against a future `#[non_exhaustive]` property variant.
     #[error("elicitation field {0:?} uses an unsupported schema kind")]
     UnsupportedField(String),
 }
@@ -257,8 +208,7 @@ pub enum ElicitationValidationError {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "action", rename_all = "snake_case")]
 pub enum ElicitationResolution {
-    /// User submitted the form. `answers` maps each answered field key to
-    /// its value. Unanswered optional fields may be omitted.
+    /// User submitted the form.
     Accept {
         #[serde(default)]
         answers: BTreeMap<String, AnswerValue>,
@@ -269,10 +219,7 @@ pub enum ElicitationResolution {
     Cancel,
 }
 
-/// A submitted (or default) answer value. Untagged: the variant is chosen
-/// by JSON shape, so the order matters. `Bool` and the integer case are
-/// tried before `Number`/`Text` so `true` and `5` do not deserialize as a
-/// float or a string.
+/// A submitted (or default) answer value.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum AnswerValue {
@@ -293,15 +240,7 @@ impl ElicitationResolution {
     }
 }
 
-/// Order a form's properties for display. The adapter keys questions
-/// `question_0..N`, each optionally followed by its own free-text "Other"
-/// box `question_<n>_custom`, and serializes them through a `BTreeMap`,
-/// which sorts lexically (`question_10` before `question_2`, and every
-/// `question_<n>_custom` after every `question_<n>`). Recover the numeric
-/// order and keep each `_custom` box adjacent to its question, so the
-/// per-question "Other" field renders next to the question it belongs to
-/// rather than bunched at the end. Non-`question_N` keys (arbitrary MCP
-/// form fields) sort after, by key.
+/// Order a form's properties for display.
 fn ordered_fields(
     properties: &BTreeMap<String, ElicitationPropertySchema>,
 ) -> Vec<(&String, &ElicitationPropertySchema)> {
@@ -327,8 +266,7 @@ fn ordered_fields(
 }
 
 /// Render a `StringFormat` as the wire token (`email`, `uri`, `date`,
-/// `date-time`) so the web can map it to an input type. Unknown formats
-/// pass through verbatim; the spec treats them as advisory annotations.
+/// `date-time`) so the web can map it to an input type.
 fn format_token(format: &StringFormat) -> String {
     match format {
         StringFormat::Email => "email".to_string(),
@@ -440,9 +378,6 @@ fn parse_field(
                         description: None,
                     })
                     .collect(),
-                // `MultiSelectItems` is non_exhaustive; a future item shape
-                // surfaces as an option-less multi-select rather than a hard
-                // failure.
                 _ => Vec::new(),
             };
             Ok(ElicitationQuestion {
@@ -612,11 +547,7 @@ fn check_range(
 }
 
 /// Validate a user resolution against the normalized form and build the
-/// ACP response. Accept answers are checked server-side: every key must be
-/// a known field, value shapes must match the field kind, selected values
-/// must be offered options, and required / length / range / pattern / item
-/// constraints must hold. This is the only place answers cross back to the
-/// agent, so the browser is never trusted to send well-formed content.
+/// ACP response.
 pub fn build_response(
     elicitation: &Elicitation,
     resolution: ElicitationResolution,
@@ -661,10 +592,6 @@ pub fn build_response(
                         });
                     }
                 }
-                // An unanswered question is "required?" only: min_items /
-                // max_items constrain a selection the user actually made, so
-                // an optional field with min_items > 0 must not error when
-                // left blank.
                 if selected.is_empty() {
                     if question.required {
                         return Err(ElicitationValidationError::MissingRequired(
@@ -731,10 +658,7 @@ pub fn build_response(
                 let value = match answer {
                     Some(AnswerValue::Integer(i)) => *i,
                     // A whole-valued float in range (the browser may send
-                    // `5` as a JSON number) coerces. `as i64` saturates, so
-                    // an out-of-range or non-finite float must be rejected
-                    // before the cast or it would silently clamp to
-                    // i64::MIN / i64::MAX and slip past check_range.
+                    // `5` as a JSON number) coerces.
                     Some(AnswerValue::Number(n))
                         if n.is_finite()
                             && n.fract() == 0.0
@@ -848,8 +772,6 @@ mod tests {
 
     #[test]
     fn parses_option_descriptions_from_titled_variants() {
-        // A titled `oneOf` / multi-select option can carry a per-option
-        // description on the wire; an untitled one has no slot for one.
         let schema = ElicitationSchema::new()
             .property(
                 "question_0",
@@ -879,8 +801,6 @@ mod tests {
 
     #[test]
     fn bare_enum_and_multi_select_options_have_no_description() {
-        // A bare `enum`/string-array item is just a string on the wire; it
-        // has no slot to carry a description, unlike a titled EnumOption.
         let schema = ElicitationSchema::new()
             .property(
                 "question_0",
@@ -930,10 +850,6 @@ mod tests {
 
     #[test]
     fn per_question_custom_box_stays_next_to_its_question() {
-        // claude-agent-acp >=0.46 emits a per-question "Other" box keyed
-        // `question_<n>_custom` right after each `question_<n>`. The BTreeMap
-        // would otherwise sort every `_custom` after every question; the
-        // ordering must instead keep each box adjacent to its question.
         let schema = ElicitationSchema::new()
             .string("question_0", false)
             .property(
@@ -1127,8 +1043,7 @@ mod tests {
         );
         answers.insert("question_0".to_string(), AnswerValue::Text("Yes".into()));
         let summary = summarize_answers(&e, &answers);
-        // Question order from the form, not BTreeMap key order. Selected
-        // values render as their option labels ("a"/"b" -> "A"/"B").
+        // Question order from the form, not BTreeMap key order.
         assert_eq!(summary.len(), 2);
         assert_eq!(summary[0].question, "question_0");
         assert_eq!(summary[0].answer, "Yes");
@@ -1152,8 +1067,6 @@ mod tests {
                         label: "Blue".into(),
                         description: None,
                     },
-                    // AskUserQuestion-style "label <sep> description": the bare
-                    // value is kept, the description dropped from the summary.
                     ElicitationOption {
                         value: "Green".into(),
                         label: "Green \u{2014} the color green".into(),
@@ -1276,8 +1189,6 @@ mod tests {
 
     #[test]
     fn build_skips_optional_multiselect_with_min_items_when_blank() {
-        // An optional multi-select with min_items must not error when left
-        // blank: min_items only constrains an actual selection.
         let mut e = sample_elicitation();
         e.questions[1].min_items = Some(2);
         let content = accept_content(&e, vec![("question_0", AnswerValue::Text("Yes".into()))]);
@@ -1343,8 +1254,6 @@ mod tests {
                 field: "question_0".into()
             })
         );
-        // A whole float past i64 range must not saturate-cast past the
-        // range check; it is rejected as out of range.
         assert_eq!(
             build_response(&e, accept(vec![("question_0", AnswerValue::Number(1e30))])),
             Err(ElicitationValidationError::OutOfRange {

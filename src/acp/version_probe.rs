@@ -17,8 +17,7 @@ pub enum ProbeStatus {
         raw: String,
         parsed: Version,
         /// stdout only, what the spawn-side tokenizer sees; stderr is
-        /// folded into `raw`. Bundle-backed suppression must judge
-        /// spawn's stream view, not this probe's lenient fold.
+        /// folded into `raw`.
         stdout_raw: String,
     },
     Unparseable {
@@ -89,18 +88,11 @@ pub fn extract_semver(raw: &str) -> Option<Version> {
 
 /// The spawn side's tokenizer (`path_copy_below_floor`): the first
 /// whitespace-delimited token that parses as strict semver once a
-/// leading `v` is stripped. The doctor's probe parser is more lenient
-/// (stderr folded in, punctuation-split tokens), so code that predicts
-/// what spawn will do must ask this exact predicate instead of reusing
-/// the lenient parse.
+/// leading `v` is stripped.
 pub fn whitespace_token_below_floor(raw: &str, min: Version) -> bool {
     whitespace_token_semver(raw).is_some_and(|found| found < min)
 }
 
-/// The strict token itself, for callers that need to compare against a
-/// floor in either direction (spawn keeps the PATH copy when this is
-/// `None`, and a pinned bundle only counts as backing when its own
-/// stdout parses at or above the floor).
 pub fn whitespace_token_semver(raw: &str) -> Option<Version> {
     raw.split_whitespace()
         .filter_map(|tok| Version::parse(tok.trim_start_matches('v')).ok())
@@ -114,9 +106,7 @@ pub async fn probe_binary_version(binary: &str) -> ProbeStatus {
     }
 }
 
-/// Probe an explicit executable path. Same budget and stream handling
-/// as [`probe_binary_version`], for callers that resolved the binary
-/// themselves (the pinned bundled copies never sit on PATH).
+/// Probe an explicit executable path.
 pub async fn probe_path_version(path: &std::path::Path) -> ProbeStatus {
     let child = tokio::process::Command::new(path)
         .arg("--version")
@@ -200,12 +190,7 @@ pub fn gates_needed_by_instances(instances: &[Instance]) -> Vec<VersionGate> {
     let registry = AgentRegistry::with_defaults();
     let mut seen = HashSet::new();
     let mut gates = Vec::new();
-    // Only host-run structured sessions gate on the host toolchain. A
-    // sandboxed session's adapter lives inside its container, so probing
-    // `claude-agent-acp --version` on the host would report Missing (the
-    // host never installs it) and emit a bogus "upgrade the ACP package"
-    // warning at every `aoe serve` boot. The in-container adapter is
-    // validated at handshake time by `agent_compat::validate` instead.
+    // Only host-run structured sessions gate on the host toolchain.
     for inst in instances
         .iter()
         .filter(|inst| inst.is_structured() && !inst.is_sandboxed())
@@ -288,11 +273,6 @@ mod tests {
         assert!(extract_semver("not-semver").is_none());
     }
 
-    /// This predicate IS the spawn-side decision, so its table pins the
-    /// strict tokenizer: whitespace-delimited, `v`-stripped, first
-    /// parseable token wins. Formats the lenient doctor parser accepts
-    /// (like `version=0.37.0`, split on punctuation) must read as
-    /// unproven here.
     #[test]
     fn whitespace_token_below_floor_mirrors_spawn_parsing() {
         let min = Version::parse(CLAUDE_AGENT_ACP_MIN_VERSION).unwrap();
@@ -303,8 +283,6 @@ mod tests {
             ("v0.37.0", true),
             ("0.55.0", false),
             ("0.56.0", false),
-            // Punctuation-joined output has no whitespace token that
-            // parses strictly: spawn keeps the PATH copy.
             ("version=0.37.0", false),
             ("0.37.0-beta.1", true),
             ("junk", false),
@@ -419,10 +397,6 @@ mod tests {
 
     #[test]
     fn gates_needed_by_instances_skips_sandboxed_sessions() {
-        // A sandboxed structured session runs its adapter inside the
-        // container; the host probe would falsely report it Missing. Only
-        // a host-run structured session on the same tool should contribute
-        // a gate. See the sandbox-only false-warning fix.
         let mut sandboxed = Instance::new("sandboxed", "/tmp/sandboxed");
         sandboxed.view = View::Structured;
         sandboxed.tool = "claude".to_string();

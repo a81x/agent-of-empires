@@ -1,31 +1,4 @@
 //! Per-adapter compatibility policy for ACP agents.
-//!
-//! aoe spawns several ACP adapters (claude-agent-acp, codex-acp,
-//! opencode, aoe-agent, gemini, pi-acp). Some require a minimum upstream
-//! version because aoe relies on behavior that only landed past a known
-//! release. This module centralizes those rules so `acp_client` has a
-//! single hook to call after `initialize` succeeds, instead of scattering
-//! ad-hoc semver checks at every spawn site.
-//!
-//! `ClaudeAgentAcp` carries a minimum version (see
-//! `CLAUDE_AGENT_ACP_MIN_VERSION`,
-//! required for `memory_recall` tool-call emission, native `cancelled`
-//! stop reason, force-cancel of a wedged `TaskOutput` block (upstream
-//! #680), the upstream #641 fix, the `fable` model, and several other
-//! behaviors aoe builds on). `OpenCode` carries one too (see
-//! `OPENCODE_MIN_VERSION`, the release that stopped sending empty
-//! `rawInput` on `external_directory` permission requests so the approval
-//! card shows the path and command; AoE issue #1907, upstream #30567). The
-//! Codex validates the maintained adapter package name but has no minimum
-//! version floor. aoe-agent, Gemini, Pi ACP, and unknown adapters get a
-//! permissive policy (protocol check only). Long-term aoe should
-//! prefer ACP capability flags over package-version gating; until upstream
-//! exposes those, package versions are the only precise contract.
-//!
-//! Failure mode: missing `agent_info`, missing version, parse failure, or
-//! version below the floor all reject for adapters with a minimum. Other
-//! adapters are passed through. The supervisor's known spawn intent is
-//! the gate, not the self-reported `agent_info.name` on the wire.
 
 use agent_client_protocol::schema::v1::InitializeResponse;
 use agent_client_protocol::schema::ProtocolVersion;
@@ -33,41 +6,14 @@ use agent_client_protocol::schema::ProtocolVersion;
 use super::state::StartupErrorDetail;
 
 /// Single source of truth for the `claude-agent-acp` minimum-version floor.
-///
-/// Bumping the floor is a one-line edit here: the gate, the startup-error
-/// strings, and the boundary tests all derive from this value. The one
-/// peer that cannot read a Rust const, the npm pin in `docker/Dockerfile`,
-/// is held in sync by the `dockerfile_pin_matches_floor` test below, so a
-/// bump that forgets the Dockerfile fails CI rather than shipping a
-/// sandbox image stuck below the host floor. User docs deliberately do not
-/// restate the number; the startup-error path reports the exact floor
-/// dynamically at rejection time.
 pub const CLAUDE_AGENT_ACP_MIN_VERSION: &str = "0.55.0";
 
-/// Parsed form of [`CLAUDE_AGENT_ACP_MIN_VERSION`]. Runs once per adapter
-/// initialize, not in a hot path, so parsing on demand is fine.
+/// Parsed form of [`CLAUDE_AGENT_ACP_MIN_VERSION`].
 fn claude_agent_acp_min_version() -> semver::Version {
     semver::Version::parse(CLAUDE_AGENT_ACP_MIN_VERSION)
         .expect("CLAUDE_AGENT_ACP_MIN_VERSION must be valid semver")
 }
 
-/// Version at which `claude-agent-acp`'s `_session/steering` extension
-/// became safe for AoE to use, i.e. the release that added the
-/// request-level `_meta.steering.idleBehavior: "promptRequired"` opt-in
-/// (upstream #903, PR #919).
-///
-/// This is a *feature* floor, deliberately separate from
-/// [`CLAUDE_AGENT_ACP_MIN_VERSION`]: that one is a hard startup reject,
-/// so folding steering into it would force every user to upgrade for an
-/// optional capability. Below this floor the adapter still advertises
-/// `steering.supported` (steering itself landed in 0.61.0) but answers a
-/// racing steer with `startedNewTurn`, spawning a detached turn whose
-/// `PromptResponse` nobody owns. AoE scopes streaming, cancellation, and
-/// UI state to a pending prompt request, so it cannot consume that turn;
-/// gating on the opt-in is what keeps the race safe.
-///
-/// `steering_floor_at_or_above_hard_floor` below pins the invariant
-/// that a feature floor never sits under the startup floor.
 pub const CLAUDE_AGENT_ACP_STEERING_MIN_VERSION: &str = "0.64.0";
 
 /// Parsed form of [`CLAUDE_AGENT_ACP_STEERING_MIN_VERSION`].
@@ -77,14 +23,6 @@ fn claude_agent_acp_steering_min_version() -> semver::Version {
 }
 
 /// Single source of truth for the `opencode` minimum-version floor.
-///
-/// 1.16.0 is the first release that ships upstream #30567: pre-1.16
-/// opencode sent an empty `rawInput` on `external_directory` permission
-/// requests, so the structured-view approval card had no path or command
-/// to show and the user could not tell what was being approved (#1907).
-/// opencode installs via `curl | bash`, not npm, so there is no Dockerfile
-/// pin to keep in sync; the sandbox image's `curl` install always pulls a
-/// release at or above this floor.
 pub const OPENCODE_MIN_VERSION: &str = "1.16.0";
 
 /// Parsed form of [`OPENCODE_MIN_VERSION`].
@@ -102,8 +40,7 @@ pub struct VersionGate {
     pub auto_install: bool,
 }
 
-/// The adapter aoe is trying to launch. Drives which `CompatibilityPolicy`
-/// is applied at initialize-time.
+/// The adapter aoe is trying to launch.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ExpectedAgent {
     ClaudeAgentAcp,
@@ -112,29 +49,14 @@ pub enum ExpectedAgent {
     AoeAgent,
     Gemini,
     PiAcp,
-    /// Unknown / user-configured agent. Permissive policy.
+    /// Unknown / user-configured agent.
     Other,
 }
 
 impl ExpectedAgent {
-    /// Resolve from the binary name as configured in `AgentRegistry`. Maps
-    /// the string the supervisor is about to spawn to the matching policy
-    /// enum so the supervisor can call this once and pass the result down.
-    ///
-    /// Robust to surface variations seen in the wild: a wrapper command
-    /// string ("bash claude-agent-acp"), POSIX or Windows path
-    /// separators, and the `.exe` / `.cmd` suffixes Windows shims add.
-    /// Without this normalization a wrapped or Windows-installed
-    /// `claude-agent-acp` would land in `Other` and silently bypass the
-    /// minimum-version gate.
+    /// Resolve from the binary name as configured in `AgentRegistry`.
     pub fn from_command(command: &str) -> Self {
-        // Scan every whitespace-separated token. The actual binary can
-        // be the first token (`/usr/local/bin/claude-agent-acp`) but
-        // also a later one when a wrapper prefixes the command line
-        // (`bash claude-agent-acp`, `env -u FOO claude-agent-acp`,
-        // `npx claude-agent-acp`, etc.). Match against the first token
-        // that classifies as a known adapter so wrappers don't bypass
-        // the minimum-version gate.
+        // Scan every whitespace-separated token.
         command
             .split_whitespace()
             .find_map(|token| {
@@ -165,10 +87,10 @@ struct CompatibilityPolicy {
     /// If set, the adapter's `agent_info.version` must parse as semver
     /// and be at least this value.
     min_version: Option<semver::Version>,
-    /// The protocol version the client requested. Adapter must match.
+    /// The protocol version the client requested.
     required_protocol: ProtocolVersion,
     /// If `true`, missing `agent_info` or empty/unparseable version
-    /// rejects. `false` means we tolerate adapters that don't advertise.
+    /// rejects.
     fail_on_missing_agent_info: bool,
 }
 
@@ -182,11 +104,6 @@ impl ExpectedAgent {
                 fail_on_missing_agent_info: true,
             },
             Self::OpenCode => CompatibilityPolicy {
-                // opencode's ACP handshake reports `agentInfo.name`
-                // "OpenCode" (a display string, not an npm id), verified
-                // against opencode v1.16.0 `acp/service.ts`. Gating the
-                // name mirrors the claude policy and yields a precise
-                // mismatch diagnostic if a different binary is shimmed in.
                 expected_name: Some("OpenCode"),
                 min_version: Some(opencode_min_version()),
                 required_protocol: ProtocolVersion::V1,
@@ -195,15 +112,12 @@ impl ExpectedAgent {
             Self::CodexAcp => CompatibilityPolicy {
                 // The deprecated @zed-industries package still exposes the
                 // same binary name, but lacks current Codex model metadata.
-                // Match the maintained package when agent_info is present;
-                // tolerate missing info because Codex has no version floor.
                 expected_name: Some("@agentclientprotocol/codex-acp"),
                 min_version: None,
                 required_protocol: ProtocolVersion::V1,
                 fail_on_missing_agent_info: false,
             },
-            // Other adapters: protocol check only. aoe doesn't yet
-            // depend on a version-gated behavior in any of them.
+            // Other adapters: protocol check only.
             Self::AoeAgent | Self::Gemini | Self::PiAcp | Self::Other => CompatibilityPolicy {
                 expected_name: None,
                 min_version: None,
@@ -215,7 +129,7 @@ impl ExpectedAgent {
 }
 
 /// Reasons aoe refuses to enter a session after a successful `initialize`
-/// handshake. Surfaced to the user via the structured view StartupErrorScreen.
+/// handshake.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StartupError {
     /// Adapter reported a version below the minimum aoe requires.
@@ -237,7 +151,7 @@ pub enum StartupError {
         auto_install: bool,
     },
     /// Adapter advertised a different package name than aoe expected for
-    /// this `ExpectedAgent`. Probably a wrapper or stale install.
+    /// this `ExpectedAgent`.
     MismatchedAgentName {
         expected: String,
         received: String,
@@ -268,9 +182,7 @@ impl StartupError {
     }
 
     /// User-facing one-liner suitable for the legacy
-    /// `AgentStartupError { message }` event channel. Lets the existing
-    /// status-derivation paths flip the session into Error state without
-    /// having to teach every consumer about the structured variant.
+    /// `AgentStartupError { message }` event channel.
     pub fn user_message(&self) -> String {
         match self {
             Self::IncompatibleAgentVersion {
@@ -373,9 +285,7 @@ impl From<&StartupError> for StartupErrorDetail {
 }
 
 /// Validate an `InitializeResponse` against the policy for the adapter
-/// aoe was launching. Returns `Ok(())` on success; `Err(StartupError)`
-/// surfaces a structured failure the supervisor can route into the
-/// startup-error UI path.
+/// aoe was launching.
 pub fn validate(expected: ExpectedAgent, init: &InitializeResponse) -> Result<(), StartupError> {
     let policy = expected.policy();
 
@@ -459,23 +369,7 @@ pub fn validate(expected: ExpectedAgent, init: &InitializeResponse) -> Result<()
 }
 
 /// Whether AoE may steer this agent's running turn via the
-/// `_session/steering` extension request (#2805).
-///
-/// Two conditions, both required. The adapter must advertise
-/// `_meta.steering.supported` on its `initialize` response, and, for
-/// `claude-agent-acp`, report a version at or above
-/// [`CLAUDE_AGENT_ACP_STEERING_MIN_VERSION`]. The advertised bit alone is
-/// not enough: 0.61.0 through 0.63.x advertise steering but predate the
-/// `promptRequired` idle opt-in, so a steer that races the turn's end
-/// spawns a detached turn AoE cannot own.
-///
-/// Other adapters get the advertised bit alone. None ships steering
-/// today, so the version arm would have nothing to gate on; when one
-/// does, its floor belongs here next to claude's.
-///
-/// Callers must re-derive this on every `initialize`, including
-/// reconnect and resume, rather than caching it across connections: a
-/// worker respawn can land on a different adapter build.
+/// `_session/steering` extension request.
 pub fn supports_steering(expected: ExpectedAgent, init: &InitializeResponse) -> bool {
     let advertised = init
         .meta
@@ -510,16 +404,13 @@ fn binary_for(expected: ExpectedAgent) -> Option<&'static str> {
 }
 
 /// Lookup table for the install commands surfaced in startup errors.
-/// Kept in sync with `install_hints::install_hint_for` so the error UI
-/// shows the exact command the doctor would run.
 fn install_command_for(expected: ExpectedAgent) -> Option<String> {
     let bin = binary_for(expected)?;
     crate::acp::install_hints::install_hint_for(bin).map(|s| s.to_string())
 }
 
 /// Whether the web "Update & restart" action can install this agent itself
-/// via a plain `npm install -g`. Server-authoritative pre-gate for the
-/// button; non-npm agents fall back to the displayed manual hint. See #2109.
+/// via a plain `npm install -g`.
 fn auto_install_for(expected: ExpectedAgent) -> bool {
     binary_for(expected)
         .and_then(crate::acp::install_hints::npm_package_for)
@@ -582,8 +473,6 @@ mod tests {
         };
         assert_eq!(installed, "0.0.0");
         assert_eq!(required, CLAUDE_AGENT_ACP_MIN_VERSION);
-        // claude-agent-acp is npm-installable, so the web can offer
-        // "Update & restart". See #2109.
         assert!(auto_install);
     }
 
@@ -619,10 +508,6 @@ mod tests {
 
     #[test]
     fn claude_just_below_floor_rejected() {
-        // The strict lower boundary, derived from the floor so a bump
-        // never needs to touch this fixture: a prerelease of the floor
-        // sorts strictly below the release under semver, so it must be
-        // rejected. Guards an accidental `<=` slip in the gate.
         let version = format!("{CLAUDE_AGENT_ACP_MIN_VERSION}-alpha.1");
         let init = make_init("@agentclientprotocol/claude-agent-acp", &version);
         let err = validate(ExpectedAgent::ClaudeAgentAcp, &init).unwrap_err();
@@ -646,10 +531,6 @@ mod tests {
 
     #[test]
     fn dockerfile_pin_matches_floor() {
-        // docker/Dockerfile cannot read a Rust const, so the sandbox npm
-        // pin is the one floor restatement outside this module. Assert it
-        // tracks the gate so a bump that forgets the Dockerfile fails CI
-        // instead of shipping an image stuck below the host floor.
         let dockerfile = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/docker/Dockerfile"));
         let needle = "@agentclientprotocol/claude-agent-acp@^";
         let pins: Vec<String> = dockerfile
@@ -668,10 +549,6 @@ mod tests {
         );
     }
 
-    /// Steering needs the advertised bit AND, for claude, the
-    /// `promptRequired` floor. The table is the whole contract: an
-    /// advertised-but-old adapter is the case that matters, since 0.61
-    /// through 0.63 answer a racing steer with a detached turn.
     #[test]
     fn steering_gate_requires_advert_and_floor() {
         let below = "0.63.9";
@@ -719,9 +596,6 @@ mod tests {
         }
     }
 
-    /// A feature floor that sat below the startup floor would be dead
-    /// weight: every session that got past `validate` would already
-    /// clear it. Fails if a future hard-floor bump overtakes steering.
     #[test]
     fn steering_floor_at_or_above_hard_floor() {
         assert!(
@@ -854,15 +728,6 @@ mod tests {
 
     #[test]
     fn from_command_handles_wrapper_token_prefix() {
-        // `AgentRegistry` exposes `command` plus a separate `args`
-        // vector, but defensive code paths sometimes hand us the joined
-        // string (e.g. `aoe acp doctor --json` output, log lines
-        // round-tripped through user config). Tolerate the joined form
-        // so the gate doesn't silently flip to `Other` and skip the
-        // claude check. Wrapper-prefixed commands count too: the
-        // classifier scans every whitespace-separated token so
-        // `bash claude-agent-acp` or `npx claude-agent-acp` is gated
-        // on the wrapped binary, not on the wrapper.
         assert_eq!(
             ExpectedAgent::from_command("claude-agent-acp --some-flag"),
             ExpectedAgent::ClaudeAgentAcp
@@ -879,11 +744,5 @@ mod tests {
             ExpectedAgent::from_command("env FOO=bar /usr/local/bin/claude-agent-acp"),
             ExpectedAgent::ClaudeAgentAcp
         );
-        // `npx`-style npm-package-spec invocations are out of scope:
-        // npx itself resolves the package and the spawned binary's
-        // argv[0] is `claude-agent-acp`, not `claude-agent-acp@0.39.0`.
-        // The version-suffixed form would only show up if a user wired
-        // it manually into AgentSpec.command, which is not a supported
-        // configuration today.
     }
 }

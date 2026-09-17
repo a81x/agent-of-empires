@@ -1,15 +1,12 @@
 //! Named agent registry: maps an agent name (e.g. `claude-code`,
-//! `aoe-agent`, `gemini`) to a spawn command + args. Users add agents via
-//! the settings TUI; this module is the in-memory model.
+//! `aoe-agent`, `gemini`) to a spawn command + args.
 
 use super::install_hints::{env_allowlist_for, install_hint_for, AOE_AGENT_BINARY};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 /// Convert the static per-binary slice from `install_hints::env_allowlist_for`
-/// into the owned `Option<Vec<String>>` field on `AgentSpec`. Empty slice maps
-/// to `None`, the shape a deferred or custom adapter carries, so a registry
-/// entry with no verified provider keys serializes as it always has.
+/// into the owned `Option<Vec<String>>` field on `AgentSpec`.
 fn default_env_allowlist(binary: &str) -> Option<Vec<String>> {
     let keys = env_allowlist_for(binary);
     (!keys.is_empty()).then(|| keys.iter().map(|s| s.to_string()).collect())
@@ -25,20 +22,12 @@ pub struct AgentSpec {
     pub description: String,
     /// Provider env vars forwarded to this agent on top of the infrastructure
     /// inheritance set defined by `ALWAYS_FORWARD_ENV` in `acp_client/spawn.rs`.
-    /// `None` means no ambient provider credentials. Populated by
-    /// `default_env_allowlist` for built-in adapters via
-    /// `install_hints::env_allowlist_for`; a custom `from_acp_cmd` spec leaves
-    /// it `None` and can be overridden by
-    /// `session.inherit_host_environment = true` if the user needs more keys
-    /// through.
     pub env_allowlist: Option<Vec<String>>,
 }
 
 impl AgentSpec {
     /// Build an ACP `AgentSpec` from a custom agent's `agent_acp_cmd`
-    /// string. The string is split with shell-word rules into argv and run
-    /// directly (no shell). Returns a user-facing error message when the
-    /// command is empty or has malformed quoting.
+    /// string.
     pub fn from_acp_cmd(name: &str, cmd: &str) -> Result<AgentSpec, String> {
         let argv = shell_words::split(cmd).map_err(|e| {
             format!("custom agent `{name}` has a malformed structured view command ({e})")
@@ -69,29 +58,6 @@ impl AgentRegistry {
 
     /// Returns a registry seeded with one entry per aoe tool that has
     /// a published ACP server, plus aoe's own multi-provider `aoe-agent`.
-    /// Each entry is keyed on the same name the tmux view uses (claude /
-    /// opencode / gemini / codex / vibe / pi / omp) so the spawn path can
-    /// map `instance.tool` directly to a registry key.
-    ///
-    /// Sources verified against
-    /// <https://agentclientprotocol.com/get-started/agents.md>
-    /// (Jan 2026):
-    ///
-    ///   claude   → claude-agent-acp     (Zed adapter for Claude SDK)
-    ///   opencode → `opencode acp`       (native, SST)
-    ///   gemini   → `gemini --acp`       (native, Google)
-    ///   codex    → codex-acp            (ACP adapter, OpenAI Codex CLI)
-    ///   vibe     → vibe-acp             (native, Mistral)
-    ///   pi       → pi-acp               (adapter, Pi coding agent)
-    ///   omp      → `omp acp`            (native, Oh My Pi)
-    ///   kimi     → `kimi acp`           (native, Kimi Code)
-    ///   prime-agent → `prime-agent --mode acp` (native, PrimeIntellect)
-    ///
-    /// We deliberately don't use `npx -y` for these. First-run
-    /// downloads can hang for tens of seconds with no output, which
-    /// used to leave the structured view worker silently wedged before the
-    /// handshake. `aoe acp doctor --fix` can install missing
-    /// binaries on demand.
     pub fn with_defaults() -> Self {
         let mut reg = Self::new();
 
@@ -108,8 +74,7 @@ impl AgentRegistry {
             },
         );
         // Legacy alias used by older session records before the
-        // tool-keyed naming. Kept so persisted sessions with
-        // agent_name="claude-code" still resolve.
+        // tool-keyed naming.
         reg.agents.insert(
             "claude-code".into(),
             AgentSpec {
@@ -198,7 +163,7 @@ impl AgentRegistry {
             "aoe-agent".into(),
             AgentSpec {
                 // Installed into the app dir like the npm adapters and found
-                // through `bundled_adapter_bin` (#3553).
+                // through `bundled_adapter_bin`.
                 command: AOE_AGENT_BINARY.into(),
                 args: vec![],
                 description: "aoe's bundled multi-provider agent (Vercel AI SDK)".into(),
@@ -227,25 +192,6 @@ impl AgentRegistry {
     }
 }
 
-/// If `tool` is a custom agent that inherits a built-in agent through
-/// `[session.agent_detect_as]` (e.g. `lenovo-claude = claude`), and that base
-/// agent has a built-in ACP adapter in the default registry, return the base
-/// registry key.
-///
-/// This is what lets a wrapper that "inherits Claude Code" (a distinct tool
-/// that only overrides profile/oauth locations) run in the structured view
-/// through the base agent's adapter without the operator hand-writing an
-/// `[session.agent_acp_cmd]` argv. Resolving to the *base* key (rather than the
-/// wrapper name) is deliberate: the spawn then reuses the base agent's version
-/// gate, env allowlist, and `AgentProfile`, so the wrapper renders in
-/// structured view exactly as the base agent would. The wrapper's own identity
-/// stays on `Instance.tool`, which drives status detection (via the same
-/// `agent_detect_as` map) and `AOE_TOOL` host hooks.
-///
-/// Returns `None` when `tool` is itself a registry key (handled by the direct
-/// registry lookup at every call site, which runs first), has no
-/// `agent_detect_as` mapping, or maps to a base that is terminal-only
-/// (e.g. `cursor`, `copilot`), which cannot back a structured session.
 pub fn inherited_acp_base(tool: &str, agent_detect_as: &HashMap<String, String>) -> Option<String> {
     let base = agent_detect_as.get(tool)?;
     AgentRegistry::with_defaults()
@@ -253,14 +199,7 @@ pub fn inherited_acp_base(tool: &str, agent_detect_as: &HashMap<String, String>)
         .map(|_| base.clone())
 }
 
-/// The agent a structured-view session of `tool` spawns as. Sync mirror of
-/// `Supervisor::pick_agent_for_tool` for the creation surfaces that must
-/// agree with the spawn without an async supervisor: add-time checks, the
-/// plugin pin gate, the settings model picker. Precedence: explicit
-/// override, tool-keyed registry entry, custom agent with `agent_acp_cmd`,
-/// custom agent inheriting a registry-backed base via `agent_detect_as`
-/// (resolves to the base key), `claude` for the claude tool, else
-/// `acp.default_agent`.
+/// The agent a structured-view session of `tool` spawns as.
 pub fn pick_acp_agent_name(
     registry: &AgentRegistry,
     session: &crate::session::config::SessionConfig,
@@ -276,12 +215,6 @@ pub fn pick_acp_agent_name(
     if registry.get(tool).is_some() {
         return tool.to_string();
     }
-    // A malformed or empty `agent_acp_cmd` is not a usable ACP agent:
-    // selecting the tool key here would leave the supervisor falling back
-    // to `agent_detect_as`'s base (e.g. claude), whose defaults then apply
-    // while the creation path resolved the wrapper's. Reject the key the
-    // same way the supervisor does, so both sides agree the wrapper is
-    // invalid and defaults resolve for the base agent.
     if session
         .agent_acp_cmd
         .get(tool)
@@ -299,10 +232,7 @@ pub fn pick_acp_agent_name(
     }
 }
 
-/// The model pinned for the agent `tool` spawns as, if any. Keyed by the
-/// resolved agent rather than the requested id, so a wrapper mapped through
-/// `agent_detect_as` reads its base agent's pin: the entry the spawn
-/// resolver applies.
+/// The model pinned for the agent `tool` spawns as, if any.
 pub fn pinned_model_for_tool(
     config: &crate::session::config::Config,
     tool: &str,
@@ -330,8 +260,6 @@ mod tests {
         assert!(reg.get("omp").is_some());
     }
 
-    /// The sync mirror names the agent a spawn runs, in the supervisor's
-    /// precedence order.
     #[test]
     fn pick_acp_agent_name_resolves_the_agent_a_spawn_runs() {
         let registry = AgentRegistry::with_defaults();
@@ -339,9 +267,6 @@ mod tests {
             agent_detect_as: [
                 ("my-claude".to_string(), "claude".to_string()),
                 ("my-cursor".to_string(), "cursor".to_string()),
-                // A wrapper with a malformed command: the key must be
-                // rejected the same way the supervisor rejects it, so the
-                // defaults resolve for the base agent instead.
                 ("bad-sp".to_string(), "claude".to_string()),
             ]
             .into(),
@@ -366,8 +291,6 @@ mod tests {
             ("my-cursor", None, "opencode"),
             ("claude", None, "claude"),
             ("unknown", None, "opencode"),
-            // A malformed wrapper command must not claim the tool key: the
-            // detect_as base runs and its defaults apply.
             ("bad-sp", None, "claude"),
         ] {
             assert_eq!(
@@ -378,8 +301,6 @@ mod tests {
         }
     }
 
-    /// The pin a creation surface enforces is keyed by the resolved agent, so
-    /// a wrapper reads its base agent's pin and an override reads its own.
     #[test]
     fn pinned_model_for_tool_reads_the_resolved_agents_pin() {
         let mut config = crate::session::config::Config::default();
@@ -438,15 +359,6 @@ mod tests {
         assert!(AgentSpec::from_acp_cmd("x", "ocp run \"unterminated").is_err());
     }
 
-    /// #3238: verified adapters (`claude`, `codex`, `opencode`, `gemini`,
-    /// `aoe-agent`, `prime-agent`)
-    /// forward the operator's provider-auth env; adapters whose real env
-    /// vars couldn't be source-verified (pi, omp, kimi, vibe) stay `None`.
-    /// One row asserts a specific negative for `aoe-agent`: it must NOT
-    /// receive `GEMINI_API_KEY` (that's the CLI-native name; the bundled
-    /// AI-SDK agent reads `GOOGLE_GENERATIVE_AI_API_KEY` instead). The
-    /// negative row catches a registry keyed on something other than the
-    /// binary token, where every `aoe-agent` provider key would drop.
     #[test]
     fn default_env_allowlists_match_verified_providers() {
         let reg = AgentRegistry::with_defaults();
@@ -491,13 +403,9 @@ mod tests {
                     .collect::<Vec<_>>()[..]
             )
         );
-        // gemini CLI uses the CLI-native GEMINI_API_KEY; aoe-agent (AI-SDK)
-        // does not. Verify the two do not share the wrong Google key.
         let gemini = al("gemini").unwrap_or_default();
         assert!(gemini.iter().any(|k| k == "GEMINI_API_KEY"));
         assert!(!gemini.iter().any(|k| k == "GOOGLE_GENERATIVE_AI_API_KEY"));
-        // Vertex is dead without the switch that selects it and the region
-        // that pairs with the project, so the credential alone is not enough.
         for key in [
             "GOOGLE_GENAI_USE_VERTEXAI",
             "GOOGLE_APPLICATION_CREDENTIALS",
@@ -509,14 +417,8 @@ mod tests {
         let aoe = al("aoe-agent").unwrap_or_default();
         assert!(!aoe.iter().any(|k| k == "GEMINI_API_KEY"));
 
-        // opencode resolves providers through models.dev, whose `google` entry
-        // declares all three Google key names, so a user with any one of them
-        // exported must authenticate.
         let opencode = al("opencode").unwrap_or_default();
         for key in [
-            // The `anthropic` entry declares this one; opencode against a
-            // Claude model reads it from the environment like any other
-            // models.dev provider key.
             "ANTHROPIC_API_KEY",
             "OPENROUTER_API_KEY",
             "OPENCODE_API_KEY",
@@ -589,8 +491,6 @@ mod tests {
             )
         );
 
-        // Deferred adapters stay None until each adapter's env reads are
-        // verified from its own source.
         for name in ["pi", "omp", "kimi", "vibe"] {
             assert!(
                 al(name).is_none(),
@@ -598,11 +498,6 @@ mod tests {
             );
         }
 
-        // Structural link between the registry and `env_allowlist_for`: exactly
-        // these adapters carry an allowlist. Adding an arm to `env_allowlist_for`
-        // (or a new default agent) without updating this set, or dropping an
-        // existing arm, fails here rather than silently changing what a spawn
-        // forwards.
         let with_allowlist: std::collections::BTreeSet<&str> = reg
             .list()
             .into_iter()
@@ -628,9 +523,6 @@ mod tests {
 
     #[test]
     fn defaults_spawn_commands_match_expected() {
-        // The structured view runner executes each spec's command+args
-        // verbatim; a typo'd or reordered argv only breaks at handshake time,
-        // so pin every default adapter's exact spawn contract here.
         let reg = AgentRegistry::with_defaults();
         let expected: &[(&str, &str, &[&str])] = &[
             ("claude", "claude-agent-acp", &[]),
