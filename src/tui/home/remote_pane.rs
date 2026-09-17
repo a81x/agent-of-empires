@@ -74,26 +74,13 @@ impl HomeView {
         }
     }
 
-    /// Land frames and socket state from the preview worker. Returns whether
-    /// the pane needs a redraw.
+    /// Land socket state and the newest frame from the preview worker.
+    /// Returns whether the pane needs a redraw.
     pub fn apply_remote_preview(&mut self) -> bool {
         let mut changed = false;
         while let Some(event) = self.remote_preview.try_recv() {
             let current = self.remote_preview_key.clone();
             match event {
-                PreviewEvent::Frame {
-                    key,
-                    content,
-                    cursor,
-                } if current.as_ref() == Some(&key) => {
-                    self.remote_preview_frame = Some(RemoteFrame {
-                        content,
-                        cursor,
-                        budget: self.remote_window_sent.map_or(0, |(lines, _)| lines),
-                    });
-                    self.remote_preview_error = None;
-                    changed = true;
-                }
                 PreviewEvent::SizeOwner { key, is_owner }
                     if self.remote_live_key().as_ref() == Some(&key) =>
                 {
@@ -129,6 +116,17 @@ impl HomeView {
                     changed = true;
                 }
                 _ => {}
+            }
+        }
+        if let Some(frame) = self.remote_preview.take_frame() {
+            if self.remote_preview_key.as_ref() == Some(&frame.key) {
+                self.remote_preview_frame = Some(RemoteFrame {
+                    content: frame.content,
+                    cursor: frame.cursor,
+                    budget: self.remote_window_sent.map_or(0, |(lines, _)| lines),
+                });
+                self.remote_preview_error = None;
+                changed = true;
             }
         }
         changed

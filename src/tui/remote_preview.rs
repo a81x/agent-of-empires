@@ -8,6 +8,7 @@
 
 use std::collections::VecDeque;
 use std::sync::mpsc as std_mpsc;
+use std::sync::{Arc, Mutex};
 
 use serde_json::json;
 use tokio::sync::mpsc;
@@ -50,35 +51,57 @@ pub(crate) enum PreviewCommand {
     },
 }
 
+/// The newest content of the watched pane.
+#[derive(Debug)]
+pub(crate) struct PreviewFrame {
+    pub(crate) key: RemoteKey,
+    pub(crate) content: String,
+    pub(crate) cursor: crate::tmux::PaneCursor,
+}
+
+/// Socket state changes, delivered in order and never coalesced.
 #[derive(Debug)]
 pub(crate) enum PreviewEvent {
-    Frame {
-        key: RemoteKey,
-        content: String,
-        cursor: crate::tmux::PaneCursor,
-    },
-    SizeOwner {
-        key: RemoteKey,
-        is_owner: bool,
-    },
-    Closed {
-        key: RemoteKey,
-        reason: String,
-    },
+    SizeOwner { key: RemoteKey, is_owner: bool },
+    Closed { key: RemoteKey, reason: String },
+}
+
+type FrameSlot = Arc<Mutex<Option<PreviewFrame>>>;
+
+/// Worker side of the hand-off to the TUI. A frame replaces any the TUI has
+/// not taken yet, so a busy TUI never works through stale frames; events
+/// queue behind each other.
+struct EventSink {
+    events: std_mpsc::Sender<PreviewEvent>,
+    frame: FrameSlot,
+    wake: Arc<tokio::sync::Notify>,
+}
+
+impl EventSink {
+    fn frame(&self, frame: PreviewFrame) {
+        *self.frame.lock().unwrap_or_else(|e| e.into_inner()) = Some(frame);
+        self.wake.notify_one();
+    }
+
+    fn event(&self, event: PreviewEvent) {
+        let _ = self.events.send(event);
+        self.wake.notify_one();
+    }
 }
 
 /// Worker thread owning at most one live socket at a time.
 pub struct RemotePreview {
     commands: mpsc::UnboundedSender<PreviewCommand>,
     events: std_mpsc::Receiver<PreviewEvent>,
+    frame: FrameSlot,
 }
 
 impl RemotePreview {
     /// `wake` is notified with each frame so the TUI paints it without
     /// waiting for its ticker.
-    pub fn new(wake: std::sync::Arc<tokio::sync::Notify>) -> Self {
+    pub fn new(wake: Arc<tokio::sync::Notify>) -> Self {
         let (commands, command_rx) = mpsc::unbounded_channel();
-        let (event_tx, events) = std_mpsc::channel();
+        let (preview, sink) = Self::with_sink(commands, wake);
         let spawned = std::thread::Builder::new()
             .name("aoe-remote-preview".into())
             .spawn(move || {
@@ -86,7 +109,7 @@ impl RemotePreview {
                     .enable_all()
                     .build()
                 {
-                    Ok(rt) => rt.block_on(run(command_rx, event_tx, wake)),
+                    Ok(rt) => rt.block_on(run(command_rx, sink)),
                     Err(e) => {
                         tracing::warn!(target: "tui.remote_preview", "runtime build failed: {e}")
                     }
@@ -95,15 +118,35 @@ impl RemotePreview {
         if let Err(e) = spawned {
             tracing::warn!(target: "tui.remote_preview", "worker spawn failed: {e}");
         }
-        Self { commands, events }
+        preview
+    }
+
+    fn with_sink(
+        commands: mpsc::UnboundedSender<PreviewCommand>,
+        wake: Arc<tokio::sync::Notify>,
+    ) -> (Self, EventSink) {
+        let (events_tx, events) = std_mpsc::channel();
+        let frame = FrameSlot::default();
+        let sink = EventSink {
+            events: events_tx,
+            frame: Arc::clone(&frame),
+            wake,
+        };
+        (
+            Self {
+                commands,
+                events,
+                frame,
+            },
+            sink,
+        )
     }
 
     /// A preview with no worker, whose commands land on the returned receiver.
     #[cfg(test)]
     pub(crate) fn recording() -> (Self, mpsc::UnboundedReceiver<PreviewCommand>) {
         let (commands, recorded) = mpsc::unbounded_channel();
-        let (_, events) = std_mpsc::channel();
-        (Self { commands, events }, recorded)
+        (Self::with_sink(commands, Arc::default()).0, recorded)
     }
 
     pub(crate) fn send(&self, command: PreviewCommand) {
@@ -112,6 +155,11 @@ impl RemotePreview {
 
     pub(crate) fn try_recv(&self) -> Option<PreviewEvent> {
         self.events.try_recv().ok()
+    }
+
+    /// The newest frame the worker delivered since the last take.
+    pub(crate) fn take_frame(&self) -> Option<PreviewFrame> {
+        self.frame.lock().unwrap_or_else(|e| e.into_inner()).take()
     }
 }
 
@@ -218,11 +266,7 @@ fn latest_target(
     latest
 }
 
-async fn run(
-    mut commands: mpsc::UnboundedReceiver<PreviewCommand>,
-    events: std_mpsc::Sender<PreviewEvent>,
-    wake: std::sync::Arc<tokio::sync::Notify>,
-) {
+async fn run(mut commands: mpsc::UnboundedReceiver<PreviewCommand>, events: EventSink) {
     let mut conn: Option<Connection> = None;
     let mut rx: Option<mpsc::Receiver<LiveMessage>> = None;
     let mut backlog = VecDeque::new();
@@ -236,7 +280,6 @@ async fn run(
                 }
                 message = next_message(&mut rx) => {
                     on_message(message, &mut conn, &mut rx, &events).await;
-                    wake.notify_one();
                     continue;
                 }
             },
@@ -270,7 +313,7 @@ async fn run(
                         conn = Some(next);
                     }
                     Err(e) => {
-                        let _ = events.send(PreviewEvent::Closed {
+                        events.event(PreviewEvent::Closed {
                             key,
                             reason: format!("{e:#}"),
                         });
@@ -321,7 +364,7 @@ async fn on_message(
     message: Option<LiveMessage>,
     conn: &mut Option<Connection>,
     rx: &mut Option<mpsc::Receiver<LiveMessage>>,
-    events: &std_mpsc::Sender<PreviewEvent>,
+    events: &EventSink,
 ) {
     let Some(c) = conn.as_mut() else {
         *rx = None;
@@ -330,7 +373,7 @@ async fn on_message(
     let key = c.key.clone();
     let closed = match message {
         Some(LiveMessage::Frame { content, cursor }) => {
-            let _ = events.send(PreviewEvent::Frame {
+            events.frame(PreviewFrame {
                 key,
                 content,
                 cursor,
@@ -341,7 +384,7 @@ async fn on_message(
             for bytes in c.gate.ownership(is_owner) {
                 let _ = c.tx.send(Message::Binary(bytes.into())).await;
             }
-            let _ = events.send(PreviewEvent::SizeOwner { key, is_owner });
+            events.event(PreviewEvent::SizeOwner { key, is_owner });
             None
         }
         Some(LiveMessage::Closed(reason)) => Some((key, reason)),
@@ -352,7 +395,7 @@ async fn on_message(
             old.close();
         }
         *rx = None;
-        let _ = events.send(PreviewEvent::Closed { key, reason });
+        events.event(PreviewEvent::Closed { key, reason });
     }
 }
 
@@ -386,6 +429,64 @@ mod tests {
             "a refusal drops held input"
         );
         assert_eq!(gate, InputGate::Viewer);
+    }
+
+    #[test]
+    fn a_stalled_tui_takes_only_the_newest_frame_and_every_event_in_order() {
+        let (commands, _) = mpsc::unbounded_channel();
+        let (preview, sink) = RemotePreview::with_sink(commands, Arc::default());
+        let key: RemoteKey = ("mini".into(), "s1".into());
+        let cursor = crate::tmux::PaneCursor {
+            x: 0,
+            y: 0,
+            visible: true,
+            pane_height: 1,
+            history_size: 0,
+            pane_width: 0,
+            alternate_on: false,
+            mouse_tracking: false,
+            mouse_sgr: false,
+            mouse_all: false,
+            position_reliable: true,
+            composite_pane0: None,
+        };
+        for i in 0..100 {
+            sink.frame(PreviewFrame {
+                key: key.clone(),
+                content: format!("{i}\n"),
+                cursor,
+            });
+            if i % 25 == 0 {
+                sink.event(PreviewEvent::SizeOwner {
+                    key: key.clone(),
+                    is_owner: i % 50 == 0,
+                });
+            }
+        }
+        sink.event(PreviewEvent::Closed {
+            key: key.clone(),
+            reason: "gone".into(),
+        });
+
+        let frame = preview.take_frame().expect("a frame waits");
+        assert_eq!(frame.content, "99\n");
+        assert!(preview.take_frame().is_none(), "older frames were replaced");
+        let events: Vec<String> = std::iter::from_fn(|| preview.try_recv())
+            .map(|event| match event {
+                PreviewEvent::SizeOwner { is_owner, .. } => format!("owner={is_owner}"),
+                PreviewEvent::Closed { reason, .. } => format!("closed={reason}"),
+            })
+            .collect();
+        assert_eq!(
+            events,
+            [
+                "owner=true",
+                "owner=false",
+                "owner=true",
+                "owner=false",
+                "closed=gone"
+            ]
+        );
     }
 
     #[test]

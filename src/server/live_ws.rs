@@ -578,6 +578,119 @@ impl FrameDeflater {
     }
 }
 
+/// A publish waiting for the socket. `full` forbids a patch (a resync, or a
+/// transport switch whose rows the baseline cannot describe).
+struct PendingFrame {
+    content: String,
+    cursor: Option<crate::tmux::PaneCursor>,
+    full: bool,
+}
+
+/// One-slot latest-frame mailbox between the capture loop and the socket
+/// writer. A publish replaces any unsent one, so a slow client never queues
+/// stale frames; a superseded publish's `full` carries over to its successor.
+#[derive(Default)]
+struct FrameMailbox {
+    slot: std::sync::Mutex<Option<PendingFrame>>,
+    ready: tokio::sync::Notify,
+    /// Publishes replaced before the writer took them.
+    coalesced: AtomicU64,
+}
+
+impl FrameMailbox {
+    fn put(&self, mut frame: PendingFrame) {
+        let mut slot = self.slot.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(stale) = slot.take() {
+            frame.full |= stale.full;
+            self.coalesced.fetch_add(1, Ordering::Relaxed);
+        }
+        *slot = Some(frame);
+        drop(slot);
+        self.ready.notify_one();
+    }
+
+    fn take(&self) -> Option<PendingFrame> {
+        self.slot.lock().unwrap_or_else(|e| e.into_inner()).take()
+    }
+}
+
+#[derive(Default)]
+struct SendStats {
+    sent: u64,
+    patches: u64,
+    bytes: u64,
+}
+
+/// Serializes frames at the moment they go on the wire. The patch baseline
+/// and `seq` advance only for sent messages, so a patch's `base` is always
+/// the message the client received just before it.
+#[derive(Default)]
+struct FrameEncoder {
+    /// Rows and scrollback depth of the last sent message.
+    last_sent: Option<(Vec<String>, u32)>,
+    seq: u64,
+    /// Created on the first frame after the client advertises deflate; lives
+    /// for the connection so the dictionary spans frames.
+    deflater: Option<FrameDeflater>,
+    stats: SendStats,
+}
+
+impl FrameEncoder {
+    fn json(&mut self, frame: &PendingFrame, patch_enabled: bool) -> String {
+        self.seq += 1;
+        let lines = frame_lines(&frame.content);
+        let history = frame.cursor.as_ref().map_or(0, |c| c.history_size);
+        let alt = frame.cursor.as_ref().is_some_and(|c| c.alternate_on);
+        let patch = self
+            .last_sent
+            .as_ref()
+            .filter(|_| patch_enabled && !frame.full)
+            .and_then(|(prev, prev_history)| {
+                let shift = if alt {
+                    0
+                } else {
+                    history.saturating_sub(*prev_history) as usize
+                };
+                plan_patch(prev, &lines, shift).map(|changed| (changed, shift))
+            });
+        let json = match patch {
+            Some((changed, shift)) => {
+                self.stats.patches += 1;
+                patch_json(&changed, shift, self.seq, frame.cursor.as_ref())
+            }
+            None => frame_json(&frame.content, frame.cursor.as_ref(), self.seq),
+        };
+        self.last_sent = Some((lines.iter().map(|l| l.to_string()).collect(), history));
+        self.stats.sent += 1;
+        self.stats.bytes += json.len() as u64;
+        json
+    }
+
+    fn encode(
+        &mut self,
+        frame: PendingFrame,
+        patch_enabled: bool,
+        deflate: &AtomicBool,
+    ) -> Message {
+        let json = self.json(&frame, patch_enabled);
+        if self.deflater.is_none() && deflate.load(Ordering::Relaxed) {
+            self.deflater = Some(FrameDeflater::new());
+        }
+        match self.deflater.as_mut().map(|d| d.frame(&json)) {
+            Some(Some(bytes)) => Message::Binary(bytes.into()),
+            Some(None) => {
+                // Corrupt compressor state (not expected): degrade to text
+                // frames for the rest of the connection; every client accepts
+                // them regardless of caps.
+                self.deflater = None;
+                deflate.store(false, Ordering::Relaxed);
+                Message::Text(json.into())
+            }
+            None => Message::Text(json.into()),
+        }
+    }
+}
+
 /// One iteration's fetch result, normalizing the vt100-grid sample and the
 /// legacy capture-pane fork onto the same downstream publish/death logic.
 enum CaptureOutcome {
@@ -877,9 +990,12 @@ async fn handle_live_ws_inner(
 
     let (mut ws_sender, mut ws_receiver) = socket.split();
 
-    // Frames and pings funnel through one channel so the sender task is
-    // the only writer on the socket.
+    // Control messages and pings funnel through one channel so the sender
+    // task is the only writer on the socket; frames wait in a one-slot mailbox
+    // so a slow socket only ever receives the newest one.
     let (out_tx, mut out_rx) = tokio::sync::mpsc::channel::<Message>(8);
+    let mailbox = Arc::new(FrameMailbox::default());
+    let capture_mailbox = Arc::clone(&mailbox);
 
     // Capture loop: fork capture-pane (+cursor) off the async runtime,
     // dedup, publish.
@@ -920,14 +1036,9 @@ async fn handle_live_ws_inner(
         // Announced on the first frame and whenever it flips, so a client can
         // report the transport rather than infer it.
         let mut announced_grid: Option<bool> = None;
-        // Patch baseline: rows of the last message the client applied and its
-        // scrollback depth, plus the running sequence number.
-        let mut last_sent: Option<(Vec<String>, u32)> = None;
-        let mut seq: u64 = 0;
+        // Set when the transport flips: the next publish must be a full frame.
+        let mut reset_baseline = false;
         let mut stats = LiveStats::default();
-        // Created on the first frame after the client advertises deflate;
-        // lives for the connection so the dictionary spans frames.
-        let mut deflater: Option<FrameDeflater> = None;
         let mut dead_probes: u32 = 0;
         let mut last_reassert = std::time::Instant::now() - REASSERT_MIN_INTERVAL;
         #[cfg(unix)]
@@ -1383,7 +1494,7 @@ async fn handle_live_ws_inner(
                         // one's frame, which lands the cursor rows away from the
                         // line it belongs on. Drop the baseline so the first
                         // frame after a switch is a whole one.
-                        last_sent = None;
+                        reset_baseline = true;
                         if capture_tx
                             .send(Message::Text(transport_json(grid_frame).into()))
                             .await
@@ -1398,54 +1509,12 @@ async fn handle_live_ws_inner(
                     // it cannot recover from on its own.
                     let force_full = capture_settings.force_full.swap(false, Ordering::Relaxed);
                     if force_full || last_published.as_ref() != Some(&frame) {
-                        seq += 1;
-                        let lines = frame_lines(&frame.0);
-                        let history = frame.1.as_ref().map_or(0, |c| c.history_size);
-                        let alt = frame.1.as_ref().is_some_and(|c| c.alternate_on);
-                        let patch = if capture_settings.patch.load(Ordering::Relaxed) && !force_full
-                        {
-                            last_sent.as_ref().and_then(|(prev, prev_history)| {
-                                let shift = if alt {
-                                    0
-                                } else {
-                                    history.saturating_sub(*prev_history) as usize
-                                };
-                                plan_patch(prev, &lines, shift).map(|changed| (changed, shift))
-                            })
-                        } else {
-                            None
-                        };
-                        let json = match patch {
-                            Some((changed, shift)) => {
-                                stats.patches += 1;
-                                patch_json(&changed, shift, seq, frame.1.as_ref())
-                            }
-                            None => frame_json(&frame.0, frame.1.as_ref(), seq),
-                        };
-                        last_sent = Some((lines.iter().map(|l| l.to_string()).collect(), history));
                         stats.publishes += 1;
-                        stats.bytes += json.len() as u64;
-                        if deflater.is_none() && capture_settings.deflate.load(Ordering::Relaxed) {
-                            deflater = Some(FrameDeflater::new());
-                        }
-                        let msg = match deflater.as_mut() {
-                            Some(d) => match d.frame(&json) {
-                                Some(bytes) => Message::Binary(bytes.into()),
-                                None => {
-                                    // Corrupt compressor state (not expected):
-                                    // degrade to text frames for the rest of
-                                    // the connection; every client accepts
-                                    // them regardless of caps.
-                                    deflater = None;
-                                    capture_settings.deflate.store(false, Ordering::Relaxed);
-                                    Message::Text(json.into())
-                                }
-                            },
-                            None => Message::Text(json.into()),
-                        };
-                        if capture_tx.send(msg).await.is_err() {
-                            break; // socket gone
-                        }
+                        capture_mailbox.put(PendingFrame {
+                            content: frame.0.clone(),
+                            cursor: frame.1,
+                            full: force_full || std::mem::take(&mut reset_baseline),
+                        });
                         last_published = Some(frame);
                     }
                 }
@@ -1485,8 +1554,6 @@ async fn handle_live_ws_inner(
             tmux = %capture_tmux,
             kind = "live",
             publishes = stats.publishes,
-            patches = stats.patches,
-            bytes = stats.bytes,
             samples = stats.samples,
             avg_sample_us = stats.sample_micros / stats.samples.max(1),
             settle_held = stats.settle_held,
@@ -1498,7 +1565,10 @@ async fn handle_live_ws_inner(
     // Sender task: sole socket writer; also emits keepalive pings.
     let send_stop = capture_stop.clone();
     let send_shutdown = shutdown.clone();
+    let send_settings = Arc::clone(&settings);
+    let send_tmux = tmux_name.clone();
     let send_task = tokio::spawn(async move {
+        let mut encoder = FrameEncoder::default();
         let interrupted = tokio::select! {
             biased;
             _ = send_stop.cancelled() => true,
@@ -1507,9 +1577,18 @@ async fn handle_live_ws_inner(
                 ping.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
                 loop {
                     let message = tokio::select! {
+                        biased;
                         message = out_rx.recv() => match message {
                             Some(message) => message,
                             None => break,
+                        },
+                        _ = mailbox.ready.notified() => match mailbox.take() {
+                            Some(pending) => encoder.encode(
+                                pending,
+                                send_settings.patch.load(Ordering::Relaxed),
+                                &send_settings.deflate,
+                            ),
+                            None => continue,
                         },
                         _ = ping.tick() => Message::Ping(vec![].into()),
                     };
@@ -1535,6 +1614,16 @@ async fn handle_live_ws_inner(
             )
             .await;
         }
+        debug!(
+            target: "terminal.ws",
+            tmux = %send_tmux,
+            kind = "live",
+            sent = encoder.stats.sent,
+            patches = encoder.stats.patches,
+            bytes = encoder.stats.bytes,
+            coalesced = mailbox.coalesced.load(Ordering::Relaxed),
+            "live sender ended"
+        );
         send_stop.cancel();
     });
 
@@ -1799,10 +1888,8 @@ fn viewer_wheel_bytes(
 /// Per-connection counters, logged when the capture loop ends.
 #[derive(Default)]
 struct LiveStats {
-    /// Every message that carried content, full frames and patches alike.
+    /// Frames handed to the mailbox, sent or superseded.
     publishes: u64,
-    patches: u64,
-    bytes: u64,
     samples: u64,
     sample_micros: u64,
     settle_held: u64,
@@ -2389,6 +2476,49 @@ mod tests {
                 "{prev:?} -> {next:?} shift {shift}"
             );
         }
+    }
+
+    #[test]
+    fn a_stalled_writer_sends_only_the_newest_frame_and_patches_against_what_it_sent() {
+        let pending = |content: &str, full: bool| PendingFrame {
+            content: content.to_string(),
+            cursor: None,
+            full,
+        };
+        let json = |message: Message| match message {
+            Message::Text(text) => serde_json::from_str::<serde_json::Value>(&text).unwrap(),
+            other => panic!("expected text, got {other:?}"),
+        };
+        let mailbox = FrameMailbox::default();
+        let mut encoder = FrameEncoder::default();
+        let deflate = AtomicBool::new(false);
+
+        mailbox.put(pending("a\nb\nc\nd\n", false));
+        let first = json(encoder.encode(mailbox.take().unwrap(), true, &deflate));
+        assert_eq!(
+            (&first["type"], &first["seq"]),
+            (&"frame".into(), &1.into())
+        );
+
+        // A burst lands while the socket is busy; none of it is encoded.
+        for i in 0..50 {
+            mailbox.put(pending(&format!("a\nb\nc\n{i}\n"), false));
+        }
+        let newest = mailbox.take().expect("the newest frame waits");
+        assert!(mailbox.take().is_none(), "one slot");
+        assert_eq!(newest.content, "a\nb\nc\n49\n");
+        assert_eq!(mailbox.coalesced.load(Ordering::Relaxed), 49);
+        let patch = json(encoder.encode(newest, true, &deflate));
+        assert_eq!(patch["type"], "patch");
+        assert_eq!(patch["base"], 1, "based on the frame the client has");
+        assert_eq!(patch["lines"], serde_json::json!([[3, "49"]]));
+
+        // A resync superseded before it was sent still yields a full frame.
+        mailbox.put(pending("a\nb\nc\nx\n", true));
+        mailbox.put(pending("a\nb\nc\ny\n", false));
+        let full = json(encoder.encode(mailbox.take().unwrap(), true, &deflate));
+        assert_eq!((&full["type"], &full["seq"]), (&"frame".into(), &3.into()));
+        assert_eq!(full["content"], "a\nb\nc\ny\n");
     }
 
     #[test]
