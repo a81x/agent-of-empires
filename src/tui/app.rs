@@ -3488,17 +3488,14 @@ impl App {
                 self.edit_file(&path, terminal)?;
             }
             Action::StopSession(id) => {
-                if self.home.get_instance(&id).is_some() {
-                    let result = self
-                        .home
-                        .session_feed
-                        .submit(id, crate::daemon::SessionMutation::Stop);
-                    if let Err(error) = result {
-                        self.home.info_dialog = Some(crate::tui::dialogs::InfoDialog::new(
-                            "Stop failed",
-                            &error.to_string(),
-                        ));
-                    }
+                if self.home.get_instance(&id).is_none() {
+                    return Ok(());
+                }
+                if let Err(error) = self.home.submit_daemon_stop_via_ui(&id) {
+                    self.home.info_dialog = Some(crate::tui::dialogs::InfoDialog::new(
+                        "Stop failed",
+                        &error.to_string(),
+                    ));
                 }
             }
             Action::SetTheme(name) => {

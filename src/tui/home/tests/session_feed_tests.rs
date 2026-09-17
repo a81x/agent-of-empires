@@ -98,7 +98,7 @@ fn daemon_status_ignores_an_unknown_session_id() {
     );
 }
 
-fn daemon_row(id: &str, status: &str) -> crate::daemon::SessionResponse {
+pub(super) fn daemon_row(id: &str, status: &str) -> crate::daemon::SessionResponse {
     serde_json::from_value(serde_json::json!({
         "id": id,
         "status": status,
@@ -865,4 +865,165 @@ fn terminal_status_converges_in_one_feed_apply_without_a_local_probe() {
         env.view.auxiliary_presence_for_view(instance)
     };
     assert_eq!(seed, PanePresence::Dead);
+}
+
+/// Stop through the feed lands the daemon's Stopped row with a cleared
+/// `last_error`, the same end state the local path used to write, and no
+/// local status write happens on either side of the submit.
+#[test]
+#[serial]
+fn daemon_stop_result_lands_stopped_without_a_local_write() {
+    let mut env = create_test_env_with_sessions(1);
+    let id = env.view.instance_at(0).id.clone();
+    env.view.mutate_instance(&id, |inst| {
+        inst.status = Status::Running;
+        inst.last_error = Some("stale local probe error".into());
+    });
+
+    let mut respond = env.view.session_feed.command_driver_for_test();
+    let admitted = env
+        .view
+        .submit_daemon_stop(&id)
+        .expect("stop submit returns its admission");
+    assert!(admitted, "an available runtime admits the stop");
+    // Admit-side: the mutation is queued, the row is untouched.
+    assert_eq!(
+        env.view.get_instance(&id).map(|inst| inst.status),
+        Some(Status::Running)
+    );
+    assert_eq!(
+        env.view
+            .get_instance(&id)
+            .and_then(|inst| inst.last_error.clone()),
+        Some("stale local probe error".to_string())
+    );
+    let submitted = respond(Ok(crate::daemon::RuntimeCursor {
+        epoch: "test".into(),
+        revision: 2,
+    }));
+    assert!(
+        submitted.is_some_and(|(target, mutation)| target == id
+            && matches!(mutation, crate::daemon::SessionMutation::Stop)),
+        "stop must submit SessionMutation::Stop for the row"
+    );
+    assert!(
+        env.view.info_dialog.is_none(),
+        "an admitted stop shows no dialog"
+    );
+
+    // Outcome-side: the canonical snapshot, not a local write, flips the row.
+    let mut stopped = daemon_row(&id, "Stopped");
+    stopped.last_error = None;
+    env.view.apply_daemon_status_update(&stopped);
+    let inst = env.view.get_instance(&id).expect("row still present");
+    assert_eq!(inst.status, Status::Stopped);
+    assert_eq!(inst.last_error, None);
+}
+
+/// A refused stop submit fails loudly with reconnect guidance and leaves the
+/// row untouched: no local status write on failure, no replay.
+#[test]
+#[serial]
+fn daemon_unreachable_stop_fails_without_a_local_write() {
+    let mut env = create_test_env_with_sessions(1);
+    let id = env.view.instance_at(0).id.clone();
+    env.view.mutate_instance(&id, |inst| {
+        inst.status = Status::Running;
+        inst.last_error = Some("stale local probe error".into());
+    });
+
+    // No command driver: the feed has no runtime, so the submit refuses.
+    let admitted = env
+        .view
+        .submit_daemon_stop(&id)
+        .expect("stop refusal still returns");
+    assert!(!admitted, "a disconnected runtime refuses the stop");
+    let dialog = env
+        .view
+        .info_dialog
+        .as_ref()
+        .expect("a refused stop surfaces a dialog");
+    assert_eq!(dialog.title(), "Stop failed");
+    assert!(
+        dialog.message().contains("Reconnect the runtime"),
+        "a refused stop points at reconnect, got: {}",
+        dialog.message()
+    );
+    let inst = env.view.get_instance(&id).expect("row still present");
+    assert_eq!(inst.status, Status::Running, "the row is unchanged");
+    assert_eq!(
+        inst.last_error.as_deref(),
+        Some("stale local probe error"),
+        "the stale error is unchanged"
+    );
+}
+
+/// Start through the feed paints the optimistic Starting overlay only once
+/// admitted, and the daemon's Running snapshot settles it: the same pair as
+/// stop, with the overlay as the admitted-side feedback.
+#[test]
+#[serial]
+fn daemon_start_result_settles_starting_without_a_local_write() {
+    let mut env = create_test_env_with_sessions(1);
+    let id = env.view.instance_at(0).id.clone();
+    env.view.mutate_instance(&id, |inst| {
+        inst.status = Status::Stopped;
+    });
+
+    let mut respond = env.view.session_feed.command_driver_for_test();
+    assert!(
+        env.view.submit_daemon_start(&id, None),
+        "an available runtime admits the start"
+    );
+    env.view.mutate_instance(&id, |inst| {
+        inst.status = Status::Starting;
+        inst.last_error = None;
+        inst.last_start_time = Some(std::time::Instant::now());
+    });
+    let submitted = respond(Ok(crate::daemon::RuntimeCursor {
+        epoch: "test".into(),
+        revision: 2,
+    }));
+    assert!(
+        submitted.is_some_and(|(target, mutation)| target == id
+            && matches!(mutation, crate::daemon::SessionMutation::Start(_))),
+        "start must submit SessionMutation::Start for the row"
+    );
+
+    env.view
+        .apply_daemon_status_update(&daemon_row(&id, "Running"));
+    let inst = env.view.get_instance(&id).expect("row still present");
+    assert_eq!(inst.status, Status::Running);
+    assert_eq!(inst.last_error, None);
+}
+
+/// A refused start submit paints no overlay, writes nothing locally, and
+/// fails loudly with reconnect guidance.
+#[test]
+#[serial]
+fn daemon_unreachable_start_fails_without_a_local_write() {
+    let mut env = create_test_env_with_sessions(1);
+    let id = env.view.instance_at(0).id.clone();
+    env.view.mutate_instance(&id, |inst| {
+        inst.status = Status::Stopped;
+    });
+
+    // No command driver: the feed has no runtime, so the submit refuses.
+    assert!(
+        !env.view.submit_daemon_start(&id, None),
+        "a disconnected runtime refuses the start"
+    );
+    let dialog = env
+        .view
+        .info_dialog
+        .as_ref()
+        .expect("a refused start surfaces a dialog");
+    assert_eq!(dialog.title(), "Start failed");
+    assert!(
+        dialog.message().contains("Reconnect the runtime"),
+        "a refused start points at reconnect, got: {}",
+        dialog.message()
+    );
+    let inst = env.view.get_instance(&id).expect("row still present");
+    assert_eq!(inst.status, Status::Stopped, "no overlay on refusal");
 }

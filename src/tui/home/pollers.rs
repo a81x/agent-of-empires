@@ -494,128 +494,44 @@ impl HomeView {
         self.update_selected();
     }
 
-    /// Apply results from the restart poller. Writes the post-cascade `Instance`
-    /// snapshot back into memory (so `restart_with_size`'s mutations and the
-    /// `#[serde(skip)]` `last_start_time` survive), clears the in-flight marker,
-    /// and persists. A failed cascade or preserved resume-probe failure surfaces
-    /// as a "Restart Failed" dialog (the user explicitly initiated the restart).
-    /// Returns true if any instance changed.
+    /// Settle an in-flight daemon start once the canonical snapshot reports
+    /// the row live: clear the Starting reservation and queue the pending
+    /// attach, if any. Returns true if any instance changed.
+    ///
+    /// The daemon's snapshot already drove status/`last_error`/observations
+    /// through `apply_daemon_status_update`; this only settles reservations
+    /// and never writes status locally. Rows the daemon reports live clear
+    /// `restart_in_flight`, queue `restarted_attaches` when
+    /// `attach_after_restart` is set, and refresh the rows. Stuck Starting
+    /// rows with no live snapshot stay reserved until the daemon reports.
     pub fn apply_restart_results(&mut self) -> bool {
-        use crate::session::Status;
-        use std::sync::mpsc::TryRecvError;
-
-        let mut touched = false;
-        loop {
-            match self.restart_poller.try_recv_result() {
-                Ok(result) => {
-                    let crate::session::restart::RestartResult {
-                        session_id,
-                        before,
-                        mut instance,
-                        outcome,
-                    } = result;
-
-                    self.restart_in_flight.remove(&session_id);
-                    if self.attach_after_restart.remove(&session_id)
-                        && crate::session::restart::launched_agent(&outcome)
-                    {
-                        self.restarted_attaches.push(session_id.clone());
-                    }
-
-                    match outcome {
-                        Ok(crate::session::StartOutcome::ResumeFailed { sid }) => {
-                            tracing::warn!(
-                                target: "session.restart",
-                                id = %session_id,
-                                %sid,
-                                "resume failed; sid preserved for explicit retry",
-                            );
-                            self.info_dialog = Some(InfoDialog::new(
-                                "Restart Failed",
-                                &format!(
-                                    "Resume failed for sid {sid}; preserved for explicit retry"
-                                ),
-                            ));
-                        }
-                        Ok(crate::session::StartOutcome::FreshAfterFailedResume { sid }) => {
-                            tracing::info!(
-                                target: "session.restart",
-                                id = %session_id,
-                                %sid,
-                                "started fresh; sid previously failed a resume probe",
-                            );
-                            self.info_dialog = Some(InfoDialog::new(
-                                "Restarted",
-                                &format!(
-                                    "Started fresh; a prior resume attempt failed for sid {sid}. \
-                                     The old conversation is still reachable via the agent's \
-                                     own resume/history picker."
-                                ),
-                            ));
-                        }
-                        Ok(_) => {}
-                        Err(e) => {
-                            tracing::warn!(
-                                target: "session.restart",
-                                id = %session_id,
-                                error = %e,
-                                "restart cascade failed",
-                            );
-                            instance.status = Status::Error;
-                            instance.last_error = Some(e.clone());
-                            // Surface it: a cascade failure now arrives async, so
-                            // the input handler's "Restart Failed" dialog can no
-                            // longer catch it (restart_selected_session returned
-                            // Ok once the work was enqueued).
-                            self.info_dialog = Some(InfoDialog::new(
-                                "Restart Failed",
-                                &format!("Could not restart session: {e}"),
-                            ));
-                        }
-                    }
-
-                    if let Some(slot) = self.instances.get_mut(&session_id) {
-                        slot.merge_post_restart_with_baseline(&before, &instance);
-                        slot.last_error = if instance.status == Status::Error {
-                            instance.last_error.clone()
-                        } else {
-                            None
-                        };
-                        slot.last_error_check = instance.last_error_check;
-                        slot.last_start_time = instance.last_start_time;
-                        slot.retroactive_capture_excludes =
-                            instance.retroactive_capture_excludes.clone();
-                        touched = true;
-                    }
-                }
-                Err(TryRecvError::Empty) => break,
-                Err(TryRecvError::Disconnected) => {
-                    // A crashed worker cannot release its pending restart admissions.
-                    if !self.restart_in_flight.is_empty() {
-                        tracing::error!(
-                            target: "session.restart",
-                            "restart poller worker gone; clearing in-flight set",
-                        );
-                        self.restart_in_flight.clear();
-                        self.attach_after_restart.clear();
-                        touched = true;
-                    }
-                    break;
-                }
+        if self.restart_in_flight.is_empty() && self.attach_after_restart.is_empty() {
+            return false;
+        }
+        let mut settled: Vec<String> = Vec::new();
+        for id in self.restart_in_flight.iter() {
+            let live = self
+                .get_instance(id)
+                .is_some_and(|inst| inst.status != crate::session::Status::Starting);
+            if live {
+                settled.push(id.clone());
             }
         }
-
-        if touched {
-            self.refresh_rows_preserving_selection();
-            if let Err(e) = self.save() {
-                tracing::error!(target: "tui.home", "Failed to save after restart: {}", e);
+        if settled.is_empty() {
+            return false;
+        }
+        for session_id in settled {
+            self.restart_in_flight.remove(&session_id);
+            if self.attach_after_restart.remove(&session_id) {
+                self.restarted_attaches.push(session_id);
             }
         }
-        touched
+        self.refresh_rows_preserving_selection();
+        true
     }
 
-    /// Sessions whose `restart_then_attach` restart launched the agent, for
-    /// the event loop to attach.
+    /// Sessions whose `restart_then_attach` start the daemon reported live,
+    /// for the event loop to attach.
     pub fn take_restarted_attaches(&mut self) -> Vec<String> {
         std::mem::take(&mut self.restarted_attaches)
     }

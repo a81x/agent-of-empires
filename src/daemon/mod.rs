@@ -534,10 +534,22 @@ impl DaemonClient {
             transport::execute(&self.http, self.unix_path.as_deref(), request).await?;
         let status = response.status();
         if !status.is_success() {
+            let code = ApiErrorCode::from_headers(status, response.headers(), false);
+            // D1: 409 lifecycle_locked maps from status plus the single finite
+            // server-owned header without reading the body. 401 maps from status
+            // alone; neither retains a body or token in the error.
+            if code == Some(ApiErrorCode::LifecycleLocked) || status == StatusCode::UNAUTHORIZED {
+                return Err(DaemonClientError::Status {
+                    status,
+                    code,
+                    body: String::new(),
+                    truncated: false,
+                });
+            }
             if self.authorization.is_some() || self.unix_path.is_some() {
                 return Err(DaemonClientError::Status {
                     status,
-                    code: ApiErrorCode::from_headers(status, response.headers(), false),
+                    code,
                     body: String::new(),
                     truncated: false,
                 });
@@ -545,7 +557,7 @@ impl DaemonClient {
             let (body, truncated) = self.read_error_body(&mut response).await?;
             return Err(DaemonClientError::Status {
                 status,
-                code: ApiErrorCode::from_headers(status, response.headers(), false),
+                code,
                 body,
                 truncated,
             });
@@ -835,5 +847,241 @@ mod tests {
             headers.remove(name);
             headers.insert(name, original);
         }
+    }
+    #[derive(Debug)]
+    struct CapturedRequest {
+        method: String,
+        path: String,
+        epoch: Option<String>,
+        body: Vec<u8>,
+    }
+
+    async fn serve_mutation_once(
+        route: &'static str,
+        status: u16,
+        headers: Vec<(&'static str, &'static str)>,
+        body: &'static str,
+        tx: tokio::sync::oneshot::Sender<CapturedRequest>,
+    ) -> String {
+        let headers = std::sync::Arc::new(headers);
+        let body = std::sync::Arc::new(body.to_owned());
+        let tx = std::sync::Arc::new(std::sync::Mutex::new(Some(tx)));
+        let app = axum::Router::new().route(
+            route,
+            axum::routing::post(move |req: axum::extract::Request| {
+                let headers = headers.clone();
+                let body = body.clone();
+                let tx = tx.clone();
+                async move {
+                    let (parts, incoming) = req.into_parts();
+                    let bytes = axum::body::to_bytes(incoming, 1024 * 1024)
+                        .await
+                        .unwrap_or_default();
+                    if let Some(tx) = tx.lock().expect("capture slot").take() {
+                        let _ = tx.send(CapturedRequest {
+                            method: parts.method.to_string(),
+                            path: parts.uri.path().to_string(),
+                            epoch: parts
+                                .headers
+                                .get(RUNTIME_EPOCH_HEADER)
+                                .and_then(|value| value.to_str().ok())
+                                .map(str::to_string),
+                            body: bytes.to_vec(),
+                        });
+                    }
+                    let mut response =
+                        axum::response::Response::new(axum::body::Body::from((*body).clone()));
+                    *response.status_mut() =
+                        axum::http::StatusCode::from_u16(status).expect("valid test status");
+                    for (name, value) in headers.iter() {
+                        response
+                            .headers_mut()
+                            .insert(*name, value.parse().expect("valid test header value"));
+                    }
+                    response
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind contract-test server");
+        let addr = listener.local_addr().expect("contract-test server addr");
+        tokio::spawn(async move {
+            axum::serve(listener, app)
+                .await
+                .expect("serve test request");
+        });
+        format!("http://{addr}")
+    }
+
+    async fn next_request(rx: tokio::sync::oneshot::Receiver<CapturedRequest>) -> CapturedRequest {
+        tokio::time::timeout(Duration::from_secs(10), rx)
+            .await
+            .expect("daemon request arrives")
+            .expect("request capture")
+    }
+
+    #[tokio::test]
+    async fn stop_mutation_posts_to_stop_route_with_epoch_header() {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let base = serve_mutation_once(
+            "/api/sessions/{id}/stop",
+            200,
+            vec![
+                (RUNTIME_EPOCH_HEADER, "epoch-1"),
+                (RUNTIME_REVISION_HEADER, "3"),
+            ],
+            "",
+            tx,
+        )
+        .await;
+        let client = DaemonClient::new(&base, None).expect("test client");
+        let cursor = client
+            .mutate_session("sess-1", &SessionMutation::Stop, "epoch-1")
+            .await
+            .expect("stop mutation");
+        assert_eq!(
+            cursor,
+            RuntimeCursor {
+                epoch: "epoch-1".into(),
+                revision: 3,
+            }
+        );
+        let captured = next_request(rx).await;
+        assert_eq!(captured.method, "POST");
+        assert_eq!(captured.path, "/api/sessions/sess-1/stop");
+        assert_eq!(captured.epoch.as_deref(), Some("epoch-1"));
+        assert!(captured.body.is_empty(), "stop sends no body");
+    }
+
+    #[tokio::test]
+    async fn start_mutation_posts_json_body_to_start_route() {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let base = serve_mutation_once(
+            "/api/sessions/{id}/start",
+            200,
+            vec![
+                (RUNTIME_EPOCH_HEADER, "epoch-7"),
+                (RUNTIME_REVISION_HEADER, "11"),
+            ],
+            "",
+            tx,
+        )
+        .await;
+        let client = DaemonClient::new(&base, None).expect("test client");
+        let cursor = client
+            .mutate_session(
+                "sess-9",
+                &SessionMutation::Start(StartSessionBody::default()),
+                "epoch-7",
+            )
+            .await
+            .expect("start mutation");
+        assert_eq!(
+            cursor,
+            RuntimeCursor {
+                epoch: "epoch-7".into(),
+                revision: 11,
+            }
+        );
+        let captured = next_request(rx).await;
+        assert_eq!(captured.method, "POST");
+        assert_eq!(captured.path, "/api/sessions/sess-9/start");
+        assert_eq!(captured.epoch.as_deref(), Some("epoch-7"));
+        let body: serde_json::Value =
+            serde_json::from_slice(&captured.body).expect("start sends a JSON body");
+        assert_eq!(body, serde_json::json!({}));
+    }
+
+    #[tokio::test]
+    async fn conflict_lifecycle_locked_maps_without_reading_body() {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let base = serve_mutation_once(
+            "/api/sessions/{id}/stop",
+            409,
+            vec![(ERROR_CODE_HEADER, "lifecycle_locked")],
+            r#"{"error":"lifecycle_busy","message":"Session lifecycle is busy"}"#,
+            tx,
+        )
+        .await;
+        let client = DaemonClient::new(&base, None).expect("test client");
+        let error = client
+            .mutate_session("sess-1", &SessionMutation::Stop, "epoch-1")
+            .await
+            .expect_err("conflict must fail");
+        assert!(
+            matches!(
+                error,
+                DaemonClientError::Status {
+                    status,
+                    code: Some(ApiErrorCode::LifecycleLocked),
+                    ref body,
+                    truncated: false,
+                } if status == StatusCode::CONFLICT && body.is_empty()
+            ),
+            "409 lifecycle_locked must map from status plus header with no body read, got: {error:?}"
+        );
+        let captured = next_request(rx).await;
+        assert_eq!(captured.path, "/api/sessions/sess-1/stop");
+    }
+
+    #[tokio::test]
+    async fn unauthorized_maps_by_status_without_body_or_token() {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let base = serve_mutation_once(
+            "/api/sessions/{id}/stop",
+            401,
+            Vec::new(),
+            "secret-body",
+            tx,
+        )
+        .await;
+        let client = DaemonClient::new(&base, Some("secret-token")).expect("test client");
+        let error = client
+            .mutate_session("sess-1", &SessionMutation::Stop, "epoch-1")
+            .await
+            .expect_err("unauthorized must fail");
+        assert!(
+            matches!(
+                error,
+                DaemonClientError::Status {
+                    status,
+                    code: None,
+                    ref body,
+                    ..
+                } if status == StatusCode::UNAUTHORIZED && body.is_empty()
+            ),
+            "401 must be identifiable by status alone with no retained body, got: {error:?}"
+        );
+        assert!(
+            !format!("{client:?}").contains("secret-token"),
+            "client debug must not leak the bearer token"
+        );
+        assert!(
+            !format!("{error}").contains("secret"),
+            "error display must not reflect the response body"
+        );
+        let captured = next_request(rx).await;
+        assert_eq!(captured.path, "/api/sessions/sess-1/stop");
+    }
+
+    #[tokio::test]
+    async fn unreachable_daemon_surfaces_transport_error() {
+        let port = {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+                .await
+                .expect("bind ephemeral port");
+            listener.local_addr().expect("ephemeral addr").port()
+        };
+        let client =
+            DaemonClient::new(&format!("http://127.0.0.1:{port}"), None).expect("test client");
+        let error = client
+            .mutate_session("sess-1", &SessionMutation::Stop, "epoch-1")
+            .await
+            .expect_err("unreachable daemon must fail");
+        assert!(
+            matches!(error, DaemonClientError::Transport),
+            "unreachable daemon must surface a transport error with no local write, got: {error:?}"
+        );
     }
 }

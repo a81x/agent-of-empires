@@ -592,14 +592,19 @@ pub struct HomeView {
     /// `RECONCILE_RELOAD_RETRY_INTERVAL`.
     pub(super) reconcile_reload_retry_at: Option<std::time::Instant>,
 
-    // Performance: background restart (the start cascade shells out to docker
-    // and runs the before_start host hook, which can block for seconds)
+    // Daemon start reservations: the daemon runs the start and its canonical
+    // snapshot drives the row. `restart_poller` storage below is retired: no
+    // local cascade reads or updates it on the start path anymore (the
+    // `request_restart` worker and its `try_recv_result` drain are dead for
+    // cut-over rows). The fields stay so unmigrated readers still compile;
+    // see `apply_restart_results`.
+    #[allow(dead_code)]
     pub(super) restart_poller: RestartPoller,
-    /// Sessions awaiting a restart worker result.
+    /// Sessions awaiting a daemon start snapshot (see `apply_restart_results`).
     pub(super) restart_in_flight: std::collections::HashSet<String>,
-    /// Sessions to attach once their in-flight restart launches the agent.
+    /// Sessions to attach once their in-flight daemon start reports live.
     pub(super) attach_after_restart: std::collections::HashSet<String>,
-    /// Restarted sessions ready for the event loop to attach; see
+    /// Daemon-live sessions ready for the event loop to attach; see
     /// `take_restarted_attaches`.
     pub(super) restarted_attaches: Vec<String>,
 

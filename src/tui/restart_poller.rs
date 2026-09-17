@@ -1,10 +1,17 @@
-//! Background restart handler for TUI responsiveness.
+//! Retired start-cascade worker storage.
 //!
-//! Run restart cascades on a worker and apply results on the main loop.
+//! TUI start/restart now submits `SessionMutation::Start` through the daemon
+//! feed and the canonical snapshot drives the row, so no caller enqueues a
+//! local cascade here. The struct stays (with its worker and test seams) so
+//! unmigrated readers still compile; `request_restart` and
+//! `try_recv_result` have no cut-over callers. See
+//! `HomeView::apply_restart_results`.
 
 use std::sync::mpsc::TryRecvError;
 
+#[allow(dead_code)]
 use crate::session::restart::perform_restart;
+#[allow(dead_code)]
 pub use crate::session::restart::{RestartRequest, RestartResult};
 use crate::tui::worker::Worker;
 
@@ -19,6 +26,7 @@ impl RestartPoller {
         }
     }
 
+    #[allow(dead_code)]
     pub fn request_restart(&self, request: RestartRequest) {
         self.worker.request(request);
     }
@@ -28,15 +36,9 @@ impl RestartPoller {
     /// `perform_restart`) rather than collapsing it into `None`, so the caller
     /// can clear stuck in-flight state instead of leaving rows pinned on
     /// `Status::Starting` forever.
+    #[allow(dead_code)]
     pub fn try_recv_result(&self) -> Result<RestartResult, TryRecvError> {
         self.worker.try_recv()
-    }
-
-    #[cfg(test)]
-    pub(crate) fn with_result_for_test(result: RestartResult) -> Self {
-        Self {
-            worker: Worker::seeded_for_test("aoe-restart-poller-test", result),
-        }
     }
 }
 

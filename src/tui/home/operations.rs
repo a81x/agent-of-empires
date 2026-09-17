@@ -6,7 +6,6 @@ use crate::session::{
 };
 use crate::tui::deletion_poller::DeletionRequest;
 use crate::tui::dialogs::{DeleteOptions, GroupDeleteOptions, InfoDialog};
-use crate::tui::restart_poller::RestartRequest;
 
 use super::{HomeView, PendingArchiveCursor};
 
@@ -265,28 +264,24 @@ impl HomeView {
     ///   sees on screen.
     /// - Spam-debounce: if the same session was restarted within the last
     ///   1.5s, the press is dropped. Without this guard rapid `e` presses
-    ///   would each spawn a wake-up worker AND tear down the still-booting
-    ///   tmux pane via overlapping `restart_with_size` calls.
+    ///   would each submit a daemon start and churn the still-booting agent
+    ///   via overlapping starts.
     ///
-    /// `new_profile`: when `Some(p)` and `p` differs from the current
-    /// `source_profile`, the session moves between profile storages.
-    /// Mirrors the profile-move path in `rename_selected` so a restart-
-    /// with-different-profile behaves the same as rename + restart.
+    /// - `new_profile`: when `Some(p)` and `p` differs from the current
+    ///   `source_profile`, the session moves between profile storages.
+    ///   Mirrors the profile-move path in `rename_selected` so a restart-
+    ///   with-different-profile behaves the same as rename + restart.
+    /// - `new_tool`: when `Some(t)` and `t` differs from the current `tool`,
+    ///   the field is updated before respawn so the new agent binary starts
+    ///   on the next launch.
     ///
-    /// `new_tool`: when `Some(t)` and `t` differs from the current `tool`,
-    /// the field is updated before respawn so the new agent binary starts
-    /// on the next launch.
-    ///
-    /// The start cascade itself runs on the `RestartPoller` worker thread (it
-    /// shells out to docker and runs the before_start host hook, which can
-    /// block for seconds), so the TUI event loop never blocks. The post-cascade
-    /// `Instance` (with `restart_with_size`'s mutations: `resume_probe_failed_sid`,
-    /// `last_error`, container id, etc.) is written back via
-    /// `apply_restart_results`.
-    ///
-    /// The wake-up message is read from the resolved config
-    /// (`session.restart_wake_message`); an empty value disables the
-    /// wake-up entirely while still running the restart.
+    /// The start itself runs on the daemon: this submits
+    /// `SessionMutation::Start` through the feed and the daemon's canonical
+    /// snapshot drives the row (Starting, then Running or Error with
+    /// `last_error`). No local outcome is written on success or failure; a
+    /// refused submit surfaces an info dialog with reconnect guidance and
+    /// never replays. The optimistic Starting overlay below (plus the
+    /// in-flight/cooldown guards) is local feedback only.
     pub(super) fn restart_selected_session(
         &mut self,
         new_profile: Option<&str>,
@@ -299,12 +294,11 @@ impl HomeView {
             None => return Ok(()),
         };
 
-        // A restart cascade for this row is already running on the poller
-        // worker. The cascade is off the event loop now, so the 1.5s
-        // keyboard-repeat debounce below does not cover a deliberate second
-        // press during a multi-second pull. Without this guard the worker would
-        // enqueue a duplicate request and, running serially, restart the row a
-        // second time, tearing down the container the first restart just built.
+        // A daemon start for this row is already in flight. The start runs
+        // off the event loop now, so the 1.5s keyboard-repeat debounce below
+        // does not cover a deliberate second press during a multi-second
+        // start. Without this guard a duplicate submit would churn the
+        // still-booting agent a second time.
         if self.restart_in_flight.contains(&id) {
             return Ok(());
         }
@@ -406,11 +400,8 @@ impl HomeView {
             }
         }
 
-        let tool_swapped = new_tool.is_some_and(|tool| tool != restart_edit_authoritative.tool);
-
-        // A cross-profile restart is staged entirely on a detached candidate.
-        // In particular, do not persist a tool swap into the source row before
-        // the target transaction has accepted the complete candidate.
+        // A tool swap is launch config: it is persisted below and the daemon
+        // starts the stored config, so there is no local cascade flag to set.
         if let Some(target_profile) = profile_move_target.as_deref() {
             if !self.storages.contains_key(target_profile) {
                 self.storages.insert(
@@ -469,13 +460,13 @@ impl HomeView {
                 });
             }
         }
-        self.restart_cooldown_at.insert(id.clone(), now);
         self.mutate_instance(&id, |inst| inst.touch_last_accessed());
 
         // Persist user-selected profile/tool/command changes and the access
         // timestamp while the durable row still carries its prior lifecycle
-        // state. The worker owns the Starting reservation; publishing that
-        // status here would make it reject its own request as concurrent.
+        // state. The Starting overlay below is local feedback only and is
+        // painted after this save, so it never reaches disk; the daemon's
+        // canonical snapshot drives the row from here.
         self.save()?;
         // The transaction has already released its canonical profile locks.
         // Publish the final launch edit while identity/title/lifecycle remain
@@ -483,41 +474,23 @@ impl HomeView {
         drop(profile_move_identity);
         drop(profile_move_guards);
 
-        // The start cascade shells out to docker (image pull, container
-        // create/start) and runs the before_start host hook, any of which can
-        // block for seconds. Running it inline froze the TUI event loop, so
-        // mirror the recovery/stop paths: show Starting locally for immediate
-        // feedback, then let the restart worker reserve and persist Starting.
-        // The post-cascade snapshot (and the wake-up) is handled via
-        // `apply_restart_results`.
+        // Submit first: a refused submit leaves the row untouched (no local
+        // status write on failure) and surfaces reconnect guidance. Only an
+        // admitted submit records the cooldown, paints the optimistic
+        // Starting overlay, and reserves the row; the daemon's canonical
+        // snapshot drives the row from there. Never replay: an uncertain
+        // outcome refreshes from the snapshot, it is not re-submitted.
         let size = crate::terminal::get_size();
-
+        if !self.submit_daemon_start(&id, size) {
+            return Ok(());
+        }
+        self.restart_cooldown_at.insert(id.clone(), now);
         self.mutate_instance(&id, |inst| {
             inst.status = Status::Starting;
             inst.last_error = None;
             inst.last_start_time = Some(std::time::Instant::now());
         });
-
-        let Some(instance) = self.get_instance(&id).cloned() else {
-            return Ok(());
-        };
-
-        // Resolve the wake message on the main thread (config access). Empty is
-        // the documented opt-out; the worker skips the wake-up then.
-        let wake_message = crate::session::resolve_config(&instance.source_profile)
-            .map(|c| c.session.restart_wake_message.clone())
-            .unwrap_or_else(|_| "wake up: pick up what you were doing".to_string());
-
         self.restart_in_flight.insert(id.clone());
-        self.restart_poller.request_restart(RestartRequest {
-            session_id: id,
-            instance,
-            size,
-            wake_message,
-            skip_on_launch: false,
-            bound_hooks: true,
-            discard_sandbox_container: tool_swapped,
-        });
         Ok(())
     }
 
@@ -581,12 +554,9 @@ impl HomeView {
         if let Some(id) = &self.selected_session {
             let id = id.clone();
 
-            // Refuse to delete a row whose restart cascade is still running on
-            // the worker: deletion would fire docker commands against the same
-            // container the restart worker is mid-creating, orphaning resources
-            // non-deterministically. The old synchronous cascade made this race
-            // impossible (the UI thread could not accept a delete mid-restart);
-            // off-threading the cascade removed that implicit lock.
+            // Refuse to delete a row whose daemon start is still in flight:
+            // deletion would race the start the daemon is mid-running,
+            // orphaning resources non-deterministically.
             if self.restart_in_flight.contains(&id) {
                 self.info_dialog = Some(InfoDialog::new(
                     "Restart in progress",
@@ -2032,10 +2002,10 @@ impl HomeView {
         }
         for inst in trashed {
             let id = inst.id.clone();
-            // A restart cascade still running on the worker would race the
-            // teardown against the container it is mid-creating; skip that row
-            // rather than orphan resources, the same guard `delete_selected`
-            // applies to a single delete.
+            // A daemon start still in flight would race the teardown against
+            // the container it is mid-creating; skip that row rather than
+            // orphan resources, the same guard `delete_selected` applies to
+            // a single delete.
             if self.restart_in_flight.contains(&id) {
                 continue;
             }

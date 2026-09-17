@@ -184,41 +184,104 @@ impl HomeView {
         None
     }
 
-    /// Restart `id` on the restart worker and attach once it launches the
-    /// agent (see `take_restarted_attaches`). The cascade can pull a sandbox
-    /// image for minutes, so it must stay off the event loop. A restart
+    /// Submit a daemon start for `id` and attach once the canonical snapshot
+    /// reports the agent live (see `take_restarted_attaches`). A refused
+    /// submit surfaces reconnect guidance and never writes locally; an
+    /// admitted submit paints the optimistic Starting overlay, and the
+    /// daemon's canonical snapshot drives the row from there. A start
     /// already in flight is joined rather than queued twice.
     pub fn restart_then_attach(
         &mut self,
         id: &str,
         size: Option<(u16, u16)>,
-        skip_on_launch: bool,
+        _skip_on_launch: bool,
     ) {
         if self.get_instance(id).is_none() {
             return;
         }
-        self.attach_after_restart.insert(id.to_string());
+        // Join a start already in flight rather than submitting twice: the
+        // feed refuses duplicates anyway, and a second submit would surface
+        // a spurious failure dialog on top of the running start.
         if !self.restart_in_flight.insert(id.to_string()) {
+            self.attach_after_restart.insert(id.to_string());
             return;
         }
+        if !self.submit_daemon_start(id, size) {
+            self.restart_in_flight.remove(id);
+            return;
+        }
+        self.attach_after_restart.insert(id.to_string());
         self.mutate_instance(id, |inst| {
             inst.status = crate::session::Status::Starting;
             inst.last_error = None;
             inst.last_start_time = Some(std::time::Instant::now());
         });
-        let Some(instance) = self.get_instance(id).cloned() else {
-            return;
-        };
-        self.restart_poller
-            .request_restart(crate::session::restart::RestartRequest {
-                session_id: id.to_string(),
-                instance,
-                size,
-                wake_message: String::new(),
-                skip_on_launch,
-                bound_hooks: false,
-                discard_sandbox_container: false,
-            });
+    }
+}
+
+impl HomeView {
+    /// Submit a daemon stop for `id` through the feed. On success the row is
+    /// left untouched: the daemon's canonical snapshot drives it. On refusal
+    /// the row is likewise untouched and the caller surfaces the returned
+    /// error (which carries reconnect guidance); the outcome is never
+    /// replayed. Returns the admitted submission for callers that need it.
+    pub(in crate::tui) fn submit_daemon_stop_via_ui(&mut self, id: &str) -> anyhow::Result<()> {
+        self.submit_daemon_stop(id).map(|_| ())
+    }
+
+    /// Submit a daemon stop for `id`. `Ok(true)` admits the submit (row left
+    /// untouched for the canonical snapshot); `Ok(false)` refuses it with an
+    /// info dialog and no local write.
+    pub(in crate::tui) fn submit_daemon_stop(&mut self, id: &str) -> anyhow::Result<bool> {
+        match self
+            .session_feed
+            .submit(id.to_string(), crate::daemon::SessionMutation::Stop)
+        {
+            Ok(()) => Ok(true),
+            Err(error) => {
+                self.info_dialog = Some(InfoDialog::sized_to_fit(
+                    "Stop failed",
+                    &format!(
+                        "Could not stop the session: {error}\nReconnect the runtime and try again."
+                    ),
+                ));
+                Ok(false)
+            }
+        }
+    }
+
+    /// Submit a daemon start for `id` at `size`. `true` admits the submit
+    /// (the caller paints the optimistic Starting overlay; the daemon's
+    /// canonical snapshot drives the row from there). `false` refuses it
+    /// with an info dialog and no local status write, and the outcome is
+    /// never replayed.
+    pub(in crate::tui) fn submit_daemon_start(
+        &mut self,
+        id: &str,
+        size: Option<(u16, u16)>,
+    ) -> bool {
+        let terminal_size = size.and_then(|(cols, rows)| {
+            use std::num::NonZeroU16;
+            Some(crate::daemon::TerminalSize {
+                cols: NonZeroU16::new(cols)?,
+                rows: NonZeroU16::new(rows)?,
+            })
+        });
+        match self.session_feed.submit(
+            id.to_string(),
+            crate::daemon::SessionMutation::Start(crate::daemon::StartSessionBody {
+                size: terminal_size,
+            }),
+        ) {
+            Ok(()) => true,
+            Err(error) => {
+                self.info_dialog = Some(InfoDialog::sized_to_fit(
+                    "Start failed",
+                    &format!("Could not start the session: {error}\nReconnect the runtime and try again."),
+                ));
+                false
+            }
+        }
     }
 
     /// Get the terminal mode for a session (uses config default if not set)

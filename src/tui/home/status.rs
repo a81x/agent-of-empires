@@ -3,13 +3,13 @@
 use super::*;
 
 impl HomeView {
-    /// Rows eligible for local system-health sampling.
+    /// Rows eligible for local system-health sampling. Recovery owns its rows
+    /// on a worker, so in-flight recoveries are skipped; a daemon start in
+    /// flight only reserves the row and never skips the health sample.
     pub(in crate::tui) fn pollable_instances(&self) -> Vec<Instance> {
         self.instances
             .values()
-            .filter(|i| {
-                !self.recovery_in_flight.contains(&i.id) && !self.restart_in_flight.contains(&i.id)
-            })
+            .filter(|i| !self.recovery_in_flight.contains(&i.id))
             .cloned()
             .collect()
     }
