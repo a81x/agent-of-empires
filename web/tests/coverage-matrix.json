@@ -1185,7 +1185,7 @@
       "id": "sidebar.compact-mode",
       "kind": "mocked-playwright",
       "risk": "medium",
-      "specs": ["tests/sidebar-compact.spec.ts"],
+      "specs": ["tests/sidebar-chrome.spec.ts"],
       "components": ["web/src/components/WorkspaceSidebar.tsx"]
     },
     {
@@ -1255,7 +1255,7 @@
       "id": "sidebar.project-row",
       "kind": "mocked-playwright",
       "risk": "medium",
-      "specs": ["tests/sidebar-project-row.spec.ts"],
+      "specs": ["tests/sidebar-chrome.spec.ts"],
       "components": ["web/src/components/WorkspaceSidebar.tsx"]
     },
     {
@@ -1269,7 +1269,7 @@
       "id": "sidebar.empty-state",
       "kind": "mocked-playwright",
       "risk": "low",
-      "specs": ["tests/sidebar-empty-state.spec.ts"],
+      "specs": ["tests/sidebar-chrome.spec.ts"],
       "components": ["web/src/components/WorkspaceSidebar.tsx"]
     },
     {
@@ -1290,7 +1290,7 @@
       "id": "sidebar.new-session-tooltips",
       "kind": "mocked-playwright",
       "risk": "low",
-      "specs": ["tests/sidebar-new-session-tooltips.spec.ts"],
+      "specs": ["tests/sidebar-chrome.spec.ts"],
       "components": ["web/src/components/WorkspaceSidebar.tsx"]
     },
     {
@@ -3489,21 +3489,21 @@
       "id": "sidebar.smart-rename-chip-render",
       "kind": "mocked-playwright",
       "risk": "low",
-      "specs": ["tests/sidebar-smart-rename-chip.spec.ts"],
+      "specs": ["tests/sidebar-chrome.spec.ts"],
       "components": ["web/src/components/WorkspaceSidebar.tsx"]
     },
     {
       "id": "sidebar.auto-name-action",
       "kind": "mocked-playwright",
       "risk": "medium",
-      "specs": ["tests/sidebar-auto-name.spec.ts"],
+      "specs": ["tests/sidebar-chrome.spec.ts"],
       "components": ["web/src/components/WorkspaceSidebar.tsx"]
     },
     {
       "id": "sidebar.summarize-action",
       "kind": "mocked-playwright",
       "risk": "medium",
-      "specs": ["tests/sidebar-summarize.spec.ts"],
+      "specs": ["tests/sidebar-chrome.spec.ts"],
       "components": ["web/src/components/WorkspaceSidebar.tsx"]
     },
     {

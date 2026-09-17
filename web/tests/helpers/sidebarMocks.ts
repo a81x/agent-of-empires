@@ -13,6 +13,8 @@ export interface MockSessionInput {
   remote_owner?: string | null;
   /** Defaults to `${remote_owner}@example.com`. */
   remote_owner_key?: string | null;
+  /** Extra SessionResponse fields merged over the defaults. */
+  fields?: Record<string, unknown>;
 }
 
 type MockSession = MockSessionInput & { created_at: string };
@@ -46,6 +48,7 @@ function sessionResponse(s: MockSession) {
     remote_owner: s.remote_owner ?? null,
     remote_owner_key:
       s.remote_owner_key !== undefined ? s.remote_owner_key : s.remote_owner ? `${s.remote_owner}@example.com` : null,
+    ...s.fields,
   };
 }
 

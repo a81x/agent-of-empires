@@ -177,7 +177,7 @@ test.describe("touch rows", () => {
     );
     return { handle, rows, cdp: await page.context().newCDPSession(page) };
   }
-  const touch = (cdp: CDPSession, type: string, points: { x: number; y: number }[]) =>
+  const touch = (cdp: CDPSession, type: "touchStart" | "touchMove" | "touchEnd", points: { x: number; y: number }[]) =>
     cdp.send("Input.dispatchTouchEvent", { type, touchPoints: points.map((p) => ({ ...p, id: 1 })) });
   const center = async (row: import("@playwright/test").Locator) => {
     const box = (await row.boundingBox())!;
