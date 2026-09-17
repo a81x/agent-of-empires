@@ -119,15 +119,17 @@ fn tui_acp_renders_compact_edit_summary_with_live_daemon() {
         vec!["init", "-q"],
         vec!["commit", "--allow-empty", "-q", "-m", "init"],
     ] {
-        let out = std::process::Command::new("git")
-            .args(&args)
-            .current_dir(&project)
+        let mut git = std::process::Command::new("git");
+        git.current_dir(&project)
             .env("GIT_AUTHOR_NAME", "t")
             .env("GIT_AUTHOR_EMAIL", "t@t")
             .env("GIT_COMMITTER_NAME", "t")
-            .env("GIT_COMMITTER_EMAIL", "t@t")
-            .output()
-            .expect("run git");
+            .env("GIT_COMMITTER_EMAIL", "t@t");
+        if args[0] == "commit" {
+            git.arg("-c").arg("commit.gpgsign=false");
+        }
+        git.args(&args);
+        let out = git.output().expect("run git");
         assert!(
             out.status.success(),
             "git {:?} failed: {}",

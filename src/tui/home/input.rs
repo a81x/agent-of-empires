@@ -6380,7 +6380,13 @@ impl HomeView {
         use crate::session::{AuxiliaryTarget, PanePresence};
         let gone = match &state.target {
             live_send::LiveSendTarget::Agent => {
-                crate::tmux::session_exists_from_cache(&state.tmux_name) == Some(false)
+                // The daemon may have created the pane after this process's
+                // last scan, so a cached miss is not evidence of death (the
+                // asymmetry documented on `session_exists`). Confirm with a
+                // live probe before ending live mode; Unknown stays put.
+                !crate::tmux::session_exists(&state.tmux_name)
+                    && crate::tmux::probe_session_existence(&state.tmux_name)
+                        == crate::tmux::SessionExistence::Absent
             }
             live_send::LiveSendTarget::Terminal => matches!(
                 inst.auxiliary_presence(&AuxiliaryTarget::Host { index: 0 }),

@@ -1125,6 +1125,21 @@ fn runner_load_uses_requested_id_and_caches_response() {
         assert!(ready["result"].get("sessionId").is_none());
 
         write_frame(&mut ctl, &serde_json::json!({"kind": "cancel"}));
+
+        // The runner forwards Cancel only while this attachment is alive, so
+        // hold the socket open and wait for the agent-side trace instead of
+        // dropping it: an immediate close can end the connection on writer
+        // termination before the frame is read, losing the cancel.
+        let cancel_deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let logged = std::fs::read_to_string(&agent_log).unwrap_or_default();
+            if logged.contains("session/cancel sessionId=existing-session")
+                || Instant::now() >= cancel_deadline
+            {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        }
     }
 
     // Reattach and repeat the handshake inputs. Both responses must come from

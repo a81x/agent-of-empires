@@ -1280,8 +1280,7 @@ async fn daemon_trash_restore_purge_preserves_collisions_and_allows_retry() {
             &epoch,
         )
         .await
-        .err()
-        .expect("dirty worktree purge must fail");
+        .expect_err("dirty worktree purge must fail");
     assert!(
         matches!(refused, DaemonClientError::Status { status, .. } if status == reqwest::StatusCode::INTERNAL_SERVER_ERROR)
     );

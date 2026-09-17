@@ -169,11 +169,6 @@ impl HomeView {
             .any(|t| !t.get_all_groups().is_empty())
     }
 
-    /// Centralized instance addition: inserts into the ordered map (preserves
-    /// insertion order = sidebar order) and records the id in `pending_added`
-    /// so the next `save` distinguishes TUI-new rows from peer-deleted ones
-    /// (which look identical at the disk layer: missing from sessions.json).
-
     /// Test fixture helper: insert a row and register it as TUI-added so a
     /// following `save` persists it. Production row arrival is daemon-owned.
     #[cfg(test)]
