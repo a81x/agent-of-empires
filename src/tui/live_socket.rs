@@ -28,6 +28,14 @@ struct WireMessage {
     #[serde(default)]
     content: Option<String>,
     #[serde(default)]
+    seq: Option<u64>,
+    #[serde(default)]
+    base: Option<u64>,
+    #[serde(default)]
+    shift: usize,
+    #[serde(default)]
+    lines: Vec<(usize, String)>,
+    #[serde(default)]
     cursor: Option<WireCursor>,
     #[serde(default)]
     rows: u16,
@@ -46,34 +54,59 @@ struct WireMessage {
 /// What the reader task hands its owner.
 #[derive(Debug)]
 pub(crate) enum LiveMessage {
-    Frame { content: String, cursor: PaneCursor },
+    Frame {
+        seq: Option<u64>,
+        content: String,
+        cursor: PaneCursor,
+    },
+    /// Row changes against the message numbered `base` (module doc of
+    /// `crate::server::live_ws`).
+    Patch {
+        seq: u64,
+        base: u64,
+        shift: usize,
+        lines: Vec<(usize, String)>,
+        cursor: PaneCursor,
+    },
     SizeOwner(bool),
     Closed(String),
 }
 
-/// Decoded view of one server frame. `patch` is never seen because this client
-/// does not advertise `caps.patch`; the server then always sends full frames.
+impl WireMessage {
+    /// The daemon already moved the cursor onto the window grid, so no
+    /// composite origin is applied again here.
+    fn pane_cursor(&self) -> PaneCursor {
+        PaneCursor {
+            x: self.cursor.as_ref().map_or(0, |c| c.x),
+            y: self.cursor.as_ref().map_or(0, |c| c.y),
+            visible: self.cursor.is_some(),
+            pane_height: self.rows,
+            history_size: self.history,
+            pane_width: 0,
+            alternate_on: self.alt_screen,
+            mouse_tracking: self.mouse,
+            mouse_sgr: self.mouse_sgr,
+            mouse_all: false,
+            position_reliable: true,
+            composite_pane0: None,
+        }
+    }
+}
+
 fn parse_text(text: &str) -> Option<LiveMessage> {
     let msg: WireMessage = serde_json::from_str(text).ok()?;
     match msg.kind.as_str() {
         "frame" => Some(LiveMessage::Frame {
+            seq: msg.seq,
+            cursor: msg.pane_cursor(),
             content: msg.content.unwrap_or_default(),
-            // The daemon already moved the cursor onto the window grid, so no
-            // composite origin is applied again here.
-            cursor: PaneCursor {
-                x: msg.cursor.as_ref().map_or(0, |c| c.x),
-                y: msg.cursor.as_ref().map_or(0, |c| c.y),
-                visible: msg.cursor.is_some(),
-                pane_height: msg.rows,
-                history_size: msg.history,
-                pane_width: 0,
-                alternate_on: msg.alt_screen,
-                mouse_tracking: msg.mouse,
-                mouse_sgr: msg.mouse_sgr,
-                mouse_all: false,
-                position_reliable: true,
-                composite_pane0: None,
-            },
+        }),
+        "patch" => Some(LiveMessage::Patch {
+            seq: msg.seq?,
+            base: msg.base?,
+            shift: msg.shift,
+            cursor: msg.pane_cursor(),
+            lines: msg.lines,
         }),
         "size_owner" => Some(LiveMessage::SizeOwner(msg.is_owner.unwrap_or(true))),
         _ => None,
@@ -183,6 +216,29 @@ mod tests {
                 other => panic!("expected a frame, got {other:?}"),
             }
         }
+    }
+
+    #[test]
+    fn a_patch_carries_its_base_rows_and_cursor() {
+        let text = r#"{"type":"patch","seq":8,"base":7,"shift":2,"lines":[[0,"a"],[3,"\u001b[1mb"]],"rows":4,"history":12,"cursor":{"x":1,"y":3},"altScreen":false,"mouse":false,"mouseSgr":false,"pane0":null}"#;
+        match parse_text(text).expect("patch parses") {
+            LiveMessage::Patch {
+                seq,
+                base,
+                shift,
+                lines,
+                cursor,
+            } => {
+                assert_eq!((seq, base, shift), (8, 7, 2));
+                assert_eq!(lines, [(0, "a".into()), (3, "\u{1b}[1mb".into())]);
+                assert_eq!((cursor.x, cursor.y, cursor.history_size), (1, 3, 12));
+            }
+            other => panic!("expected a patch, got {other:?}"),
+        }
+        assert!(
+            parse_text(r#"{"type":"patch","seq":8,"lines":[]}"#).is_none(),
+            "a patch without a base cannot be applied"
+        );
     }
 
     #[test]

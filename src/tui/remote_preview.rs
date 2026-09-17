@@ -209,11 +209,77 @@ impl InputGate {
     }
 }
 
+/// The window the last frame or patch produced, which the next patch edits.
+#[derive(Debug, Default)]
+struct PatchBase {
+    /// `None` before a numbered frame lands and after continuity is lost.
+    seq: Option<u64>,
+    rows: Vec<String>,
+    /// Whether the window's text ended with a newline, restored on rebuild.
+    terminated: bool,
+    resync_sent: bool,
+}
+
+#[derive(Debug, PartialEq)]
+enum Patched {
+    Content(String),
+    /// Continuity lost: ask the daemon for a full frame.
+    Resync,
+    /// A resync is already on its way; drop patches until the frame lands.
+    Skip,
+}
+
+impl PatchBase {
+    fn frame(&mut self, seq: Option<u64>, content: &str) {
+        let mut rows: Vec<String> = content.split('\n').map(str::to_string).collect();
+        let terminated = rows.len() > 1 && rows.last().is_some_and(String::is_empty);
+        if terminated {
+            rows.pop();
+        }
+        *self = Self {
+            seq,
+            rows,
+            terminated,
+            resync_sent: false,
+        };
+    }
+
+    /// Drop `shift` leading rows, pad the bottom with blanks, then replace the
+    /// listed rows, which is how the daemon diffed the window. Indices outside
+    /// the window are ignored so a patch can never resize it.
+    fn patch(&mut self, seq: u64, base: u64, shift: usize, lines: Vec<(usize, String)>) -> Patched {
+        if self.seq != Some(base) {
+            self.seq = None;
+            if self.resync_sent {
+                return Patched::Skip;
+            }
+            self.resync_sent = true;
+            return Patched::Resync;
+        }
+        let n = self.rows.len();
+        let shift = shift.min(n);
+        self.rows.drain(..shift);
+        self.rows.resize(n, String::new());
+        for (i, row) in lines {
+            if let Some(slot) = self.rows.get_mut(i) {
+                *slot = row;
+            }
+        }
+        self.seq = Some(seq);
+        let mut content = self.rows.join("\n");
+        if self.terminated {
+            content.push('\n');
+        }
+        Patched::Content(content)
+    }
+}
+
 struct Connection {
     key: RemoteKey,
     tx: mpsc::Sender<Message>,
     task: tokio::task::JoinHandle<()>,
     gate: InputGate,
+    base: PatchBase,
 }
 
 impl Connection {
@@ -307,7 +373,9 @@ async fn run(mut commands: mpsc::UnboundedReceiver<PreviewCommand>, events: Even
                             tx: socket.tx,
                             task: socket.task,
                             gate: InputGate::Viewer,
+                            base: PatchBase::default(),
                         };
+                        next.control(json!({"type": "caps", "patch": true})).await;
                         next.window(lines, true).await;
                         rx = Some(socket.rx);
                         conn = Some(next);
@@ -372,12 +440,35 @@ async fn on_message(
     };
     let key = c.key.clone();
     let closed = match message {
-        Some(LiveMessage::Frame { content, cursor }) => {
+        Some(LiveMessage::Frame {
+            seq,
+            content,
+            cursor,
+        }) => {
+            c.base.frame(seq, &content);
             events.frame(PreviewFrame {
                 key,
                 content,
                 cursor,
             });
+            None
+        }
+        Some(LiveMessage::Patch {
+            seq,
+            base,
+            shift,
+            lines,
+            cursor,
+        }) => {
+            match c.base.patch(seq, base, shift, lines) {
+                Patched::Content(content) => events.frame(PreviewFrame {
+                    key,
+                    content,
+                    cursor,
+                }),
+                Patched::Resync => c.control(json!({"type": "resync"})).await,
+                Patched::Skip => {}
+            }
             None
         }
         Some(LiveMessage::SizeOwner(is_owner)) => {
@@ -402,6 +493,7 @@ async fn on_message(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
 
     #[test]
     fn input_waits_for_the_ownership_grant_and_leaves_in_order() {
@@ -487,6 +579,208 @@ mod tests {
                 "closed=gone"
             ]
         );
+    }
+
+    fn rows(content: &str) -> Vec<(usize, String)> {
+        content
+            .lines()
+            .enumerate()
+            .map(|(i, row)| (i, row.to_string()))
+            .collect()
+    }
+
+    #[test]
+    fn a_patch_rebuilds_the_window_the_daemon_diffed() {
+        type Case = (
+            &'static str,
+            &'static str,
+            usize,
+            &'static [(usize, &'static str)],
+            &'static str,
+        );
+        let cases: &[Case] = &[
+            ("in place", "a\nb\nc\n", 0, &[(1, "B")], "a\nB\nc\n"),
+            ("empty patch", "a\nb\n", 0, &[], "a\nb\n"),
+            ("history grew", "a\nb\nc\n", 1, &[(2, "d")], "b\nc\nd\n"),
+            ("shift appends blanks", "a\nb\nc\n", 2, &[], "c\n\n\n"),
+            ("shift past the window", "a\nb\n", 9, &[(0, "x")], "x\n\n"),
+            (
+                "rows outside are ignored",
+                "a\nb\n",
+                0,
+                &[(2, "z"), (0, "A")],
+                "A\nb\n",
+            ),
+            ("unterminated window", "a\nb", 0, &[(1, "c")], "a\nc"),
+            ("blank last row", "a\n\n", 0, &[(0, "b")], "b\n\n"),
+        ];
+        for (what, prev, shift, lines, want) in cases {
+            let mut base = PatchBase::default();
+            base.frame(Some(4), prev);
+            let lines = lines.iter().map(|(i, r)| (*i, r.to_string())).collect();
+            assert_eq!(
+                base.patch(5, 4, *shift, lines),
+                Patched::Content(want.to_string()),
+                "{what}"
+            );
+            assert_eq!(base.seq, Some(5), "{what}");
+        }
+    }
+
+    #[test]
+    fn a_patch_off_its_base_asks_once_for_a_full_frame() {
+        let mut base = PatchBase::default();
+        assert_eq!(base.patch(1, 0, 0, vec![]), Patched::Resync, "no frame yet");
+
+        base.frame(Some(3), "a\nb\n");
+        assert_eq!(base.patch(5, 4, 0, rows("x\n")), Patched::Resync);
+        assert_eq!(base.patch(6, 5, 0, rows("y\n")), Patched::Skip);
+        assert_eq!(
+            base.patch(7, 3, 0, rows("z\n")),
+            Patched::Skip,
+            "continuity stays lost until a frame lands"
+        );
+
+        // A wider window arrives as a full frame and becomes the base.
+        base.frame(Some(8), "0\n1\na\nb\n");
+        assert_eq!(
+            base.patch(9, 8, 0, vec![(3, "c".into())]),
+            Patched::Content("0\n1\na\nc\n".into())
+        );
+        assert_eq!(base.patch(10, 8, 0, vec![]), Patched::Resync);
+    }
+
+    #[tokio::test]
+    async fn patches_from_the_daemon_encoder_land_as_the_full_window() {
+        use crate::acp::client::discovery::Source;
+        use crate::server::live_ws::{FrameEncoder, PendingFrame};
+        use futures_util::{SinkExt, StreamExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let endpoint = DaemonEndpoint::new(
+            format!("http://{}", listener.local_addr().unwrap()),
+            None,
+            Source::Remote,
+        );
+        let wake = Arc::new(tokio::sync::Notify::new());
+        let (commands, command_rx) = mpsc::unbounded_channel();
+        let (preview, sink) = RemotePreview::with_sink(commands, Arc::clone(&wake));
+        let worker = tokio::spawn(run(command_rx, sink));
+        let key: RemoteKey = ("mini".into(), "s1".into());
+        preview.send(PreviewCommand::Watch {
+            key: key.clone(),
+            endpoint,
+            lines: 4,
+        });
+        let (tcp, _) = listener.accept().await.unwrap();
+        let mut server = tokio_tungstenite::accept_async(tcp).await.unwrap();
+
+        async fn client_text<S>(
+            server: &mut tokio_tungstenite::WebSocketStream<S>,
+        ) -> serde_json::Value
+        where
+            S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+        {
+            loop {
+                if let Message::Text(text) = server.next().await.unwrap().unwrap() {
+                    return serde_json::from_str(&text).unwrap();
+                }
+            }
+        }
+        let caps = client_text(&mut server).await;
+        assert_eq!(
+            (&caps["type"], &caps["patch"]),
+            (&"caps".into(), &true.into())
+        );
+
+        let cursor = |history_size: u32, y: u16| crate::tmux::PaneCursor {
+            x: 0,
+            y,
+            visible: true,
+            pane_height: 4,
+            history_size,
+            pane_width: 0,
+            alternate_on: false,
+            mouse_tracking: false,
+            mouse_sgr: false,
+            mouse_all: false,
+            position_reliable: true,
+            composite_pane0: None,
+        };
+        // A streaming shell: each step scrolls a line into history and edits
+        // the prompt row.
+        let windows = [
+            ("l1\nl2\nl3\n$ \n", 0, 3),
+            ("l1\nl2\nl3\n$ ls\n", 0, 3),
+            ("l2\nl3\nl4\n$ \n", 1, 3),
+            ("l4\nl5\nl6\n$ \n", 3, 3),
+            ("l4\nl5\nl6\n\x1b[1m$ \x1b[0m\n", 3, 2),
+        ];
+        let mut encoder = FrameEncoder::default();
+        let mut kinds = Vec::new();
+        for (content, history, y) in windows {
+            let json = encoder.json(
+                &PendingFrame {
+                    content: content.to_string(),
+                    cursor: Some(cursor(history, y)),
+                    full: false,
+                },
+                true,
+            );
+            kinds.push(serde_json::from_str::<serde_json::Value>(&json).unwrap()["type"].clone());
+            server.send(Message::Text(json.into())).await.unwrap();
+            let frame = loop {
+                if let Some(frame) = preview.take_frame() {
+                    break frame;
+                }
+                tokio::time::timeout(Duration::from_secs(5), wake.notified())
+                    .await
+                    .expect("frame lands");
+            };
+            assert_eq!(frame.key, key);
+            assert_eq!(frame.content, content);
+            assert_eq!((frame.cursor.history_size, frame.cursor.y), (history, y));
+        }
+        // The two-line scroll rewrites most of a four-row window, so the
+        // daemon sends that one whole.
+        assert_eq!(kinds, ["frame", "patch", "patch", "frame", "patch"]);
+
+        // A patch the client cannot place brings a resync, then a full frame.
+        let stray = r#"{"type":"patch","seq":99,"base":98,"shift":0,"lines":[[0,"lost"]],"rows":4,"history":3,"cursor":null}"#;
+        server.send(Message::Text(stray.into())).await.unwrap();
+        let resync = loop {
+            let value = client_text(&mut server).await;
+            if value["type"] != "window" && value["type"] != "cadence" {
+                break value;
+            }
+        };
+        assert_eq!(resync["type"], "resync");
+        assert!(
+            preview.take_frame().is_none(),
+            "the stray patch is not shown"
+        );
+
+        let recovered = "r1\nr2\nr3\n$ \n";
+        let json = encoder.json(
+            &PendingFrame {
+                content: recovered.to_string(),
+                cursor: Some(cursor(3, 3)),
+                full: true,
+            },
+            true,
+        );
+        server.send(Message::Text(json.into())).await.unwrap();
+        let frame = loop {
+            if let Some(frame) = preview.take_frame() {
+                break frame;
+            }
+            tokio::time::timeout(Duration::from_secs(5), wake.notified())
+                .await
+                .expect("the resync frame lands");
+        };
+        assert_eq!(frame.content, recovered);
+
+        worker.abort();
     }
 
     #[test]

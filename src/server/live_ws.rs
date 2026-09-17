@@ -580,10 +580,10 @@ impl FrameDeflater {
 
 /// A publish waiting for the socket. `full` forbids a patch (a resync, or a
 /// transport switch whose rows the baseline cannot describe).
-struct PendingFrame {
-    content: String,
-    cursor: Option<crate::tmux::PaneCursor>,
-    full: bool,
+pub(crate) struct PendingFrame {
+    pub(crate) content: String,
+    pub(crate) cursor: Option<crate::tmux::PaneCursor>,
+    pub(crate) full: bool,
 }
 
 /// One-slot latest-frame mailbox between the capture loop and the socket
@@ -625,7 +625,7 @@ struct SendStats {
 /// and `seq` advance only for sent messages, so a patch's `base` is always
 /// the message the client received just before it.
 #[derive(Default)]
-struct FrameEncoder {
+pub(crate) struct FrameEncoder {
     /// Rows and scrollback depth of the last sent message.
     last_sent: Option<(Vec<String>, u32)>,
     seq: u64,
@@ -636,7 +636,7 @@ struct FrameEncoder {
 }
 
 impl FrameEncoder {
-    fn json(&mut self, frame: &PendingFrame, patch_enabled: bool) -> String {
+    pub(crate) fn json(&mut self, frame: &PendingFrame, patch_enabled: bool) -> String {
         self.seq += 1;
         let lines = frame_lines(&frame.content);
         let history = frame.cursor.as_ref().map_or(0, |c| c.history_size);
