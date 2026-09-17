@@ -624,14 +624,6 @@ impl ServeView {
                         self.show_picker(Some(mode), None);
                         ServeAction::Continue
                     }
-                    KeyCode::Char('c') | KeyCode::Char('C') => {
-                        let url = urls.get(*url_index).or_else(|| urls.first());
-                        if let Some(command) = url.and_then(|url| client_command(&url.url)) {
-                            crate::tui::clipboard::copy_to_clipboard(&command);
-                            self.flash = Some((format!("Copied: {command}"), Instant::now()));
-                        }
-                        ServeAction::Continue
-                    }
                     KeyCode::Char('w') | KeyCode::Char('W') => {
                         self.show_web = !self.show_web;
                         ServeAction::Continue
@@ -1468,8 +1460,10 @@ const API_ONLY_NOTICE: &str = "This build has no dashboard; the link serves the 
 
 /// Narrowest content the card lays out for; below it lines are truncated.
 const CARD_MIN_WIDTH: usize = 50;
-/// Widest a single column grows before lines are truncated.
-const CARD_MAX_WIDTH: usize = 76;
+/// Widest a single column grows before lines are truncated. The longest line
+/// the card lays out is the token URL indented by two, about 100 columns for
+/// `http://<host>:<port>/?token=<64 hex>`, so this keeps it on one line.
+const CARD_MAX_WIDTH: usize = 112;
 /// Columns between the pairing column and the QR column.
 const COLUMN_GAP: usize = 3;
 
@@ -1704,21 +1698,17 @@ fn pair_rows(theme: &Theme, model: &ActiveModel, command: Option<&str>, width: u
         return rows;
     };
     let lead = "  1. On the other machine run  ";
-    let copy = "  c copies";
     let command_style = text.bold();
-    if lead.len() + command.len() + copy.len() <= width {
+    if lead.len() + command.len() <= width {
         rows.push(Row::keep(Line::from(vec![
             Span::styled(lead, text),
             Span::styled(command.to_string(), command_style),
-            Span::styled("  c", hint),
-            Span::styled(" copies", dimmed),
         ])));
     } else {
-        rows.push(Row::keep(Line::from(vec![
-            Span::styled("  1. On the other machine run", text),
-            Span::styled("  c", hint),
-            Span::styled(" copies", dimmed),
-        ])));
+        rows.push(Row::keep(Line::styled(
+            "  1. On the other machine run",
+            text,
+        )));
         rows.push(Row::keep(Line::styled(
             truncate_to_width(&format!("     {command}"), width),
             command_style,
@@ -1985,14 +1975,7 @@ fn render_active(frame: &mut Frame, area: Rect, theme: &Theme, model: &ActiveMod
             (used.clamp(CARD_MIN_WIDTH.min(width), width), lines, None, 0)
         }
     };
-    let footer = active_footer(
-        theme,
-        model,
-        command.is_some(),
-        &layout,
-        qr_size.0 > 0,
-        width,
-    );
+    let footer = active_footer(theme, model, &layout, qr_size.0 > 0, width);
     let body_rows = left.len().max(right.as_ref().map_or(0, Vec::len));
     let card = centered(area, width as u16 + 4, body_rows as u16 + 3);
     frame.render_widget(Clear, card);
@@ -2044,7 +2027,6 @@ fn centered(area: Rect, width: u16, height: u16) -> Rect {
 fn active_footer(
     theme: &Theme,
     model: &ActiveModel,
-    has_command: bool,
     layout: &CardLayout,
     has_qr: bool,
     width: usize,
@@ -2072,9 +2054,6 @@ fn active_footer(
     if *layout == CardLayout::Web {
         keys.push(("w", "back to pairing", 7));
     } else {
-        if has_command {
-            keys.push(("c", "copy command", 7));
-        }
         if has_devices {
             keys.push(("↑↓", "select device", 1));
             keys.push(("x", "revoke device", 5));
@@ -2127,7 +2106,6 @@ fn active_footer(
 /// Every key the exposed view takes, with what it does.
 fn help_shortcuts(is_tunnel: bool) -> Vec<(&'static str, &'static str)> {
     let mut shortcuts = vec![
-        ("c", "Copy the command for the other machine."),
         ("↑↓  j k", "Select a paired device."),
         ("x", "Revoke the selected device (press twice)."),
         ("u", "Let locked-out IPs try pairing again."),
@@ -2425,6 +2403,7 @@ mod active_screen {
     struct Setup {
         width: u16,
         height: u16,
+        url: String,
         show_web: bool,
         qr: String,
         panel: super::super::pairing::PairingPanel,
@@ -2435,6 +2414,7 @@ mod active_screen {
         Setup {
             width,
             height,
+            url: TOKEN_URL.to_string(),
             show_web: false,
             qr: String::new(),
             panel: super::super::pairing::PairingPanel::ready("K7F-3QX", &["laptop"]),
@@ -2451,7 +2431,7 @@ mod active_screen {
         fn draw(&self) -> (String, Rect) {
             let urls = vec![ServeUrl {
                 label: Some("lan".to_string()),
-                url: TOKEN_URL.to_string(),
+                url: self.url.clone(),
             }];
             let mut term =
                 Terminal::new(TestBackend::new(self.width, self.height)).expect("terminal");
@@ -2539,12 +2519,7 @@ mod active_screen {
                 positions.windows(2).all(|w| w[0] < w[1]),
                 "{width}x{height}:\n{screen}"
             );
-            for hint in [
-                "c copy command",
-                "? help",
-                "Esc back to sessions",
-                "x revoke laptop",
-            ] {
+            for hint in ["? help", "Esc back to sessions", "x revoke laptop"] {
                 position(&screen, hint);
             }
             assert!(
@@ -2623,6 +2598,26 @@ mod active_screen {
         position(&screen, "Browser or phone");
         position(&screen, "w back to pairing");
         assert!(!screen.contains("Pair a device"), "{screen}");
+    }
+
+    /// The card is wide enough for a real token URL to stand on one line,
+    /// and still folds it when the terminal is narrow.
+    #[test]
+    fn a_token_url_stands_on_one_line_when_the_terminal_has_room() {
+        let url = format!("http://192.168.1.42:8081/?token={}", "a1b2c3d4".repeat(8));
+        let mut wide = setup(140, 40);
+        wide.url.clone_from(&url);
+        wide.show_web = true;
+        let (screen, card) = wide.draw();
+        position(&screen, &url);
+        assert!(card.width <= 140, "{screen}");
+
+        let mut narrow = setup(100, 30);
+        narrow.url.clone_from(&url);
+        narrow.show_web = true;
+        let (screen, card) = narrow.draw();
+        assert!(!screen.contains(&url), "folded when narrow:\n{screen}");
+        assert!(card.width <= 100, "{screen}");
     }
 
     /// A tunnel adds its passphrase to the link section.
@@ -2958,18 +2953,7 @@ localhost\thttp://localhost:54321/?token=abc\n";
     fn help_lists_every_key_and_fits_a_small_terminal() {
         for tunnel in [false, true] {
             let keys: Vec<&str> = help_shortcuts(tunnel).iter().map(|(k, _)| *k).collect();
-            for key in [
-                "c",
-                "↑↓  j k",
-                "x",
-                "u",
-                "w",
-                "Tab",
-                "e",
-                "r",
-                "?",
-                "Esc  q",
-            ] {
+            for key in ["↑↓  j k", "x", "u", "w", "Tab", "e", "r", "?", "Esc  q"] {
                 assert!(keys.contains(&key), "{key} missing: {keys:?}");
             }
             assert_eq!(keys.contains(&"g"), tunnel);

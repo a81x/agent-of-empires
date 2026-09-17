@@ -20,7 +20,7 @@ AOE_REMOTE_PASSPHRASE=… aoe remote add https://mini.example.com --token <token
 The address is `host:port` for a LAN, link-local or tailnet (`100.64.0.0/10`)
 address or a `.local` name, which is reached over plain HTTP and needs the
 port the remote shows; any other hostname is reached over HTTPS. A full URL
-works too. `c` in the exposed view copies the command.
+works too.
 
 Pairing needs no token. The code is single use and valid for 10 minutes; the
 view replaces it as soon as it expires or a device redeems it, so the code on
