@@ -913,6 +913,7 @@ impl App {
         crate::session::write_tui_heartbeat();
         crate::session::write_tui_activity();
         self.home.active_tui_count = crate::session::count_active_tuis(PRESENCE_FRESH_WINDOW);
+        self.home.serve_exposure = crate::cli::serve::current_exposure();
 
         // Telemetry (opt-in, no-op otherwise): announce this surface on boot,
         // send an initial snapshot, then refresh it periodically and once more
@@ -2119,6 +2120,11 @@ impl App {
                 let count = crate::session::count_active_tuis(PRESENCE_FRESH_WINDOW);
                 if count != self.home.active_tui_count {
                     self.home.active_tui_count = count;
+                    refresh_needed = true;
+                }
+                let exposure = crate::cli::serve::current_exposure();
+                if exposure != self.home.serve_exposure {
+                    self.home.serve_exposure = exposure;
                     refresh_needed = true;
                 }
             }

@@ -163,8 +163,8 @@ pub async fn run(
 }
 
 /// Render the "no daemon running" screen with a one-key recovery:
-/// Enter spawns a localhost daemon (via the serve dialog's shared
-/// spawn path) and waits for it to become healthy, then returns its
+/// Enter starts the localhost daemon the TUI bootstraps and waits for
+/// it to become healthy, then returns its
 /// endpoint so the caller can proceed straight into the view. Any
 /// other key returns `None` (back to the session list). Spawn or
 /// health-check failures render an error screen and also return

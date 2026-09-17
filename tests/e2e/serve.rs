@@ -1724,47 +1724,71 @@ async fn daemon_terminal_commands_apply_dimensions_archive_and_abandon_policy() 
     );
 }
 
-/// Pressing `R` from the home screen opens the serve ModePicker,
-/// which must render both cards (Local + Internet) and surface the
-/// transport-picker-deferred hint on the Tunnel card ("Pick transport
-/// on next screen.").
+/// `R` opens the exposure picker on the running localhost daemon: it offers
+/// the three exposures and never an off switch.
 #[test]
 #[parallel]
-fn tui_serve_dialog_opens_to_mode_picker() {
+fn tui_serve_dialog_opens_to_exposure_picker() {
     require_tmux!();
 
     let mut h = TuiTestHarness::new("serve_mode_picker");
+    h.enable_e2e_debug_signals();
     h.spawn_tui();
-
-    h.wait_for(" aoe ");
+    h.wait_for_runtime_ready();
     h.send_keys("R");
 
-    h.wait_for("How should this be reachable?");
+    h.wait_for("How should it be reachable?");
+    h.assert_screen_contains("Exposure: Localhost only");
     h.assert_screen_contains("Local network");
     h.assert_screen_contains("Internet (HTTPS)");
-    // The Tunnel card defers the transport choice to the next screen.
-    // If this line disappears, the ModePicker copy is out of sync with
-    // the Confirm-screen picker it hands off to.
-    h.assert_screen_contains("Pick transport on next screen.");
-}
-
-/// Esc dismisses the serve dialog and returns to the home screen
-/// without spawning anything. Regression guard against state-transition
-/// bugs where ModePicker might latch onto a stale mode.
-#[test]
-#[parallel]
-fn tui_serve_dialog_escape_returns_home() {
-    require_tmux!();
-
-    let mut h = TuiTestHarness::new("serve_mode_picker_esc");
-    h.spawn_tui();
-
-    h.wait_for(" aoe ");
-    h.send_keys("R");
-    h.wait_for("How should this be reachable?");
+    h.assert_screen_not_contains("stop");
 
     h.send_keys("Escape");
-    // Home-screen footer is the tell that we've returned.
+    h.wait_for("No sessions yet");
+}
+
+/// Switching to the local network restarts the daemon on 0.0.0.0 and lights
+/// the footer; switching back returns to loopback, clears the indicator and
+/// the TUI reconnects on its own.
+#[test]
+#[parallel]
+fn tui_serve_dialog_switches_exposure_and_reconnects() {
+    require_tmux!();
+    if agent_of_empires::server::discover_tagged_ips().is_empty() {
+        eprintln!("skipping: no non-loopback interface");
+        return;
+    }
+
+    let mut h = TuiTestHarness::new("serve_exposure_roundtrip");
+    h.enable_e2e_debug_signals();
+    h.spawn_tui();
+    h.wait_for_runtime_ready();
+    let launch = || -> serde_json::Value {
+        serde_json::from_str(&std::fs::read_to_string(daemon_launch_path(&h)).unwrap()).unwrap()
+    };
+    assert_eq!(launch()["host"], "127.0.0.1");
+    assert_eq!(launch()["core_only"], false);
+
+    h.send_keys("R");
+    h.wait_for("How should it be reachable?");
+    h.send_keys("2");
+    h.wait_for_timeout("(local network)", Duration::from_secs(30));
+    h.assert_screen_contains("aoe remote add");
+    assert_eq!(launch()["host"], "0.0.0.0");
+    h.send_keys("Escape");
+    h.wait_for_timeout("Serving LAN", Duration::from_secs(10));
+    h.wait_for_runtime_ready();
+
+    h.send_keys("R");
+    h.wait_for("(local network)");
+    h.send_keys("E");
+    h.wait_for("How should it be reachable?");
+    h.send_keys("1");
+    h.wait_for_timeout("Now localhost only.", Duration::from_secs(30));
+    assert_eq!(launch()["host"], "127.0.0.1");
+    h.send_keys("Escape");
+    h.wait_for_absent("Serving LAN", Duration::from_secs(10));
+    h.wait_for_runtime_ready();
     h.wait_for("No sessions yet");
 }
 

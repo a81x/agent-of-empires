@@ -1860,6 +1860,7 @@ impl HomeView {
                 ServeAction::Continue => return None,
                 ServeAction::Close => {
                     self.serve_view = None;
+                    self.serve_exposure = crate::cli::serve::current_exposure();
                     return None;
                 }
             }

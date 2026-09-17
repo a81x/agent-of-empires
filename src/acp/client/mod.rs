@@ -11,7 +11,7 @@
 //! WebSocket transport. An explicit `AOE_DAEMON_URL` takes precedence; otherwise
 //! discovery selects the live local daemon through its owner-verified Unix socket.
 //! [`daemon_manager::require_daemon`] never starts a process. The explicit
-//! [`daemon_manager::ensure_local_daemon`] bootstrap uses the serialized core launcher
+//! [`daemon_manager::ensure_local_daemon`] bootstrap uses the serialized localhost launcher
 //! and never replaces an explicit remote endpoint with a local daemon.
 
 pub mod daemon_manager;

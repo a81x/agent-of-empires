@@ -808,6 +808,10 @@ pub struct HomeView {
     // since tmux reflows to the smallest attached client).
     pub(super) active_tui_count: usize,
 
+    /// Local daemon exposure, refreshed with `active_tui_count`. The footer
+    /// shows it only beyond localhost.
+    pub(super) serve_exposure: Option<crate::cli::serve::Exposure>,
+
     // Settings view
     pub(super) settings_view: Option<SettingsView>,
     /// Flag to indicate we're confirming settings close (unsaved changes)

@@ -416,6 +416,7 @@ impl HomeView {
             confirm_before_quit,
             host_tab_title,
             active_tui_count: 1,
+            serve_exposure: None,
             idle_decay_window,
             settings_view: None,
             settings_close_confirm: false,

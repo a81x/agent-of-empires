@@ -9,7 +9,7 @@ dashboard uses the same API surface plus additional internal routes.
 
 All endpoints require a token unless the server was started with
 `--no-auth`. The token is the one printed by `aoe serve` (or visible
-in the TUI's Serve panel). Three transports are accepted:
+in the TUI's Remote Access view, `R`). Three transports are accepted:
 
 | Transport | Example |
 | --- | --- |

@@ -24,7 +24,7 @@ impl HomeView {
             }
         }
 
-        // Poll serve dialog for subprocess startup events.
+        // Poll the serve dialog for a background exposure change.
         if let Some(view) = &mut self.serve_view {
             if view.tick() {
                 changed = true;

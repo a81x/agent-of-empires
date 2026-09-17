@@ -34,6 +34,8 @@ pub(crate) enum SidebarSource {
 }
 
 const COMMAND_CAPACITY: usize = 32;
+const RECONNECT_MIN: std::time::Duration = std::time::Duration::from_millis(250);
+const RECONNECT_MAX: std::time::Duration = std::time::Duration::from_secs(5);
 
 enum SessionRequest {
     Mutation(SessionMutation),
@@ -207,13 +209,24 @@ impl SessionFeed {
         self.progress_receiver = progress_receiver;
         let sender = self.sender.clone();
         self.task = Some(tokio::spawn(async move {
-            let result: anyhow::Result<()> = async {
-                let endpoint = crate::acp::client::daemon_manager::ensure_local_daemon(&profile).await?;
+            let mut bootstrap = true;
+            let mut backoff = RECONNECT_MIN;
+            loop {
+                // Ok(true): the feed was dropped. Ok(false): the daemon went away.
+                let result: anyhow::Result<bool> = async {
+                // Only bootstrap may start a daemon; reconnects find the one
+                // an exposure change or restart brought back.
+                let endpoint = if bootstrap {
+                    crate::acp::client::daemon_manager::ensure_local_daemon(&profile).await?
+                } else {
+                    crate::acp::client::discovery::discover_local()?
+                };
                 let client = endpoint.daemon_client()?;
                 let mut connection = RuntimeConnection::connect(
                     &endpoint, (!profile.is_empty()).then_some(profile.as_str()),
                 ).await?;
                 let epoch = connection.info().epoch.clone();
+                backoff = RECONNECT_MIN;
                 set_grant(&grant, connection.mutations_allowed());
                 set_grant(&native_grant, connection.native_interaction_allowed());
                 sender.send_replace(Some(SessionFeedResult::Snapshot(connection.snapshot().clone())));
@@ -294,27 +307,42 @@ impl SessionFeed {
                         let _ = request.result.send(result);
                     }
                 };
-                tokio::join!(read, write);
-                Ok(())
+                Ok(tokio::select! {
+                    () = read => false,
+                    () = write => true,
+                })
             }.await;
-            set_grant(&grant, false);
-            set_grant(&native_grant, false);
-            if let Err(error) = result {
-                sender.send_replace(Some(SessionFeedResult::Unavailable(error.to_string())));
+                bootstrap = false;
+                set_grant(&grant, false);
+                set_grant(&native_grant, false);
+                match result {
+                    Ok(true) => return,
+                    Ok(false) => {}
+                    Err(error) => {
+                        sender
+                            .send_replace(Some(SessionFeedResult::Unavailable(error.to_string())));
+                    }
+                }
+                let retry = tokio::time::sleep(backoff);
+                tokio::pin!(retry);
+                loop {
+                    tokio::select! {
+                        () = &mut retry => break,
+                        request = requests.recv() => match request {
+                            Some(request) => {
+                                let _ = request.result.send(Err("Runtime disconnected; no change submitted".into()));
+                            }
+                            None => return,
+                        },
+                    }
+                }
+                backoff = (backoff * 2).min(RECONNECT_MAX);
             }
         }));
     }
 
     pub(crate) fn mutations_available(&self) -> bool {
         self.grant.load(Ordering::SeqCst) & 1 == 1
-            && self
-                .commands
-                .as_ref()
-                .is_some_and(|commands| !commands.is_closed())
-    }
-
-    pub(crate) fn native_interaction_available(&self) -> bool {
-        self.native_grant.load(Ordering::SeqCst) & 1 == 1
             && self
                 .commands
                 .as_ref()

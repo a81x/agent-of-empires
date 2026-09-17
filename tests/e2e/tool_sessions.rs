@@ -294,9 +294,10 @@ hotkey = "Alt+t"
     // Defensive: kill any stale tool sessions from a previous aborted run.
     kill_lingering_tool_sessions_on(&harness_sock, id_suffix);
 
+    h.enable_e2e_debug_signals();
     h.spawn_tui();
     h.wait_for("RoundtripSession");
-    h.wait_for("Runtime ready");
+    h.wait_for_runtime_ready();
 
     // Press the configured hotkey (Alt+t). tmux's send-keys grammar
     // names Alt-modified keys as `M-<key>`.

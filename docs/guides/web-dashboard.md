@@ -43,6 +43,10 @@ Open it in any browser. The token is set as a cookie on first visit, so you don'
 
 `--open` is suppressed with `--daemon` or `--remote`, and whenever no browser you could see is reachable: over SSH without a forwarded `DISPLAY`, and on Linux/BSD with no display server. Setting `BROWSER` overrides the check on platforms whose browser launcher reads it, which excludes macOS. The preview's link handling uses the same rules.
 
+### Choosing exposure from the TUI
+
+The TUI starts a localhost daemon (token auth, a random high port kept in `serve.last_port`) when none is running. Press `R` to choose how far it is reachable: **Localhost only**, **Local network** (`0.0.0.0`, token auth) or **Internet (HTTPS)** through Tailscale Funnel or Cloudflare with a passphrase. Choosing restarts the daemon with the new exposure and the TUI reconnects on its own; a failed exposed start falls back to localhost. The footer shows `Serving LAN` or `Serving tunnel` while the daemon is exposed. Exposed views show the URL, a QR code and an `aoe remote add` command for another machine (see [Remote Machines](remotes.md)).
+
 ### Private core and recovery
 
 Run only the private local API, without TCP or a dashboard, with:
@@ -51,7 +55,7 @@ Run only the private local API, without TCP or a dashboard, with:
 aoe serve --core-only --daemon
 ```
 
-An explicit `aoe serve` request replaces an existing managed core under the daemon lifecycle lock. It validates the requested exposure before stopping the core, then waits for the replacement to become ready. Existing terminal sessions remain running.
+An explicit `aoe serve` request replaces an existing managed core or localhost daemon, such as the one the TUI starts, under the daemon lifecycle lock. A daemon exposed beyond localhost needs `--restart` or `--stop` first. It validates the requested exposure before stopping the core, then waits for the replacement to become ready. Existing terminal sessions remain running.
 
 `aoe serve --restart` replays the current managed launch. If a replacement fails after stopping the daemon, there is no automatic fallback. Run `aoe serve --rollback` to restore the retained launch explicitly. Rollback also works after `--stop`; it refuses missing or mismatched credentials instead of dropping authentication. The retained launch can still fail if its prerequisites are no longer available.
 

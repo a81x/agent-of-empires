@@ -1174,6 +1174,22 @@ last_seen_version = "{}"
         self.set_env("AOE_E2E_DEBUG", "1");
     }
 
+    /// Wait until the TUI's runtime subscription is live. Requires
+    /// `enable_e2e_debug_signals` before `spawn_tui`.
+    pub fn wait_for_runtime_ready(&self) {
+        let path = app_dir_in(self.home_dir.path()).join(".aoe_e2e_runtime_ready");
+        let deadline = Instant::now() + Duration::from_secs(30);
+        while !path.exists() {
+            assert!(
+                Instant::now() < deadline,
+                "timed out waiting for the runtime subscription; check that \
+                 enable_e2e_debug_signals() was called before spawn_tui.\n\n{}",
+                self.capture_screen()
+            );
+            std::thread::sleep(Duration::from_millis(25));
+        }
+    }
+
     /// Read the current watcher-config-refresh counter exported by the
     /// TUI. Returns 0 when the file is missing (TUI has not run any
     /// watcher refresh yet, or `AOE_E2E_DEBUG` was not set on the

@@ -34,7 +34,7 @@ impl AuthMode {
     }
 }
 
-#[derive(Args)]
+#[derive(Args, Clone)]
 pub struct ServeArgs {
     /// Serve the private local API without opening TCP or a dashboard.
     #[arg(long, conflicts_with_all = ["remote", "behind_proxy", "port", "host", "auth", "no_auth", "open", "passphrase", "allowed_host", "allowed_origin"])]
@@ -594,7 +594,7 @@ async fn rollback_daemon() -> Result<()> {
     match daemon_status() {
         DaemonStatus::Verified(pid) => {
             managed_launch(pid)?;
-            stop_daemon_locked(&transaction).await?;
+            stop_daemon_locked(&transaction, true).await?;
         }
         DaemonStatus::Unverified => bail!("Cannot verify the existing daemon; refusing rollback"),
         DaemonStatus::Absent => {}
@@ -1019,7 +1019,10 @@ pub async fn run(profile: &str, mut args: ServeArgs) -> Result<()> {
     let predecessor = match daemon_status() {
         DaemonStatus::Verified(pid) if pid != std::process::id() => {
             let launch = managed_launch(pid)?;
-            if !launch.core_only || args.core_only || args.daemon_child {
+            if launch_exposure(&launch) != Exposure::Localhost
+                || args.core_only
+                || args.daemon_child
+            {
                 bail!("aoe serve daemon already running (PID {pid}); use --restart or --stop");
             }
             Some(launch)
@@ -1102,7 +1105,7 @@ pub async fn run(profile: &str, mut args: ServeArgs) -> Result<()> {
     if let Some(launch) = predecessor {
         let passphrase = recall_serve_passphrase(&launch)?;
         retain_rollback_launch(&transaction, &launch, passphrase.as_deref())?;
-        stop_daemon_locked(&transaction).await?;
+        stop_daemon_locked(&transaction, true).await?;
     }
 
     if args.daemon {
@@ -1291,20 +1294,17 @@ async fn fetch_cityhall_bundle(url: &str, token: &str) -> Result<String> {
     Ok(daemon::decode_text(response).await?)
 }
 
-pub(crate) async fn ensure_core_daemon(
+/// Start the localhost baseline when no daemon runs, then verify the runtime.
+/// Every TUI has at least a loopback dashboard and the private socket.
+pub(crate) async fn ensure_local_daemon(
     profile: &str,
 ) -> Result<crate::acp::client::DaemonEndpoint> {
-    use clap::Parser;
     let transaction = crate::daemon::lifecycle::Transaction::acquire().await?;
     if daemon_pid().is_none() {
         let resolved_profile = crate::session::config::effective_profile(profile);
         let profile = resolved_profile.as_str();
         crate::session::require_known_profile(profile)?;
-        let cli = crate::cli::Cli::try_parse_from(["aoe", "serve", "--core-only", "--daemon"])?;
-        let Some(crate::cli::Commands::Serve(args)) = cli.command else {
-            unreachable!()
-        };
-        start_daemon(profile, &args, &transaction, false).await?;
+        start_daemon(profile, &baseline_args(None)?, &transaction, false).await?;
     }
     let endpoint = crate::acp::client::DaemonEndpoint::local_unix(
         crate::daemon::transport::local_socket_path()?,
@@ -1317,6 +1317,166 @@ pub(crate) async fn ensure_core_daemon(
         "Local daemon runtime identity or profile readiness does not match"
     );
     Ok(endpoint)
+}
+
+/// `aoe serve --daemon` on loopback with token auth. `port` keeps a running
+/// daemon's port; otherwise the persisted baseline port is used.
+fn baseline_args(port: Option<u16>) -> Result<ServeArgs> {
+    use clap::Parser;
+    let port = port.unwrap_or_else(baseline_port).to_string();
+    let cli = crate::cli::Cli::try_parse_from(["aoe", "serve", "--daemon", "--port", &port])?;
+    let Some(crate::cli::Commands::Serve(args)) = cli.command else {
+        unreachable!()
+    };
+    Ok(args)
+}
+
+/// Port persisted in `serve.last_port`, so the localhost URL survives
+/// restarts. A random high port avoids a user's own server on 8080; a busy
+/// or missing one is replaced.
+fn baseline_port() -> u16 {
+    let Ok(dir) = crate::session::get_app_dir() else {
+        return random_high_port();
+    };
+    baseline_port_in(&dir, |port| {
+        std::net::TcpListener::bind(("127.0.0.1", port)).is_ok()
+    })
+}
+
+fn baseline_port_in(dir: &std::path::Path, is_free: impl Fn(u16) -> bool) -> u16 {
+    let path = dir.join("serve.last_port");
+    if let Some(port) = std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|raw| raw.trim().parse::<u16>().ok())
+        .filter(|port| *port >= 49152 && is_free(*port))
+    {
+        return port;
+    }
+    let port = (0..16)
+        .map(|_| random_high_port())
+        .find(|port| is_free(*port))
+        .unwrap_or_else(random_high_port);
+    let _ = std::fs::write(&path, port.to_string());
+    port
+}
+
+fn random_high_port() -> u16 {
+    use rand::RngExt;
+    rand::rng().random_range(49152..65535)
+}
+
+/// How far the running daemon is reachable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Exposure {
+    /// Loopback TCP or the private socket only.
+    Localhost,
+    /// Every interface, token auth.
+    Network,
+    /// Public HTTPS tunnel with a passphrase.
+    Tunnel,
+}
+
+fn launch_exposure(launch: &ServeLaunch) -> Exposure {
+    if launch.remote {
+        Exposure::Tunnel
+    } else if launch.core_only || host_is_localhost(&launch.host) {
+        Exposure::Localhost
+    } else {
+        Exposure::Network
+    }
+}
+
+/// Exposure of the running daemon, or `None` when none runs. Daemons without
+/// a managed launch record fall back to `serve.mode` and `serve.url`.
+pub(crate) fn current_exposure() -> Option<Exposure> {
+    let pid = daemon_pid()?;
+    if let Some(launch) = read_serve_launch().ok().filter(|launch| launch.pid == pid) {
+        return Some(launch_exposure(&launch));
+    }
+    Some(match read_serve_mode_label() {
+        Some("tunnel" | "tailscale") => Exposure::Tunnel,
+        _ if read_serve_urls()
+            .iter()
+            .any(|url| matches!(url.label.as_deref(), Some("lan" | "tailscale"))) =>
+        {
+            Exposure::Network
+        }
+        _ => Exposure::Localhost,
+    })
+}
+
+/// Exposure the TUI asks for.
+pub(crate) enum ExposureRequest {
+    Localhost,
+    Network,
+    Tunnel {
+        cloudflare: bool,
+        passphrase: String,
+    },
+}
+
+/// Replace the running daemon with one exposed as requested, under one
+/// lifecycle transaction so no client can start a daemon in between. A failed
+/// exposed start restores the localhost baseline before reporting the error.
+pub(crate) async fn change_exposure(request: ExposureRequest) -> Result<()> {
+    let transaction = crate::daemon::lifecycle::Transaction::acquire().await?;
+    let current = match daemon_status() {
+        DaemonStatus::Verified(pid) => Some(managed_launch(pid)?),
+        DaemonStatus::Unverified => {
+            bail!("Cannot verify the existing daemon; refusing replacement")
+        }
+        DaemonStatus::Absent => None,
+    };
+    let profile = current
+        .as_ref()
+        .map(|launch| launch.profile.clone())
+        .unwrap_or_else(crate::session::config::resolve_default_profile);
+    let kept_port = current
+        .as_ref()
+        .filter(|launch| !launch.core_only)
+        .map(|launch| launch.port);
+    let mut baseline = baseline_args(kept_port)?;
+    if let Some(launch) = &current {
+        baseline.read_only = launch.read_only;
+        baseline.cityhall = launch.cityhall;
+        baseline.allowed_host.clone_from(&launch.allowed_host);
+        baseline.allowed_origin.clone_from(&launch.allowed_origin);
+    }
+    let mut args = baseline.clone();
+    let exposed = match request {
+        ExposureRequest::Localhost => false,
+        ExposureRequest::Network => {
+            args.host = "0.0.0.0".into();
+            true
+        }
+        ExposureRequest::Tunnel {
+            cloudflare,
+            passphrase,
+        } => {
+            args.remote = true;
+            args.no_tailscale = cloudflare;
+            args.passphrase = Some(passphrase);
+            true
+        }
+    };
+    validate_launch_args(&profile, &args).await?;
+    if let Some(launch) = &current {
+        // Rollback needs the old credentials; without them only rollback is lost.
+        if let Ok(passphrase) = recall_serve_passphrase(launch) {
+            retain_rollback_launch(&transaction, launch, passphrase.as_deref())?;
+        }
+        stop_daemon_locked(&transaction, false).await?;
+    }
+    match start_daemon(&profile, &args, &transaction, false).await {
+        Ok(()) => Ok(()),
+        Err(error) if exposed => {
+            start_daemon(&profile, &baseline, &transaction, false)
+                .await
+                .context("restoring the localhost daemon also failed")?;
+            Err(error.context("kept the daemon on localhost"))
+        }
+        Err(error) => Err(error),
+    }
 }
 
 async fn start_daemon(
@@ -1534,17 +1694,20 @@ pub async fn restart_daemon() -> Result<()> {
     retain_rollback_launch(&transaction, &launch, args.passphrase.as_deref())?;
 
     println!("Restarting aoe serve daemon (PID {pid})…");
-    stop_daemon_locked(&transaction).await?;
+    stop_daemon_locked(&transaction, true).await?;
     start_daemon(&launch.profile, &args, &transaction, true).await
 }
 
 #[tracing::instrument(target = "serve.shutdown", skip_all)]
 pub(crate) async fn stop_daemon() -> Result<()> {
     let transaction = crate::daemon::lifecycle::Transaction::acquire().await?;
-    stop_daemon_locked(&transaction).await
+    stop_daemon_locked(&transaction, true).await
 }
 
-async fn stop_daemon_locked(transaction: &crate::daemon::lifecycle::Transaction) -> Result<()> {
+async fn stop_daemon_locked(
+    transaction: &crate::daemon::lifecycle::Transaction,
+    announce: bool,
+) -> Result<()> {
     let path = pid_file_path()?;
 
     if !path.exists() {
@@ -1634,7 +1797,9 @@ async fn stop_daemon_locked(transaction: &crate::daemon::lifecycle::Transaction)
                 let _ = tokio::fs::remove_file(dir.join("serve.passphrase")).await;
                 let _ = tokio::fs::remove_file(dir.join("serve.launch")).await;
             }
-            println!("Stopped aoe serve daemon (PID {})", pid);
+            if announce {
+                println!("Stopped aoe serve daemon (PID {})", pid);
+            }
         }
         Err(nix::errno::Errno::ESRCH) => {
             // Process doesn't exist; clean up stale PID file
@@ -1645,7 +1810,9 @@ async fn stop_daemon_locked(transaction: &crate::daemon::lifecycle::Transaction)
                 let _ = tokio::fs::remove_file(dir.join("serve.passphrase")).await;
                 let _ = tokio::fs::remove_file(dir.join("serve.launch")).await;
             }
-            println!("Daemon was not running (stale PID file cleaned up)");
+            if announce {
+                println!("Daemon was not running (stale PID file cleaned up)");
+            }
         }
         Err(e) => bail!("Failed to stop daemon (PID {}): {}", pid, e),
     }
@@ -1737,6 +1904,52 @@ mod tests {
             matches!(error.downcast_ref::<crate::daemon::DaemonClientError>(),
             Some(crate::daemon::DaemonClientError::Status { status, .. }) if *status == reqwest::StatusCode::FORBIDDEN)
         );
+    }
+
+    #[test]
+    fn baseline_port_reuses_a_free_persisted_port_and_replaces_others() {
+        for (persisted, busy, reused) in [
+            (Some("55555"), None, true),
+            (Some("55555"), Some(55555), false),
+            (Some("8080"), None, false),
+            (Some("not-a-number\n"), None, false),
+            (None, None, false),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            if let Some(raw) = persisted {
+                std::fs::write(dir.path().join("serve.last_port"), raw).unwrap();
+            }
+            let port = baseline_port_in(dir.path(), |port| Some(port) != busy);
+            assert!(port >= 49152, "{persisted:?}: {port}");
+            assert_eq!(port == 55555, reused, "{persisted:?} busy {busy:?}");
+            assert_eq!(
+                std::fs::read_to_string(dir.path().join("serve.last_port")).unwrap(),
+                if reused {
+                    "55555".to_string()
+                } else {
+                    port.to_string()
+                },
+            );
+        }
+    }
+
+    #[test]
+    fn launch_exposure_classifies_bind_and_tunnel() {
+        let launch = |host: &str, core_only: bool, remote: bool| ServeLaunch {
+            host: host.into(),
+            core_only,
+            remote,
+            ..sample_launch()
+        };
+        for (launch, expected) in [
+            (launch("127.0.0.1", false, false), Exposure::Localhost),
+            (launch("0.0.0.0", true, false), Exposure::Localhost),
+            (launch("0.0.0.0", false, false), Exposure::Network),
+            (launch("192.168.1.20", false, false), Exposure::Network),
+            (launch("127.0.0.1", false, true), Exposure::Tunnel),
+        ] {
+            assert_eq!(launch_exposure(&launch), expected, "{launch:?}");
+        }
     }
 
     #[test]

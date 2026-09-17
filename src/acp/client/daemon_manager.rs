@@ -1,4 +1,4 @@
-//! Discovery never spawns; only initial TUI bootstrap and explicit reconnect may ensure a local core.
+//! Discovery never spawns; only initial TUI bootstrap may ensure the local daemon.
 
 use thiserror::Error;
 
@@ -47,8 +47,8 @@ pub async fn require_daemon() -> Result<DaemonEndpoint, ManagerError> {
     Ok(endpoint)
 }
 
-/// Called once at local TUI bootstrap, never by a reconnect timer. Always this
-/// machine's core: the TUI lists `AOE_DAEMON_URL` as a remote instead.
+/// Called once at local TUI bootstrap, never by a reconnect. Always this
+/// machine's localhost daemon: the TUI lists `AOE_DAEMON_URL` as a remote instead.
 pub async fn ensure_local_daemon(profile: &str) -> anyhow::Result<DaemonEndpoint> {
-    crate::cli::serve::ensure_core_daemon(profile).await
+    crate::cli::serve::ensure_local_daemon(profile).await
 }

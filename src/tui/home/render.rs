@@ -4203,26 +4203,35 @@ impl HomeView {
         // but aren't clickable.
         let mut groups: Vec<(u8, Option<KeyEvent>, Vec<Span<'static>>)> = Vec::new();
 
-        use crate::tui::session_feed::SidebarSource;
-        let (runtime_label, runtime_color) = match self.sidebar_source {
-            SidebarSource::Connecting => ("Connecting runtime", theme.dimmed),
-            SidebarSource::Disconnected => ("Runtime disconnected", theme.error),
-            SidebarSource::Daemon if self.session_feed.native_interaction_available() => {
-                ("Runtime ready", theme.running)
-            }
-            SidebarSource::Daemon if self.session_feed.mutations_available() => {
-                ("Native unavailable", theme.dimmed)
-            }
-            SidebarSource::Daemon => ("Runtime read-only", theme.dimmed),
+        // A lost daemon leaves the list stale and refuses every action, and
+        // reconnects never start a daemon, so this is the only lasting sign.
+        if self.sidebar_source == crate::tui::session_feed::SidebarSource::Disconnected {
+            groups.push((
+                0,
+                None,
+                vec![Span::styled(
+                    " \u{25CF} Runtime disconnected ",
+                    Style::default().fg(theme.error).bold(),
+                )],
+            ));
+        }
+        // Localhost is the baseline, so only wider exposure is announced.
+        use crate::cli::serve::Exposure;
+        let serving = match self.serve_exposure {
+            Some(Exposure::Network) => Some("LAN"),
+            Some(Exposure::Tunnel) => Some("tunnel"),
+            Some(Exposure::Localhost) | None => None,
         };
-        groups.push((
-            0,
-            None,
-            vec![Span::styled(
-                format!(" \u{25CF} {runtime_label} "),
-                Style::default().fg(runtime_color).bold(),
-            )],
-        ));
+        if let Some(serving) = serving {
+            groups.push((
+                0,
+                None,
+                vec![Span::styled(
+                    format!(" \u{25CF} Serving {serving} "),
+                    Style::default().fg(theme.running).bold(),
+                )],
+            ));
+        }
 
         // Other-TUI indicator: shown only when more than one `aoe` TUI is
         // alive. Two TUIs watching the same agent sessions clash over pane

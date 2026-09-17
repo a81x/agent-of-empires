@@ -113,10 +113,10 @@ fn test_archive_then_unarchive_cycle() {
         &[("arch_a", "Archivo"), ("arch_b", "Neighbor")],
     );
 
+    h.enable_e2e_debug_signals();
     h.spawn_tui();
-    // The native pane preparation refuses an unhealthy runtime, so wait for the
-    // subscription to report readiness before driving panes.
-    h.wait_for("Runtime ready");
+    // Native pane preparation refuses an unready runtime.
+    h.wait_for_runtime_ready();
     h.wait_for_ready();
     h.wait_for("Archivo");
     h.wait_for("Neighbor");
@@ -464,14 +464,15 @@ fn test_tui_bulk_archive_group_tears_down_all_tmux_off_thread() {
     // it as running and does not relaunch it. These run before `spawn_tui` and
     // so start the tmux server, which is why they must go through the harness
     // helper: it pins the same env `spawn_tui` uses onto the server.
+    // The first tmux client fixes the server environment, so enable signals first.
+    h.enable_e2e_debug_signals();
     for name in &names {
         h.tmux_new_detached(name, "sleep 600");
     }
 
     h.spawn_tui();
-    // The native pane preparation refuses an unhealthy runtime, so wait for the
-    // subscription to report readiness before driving panes.
-    h.wait_for("Runtime ready");
+    // Native pane preparation refuses an unready runtime.
+    h.wait_for_runtime_ready();
     h.wait_for_ready();
     // The group header renders as "name (count)"; its presence proves the group
     // loaded with all three members.

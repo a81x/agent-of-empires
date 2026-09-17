@@ -112,7 +112,7 @@ It exits 1 if Node is missing, 2 if some agents are unreachable, else 0. Pass `-
 
 Non-ACP tools always run in the terminal view, with no toggle.
 
-The local TUI ensures a native core daemon at startup without opening a web listener. It reuses an existing daemon and leaves it running on exit. Structured sidebar statuses arrive through the runtime WebSocket; disconnecting retains their last displayed values and does not automatically restart the daemon.
+The local TUI ensures a daemon at startup, listening on localhost only. It reuses an existing daemon and leaves it running on exit. Structured sidebar statuses arrive through the runtime WebSocket; disconnecting retains their last displayed values and reconnects to a daemon that comes back, but never starts one.
 
 ### Launch command and session naming
 

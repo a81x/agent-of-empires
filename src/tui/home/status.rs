@@ -153,6 +153,7 @@ impl HomeView {
             return false;
         }
         self.sidebar_source = source;
+        export_runtime_ready_for_e2e(source == SidebarSource::Daemon);
         if source != SidebarSource::Daemon {
             self.cancel_native_attachment();
             self.teardown_live_send();
@@ -495,5 +496,29 @@ impl HomeView {
                 }
             }
         }
+    }
+}
+
+/// Mirror runtime readiness to `<app_dir>/.aoe_e2e_runtime_ready` when
+/// `AOE_E2E_DEBUG=1`, so e2e tests can wait for the subscription without a
+/// footer label.
+fn export_runtime_ready_for_e2e(ready: bool) {
+    if std::env::var("AOE_E2E_DEBUG").as_deref() != Ok("1") {
+        return;
+    }
+    let Ok(app_dir) = crate::session::get_app_dir() else {
+        return;
+    };
+    let path = app_dir.join(".aoe_e2e_runtime_ready");
+    let result = if ready {
+        std::fs::write(&path, b"ready")
+    } else {
+        std::fs::remove_file(&path).or_else(|error| match error.kind() {
+            std::io::ErrorKind::NotFound => Ok(()),
+            _ => Err(error),
+        })
+    };
+    if let Err(error) = result {
+        tracing::trace!(target: "tui.e2e_debug", %error, "runtime readiness export failed");
     }
 }
