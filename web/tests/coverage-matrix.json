@@ -1667,7 +1667,7 @@
       "risk": "low",
       "specs": [
         "src/components/diff/__tests__/CopyPathContextMenu.test.tsx",
-        "src/components/diff/__tests__/DiffFileList.copyPath.test.tsx"
+        "src/components/diff/__tests__/DiffFileList.test.tsx"
       ],
       "components": [
         "web/src/components/diff/CopyPathContextMenu.tsx",
@@ -3034,7 +3034,7 @@
       "specs": [
         "tests/diff-base-override.spec.ts",
         "tests/live/diff-base-from-worktree.spec.ts",
-        "src/components/diff/__tests__/DiffFileList.coverage.test.tsx"
+        "src/components/diff/__tests__/DiffFileList.test.tsx"
       ],
       "components": ["web/src/components/diff/DiffFileList.tsx"]
     },
@@ -3055,7 +3055,7 @@
       "id": "story.diff-empty-state",
       "kind": "mocked-playwright",
       "risk": "low",
-      "specs": ["tests/diff-empty-state.spec.ts", "src/components/diff/__tests__/DiffFileList.coverage.test.tsx"],
+      "specs": ["tests/diff-empty-state.spec.ts", "src/components/diff/__tests__/DiffFileList.test.tsx"],
       "components": ["web/src/components/diff/DiffFileList.tsx"]
     },
     {
