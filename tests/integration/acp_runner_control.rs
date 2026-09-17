@@ -1600,6 +1600,7 @@ for line in sys.stdin:
         None,
         "stream-agent".into(),
         None,
+        None,
     )
     .await
     .unwrap();
