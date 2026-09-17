@@ -41,9 +41,8 @@ export function MobileTerminalToolbar({ sendData, keyboardOpen, ctrlActive, onCt
     if (keyboardOpen) inputElRef.current?.focus();
   }, [inputElRef, keyboardOpen]);
 
-  // Every toolbar key reaches the PTY without a `beforeinput` on either
-  // hidden input, so the retained IME syllable stops mirroring the line it
-  // shadowed. Drop it before the key lands. See #3877.
+  // Every toolbar key reaches the PTY without a `beforeinput` on either hidden input, so the retained IME syllable
+  // stops mirroring the line it shadowed.
   const sendOutOfBand = useCallback(
     (data: string) => {
       invalidateRetainedImeContext(inputElRef.current);
@@ -91,8 +90,6 @@ export function MobileTerminalToolbar({ sendData, keyboardOpen, ctrlActive, onCt
     <div
       className={strip}
       // Prevent toolbar taps from stealing focus away from the proxy input.
-      // Without this, every button tap blurs the proxy and iOS closes the
-      // soft keyboard. onClick handlers still fire normally.
       onMouseDown={(e) => e.preventDefault()}
     >
       <button type="button" aria-label="Arrow up" className={btnBase} {...upHandlers}>
@@ -140,11 +137,7 @@ export function MobileTerminalToolbar({ sendData, keyboardOpen, ctrlActive, onCt
           haptic();
           const t = toastBus.handler;
           if (!window.isSecureContext) {
-            // No Clipboard API on a plain-HTTP origin. WebKit still honours
-            // execCommand("paste") from a tap, behind its own Paste prompt,
-            // when an editable is focused: the paste event lands on the
-            // terminal's input, whose handler brackets it. Other engines
-            // return false. Must run before any await to stay in the gesture.
+            // No Clipboard API on a plain-HTTP origin.
             const active = document.activeElement;
             const editable = active instanceof HTMLTextAreaElement || active instanceof HTMLInputElement;
             if (keyboardOpen && editable && execCommandPaste()) return;

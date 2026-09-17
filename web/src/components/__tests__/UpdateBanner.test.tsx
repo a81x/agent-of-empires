@@ -71,9 +71,8 @@ describe("UpdateBanner", () => {
     expect(container.querySelector('[role="status"]')).toBeNull();
   });
 
-  // In "off" mode the server reports update_available: false, so the banner
-  // never has anything to render; the client only special-cases "auto". The
-  // no-update suppression is the off-mode contract, covered above.
+  // In "off" mode the server reports update_available: false, so the banner never has anything to render; the
+  // client only special-cases "auto".
   it("renders nothing in off mode (server reports no update available)", async () => {
     fetchUpdateStatus.mockResolvedValue(makeStatus({ update_check_mode: "off", update_available: false }));
     const { container } = render(<UpdateBanner />);

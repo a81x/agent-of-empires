@@ -34,8 +34,6 @@ describe("ContentSplit quota crash regression (#1345)", () => {
     expect(() => fireEvent.mouseUp(document)).not.toThrow();
 
     // Left pane still in the DOM = React tree did not unmount.
-    // ContentSplit renders `right` twice (desktop pane + mobile overlay),
-    // so we assert on the unique `left` slot.
     expect(getByTestId("left")).toBeTruthy();
   });
 

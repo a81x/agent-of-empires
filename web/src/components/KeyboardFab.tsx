@@ -9,9 +9,8 @@ export function KeyboardFab({ keyboardOpen, onToggle }: Props) {
       type="button"
       aria-label={keyboardOpen ? "Close keyboard" : "Open keyboard"}
       onClick={onToggle}
-      // Keep focus where it is: a button steals focus on pointer-down,
-      // which would blur the terminal input BEFORE onClick runs and turn
-      // every "close keyboard" tap into a re-open. onClick still fires.
+      // Keep focus where it is: a button steals focus on pointer-down, which would blur the terminal input BEFORE
+      // onClick runs and turn every "close keyboard" tap into a re-open.
       onMouseDown={(e) => e.preventDefault()}
       className="absolute right-3 bottom-3 z-10 w-10 h-10 rounded-full bg-surface-800/90 border border-surface-700/30 text-text-secondary flex items-center justify-center shadow-lg backdrop-blur-sm active:scale-95"
     >

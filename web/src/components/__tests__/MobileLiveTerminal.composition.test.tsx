@@ -153,9 +153,8 @@ describe("MobileLiveTerminal Android IME word commits", () => {
       sent: ["a", "android"],
     },
     {
-      // A suggestion tap corrects the word in the same breath as adopting it,
-      // so the first update carries more than the run. Pins the classifier to
-      // a prefix test: an equality test would send the whole word again.
+      // A suggestion tap corrects the word in the same breath as adopting it, so the first update carries more
+      // than the run.
       name: "strips an adopting composition that corrects as it takes over",
       run: (t) => {
         t.type("tes");
@@ -188,9 +187,8 @@ describe("MobileLiveTerminal Android IME word commits", () => {
       sent: ["日本"],
     },
     {
-      // A composition that stood on its own is not a typed word under the
-      // caret, so the next one must reach the pane whole even when it repeats
-      // it. Samsung's trace on #3746 composes every word this way.
+      // A composition that stood on its own is not a typed word under the caret, so the next one must reach the
+      // pane whole even when it repeats it.
       name: "sends a character composed twice in a row",
       run: (t) => {
         t.composeUpdating("a", "a");

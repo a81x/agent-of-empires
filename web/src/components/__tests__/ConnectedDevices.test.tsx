@@ -45,9 +45,8 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-/** Advance the timers far enough to fire the deferred first load
- *  (setTimeout(load, 0)) and flush the awaited fetch promise + state update,
- *  all inside act() so React applies the update before we assert. */
+/** Advance the timers far enough to fire the deferred first load (setTimeout(load, 0)) and flush the awaited fetch
+ *  promise + state update, all inside act() so React applies the update before we assert. */
 async function flush(ms = 0) {
   await act(async () => {
     await vi.advanceTimersByTimeAsync(ms);

@@ -15,12 +15,7 @@ import { LIVE_WINDOW_SCREENS, useLiveEdgeScroll } from "./live-terminal/useLiveE
 import { useTerminalInput } from "./live-terminal/useTerminalInput";
 
 // Renders a tmux pane from streamed `capture-pane` frames (src/server/live_ws.rs) as DOM text in a natively
-// scrolling container. At the live edge the capture window is the screen plus LIVE_WINDOW_SCREENS of scrollback;
-// scrolling past it switches to reading mode, which captures the whole history. Above-viewport pixels stay
-// invariant (history spacer rows convert 1:1 into content rows, and appends grow the spacer as the window
-// slides), so a preserved scrollTop keeps the reader's place. The soft keyboard never resizes tmux: rows come
-// from the largest height seen at the current width. Full-screen mouse apps (alt screen) are the exception to
-// native scrolling: touch drags and wheels are forwarded to the app as notches.
+// scrolling container.
 
 const MIN_FONT_SIZE = 6;
 const MAX_FONT_SIZE = 28;
@@ -136,9 +131,7 @@ export function MobileLiveTerminal({
   }
   const scrollerRef = useRef<HTMLDivElement>(null);
 
-  // A selection holds the painted frame. Dragging it up into scrollback widens the window, so lines newly exposed
-  // above the held window are folded in (keeping `history`, so the spacer shrinks by exactly that many and every
-  // row keeps its key). Only reading mode mounts every row, so only it folds.
+  // A selection holds the painted frame.
   const absorbExposedHistory = useCallback(
     (held: LiveFrame | null, next: LiveFrame | null) => {
       if (!reading || !held || !next) return null;

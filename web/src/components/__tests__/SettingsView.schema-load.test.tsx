@@ -59,9 +59,7 @@ describe("SettingsView schema load", () => {
   });
 
   it("keeps a mixed tab's non-schema rows visible when the schema fails", async () => {
-    // The session tab mixes a non-schema row (the default-profile selector)
-    // with a SchemaSection. A schema-load failure must only blank the schema
-    // slot, not the whole tab (CodeRabbit #1987).
+    // The session tab mixes a non-schema row (the default-profile selector) with a SchemaSection.
     vi.mocked(api.getSettingsSchema).mockResolvedValue(null);
     renderView("session");
 

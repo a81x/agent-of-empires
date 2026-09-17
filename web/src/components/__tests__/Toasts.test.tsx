@@ -6,11 +6,7 @@ import { ToastBusBridge, ToastProvider } from "../Toasts";
 import { toastBus } from "../../lib/toastBus";
 import { OPEN_SESSION_EVENT } from "../../lib/sessionRoute";
 
-// jsdom ships no navigator.serviceWorker; the ToastProvider effect bails
-// out without one. Install a real EventTarget once at module load so the
-// SW push -> in-app toast path is exercised. It must stay installed across
-// the global RTL cleanup (test-setup.ts) because React's passive unmount
-// calls navigator.serviceWorker.removeEventListener.
+// jsdom ships no navigator.serviceWorker; the ToastProvider effect bails out without one.
 const swTarget = new EventTarget();
 Object.defineProperty(navigator, "serviceWorker", {
   value: swTarget,

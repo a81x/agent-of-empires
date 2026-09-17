@@ -93,9 +93,8 @@ describe("ProjectsSection", () => {
     renderSection();
     fireEvent.contextMenu(screen.getByTestId("sidebar-project-row"));
     const menu = screen.getByTestId("sidebar-project-context-menu");
-    // `100vh` overshoots iOS Safari's visible viewport (dynamic toolbar),
-    // so the menu would never exceed its own max-height and overflow-y-auto
-    // would never engage. `dvh` matches the visible viewport.
+    // `100vh` overshoots iOS Safari's visible viewport (dynamic toolbar), so the menu would never exceed its own
+    // max-height and overflow-y-auto would never engage.
     expect(menu.style.maxHeight).toContain("dvh");
     expect(menu.className).toContain("overflow-y-auto");
   });

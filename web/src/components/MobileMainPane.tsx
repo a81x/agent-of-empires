@@ -200,9 +200,8 @@ export function MobileMainPane({
         )}
 
         {activePluginPane && (
-          // Reserve the bottom home-indicator inset here too (see the diff and
-          // paired wrappers); the App root no longer does. Collapses to 0 with
-          // the keyboard open and on desktop.
+          // Reserve the bottom home-indicator inset here too (see the diff and paired wrappers); the App root no
+          // longer does.
           <div
             className="absolute inset-0 z-10 flex flex-col min-h-0 overflow-hidden bg-surface-900"
             data-testid="mobile-plugin-layer"

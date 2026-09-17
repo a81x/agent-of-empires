@@ -28,10 +28,7 @@ function skillKey(skill: SkillSummary): string {
   return `${sourceId(skill)}:${skill.directory}`;
 }
 
-/** Compact counts line for a sync run, e.g. "3 shared, 1 unchanged, 1 conflict".
- *  "shared" folds together "created" and "updated" since both put a skill into
- *  an agent's directory; "unchanged" is omitted from the detail list below but
- *  still counted here so the user sees the full picture. */
+/** Compact counts line for a sync run, e.g. "3 shared, 1 unchanged, 1 conflict". */
 function summarizeSyncOutcomes(outcomes: SkillSyncOutcome[]): string {
   const counts = { shared: 0, removed: 0, unchanged: 0, conflict: 0, error: 0 };
   for (const outcome of outcomes) {
@@ -50,10 +47,9 @@ function summarizeSyncOutcomes(outcomes: SkillSyncOutcome[]): string {
   return parts.length ? parts.join(", ") : "Nothing to sync.";
 }
 
-/** Fold a follow-up sync's outcomes into the displayed list: rows sharing a
- *  (root, directory) key are replaced in place so the rest of the panel
- *  (other roots, other skills) does not disappear, and any outcome the
- *  follow-up introduces that was not already shown is appended. */
+/** Fold a follow-up sync's outcomes into the displayed list: rows sharing a (root, directory) key are replaced in
+ *  place so the rest of the panel (other roots, other skills) does not disappear, and any outcome the follow-up
+ *  introduces that was not already shown is appended. */
 function mergeSyncOutcomes(current: SkillSyncOutcome[] | null, updates: SkillSyncOutcome[]): SkillSyncOutcome[] {
   const key = (outcome: SkillSyncOutcome) => `${outcome.root}:${outcome.directory}`;
   const updateMap = new Map(updates.map((outcome) => [key(outcome), outcome]));
@@ -64,9 +60,7 @@ function mergeSyncOutcomes(current: SkillSyncOutcome[] | null, updates: SkillSyn
   return merged;
 }
 
-/** One collapsible section of the sidebar list ("Managed" or "Available to
- *  adopt"). Both groups render the same row shape; only the membership and
- *  the section label differ, so the row markup lives here once. */
+/** One collapsible section of the sidebar list ("Managed" or "Available to adopt"). */
 function SkillGroup({
   title,
   skills,
@@ -121,9 +115,7 @@ function SkillGroup({
   );
 }
 
-/** The right pane's tab row. A single tab today (the raw/preview toggle lives
- *  separately, since it applies within this tab); kept as a list so adding a
- *  second tab (e.g. usage statistics) is a one-entry change. */
+/** The right pane's tab row. */
 const DETAIL_TABS = [{ id: "content", label: "SKILL.md" }] as const;
 
 export function SkillsManager({ readOnly = false }: { readOnly?: boolean } = {}) {
@@ -173,11 +165,9 @@ export function SkillsManager({ readOnly = false }: { readOnly?: boolean } = {})
   const selected = data?.skills.find((skill) => skillKey(skill) === selectedKey) ?? null;
   const dirty = detail !== null && draft !== detail.content;
 
-  // Keyed on the selection's primitives, NOT the `selected` object: that object
-  // is a fresh `.find()` result on every render, so depending on it re-ran this
-  // effect after any `load()` and reset the draft out from under an unsaved
-  // edit. Sharing, replacing a conflict, and saving all keep the same skill
-  // selected, so with primitive deps they no longer touch the editor at all.
+  // Keyed on the selection's primitives, NOT the `selected` object: that object is a fresh `.find()` result on
+  // every render, so depending on it re-ran this effect after any `load()` and reset the draft out from under an
+  // unsaved edit.
   const selectedSource = selected ? sourceId(selected) : null;
   const selectedDirectory = selected?.directory ?? null;
 
@@ -250,10 +240,8 @@ export function SkillsManager({ readOnly = false }: { readOnly?: boolean } = {})
     await load(selectedKey ?? undefined);
   };
 
-  /** Re-run sync for a single conflict, naming it in `replace` so the backend
-   *  overwrites it instead of leaving it alone. Merges the follow-up's
-   *  outcomes into the panel instead of replacing it wholesale, so the other
-   *  rows already shown do not vanish. */
+  /** Re-run sync for a single conflict, naming it in `replace` so the backend overwrites it instead of leaving it
+   *  alone. */
   const replaceConflict = async (outcome: SkillSyncOutcome) => {
     setBusy(true);
     const result = await syncSkills({ roots: [outcome.root], replace: [outcome.directory] });
@@ -267,10 +255,8 @@ export function SkillsManager({ readOnly = false }: { readOnly?: boolean } = {})
     await load(selectedKey ?? undefined);
   };
 
-  /** Share only the selected skill: the server reconciles just that
-   *  directory and skips orphan removal for the rest of the library, so the
-   *  outcome panel reports exactly what happened to the one the user is
-   *  looking at. */
+  /** Share only the selected skill: the server reconciles just that directory and skips orphan removal for the
+   *  rest of the library, so the outcome panel reports exactly what happened to the one the user is looking at. */
   const shareSkill = async () => {
     if (!selected) return;
     setBusy(true);
@@ -468,11 +454,9 @@ export function SkillsManager({ readOnly = false }: { readOnly?: boolean } = {})
         </div>
       )}
 
-      {/* Explicit height: the settings content area (SettingsView) is itself
-          a scroll container with no fixed height, so a plain h-full/flex-1
-          pane here has nothing to measure against and collapses to its
-          content height instead of scrolling internally. Pinning a height
-          on the grid lets each pane scroll independently within it. */}
+      {/* Explicit height: the settings content area (SettingsView) is itself a scroll container with no fixed
+         height, so a plain h-full/flex-1 pane here has nothing to measure against and collapses to its content
+         height instead of scrolling internally. */}
       <div className="grid h-[calc(100vh-16rem)] min-h-[26rem] gap-4 lg:grid-cols-[320px_minmax(0,1fr)]">
         <aside className="flex min-h-0 flex-col overflow-y-auto rounded-lg border border-surface-700/60 bg-surface-850/70">
           <div className="sticky top-0 z-10 space-y-2 border-b border-surface-700/60 bg-surface-850/95 p-3">
@@ -548,10 +532,9 @@ export function SkillsManager({ readOnly = false }: { readOnly?: boolean } = {})
                       </span>
                     ))}
                   </div>
-                  {/* Segmented toggle chips, not standalone action buttons: kept
-                      below the 32px button height so the pair reads as one
-                      compact control sitting at the tab-label baseline rather
-                      than a second row of full-size buttons. */}
+                  {/* Segmented toggle chips, not standalone action buttons: kept below the 32px button height so
+                     the pair reads as one compact control sitting at the tab-label baseline rather than a second
+                     row of full-size buttons. */}
                   <div className="flex items-center gap-1 rounded-md bg-surface-900 p-0.5">
                     <button
                       type="button"
@@ -579,9 +562,8 @@ export function SkillsManager({ readOnly = false }: { readOnly?: boolean } = {})
                 </div>
               </div>
 
-              {/* min-h-0 lets the editor shrink inside the flex column so it
-                  grows to the bottom of the pane instead of sitting at a fixed
-                  height with dead space above the footer. */}
+              {/* min-h-0 lets the editor shrink inside the flex column so it grows to the bottom of the pane
+                 instead of sitting at a fixed height with dead space above the footer. */}
               <div className="flex min-h-0 flex-1 flex-col p-4">
                 {detail ? (
                   viewMode === "raw" ? (

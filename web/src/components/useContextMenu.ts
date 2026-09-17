@@ -2,10 +2,8 @@ import { useCallback, useEffect, useRef, useState, type RefObject } from "react"
 import { closeOtherContextMenus, menuBus } from "../lib/menuBus";
 import { useClampedMenuPosition } from "../lib/menuPosition";
 
-/** Floating context menu state, clamped to the viewport and closed by an outside click, a
- *  contextmenu elsewhere, or another menu opening. With `touchOpenedAt`, clicks and
- *  contextmenus inside the menu or within 500ms of a long-press open are ignored, since
- *  Android emits both after the long-press timer has already opened the menu. */
+/** Floating context menu state, clamped to the viewport and closed by an outside click, a contextmenu elsewhere,
+ *  or another menu opening. */
 export function useContextMenu<T extends { x: number; y: number }>(touchOpenedAt?: RefObject<number>) {
   const [menu, setMenu] = useState<T | null>(null);
   const menuRef = useRef<HTMLDivElement>(null);

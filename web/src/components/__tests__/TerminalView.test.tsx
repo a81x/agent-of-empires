@@ -5,9 +5,8 @@ import { render, screen, waitFor, act } from "@testing-library/react";
 
 import type { SessionResponse } from "../../lib/types";
 
-// ── Mock the chain of dependencies the component pulls in so the
-// render stops at the early-return without trying to mount a real
-// terminal or open a WebSocket.
+// ── Mock the chain of dependencies the component pulls in so the render stops at the early-return without trying
+// to mount a real terminal or open a WebSocket.
 
 const ensureSession = vi.fn(async () => ({ ok: true }));
 const mockedContainerRef = { current: null } as const;
@@ -23,9 +22,7 @@ vi.mock("../../lib/api", () => ({
   ensureTerminal: vi.fn(),
 }));
 
-// The full hook is exercised by useTerminal.lifecycle.test.ts and the
-// Playwright suites. Stubbing it here keeps the component test fast
-// and free of jsdom canvas warnings.
+// The full hook is exercised by useTerminal.lifecycle.test.ts and the Playwright suites.
 vi.mock("../../hooks/useTerminal", () => ({
   useTerminal: () => ({
     containerRef: mockedContainerRef,
@@ -131,9 +128,7 @@ describe("TerminalView early-return states", () => {
       expect(screen.getByText("first fail")).toBeDefined();
     });
     ensureSession.mockResolvedValueOnce({ ok: false, message: "second fail" });
-    // The error branch only ever renders one button. Scope to it
-    // explicitly so this test does not accidentally pick up the
-    // reconnect-retry button that the ready branch may also render.
+    // The error branch only ever renders one button.
     const retry = container.querySelector("button");
     if (!retry) throw new Error("no retry button rendered");
     await act(async () => {

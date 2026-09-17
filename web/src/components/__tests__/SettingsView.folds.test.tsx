@@ -275,11 +275,7 @@ describe("Settings Advanced fold", () => {
     });
   });
 
-  // Regression: the mount-time fetchProfiles resolution flips selectedProfile
-  // from its "" seed to the default. That transition must NOT remount the
-  // content fieldset, or a fold expanded during the load window collapses out
-  // from under the user (the deterministic mirror of the flake the retired
-  // live settings-advanced-fold spec used to hit).
+  // Regression: the mount-time fetchProfiles resolution flips selectedProfile from its "" seed to the default.
   it("keeps an expanded fold open when the initial profile resolves", async () => {
     let resolveProfiles!: (p: typeof PROFILES) => void;
     vi.mocked(api.fetchProfiles).mockImplementationOnce(

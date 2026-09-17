@@ -1,11 +1,7 @@
 import { useEffect, useState } from "react";
 import { onServerDownChange, isServerDown } from "../lib/connectionState";
 
-/**
- * Full-width banner shown when the backend server is unreachable. Replaces the
- * repeated "network error" toast spam with a single persistent notification
- * that auto-dismisses when the connection recovers.
- */
+/** Full-width banner shown when the backend server is unreachable. */
 export function DisconnectBanner() {
   const [down, setDown] = useState(isServerDown);
   const [reconnected, setReconnected] = useState(false);

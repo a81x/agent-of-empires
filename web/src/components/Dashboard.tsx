@@ -38,10 +38,9 @@ export function Dashboard({
     let waiting = 0;
     let errors = 0;
     for (const s of sessions) {
-      // Trashed sessions are conceptually deleted (the sidebar buckets them
-      // into a dedicated Trash section, out of the active/archived buckets), so
-      // they must not skew this summary: a session left in an Error state does
-      // not matter once it is in the trash. See #2489.
+      // Trashed sessions are conceptually deleted (the sidebar buckets them into a dedicated Trash section, out of
+      // the active/archived buckets), so they must not skew this summary: a session left in an Error state does
+      // not matter once it is in the trash.
       if (s.trashed_at) continue;
       total++;
       projects.add(s.main_repo_path || s.project_path);
@@ -140,9 +139,7 @@ export function Dashboard({
         </div>
       )}
 
-      {/* The desktop sidebar is always available, but mobile starts at this
-          dashboard. Keep a small, direct route back into the sessions the user
-          was just working with instead of making them open the full picker. */}
+      {/* The desktop sidebar is always available, but mobile starts at this dashboard. */}
       {!isWideViewport && recentSessions.length > 0 && (
         <section className="md:hidden mb-4 w-full max-w-md" aria-labelledby="recent-sessions-heading">
           <h2

@@ -85,9 +85,8 @@ export function DirectoryBrowser({ initialPath, onSelect }: Props) {
     [loadPath],
   );
 
-  // A toggle is a discrete action, unlike typing, so it reloads immediately
-  // instead of waiting out the filter debounce. Pass the new value explicitly:
-  // the `showHidden` state update has not propagated to `loadPath` yet.
+  // A toggle is a discrete action, unlike typing, so it reloads immediately instead of waiting out the filter
+  // debounce.
   const toggleHidden = useCallback(() => {
     const next = !showHidden;
     setShowHidden(next);
@@ -337,10 +336,7 @@ export function DirectoryBrowser({ initialPath, onSelect }: Props) {
         )}
       </div>
 
-      {/* Use the current folder as the working directory, even when it is not
-          itself a git repo. Lets a user point a session at a root like
-          ~/projects and let the agent discover the repos inside, instead of
-          drilling down to pick one repo by hand. See #2680. */}
+      {/* Use the current folder as the working directory, even when it is not itself a git repo. */}
       <div className="mt-3 flex items-center justify-between gap-3">
         <span className="font-mono text-xs text-text-dim truncate min-w-0" title={currentPath}>
           {currentPath || "…"}

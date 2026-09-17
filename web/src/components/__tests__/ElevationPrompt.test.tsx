@@ -12,9 +12,8 @@ vi.mock("../../lib/api", () => ({
   elevateLogin: (...args: unknown[]) => elevateLogin(...args),
 }));
 
-// The component listens for a window-level CustomEvent and updates state in
-// the handler; dispatch inside act so React flushes the open state before we
-// assert against the rendered dialog.
+// The component listens for a window-level CustomEvent and updates state in the handler; dispatch inside act so
+// React flushes the open state before we assert against the rendered dialog.
 function fireElevationRequired() {
   act(() => {
     window.dispatchEvent(new CustomEvent(ELEVATION_REQUIRED_EVENT));
