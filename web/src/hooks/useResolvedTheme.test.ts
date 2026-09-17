@@ -54,27 +54,17 @@ describe("useResolvedTheme", () => {
     expect(result.current).toBe(cached);
   });
 
-  it("applies the dark theme fetched on mount", async () => {
-    const dark = makeTheme("empire", "dark");
-    fetchCurrentThemeMock.mockResolvedValue(dark);
-
-    const { result } = renderHook(() => useResolvedTheme());
-
-    await waitFor(() => expect(result.current).toBe(dark));
-    expect(fetchCurrentThemeMock).toHaveBeenCalledTimes(1);
-    expect(applyResolvedThemeMock).toHaveBeenCalledWith(dark);
-    expect(dispatchThemeChangedMock).toHaveBeenCalledWith(dark);
-  });
-
-  it("applies a light theme just as well", async () => {
-    const light = makeTheme("daylight", "light");
-    fetchCurrentThemeMock.mockResolvedValue(light);
-
-    const { result } = renderHook(() => useResolvedTheme());
-
-    await waitFor(() => expect(result.current?.appearance).toBe("light"));
-    expect(applyResolvedThemeMock).toHaveBeenCalledWith(light);
-  });
+  it.each([makeTheme("empire", "dark"), makeTheme("daylight", "light")])(
+    "applies the $appearance theme fetched on mount",
+    async (theme) => {
+      fetchCurrentThemeMock.mockResolvedValue(theme);
+      const { result } = renderHook(() => useResolvedTheme());
+      await waitFor(() => expect(result.current).toBe(theme));
+      expect(fetchCurrentThemeMock).toHaveBeenCalledTimes(1);
+      expect(applyResolvedThemeMock).toHaveBeenCalledWith(theme);
+      expect(dispatchThemeChangedMock).toHaveBeenCalledWith(theme);
+    },
+  );
 
   it("does not apply anything when the mount fetch resolves to null (failure branch)", async () => {
     fetchCurrentThemeMock.mockResolvedValue(null);
