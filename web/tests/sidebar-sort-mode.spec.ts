@@ -1,20 +1,5 @@
-// Mocked-Playwright coverage for the sidebar sort picker (#1418, #1640).
-//
-// Drives the WorkspaceSidebar header sort picker against fully-stubbed
-// /api responses, so the only thing under test is the React + dnd-kit
-// wiring:
-//   1. Default is manual; rows honor server-supplied workspace_ordering.
-//   2. Selecting "Last activity" reorders client-side by the issue's sort
-//      key (max of last_accessed_at, idle_entered_at, created_at).
-//   3. localStorage persists across reloads; the picker reopens on the
-//      stored mode.
-//   4. Drag affordances are absent in non-manual modes and no PUT fires.
-//   5. Multi-repo group stays pinned at the bottom in last-activity mode.
-//   6. Selecting "Attention" floats Waiting / Error rows above Running /
-//      Idle / Stopped, and an urgent flag promotes its row within the tier.
-//
-// Live persistence semantics (real aoe serve, real last_accessed_at
-// bump) live in the matching tests/live/sidebar-sort-mode.spec.ts.
+// Sidebar sort picker (#1418, #1640): manual honors server ordering and allows drag; last activity and attention
+// sort client-side, pin multi-repo last, persist in localStorage, and disable drag.
 
 import { test, expect } from "./helpers/mockedTest";
 import { Page } from "@playwright/test";
@@ -94,8 +79,6 @@ async function readWorkspaceTitles(page: Page): Promise<string[]> {
 
 const TOGGLE = "[data-testid='sidebar-sort-toggle']";
 
-// The control is now a dropdown picker, not a cycle button: open it, then
-// click the labeled option for the target mode.
 async function selectSortMode(page: Page, mode: string): Promise<void> {
   await page.locator(TOGGLE).click();
   await page.locator(`[data-testid='sidebar-sort-option-${mode}']`).click();
@@ -121,8 +104,6 @@ test.describe("Sidebar sort picker (#1418, #1640)", () => {
         last_accessed_at: "2025-04-15T00:00:00Z",
       },
     ];
-    // Server pins old-ws above new-ws. Manual mode honors this even
-    // though new-ws has a fresher last_accessed_at.
     await mockApis(
       page,
       () => sessions,
@@ -169,13 +150,10 @@ test.describe("Sidebar sort picker (#1418, #1640)", () => {
     const stored = await page.evaluate(() => window.localStorage.getItem("aoe-sidebar-sort-mode"));
     expect(stored).toBe("lastActivity");
 
-    // Reload: mode and order persist on first paint without another
-    // selection. Use the same browser context so localStorage carries.
     await page.reload();
     await expect(page.locator(TOGGLE)).toHaveAttribute("data-sort-mode", "lastActivity");
     await expect.poll(() => readWorkspaceTitles(page), { timeout: 8000 }).toEqual(["new-ws", "old-ws"]);
 
-    // Selecting manual restores the server order.
     await selectSortMode(page, "manual");
     await expect.poll(() => readWorkspaceTitles(page), { timeout: 4000 }).toEqual(["old-ws", "new-ws"]);
     // suppress unused-binding lint without changing the signature
@@ -209,15 +187,12 @@ test.describe("Sidebar sort picker (#1418, #1640)", () => {
     await page.setViewportSize({ width: 1280, height: 720 });
     await page.goto("/");
 
-    // Sanity: drag wrappers are present in manual mode.
     await expect(page.locator("[aria-roledescription='Press and hold to reorder']")).toHaveCount(2, { timeout: 8000 });
 
     await selectSortMode(page, "lastActivity");
 
-    // Drag wrappers gone in last-activity mode.
     await expect(page.locator("[aria-roledescription='Press and hold to reorder']")).toHaveCount(0);
 
-    // No PUT to workspace-ordering fires from a press-and-hold attempt.
     const rows = page.locator("[data-testid='sidebar-session-row']");
     const sourceBox = await rows.nth(1).boundingBox();
     if (!sourceBox) throw new Error("row missing");
@@ -227,7 +202,6 @@ test.describe("Sidebar sort picker (#1418, #1640)", () => {
     await page.mouse.move(sourceBox.x + 4, sourceBox.y + 4, { steps: 6 });
     await page.mouse.up();
 
-    // Selecting manual: drag affordances return.
     await selectSortMode(page, "manual");
     await expect(page.locator("[aria-roledescription='Press and hold to reorder']")).toHaveCount(2);
 
@@ -241,8 +215,6 @@ test.describe("Sidebar sort picker (#1418, #1640)", () => {
         title: "multi-recent",
         project_path: "/tmp/repo",
         branch: "feature/multi",
-        // Highest last_accessed_at across the dataset; absent the pin
-        // this would float to the top of the sidebar.
         created_at: "2025-01-01T00:00:00Z",
         last_accessed_at: "2025-12-01T00:00:00Z",
         workspace_repos: [
@@ -271,20 +243,15 @@ test.describe("Sidebar sort picker (#1418, #1640)", () => {
     await page.setViewportSize({ width: 1280, height: 720 });
     await page.goto("/");
 
-    // Wait for the sidebar to render both rows before flipping the mode.
     await expect(page.locator("[data-testid='sidebar-session-row']")).toHaveCount(2, { timeout: 8000 });
 
     await selectSortMode(page, "lastActivity");
 
-    // Multi-repo group's row stays last even though its workspace has
-    // the freshest activity. Single-repo row renders first.
     await expect.poll(() => readWorkspaceTitles(page), { timeout: 4000 }).toEqual(["single-old", "multi-recent"]);
   });
 
   test("attention sort floats waiting and urgent rows to the top (#1640)", async ({ page }) => {
-    // Same repo so all four sessions sit in one group; manual order is
-    // newest-first by created_at. last_accessed_at is identical so the
-    // within-tier tie-break does not interfere with the status ordering.
+    // One group with equal last_accessed_at, so only status ordering applies.
     const sessions: MockSession[] = [
       {
         id: "s-running",
@@ -318,8 +285,7 @@ test.describe("Sidebar sort picker (#1418, #1640)", () => {
         title: "urgent-ws",
         project_path: "/tmp/repo",
         branch: "feature/urgent",
-        // Running status, but agent-flagged urgent: must float above the
-        // plain Waiting row despite a lower status rank.
+        // Urgent promotes across status ranks.
         status: "Running",
         urgent: true,
         created_at: "2025-01-01T00:00:00Z",
@@ -343,8 +309,6 @@ test.describe("Sidebar sort picker (#1418, #1640)", () => {
 
     await selectSortMode(page, "attention");
 
-    // urgent (cross-rank promoter) first, then Waiting, then Error, then
-    // the plain Running row last.
     await expect
       .poll(() => readWorkspaceTitles(page), { timeout: 4000 })
       .toEqual(["urgent-ws", "waiting-ws", "error-ws", "running-ws"]);
@@ -353,10 +317,7 @@ test.describe("Sidebar sort picker (#1418, #1640)", () => {
     expect(stored).toBe("attention");
   });
 
-  // #1836: the sort trigger used a native browser `title`, so its tooltip
-  // looked different from the grouping and filter controls (which wrap their
-  // buttons in the shared styled Tooltip). It now uses that same component,
-  // and the sidebar gained separator borders.
+  // #1836, #2214: the trigger uses the shared portaled Tooltip, not a native title, and the list gains a separator.
   test("sort tooltip matches the styled group/filter tooltip; sidebar has separators (#1836)", async ({ page }) => {
     const sessions: MockSession[] = [
       {
@@ -378,19 +339,13 @@ test.describe("Sidebar sort picker (#1418, #1640)", () => {
     const toggle = page.locator(TOGGLE);
     await expect(toggle).toBeVisible({ timeout: 8000 });
 
-    // No native browser tooltip on the trigger any more.
     await expect(toggle).not.toHaveAttribute("title", /.+/);
 
-    // The active-mode label lives in the shared Tooltip, which now portals its
-    // popup to document.body on hover with `position: fixed`, carrying the same
-    // surface-950 styling the group/filter tooltips use (#2214).
     await toggle.hover();
     const tip = page.getByRole("tooltip").filter({ hasText: "Sort: manual, drag enabled" });
     await expect(tip).toHaveClass(/bg-surface-950/);
     await expect(tip).toHaveClass(/fixed/);
 
-    // The scrollable session list is separated from the control row by a top
-    // border (the explicit ask in #1836).
     await expect(page.locator("div.overflow-y-auto.border-t")).toHaveCount(1);
   });
 });
