@@ -67,6 +67,13 @@ pub(super) struct SocketLease {
     path: std::path::PathBuf,
     dev: u64,
     ino: u64,
+    // Linux only: the lease pins the socket inode with a private hard link,
+    // so a recycled inode number after a replacement rebind cannot make Drop
+    // delete the newer socket. macOS rejects hard links to sockets (EPERM)
+    // and cannot open one by path, so it keeps the metadata-only check and
+    // its theoretical ABA window.
+    #[cfg(target_os = "linux")]
+    _identity: tempfile::TempDir,
 }
 
 impl Drop for SocketLease {
@@ -128,11 +135,21 @@ pub(super) async fn bind_private(
         Err(error) => return Err(error.into()),
     }
     let listener = tokio::net::UnixListener::bind(path)?;
+    #[cfg(target_os = "linux")]
+    let identity = {
+        let dir = tempfile::Builder::new()
+            .prefix(".socket-lease-")
+            .tempdir_in(parent)?;
+        std::fs::hard_link(path, dir.path().join("socket"))?;
+        dir
+    };
     let meta = std::fs::symlink_metadata(path)?;
     let lease = SocketLease {
         path: path.to_owned(),
         dev: meta.dev(),
         ino: meta.ino(),
+        #[cfg(target_os = "linux")]
+        _identity: identity,
     };
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
     Ok((OwnerUnixListener(listener), lease))

@@ -886,6 +886,36 @@ impl HomeView {
             .unwrap_or_else(|e| e.into_inner())
             .clear();
 
+        if self.sidebar_source != crate::tui::session_feed::SidebarSource::Daemon {
+            self.list_inner_area = Rect::default();
+            self.shelf_inner_area = Rect::default();
+            self.preview_area = Rect::default();
+            self.preview_pane_area = Rect::default();
+            self.preview_outer_area = Rect::default();
+            self.divider_col = None;
+            self.main_area_width = 0;
+            let connecting =
+                self.sidebar_source == crate::tui::session_feed::SidebarSource::Connecting;
+            let message = if connecting {
+                "Connecting to runtime…\n\nq: Quit"
+            } else {
+                "Runtime unavailable\n\nr: Reconnect / start local runtime\nq: Quit"
+            };
+            frame.render_widget(
+                Paragraph::new(message)
+                    .style(Style::default().fg(theme.dimmed))
+                    .block(
+                        Block::default()
+                            .borders(Borders::ALL)
+                            .border_type(BorderType::Rounded)
+                            .padding(Padding::horizontal(1)),
+                    )
+                    .wrap(Wrap { trim: false }),
+                area,
+            );
+            return;
+        }
+
         // Settings view takes over the whole screen
         if let Some(ref mut settings) = self.settings_view {
             self.divider_col = None;

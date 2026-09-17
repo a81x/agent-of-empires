@@ -24,6 +24,39 @@ fn pid_alive(pid: i32) -> bool {
     nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid), None).is_ok()
 }
 
+#[test]
+#[parallel]
+fn tui_disconnect_hides_sessions_and_explicit_reconnect_restores_them() {
+    require_tmux!();
+    let mut h = TuiTestHarness::new_in_tmp("offline_reconnect");
+    h.stop_daemon_on_drop();
+    let row = agent_of_empires::session::Instance::new(
+        "offline-visible-session",
+        h.project_path().to_str().unwrap(),
+    );
+    let app = crate::harness::app_dir_in(h.home_path());
+    std::fs::write(
+        app.join("profiles/default/sessions.json"),
+        serde_json::to_vec(&[row]).unwrap(),
+    )
+    .unwrap();
+    h.spawn_tui();
+    h.wait_for("offline-visible-session");
+    let stopped = h.run_cli(&["serve", "--stop"]);
+    assert!(
+        stopped.status.success(),
+        "{}",
+        String::from_utf8_lossy(&stopped.stderr)
+    );
+    h.wait_for("Runtime unavailable");
+    assert!(!h.capture_screen().contains("offline-visible-session"));
+    h.send_keys("n");
+    assert!(h.capture_screen().contains("Runtime unavailable"));
+    h.send_keys("r");
+    h.wait_for_timeout("offline-visible-session", Duration::from_secs(30));
+    assert!(!h.capture_screen().contains("Runtime unavailable"));
+}
+
 #[cfg(unix)]
 #[tokio::test]
 #[parallel]

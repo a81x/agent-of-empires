@@ -371,6 +371,7 @@ fn a_snapshot_row_outside_the_local_view_is_not_adopted() {
 #[serial]
 fn session_feed_snapshot_drives_structured_rows_and_marks_the_daemon_source() {
     let mut env = create_test_env_empty();
+    env.view.sidebar_source = SidebarSource::Disconnected;
     let id = structured_row(&mut env, Status::Idle);
     assert_eq!(env.view.sidebar_source, SidebarSource::Disconnected);
     env.view.session_feed = SessionFeed::seeded_for_test(daemon_snapshot(&id, "Running"));
@@ -403,6 +404,41 @@ fn unavailable_session_feed_retains_the_last_canonical_status() {
         Some(Status::Running)
     );
     assert_eq!(env.view.sidebar_source, SidebarSource::Disconnected);
+}
+
+#[test]
+#[serial]
+fn disconnected_runtime_hides_session_content_until_a_fresh_snapshot() {
+    let mut env = create_test_env_with_sessions(1);
+    let id = env.view.instance_at(0).id.clone();
+    env.view.mutate_instance(&id, |instance| {
+        instance.title = "offline-sensitive-session".into();
+    });
+    env.view
+        .session_feed
+        .publish_for_test(daemon_snapshot(&id, "Running"));
+    env.view.apply_session_feed();
+    assert!(render_home_to_string(&mut env.view, 120, 40).contains("offline-sensitive-session"));
+
+    env.view
+        .session_feed
+        .publish_for_test(SessionFeedResult::Unavailable("disconnected".into()));
+    env.view.apply_session_feed();
+    let screen = render_home_to_string(&mut env.view, 120, 40);
+    assert!(
+        !screen.contains("offline-sensitive-session"),
+        "stale session content remains visible: {screen}"
+    );
+    assert!(
+        screen.contains("Reconnect"),
+        "offline view must offer recovery: {screen}"
+    );
+
+    env.view
+        .session_feed
+        .publish_for_test(daemon_snapshot(&id, "Stopped"));
+    env.view.apply_session_feed();
+    assert!(render_home_to_string(&mut env.view, 120, 40).contains("offline-sensitive-session"));
 }
 
 #[test]

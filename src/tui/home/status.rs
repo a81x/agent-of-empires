@@ -153,6 +153,14 @@ impl HomeView {
             return false;
         }
         self.sidebar_source = source;
+        if source != SidebarSource::Daemon {
+            self.cancel_native_attachment();
+            self.teardown_live_send();
+            self.structured_preview = None;
+            self.preview_capture_worker = None;
+            self.preview_capture_target = None;
+            self.pending_paste = None;
+        }
         match source {
             SidebarSource::Connecting => {
                 tracing::info!(target: "tui.home", "sidebar: connecting to runtime")
@@ -164,7 +172,7 @@ impl HomeView {
             SidebarSource::Disconnected => tracing::info!(
                 target: "tui.home",
                 reason = reason.unwrap_or(""),
-                "sidebar: disconnected; retaining the last canonical state",
+                "sidebar: disconnected; session view unavailable",
             ),
         }
         true

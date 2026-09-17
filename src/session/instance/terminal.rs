@@ -788,7 +788,7 @@ exec /usr/bin/env -i PATH="$TARGET_PATH" SHELL="$FALLBACK_SHELL" "$@"
         use std::time::Duration;
         let _home = crate::session::test_support::isolate_app_dir();
         let root = tempfile::tempdir().unwrap();
-        let fresh_path = root.path().join("fresh");
+        let fresh_path = root.path().canonicalize().unwrap().join("fresh");
         std::fs::create_dir(&fresh_path).unwrap();
         let storage = crate::session::Storage::new_unwatched("auxiliary-launch").unwrap();
         let mut instance = Instance::new("auxiliary", root.path().to_str().unwrap());

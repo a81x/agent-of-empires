@@ -78,21 +78,11 @@ fn clear_reported_session_creates(reported: u32, outcome: crate::telemetry::Send
     });
 }
 
-/// Count one TUI session create for the opt-in telemetry trend counter. Bounded
-/// accumulator, read-and-decremented by the snapshot paths; a no-op for
-/// opted-out installs (the snapshot is never built / sent). Called from
-/// `HomeView::add_instance`, the single funnel every TUI create passes through.
+/// Count one TUI session create for the opt-in telemetry trend counter.
+/// Bounded accumulator, read-and-decremented by the snapshot paths; a no-op
+/// for opted-out installs. Called when a daemon-confirmed creation lands.
 pub(super) fn record_session_create() {
     TUI_SESSION_CREATES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-}
-
-/// Test-only read of the process-local create counter, so the `home` module's
-/// `add_instance` gating test can assert real creates count and `Creating`
-/// stubs do not. Tests sharing the counter use the `telemetry_creates` serial
-/// group to avoid racing on this global.
-#[cfg(test)]
-pub(crate) fn session_create_count_for_test() -> u32 {
-    reported_session_creates()
 }
 
 struct UpdateStatus {
@@ -951,6 +941,34 @@ impl App {
             // defect 1), and that EOF from a dead tty is detected (defect 2).
             tokio::select! {
                 event = self.event_stream.as_mut().expect("event_stream missing").next() => {
+                    self.home.apply_session_feed();
+                    if self.home.sidebar_source != crate::tui::session_feed::SidebarSource::Daemon {
+                        match event {
+                            Some(Ok(Event::Key(key)))
+                                if matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat) => {
+                                #[cfg(feature = "e2e-tests")]
+                                if key.code == KeyCode::F(12) && std::env::var_os("AOE_E2E_INPUT_BARRIER").is_some() {
+                                    self.draw(terminal)?;
+                                    e2e_render_ack(false)?;
+                                    continue;
+                                }
+                                match (key.code, key.modifiers) {
+                                    (KeyCode::Char('q'), KeyModifiers::NONE)
+                                    | (KeyCode::Char('c'), KeyModifiers::CONTROL) => break,
+                                    (KeyCode::Char('r'), KeyModifiers::NONE)
+                                        if self.home.sidebar_source == crate::tui::session_feed::SidebarSource::Disconnected => {
+                                        self.home.connect_runtime();
+                                    }
+                                    _ => {}
+                                }
+                            }
+                            Some(Ok(Event::Resize(_, _))) => {}
+                            None => break,
+                            _ => continue,
+                        }
+                        self.draw(terminal)?;
+                        continue;
+                    }
                     match event {
                         Some(Ok(Event::Key(key))) => {
                             // Only act on key-down / auto-repeat. Terminals that
@@ -3375,6 +3393,11 @@ impl App {
     /// "press Enter" placeholder). An active (entered) view is never
     /// disturbed. Returns true if the mount set changed (needs redraw).
     async fn reconcile_structured_preview(&mut self) -> bool {
+        if self.home.sidebar_source != crate::tui::session_feed::SidebarSource::Daemon {
+            self.preview_mount_pending = None;
+            self.home.structured_preview_pending = false;
+            return self.home.structured_preview.take().is_some();
+        }
         // An entered view owns the selection and keyboard; leave it be,
         // but only while its session is still a live structured row AND
         // still the selected one. A peer (web, another aoe) can delete

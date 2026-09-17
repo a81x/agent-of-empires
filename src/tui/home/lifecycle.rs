@@ -29,6 +29,7 @@ impl HomeView {
             })?;
         // Unit fixtures do not own background disk healing or agent recovery.
         view.startup_recovery_gate = None;
+        view.sidebar_source = crate::tui::session_feed::SidebarSource::Daemon;
         Ok(view)
     }
 
@@ -710,9 +711,7 @@ impl HomeView {
         let storage_keys: Vec<String> = self.storages.keys().cloned().collect();
         self.group_trees.retain(|k, _| storage_keys.contains(k));
 
-        // Snapshot the in-flight Creating stub before `self.instances` is
-        // overwritten. An intervening save may have persisted it, but while it
-        // is still memory-only it would otherwise vanish across reload.
+        // Preserve the display-only placeholder across a canonical row reload.
         let creating_stub_snapshot: Option<Instance> = self
             .creating_stub_id
             .as_ref()

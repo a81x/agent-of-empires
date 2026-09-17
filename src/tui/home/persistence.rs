@@ -8,7 +8,12 @@ impl HomeView {
         let mut all_peer_deleted: Vec<String> = Vec::new();
 
         for (profile_name, storage) in &self.storages {
-            let tui_rows: Vec<Instance> = self.cloned_instances_for_profile(profile_name);
+            let tui_rows: Vec<Instance> = self
+                .instances()
+                .filter(|instance| instance.source_profile == *profile_name)
+                .filter(|instance| self.creating_stub_id.as_deref() != Some(instance.id.as_str()))
+                .cloned()
+                .collect();
             let dels: HashSet<String> = self
                 .pending_deletions
                 .get(profile_name)
@@ -168,17 +173,11 @@ impl HomeView {
     /// insertion order = sidebar order) and records the id in `pending_added`
     /// so the next `save` distinguishes TUI-new rows from peer-deleted ones
     /// (which look identical at the disk layer: missing from sessions.json).
+
+    /// Test fixture helper: insert a row and register it as TUI-added so a
+    /// following `save` persists it. Production row arrival is daemon-owned.
+    #[cfg(test)]
     pub(in crate::tui) fn add_instance(&mut self, instance: Instance) {
-        // Count only finalized session inserts for the opt-in create-trend
-        // counter (#1897). `add_instance` is also the funnel for `Creating`
-        // placeholder stubs in the async creation flow (removed and replaced by
-        // the real row on success), so counting every call would double-count a
-        // successful background create and count a cancelled one that never
-        // finalized. A real create is never `Creating`. Mirrors the serve side's
-        // single increment in `create_session`; no-op when not opted in.
-        if instance.status != crate::session::Status::Creating {
-            crate::tui::app::record_session_create();
-        }
         self.pending_added
             .entry(instance.source_profile.clone())
             .or_default()

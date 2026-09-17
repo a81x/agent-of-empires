@@ -179,7 +179,7 @@ mod tests {
         use std::os::unix::fs::{MetadataExt, PermissionsExt};
         let root = tempfile::tempdir().unwrap();
         std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
-        let app = root.path().join("app");
+        let app = root.path().canonicalize().unwrap().join("app");
         std::fs::create_dir(&app).unwrap();
         std::fs::set_permissions(&app, std::fs::Permissions::from_mode(0o775)).unwrap();
 

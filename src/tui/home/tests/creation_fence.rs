@@ -10,6 +10,36 @@ const REFUSAL: &str = "Still creating this session; it has no runtime yet";
 
 #[test]
 #[serial]
+fn saving_during_creation_never_persists_the_display_placeholder() {
+    let CreationTestEnv {
+        mut view,
+        project_dir,
+        _guard,
+        _temp,
+    } = setup_creation_test_env();
+    let _driver = view.session_feed.command_driver_for_test();
+    view.request_creation(creation_data(&project_dir, "Pending", "test"), None);
+    let stub = view.creating_stub_id.clone().unwrap();
+    view.save().unwrap();
+    let storage = Storage::new_unwatched("default").unwrap();
+    assert!(!storage.load().unwrap().iter().any(|row| row.id == stub));
+    assert!(
+        view.get_instance(&stub).is_some(),
+        "saving must preserve the pending display"
+    );
+    view.reload().unwrap();
+    assert!(
+        view.get_instance(&stub).is_some(),
+        "reload must preserve the pending display"
+    );
+    view.cancel_creation();
+    view.save().unwrap();
+    assert!(!storage.load().unwrap().iter().any(|row| row.id == stub));
+    assert!(view.get_instance(&stub).is_none());
+}
+
+#[test]
+#[serial]
 fn session_actions_refuse_the_creating_stub() {
     let CreationTestEnv {
         mut view,

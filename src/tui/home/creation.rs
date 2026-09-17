@@ -98,7 +98,8 @@ impl HomeView {
 
         let stub_id = stub.id.clone();
         let target_profile = data.profile.clone();
-        self.add_instance(stub);
+        self.creating_stub_id = Some(stub_id.clone());
+        self.instances.insert(stub_id.clone(), stub);
         self.rebuild_group_trees();
         self.creating_hook_progress.insert(
             stub_id.clone(),
@@ -107,7 +108,6 @@ impl HomeView {
                 current_hook: None,
             },
         );
-        self.creating_stub_id = Some(stub_id.clone());
         self.rebuild_flat_items();
         if let Some(pos) = self
             .flat_items
@@ -201,7 +201,7 @@ impl HomeView {
     /// cancellation is still delivered once the id is known.
     fn discard_creating_stub(&mut self) {
         if let Some(stub_id) = self.creating_stub_id.take() {
-            self.remove_instance(&stub_id);
+            self.instances.shift_remove(&stub_id);
             self.creating_hook_progress.remove(&stub_id);
         }
         self.rebuild_group_trees();
@@ -302,7 +302,7 @@ impl HomeView {
             .is_some_and(|pending| pending.cancel_requested);
         self.creating_stub_id = None;
         self.pending_creation = None;
-        self.remove_instance(&stub_id);
+        self.instances.shift_remove(&stub_id);
         self.creating_hook_progress.remove(&stub_id);
         if cancelled {
             return match result {
@@ -324,6 +324,7 @@ impl HomeView {
         match result {
             Ok(receipt) => {
                 let session_id = receipt.outcome.id.clone();
+                crate::tui::app::record_session_create();
                 let warnings = receipt.outcome.warnings.clone();
                 // The daemon committed before answering; load the row it
                 // published instead of rebuilding one from the response.

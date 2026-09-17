@@ -6319,13 +6319,8 @@ impl HomeView {
         self.teardown_live_send();
     }
 
-    /// Shared live-send teardown; touches no tmux sizing. Normal exits
-    /// call it via `exit_live_send_and_restore_sizing`; the lost-lock exit
-    /// (`poll_live_send_takeover`) calls it directly, because the surface
-    /// that took over has already sized the window to its own grid and
-    /// re-asserting `window-size latest` would stomp it (the exact flap
-    /// the size-owner lock exists to kill).
-    fn teardown_live_send(&mut self) {
+    /// Drop live-send without resizing a pane whose ownership may have changed.
+    pub(super) fn teardown_live_send(&mut self) {
         let live_session_id = self.live_send.take().map(|state| state.session_id);
         self.live_send_worker = None;
         // Leave the capture worker running: the same pane is still

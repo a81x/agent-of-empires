@@ -191,6 +191,10 @@ impl SessionFeed {
         if let Some(task) = self.task.take() {
             task.abort();
         }
+        let (sender, receiver) = tokio::sync::watch::channel(None);
+        self.sender = sender;
+        self.receiver = receiver;
+        self.applied = None;
         let grant = Arc::new(AtomicU64::new(0));
         self.grant = grant.clone();
         let native_grant = Arc::new(AtomicU64::new(0));
@@ -201,7 +205,6 @@ impl SessionFeed {
         let (progress, progress_receiver) = tokio::sync::watch::channel(None);
         self.progress = progress.clone();
         self.progress_receiver = progress_receiver;
-        self.pending_creations.clear();
         let sender = self.sender.clone();
         self.task = Some(tokio::spawn(async move {
             let result: anyhow::Result<()> = async {
@@ -890,6 +893,36 @@ mod tests {
                 global_projects: vec![],
             },
         })
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn reconnect_rejects_old_publications_and_reports_pending_outcomes() {
+        let mut feed =
+            SessionFeed::seeded_for_test(SessionFeedResult::Snapshot(snapshot("old", 1)));
+        feed.mark_snapshot_applied(snapshot("old", 1));
+        let old_sender = feed.sender.clone();
+        let (commands, mut requests) = tokio::sync::mpsc::channel(COMMAND_CAPACITY);
+        feed.commands = Some(commands);
+        set_grant(&feed.grant, true);
+        let body =
+            serde_json::from_value(serde_json::json!({"path": "/test", "tool": "claude"})).unwrap();
+        feed.create_session("pending".into(), body).unwrap();
+        let pending = requests.try_recv().unwrap();
+
+        feed.connect("test".into());
+        feed.task.take().unwrap().abort();
+        old_sender.send_replace(Some(SessionFeedResult::Snapshot(snapshot("old", 99))));
+        assert!(matches!(feed.try_recv(), Err(TryRecvError::Empty)));
+        assert!(!feed.mutations_available());
+        assert!(feed.applied.is_none());
+        let outcomes = feed.drain_creation_results();
+        assert_eq!(outcomes.len(), 1);
+        assert_eq!(outcomes[0].0, "pending");
+        assert!(
+            outcomes[0].1.is_err(),
+            "reconnect must not silently forget a creation"
+        );
+        drop(pending);
     }
 
     #[test]
