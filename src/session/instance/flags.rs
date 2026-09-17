@@ -3,11 +3,7 @@
 
 use super::*;
 
-/// The MVP palette for the per-session color label (#2383). Kept deliberately
-/// small and status-oriented: red = needs attention / blocked, amber =
-/// working / in progress, green = done / ready. `None`/absent clears the dot.
-/// Both the CLI (`aoe session color`) and the web PATCH endpoint validate
-/// against this list via [`is_valid_session_color`].
+/// The MVP palette for the per-session color label. Kept deliberately small and status-oriented.
 pub const SESSION_COLORS: &[&str] = &["red", "amber", "green"];
 
 /// True when `color` is a member of the [`SESSION_COLORS`] palette.
@@ -16,10 +12,7 @@ pub fn is_valid_session_color(color: &str) -> bool {
 }
 
 /// Mutually-exclusive lifecycle bucket a session belongs to, computed by
-/// `Instance::effective_bucket()`. Precedence is `Trashed > Archived >
-/// Active`. Used to route a session into the right list (active sidebar,
-/// archived fold, or trash view) and to filter the `GET /api/sessions`
-/// response by `?state=`.
+/// `Instance::effective_bucket()`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SessionBucket {
     Active,
@@ -28,19 +21,7 @@ pub enum SessionBucket {
 }
 
 impl Instance {
-    /// Stamp `last_accessed_at` to the current time AND wake the session
-    /// from any sink state. Call this on user-initiated interactions
-    /// (attach, send keys, etc.); every existing call site already does.
-    ///
-    /// Auto-unarchive/unsnooze: sending a message or attaching is the user
-    /// explicitly saying "I care about this now." Leaving `archived_at` or
-    /// `snoozed_until` set after such interaction is incoherent; the row
-    /// would render italic+dim at tier 99 even while live traffic flows.
-    /// User rule (2026-04-23): "messaging should unarchive."
-    ///
-    /// `favorited_at` is preserved: fav is a positive "care more" signal,
-    /// orthogonal to the sink states. A favorited session that was snoozed
-    /// stays favorited when the user wakes it.
+    /// Stamp `last_accessed_at` to the current time AND wake the session from any sink state.
     pub fn touch_last_accessed(&mut self) {
         self.last_accessed_at = Some(Utc::now());
         self.archived_at = None;
@@ -48,9 +29,8 @@ impl Instance {
         self.idle_dormant_since = None;
     }
 
-    /// Whether this session's structured view worker was auto-stopped for
-    /// inactivity and should not be respawned by the reconciler until the
-    /// user wakes it. See `idle_dormant_since` and #1689.
+    /// Whether this session's structured view worker was auto-stopped for inactivity and should not
+    /// be respawned by the reconciler until the user wakes it.
     pub fn is_idle_dormant(&self) -> bool {
         self.idle_dormant_since.is_some()
     }
@@ -61,43 +41,14 @@ impl Instance {
         self.idle_dormant_since = Some(Utc::now());
     }
 
-    /// Whether this session should render as "dormant" (worker auto-stopped
-    /// for inactivity, resumable) rather than with its raw `status`. This is
-    /// the single source of the deliberate-stop-vs-dormant precedence: a
-    /// deliberate Stop also sets `idle_dormant_since` (see `stop_session`),
-    /// so `Status::Stopped` must win here and keep showing the neutral
-    /// "Stopped" dot; only a non-stopped row carrying the dormant marker
-    /// (the idle-reaper's output) presents as dormant. The reaper only ever
-    /// marks structured rows, so this is structured-only in practice. See
-    /// #2250 and `idle_dormant_since`.
+    /// Whether this session should render as "dormant" (worker auto-stopped for inactivity,
+    /// resumable) rather than with its raw `status`.
     pub fn is_shown_dormant(&self) -> bool {
         self.is_idle_dormant() && self.status != Status::Stopped
     }
 
-    /// Mark the session archived. Archived sessions sink to the bottom of
-    /// the Attention sort and render in italic+dim style, but remain visible.
-    /// Archive suppresses the attention signal rather than the signal
-    /// clearing archive: `is_urgent` returns false while archived, and the
-    /// attention sort short-circuits the row to its bottom tier.
-    ///
-    /// Cleared by `unarchive`, by `touch_last_accessed`, and by `favorite`
-    /// and `pin`; not by `snooze`.
-    /// `merge_user_action_diff` mirrors those onto disk; #3465 was a status
-    /// transition reaching that mirror without a user gesture.
-    ///
-    /// Mutual exclusion with `favorite`, `snooze`, and `pin`: archiving
-    /// clears `favorited_at`, `snoozed_until`, and `pinned_at`. Archive
-    /// is the strongest dismiss; keeping any other triage flag on a row
-    /// the user just sunk produces contradictory state, and the web
-    /// sidebar's tier comparator already assumes the server enforces a
-    /// single active triage state (see `sidebarSort.ts` in #1581).
-    ///
-    /// Archiving tears down the session's tmux (#1868), so a live-interaction
-    /// status (Running/Waiting/Starting) cannot be true of an archived row.
-    /// Left in place, a frozen `Waiting` keeps rendering as a
-    /// pending-permission row forever — the status poller deliberately never
-    /// touches archived rows (#2206), so nothing else can clear it. Degrade
-    /// those statuses to Idle here, matching where v016 settles archived rows.
+    /// Mark the session archived. Archived sessions sink to the bottom of the Attention sort and
+    /// render in italic+dim style, but remain visible.
     pub fn archive(&mut self) {
         self.archived_at = Some(Utc::now());
         self.favorited_at = None;
@@ -106,13 +57,7 @@ impl Instance {
         self.settle_archived_status();
     }
 
-    /// Idle is the resting state an archived row can truthfully claim; see
-    /// `archive`. Shared with the status poller's archived short-circuit (so
-    /// a row frozen by an older build heals in memory without waiting for the
-    /// one-shot v028 migration) and with the three disk-write merges that can
-    /// land a status or an archive on a row (`merge_user_action_diff`,
-    /// `merge_passive_status_patch`, `merge_from_tui`), so a stale
-    /// pre-archive observation cannot re-freeze it.
+    /// Idle is the resting state an archived row can truthfully claim; see `archive`.
     pub(crate) fn settle_archived_status(&mut self) {
         if matches!(
             self.status,
@@ -131,13 +76,8 @@ impl Instance {
         self.archived_at.is_some()
     }
 
-    /// Soft-delete the session into the trash bucket. Stops the live
-    /// session (handled by the caller: ACP `shutdown`, optional tmux kill)
-    /// but keeps every durable artifact so `untrash` can bring it back
-    /// intact. Intentionally additive: only `trashed_at` is set, the
-    /// sibling triage flags (`archived_at`, `favorited_at`, `snoozed_until`,
-    /// `pinned_at`) are left untouched so restore is faithful.
-    /// `effective_bucket()` makes trash win regardless. Idempotent.
+    /// Soft-delete the session into the trash bucket. Stops the live session (handled by the
+    /// caller.
     pub fn trash(&mut self) {
         if self.trashed_at.is_none() {
             self.trashed_at = Some(Utc::now());
@@ -154,13 +94,8 @@ impl Instance {
         self.trashed_at.is_some()
     }
 
-    /// The mutually-exclusive lifecycle bucket a session renders in.
-    /// Precedence is `Trashed > Archived > Active`: a trashed row never
-    /// shows in active or archived views, and an archived row never shows
-    /// in active views. Snooze/favorite/pin are orthogonal decorations
-    /// within a bucket, not buckets of their own, so they are not consulted
-    /// here. Use this instead of bare `!is_archived()` filters so trashed
-    /// rows cannot leak into the active list.
+    /// The mutually-exclusive lifecycle bucket a session renders in. Precedence is `Trashed >
+    /// Archived > Active`.
     pub fn effective_bucket(&self) -> SessionBucket {
         if self.is_trashed() {
             SessionBucket::Trashed
@@ -172,18 +107,6 @@ impl Instance {
     }
 
     /// Mark the session favorite. Sibling of `archive`, with opposite semantics.
-    /// Pinning logic lives in `attention_session_key`: favorite is a
-    /// within-tier pin (top of its respective category), not a cross-tier
-    /// promoter. A favorited Running stays in the Running bucket but sorts
-    /// above non-favorited Running peers.
-    ///
-    /// Mutual exclusion with the sink states: favoriting clears `archived_at`
-    /// AND `snoozed_until`. Favorite's whole purpose is "surface this row";
-    /// leaving either sink-state flag set would force the row to tier 99 and
-    /// the favorite bias would be suppressed; user presses `f` and sees
-    /// nothing change. The user's explicit rule: "marking as favorite
-    /// unarchives," extended to snooze because snooze shares tier 99 and
-    /// shares the burial outcome.
     pub fn favorite(&mut self) {
         self.favorited_at = Some(Utc::now());
         self.archived_at = None;
@@ -198,10 +121,8 @@ impl Instance {
         self.favorited_at.is_some()
     }
 
-    /// Set (or clear, with `None`) the per-session color label. Only a value
-    /// in the [`SESSION_COLORS`] palette is accepted; anything else is
-    /// rejected so the sidebar never has to render an unknown swatch. See
-    /// #2383.
+    /// Set (or clear, with `None`) the per-session color label. Only a value in the
+    /// [`SESSION_COLORS`] palette is accepted.
     pub fn set_color(&mut self, color: Option<String>) -> Result<(), String> {
         match color {
             None => self.color = None,
@@ -219,11 +140,7 @@ impl Instance {
         Ok(())
     }
 
-    /// Read the agent-raised urgent flag from `attention.json`. Sourced
-    /// on-demand from `/tmp/aoe-hooks-<euid>/{id}/attention.json` so it picks up
-    /// changes the running agent makes (via the `attention-urgent` script)
-    /// without an Instance state mutation. Suppressed for archived/snoozed
-    /// rows so a sunk session can't claw its way back to the top.
+    /// Read the agent-raised urgent flag from `attention.json`.
     pub fn is_urgent(&self) -> bool {
         if self.is_archived() || self.is_snoozed() {
             return false;
@@ -231,20 +148,8 @@ impl Instance {
         crate::hooks::read_hook_urgent(&self.id)
     }
 
-    /// Temporarily defer this session for `minutes`; sets `snoozed_until`
-    /// to `Utc::now() + minutes`. Behaves like a timed archive: the row
-    /// sinks to tier 99, renders italic+dim with a `z ` prefix, and shows
-    /// remaining time in the age column. When the timestamp expires the
-    /// row rejoins the active attention sort automatically (next render
-    /// tick); no timer task needed. Resolution of `minutes` happens at
-    /// snooze time, not render time, so changing the config default mid-
-    /// snooze does NOT extend currently-sleeping rows.
-    ///
-    /// Clears `pinned_at` for the same reason archive does: snooze is a
-    /// sink state, and a pinned-yet-snoozed row is contradictory. The
-    /// existing favorite mutator is intentionally NOT touched here
-    /// (favorite is the TUI within-tier signal, snoozed favorites keep
-    /// their star when they wake; see field doc for `favorited_at`).
+    /// Temporarily defer this session for `minutes`; sets `snoozed_until` to `Utc::now() +
+    /// minutes`.
     pub fn snooze(&mut self, minutes: u32) {
         self.snoozed_until = Some(Utc::now() + chrono::Duration::minutes(minutes as i64));
         self.pinned_at = None;
@@ -259,16 +164,14 @@ impl Instance {
         self.unread
     }
 
-    /// Mark the session unread. Used both by the auto-mark on a finished turn
-    /// (`Running -> Idle`) and the manual "Mark as unread" action; the single
-    /// state means there is no kind to preserve. Idempotent.
+    /// Mark the session unread. Used both by the auto-mark on a finished turn (`Running -> Idle`)
+    /// and the manual "Mark as unread" action.
     pub fn mark_unread(&mut self) {
         self.unread = true;
     }
 
-    /// Clear the unread marker. Used whenever the user engages with the
-    /// session (open/attach, live-send, click, dwell) and by the explicit
-    /// "Mark as read" action. Idempotent.
+    /// Clear the unread marker. Used whenever the user engages with the session (open/attach,
+    /// live-send, click, dwell) and by the explicit "Mark as read" action.
     pub fn mark_read(&mut self) {
         self.unread = false;
     }
@@ -278,19 +181,13 @@ impl Instance {
         self.unread = !self.unread;
     }
 
-    /// True if `snoozed_until` is set AND in the future. Expired snoozes
-    /// return false so the row naturally rejoins the main sort on the next
-    /// render; the stale timestamp stays on disk until the next mutation
-    /// rewrites the session (harmless; `snoozed_until` is always compared
-    /// against `Utc::now()`).
+    /// True if `snoozed_until` is set AND in the future. Expired snoozes return false so the row
+    /// naturally rejoins the main sort on the next render.
     pub fn is_snoozed(&self) -> bool {
         self.snoozed_until.map(|t| t > Utc::now()).unwrap_or(false)
     }
 
-    /// Combined "don't bother me" sink-state check: trashed, snoozed, or
-    /// archived. Callers that walk sessions looking for something to land on
-    /// (e.g. the `w`/jump-to-next-attention passes) use this instead of the
-    /// three-call form so a row in any sink state is uniformly excluded.
+    /// Combined "don't bother me" sink-state check: trashed, snoozed, or archived.
     pub fn is_dismissed(&self) -> bool {
         self.is_trashed() || self.is_snoozed() || self.is_archived()
     }
@@ -308,16 +205,7 @@ impl Instance {
         })
     }
 
-    /// Mark this session pinned. Pin is a web-only surfacing primitive:
-    /// pinned workspaces sort to the top of the web sidebar (across all
-    /// sort modes), regardless of last-activity. Distinct from
-    /// `favorited_at`, which drives the TUI Attention sort's within-tier
-    /// pin and stays unchanged here (see #1581).
-    ///
-    /// Mutual exclusion with the sink states: pinning clears
-    /// `archived_at` and `snoozed_until`. A pinned-yet-sunk row would
-    /// contradict the entire point of pinning (surface this), so the
-    /// sinks come off, identical to how `favorite()` handles it.
+    /// Mark this session pinned. Pin is a web-only surfacing primitive.
     pub fn pin(&mut self) {
         self.pinned_at = Some(Utc::now());
         self.archived_at = None;
@@ -332,11 +220,7 @@ impl Instance {
         self.pinned_at.is_some()
     }
 
-    /// Time elapsed since this session most recently transitioned into
-    /// `Idle`. `None` for non-Idle sessions, sessions with a missing
-    /// timestamp (legacy state), or sessions whose `idle_entered_at` is in
-    /// the future (clock skew). Negative deltas are clamped away rather than
-    /// returned as `Duration` since `chrono::Duration::to_std` rejects them.
+    /// Time elapsed since this session most recently transitioned into `Idle`.
     pub fn idle_age(&self) -> Option<std::time::Duration> {
         if self.status != Status::Idle {
             return None;
@@ -345,19 +229,8 @@ impl Instance {
         (Utc::now() - since).to_std().ok()
     }
 
-    /// True iff this session should keep the machine awake: it is active
-    /// (`Running`, `Waiting`, `Starting`, or `Creating`), or it went idle less
-    /// than `window` ago. A session idle for `>= window` (or
-    /// Stopped/Error/Unknown/Deleting) returns false, so the sleep-inhibit
-    /// assertion may release. `Waiting`, `Starting`, and `Creating` all count
-    /// as active unconditionally, so a session parked waiting for input, or
-    /// one still starting or mid-create, holds sleep until it leaves that
-    /// status: the predicate ages out only `Idle`, never these three. That is
-    /// intentional for the opt-in v1, and nothing ages these three out:
-    /// `Waiting` (an unanswered prompt) and `Creating` (a container, worktree,
-    /// or submodule setup that never returns) can hold sleep indefinitely,
-    /// while `Starting` is bounded by the ~3s `last_start_time` guard in
-    /// `update_status_with_metadata_inner` and then re-resolves.
+    /// True iff this session should keep the machine awake: it is active (`Running`, `Waiting`,
+    /// `Starting`, or `Creating`), or it went idle less than `window` ago.
     pub fn has_recent_activity(&self, window: std::time::Duration) -> bool {
         matches!(
             self.status,
@@ -410,11 +283,8 @@ mod tests {
         assert!(!is_valid_session_color("Red"));
     }
 
-    /// `touch_last_accessed` is what `aoe send` and the TUI dispatch path
-    /// call when the user interacts with a session. It must auto-wake
-    /// archived and snoozed rows so sending a message to a sunk session
-    /// brings it back, while preserving the favorite flag (favorite is a
-    /// positive "care more" signal, not a sink state).
+    /// `touch_last_accessed` is what `aoe send` and the TUI dispatch path call when the user
+    /// interacts with a session.
     #[test]
     fn test_touch_last_accessed_clears_archived() {
         let mut inst = Instance::new("test", "/tmp/test");
@@ -536,9 +406,7 @@ mod tests {
         idle_reaped.mark_idle_dormant();
         assert!(idle_reaped.is_shown_dormant());
 
-        // Stopped + dormant marker: a deliberate Stop (which also marks
-        // dormant). Stopped must win so the row keeps the neutral "Stopped"
-        // dot, not the dormant one. See #2250.
+        // Stopped + dormant marker: a deliberate Stop (which also marks dormant).
         let mut deliberate_stop = Instance::new("test", "/tmp/test");
         deliberate_stop.status = Status::Stopped;
         deliberate_stop.mark_idle_dormant();
@@ -568,12 +436,8 @@ mod tests {
 
     #[test]
     fn test_archive_clears_snooze() {
-        // Direct mutator test (no merge): the data-layer contract is
-        // that archive is mutually exclusive with every other triage
-        // flag. The sidebar tier comparator in `sidebarSort.ts`
-        // assumes the server enforces exactly one active state, so a
-        // snooze-then-archive transition must leave only archive
-        // behind. See #1581.
+        // Direct mutator test (no merge): the data-layer contract is that archive is mutually
+        // exclusive with every other triage flag.
         let mut inst = Instance::new("s", "/tmp/x");
         inst.snooze(15);
         assert!(inst.is_snoozed());
@@ -663,10 +527,8 @@ mod tests {
 
     #[test]
     fn test_trashed_at_serde_roundtrip_and_default() {
-        // A non-trashed instance omits trashed_at on the wire
-        // (skip_serializing_if), so deserializing it exercises the
-        // missing-field path that legacy rows hit: it must default to None,
-        // which is why no migration is needed.
+        // A non-trashed instance omits trashed_at on the wire (skip_serializing_if), so
+        // deserializing it exercises the missing-field path that legacy rows hit.
         let fresh = Instance::new("s", "/tmp/x");
         let fresh_json = serde_json::to_string(&fresh).expect("serialize fresh");
         assert!(
@@ -728,9 +590,6 @@ mod tests {
         let mut inst = Instance::new("test", "/tmp/test");
         inst.status = Status::Running;
         inst.idle_entered_at = Some(Utc::now() - chrono::Duration::seconds(60));
-        // A Running session never has an idle age, even if a stale
-        // `idle_entered_at` timestamp is sitting around (e.g. a transition
-        // that bumped from Idle → Running but missed the cleanup path).
         assert_eq!(inst.idle_age(), None);
     }
 
@@ -756,10 +615,7 @@ mod tests {
     fn test_idle_age_clamps_negative_to_none() {
         let mut inst = Instance::new("test", "/tmp/test");
         inst.status = Status::Idle;
-        // Future timestamp (clock skew, hand-crafted state). `to_std()` on a
-        // negative `chrono::Duration` returns Err, which we map to None so
-        // the freshness logic sees "fully decayed" rather than panicking
-        // or treating the session as freshly stopped.
+        // Future timestamp (clock skew, hand-crafted state).
         inst.idle_entered_at = Some(Utc::now() + chrono::Duration::seconds(60));
         assert_eq!(inst.idle_age(), None);
     }

@@ -147,9 +147,6 @@ impl Instance {
     }
 
     /// Resolve on_launch hooks from the full config chain (global > profile > repo).
-    ///
-    /// Repo hooks go through trust verification; global/profile hooks are
-    /// implicitly trusted. Returns `None` when skipped or no hooks are configured.
     pub(crate) fn resolve_on_launch_hooks(
         &self,
         skip_on_launch: bool,
@@ -184,22 +181,10 @@ impl Instance {
         }
     }
 
-    /// Make AoE-managed skills available to the agent this session launches, by
-    /// reconciling the managed store into that agent's own skills directory
-    /// (#3053). Skills reach an agent only as files on disk, so there is nothing
-    /// to forward over a protocol; the copy is the mechanism.
-    ///
-    /// Off unless the user opted in, because it writes into their real agent
-    /// config dirs. Best-effort: a root that is missing, read-only, or holds a
-    /// conflicting skill is logged and never blocks the launch. A sandboxed
-    /// session gets its own copy from `build_container_config`, which reconciles
-    /// into the sandbox dir rather than relying on this host pass.
+    /// Make AoE-managed skills available to the agent this session launches, by reconciling the
+    /// managed store into that agent's own skills directory.
     fn propagate_managed_skills(&self) {
-        // Read the global config, not the profile chain. `auto_propagate` is
-        // declared `global_only`, and the sandbox path reads it globally too, so
-        // resolving it per profile here would let a profile enable host
-        // propagation while the same profile's sandboxed sessions ignored it,
-        // and would widen a privilege the settings UI never offers per profile.
+        // Read the global config, not the profile chain.
         let config = crate::session::config::Config::load_or_warn();
         if !config.skills.auto_propagate {
             return;
@@ -318,10 +303,6 @@ impl Instance {
     }
 
     /// Install optional status hooks and mandatory authoritative identity hooks.
-    ///
-    /// Sandboxed sessions install through build_container_config. Disabling
-    /// agent_status_hooks removes status writers but cannot disable identity
-    /// publication for a resume-capable pane.
     fn install_agent_status_hooks(&mut self, agent: Option<&'static crate::agents::AgentDef>) {
         self.identity_publisher_launched = false;
         let profile = self.effective_profile();
@@ -416,14 +397,8 @@ impl Instance {
         }
     }
 
-    /// Pre-trust this session's worktree in the agent's host config so it does
-    /// not open on a folder-trust prompt.
-    ///
-    /// Sandboxed sessions are handled by `build_container_config` against a
-    /// staged config; this writes to the user's real one, so it is opt-in via
-    /// `session.pre_trust_agent_folders`. The path is canonicalized because
-    /// agents key trust on the resolved directory, not the symlink used to
-    /// reach it.
+    /// Pre-trust this session's worktree in the agent's host config so it does not open on a
+    /// folder-trust prompt.
     fn ensure_host_folder_trust(&self, agent: Option<&'static crate::agents::AgentDef>) {
         if self.is_sandboxed() {
             return;
@@ -453,11 +428,7 @@ impl Instance {
         }
     }
 
-    /// Install a sidecar agent's host hooks. For agents whose hooks are scoped
-    /// to a user-selected named agent (`selected_agent_hooks`, e.g. Kiro), and
-    /// when the user actually selected one and the merge setting is on, install
-    /// into that agent's own config file and stop. Otherwise install into the
-    /// agent's standalone config and run any `post_install_host` follow-up.
+    /// Install a sidecar agent's host hooks.
     fn install_sidecar_host_hooks(
         &self,
         sidecar: &'static crate::agents::SidecarHooks,
@@ -625,9 +596,8 @@ impl Instance {
     }
 }
 
-/// Resolved settings targets already warned about as read-only. Entries live
-/// for the process, so a target that turns writable and later read-only again
-/// is only logged at debug.
+/// Resolved settings targets already warned about as read-only. Entries live for the process, so a
+/// target that turns writable and later read-only again is only logged at debug.
 static READ_ONLY_SETTINGS: std::sync::LazyLock<
     std::sync::Mutex<std::collections::HashSet<std::path::PathBuf>>,
 > = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashSet::new()));
@@ -640,8 +610,6 @@ fn is_read_only_filesystem(error: &anyhow::Error) -> bool {
 }
 
 /// The resolved target to report, or `None` when it has already been reported.
-/// Keyed on the target, so a replaced symlink reports once for its new file. A
-/// missing file resolves through its parent directory.
 fn first_read_only_report(path: &std::path::Path) -> Option<std::path::PathBuf> {
     let key = std::fs::canonicalize(path).unwrap_or_else(|_| {
         path.parent()
@@ -738,11 +706,9 @@ mod tests {
         }
     }
 
-    /// The cases above build their own errors, so they cannot show that a real
-    /// `install_hooks` failure carries a downcastable `io::Error` at all, which
-    /// is what the classification rests on. A genuinely read-only filesystem is
-    /// not portable to make, so this drives a failure any machine can produce
-    /// and asserts the chain is reachable and classified as not read-only.
+    /// The cases above build their own errors, so they cannot show that a real `install_hooks`
+    /// failure carries a downcastable `io::Error` at all, which is what the classification rests
+    /// on.
     #[test]
     fn a_real_install_hooks_error_keeps_its_io_error() {
         let dir = tempfile::tempdir().unwrap();

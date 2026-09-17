@@ -3,13 +3,7 @@
 use super::*;
 
 impl Instance {
-    /// Reload this instance from disk before a launch that would re-persist
-    /// peer-writable fields. Refreshes `agent_session_id` (poller-observed)
-    /// and `resume_intent` (user-set) from disk; carries runtime-only fields
-    /// (`#[serde(skip)]` + `source_profile`) onto the disk snapshot. Closes
-    /// the ~2s `status_poll_loop` lag window in which a CLI peer
-    /// `set-session-id` would otherwise be silently overwritten. No-op on
-    /// storage error or if the row is gone from disk.
+    /// Reload this instance from disk before a launch that would re-persist peer-writable fields.
     pub(super) fn reconcile_from_disk(&mut self) {
         if let Err(error) = self.try_reconcile_from_disk() {
             tracing::warn!(target: "session.store",
@@ -36,13 +30,8 @@ impl Instance {
             return Ok(false);
         };
 
-        // Carry runtime-only fields (`#[serde(skip)]`) and locally-mutated
-        // launch-time state from `self` onto the disk snapshot. This carry
-        // set is not required to match `merge_runtime_fields` exactly: each
-        // reconciliation path feeds a different consumer, and each consumer
-        // rewrites the runtime field it observes before reading
-        // (`pane_dead_observed` is rewritten by the TUI's status poller
-        // before its consumers read).
+        // Carry runtime-only fields (`#[serde(skip)]`) and locally-mutated launch-time state from
+        // `self` onto the disk snapshot.
         let disk_has_newer_lifecycle = disk.lifecycle_generation > self.lifecycle_generation;
         if !disk_has_newer_lifecycle {
             disk.last_error_check = self.last_error_check;
@@ -61,12 +50,7 @@ impl Instance {
         disk.source_profile = std::mem::take(&mut self.source_profile);
         disk.ever_confirmed_present = self.ever_confirmed_present;
         disk.unknown_since = self.unknown_since;
-        // `before_start_env` is `#[serde(skip)]`, so the disk snapshot always
-        // has it empty. Carry the live value forward; otherwise this reload
-        // (which runs before every launch) would wipe the host-minted cache and
-        // make `get_container_for_instance` re-run the before_start hook on each
-        // relaunch of an already-running container, defeating the one-time
-        // backfill and re-minting credentials needlessly.
+        // `before_start_env` is `#[serde(skip)]`, so the disk snapshot always has it empty.
         if let (Some(disk_sandbox), Some(runtime_sandbox)) =
             (disk.sandbox_info.as_mut(), self.sandbox_info.as_ref())
         {
@@ -77,13 +61,8 @@ impl Instance {
         Ok(true)
     }
 
-    /// Closes the data-loss window where `/clear` writes the sidecar but
-    /// the daemon crashes before the next poll tick persists it: without
-    /// this step, the next launch's wipe destroys the fresh sid.
-    ///
-    /// Claude-only (sole sidecar tool); `Default` intent only (`Use(X)`
-    /// and `Cleared` override); excluded sids skipped (cascade re-poison
-    /// guard).
+    /// Closes the data-loss window where `/clear` writes the sidecar but the daemon crashes before
+    /// the next poll tick persists it.
     pub(super) fn reconcile_sidecar_into_disk(&mut self) {
         if !matches!(
             self.resolved_capture_backend(),
@@ -228,10 +207,7 @@ mod tests {
     #[test]
     #[serial]
     fn reconcile_from_disk_preserves_before_start_env() {
-        // `before_start_env` is `#[serde(skip)]`, so the disk snapshot has
-        // it empty. reconcile_from_disk (run before every launch) must carry
-        // the live host-minted cache forward, or an already-running
-        // container would re-mint on every relaunch.
+        // `before_start_env` is `#[serde(skip)]`, so the disk snapshot has it empty.
         let temp = tempdir().unwrap();
         let _home_guard = crate::session::test_support::isolate_home(temp.path());
 
@@ -276,13 +252,8 @@ mod tests {
     #[test]
     #[serial]
     fn reconcile_from_disk_preserves_unknown_streak_tracking() {
-        // `ever_confirmed_present` and `unknown_since` are both
-        // `#[serde(skip)]`, so the disk snapshot always has them at their
-        // defaults (`false` / `None`). reconcile_from_disk (run before
-        // every launch) must carry the live values forward, or a
-        // previously-confirmed-present session would lose its long
-        // tolerance window and drop back to the short never-present one
-        // on every relaunch.
+        // `ever_confirmed_present` and `unknown_since` are both `#[serde(skip)]`, so the disk
+        // snapshot always has them at their defaults (`false` / `None`).
         let temp = tempdir().unwrap();
         let _home_guard = crate::session::test_support::isolate_home(temp.path());
 

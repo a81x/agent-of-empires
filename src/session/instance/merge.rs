@@ -27,9 +27,7 @@ impl Instance {
         self.capture_started_at = src.capture_started_at;
     }
 
-    /// Same fields as `merge_post_start`. Resume-probe failure markers are
-    /// copied only when the sid still matches so peer poller writes that land
-    /// between phase 2 and phase 3 of the restart remain authoritative.
+    /// Same fields as `merge_post_start`.
     pub fn merge_post_restart(&mut self, src: &Self) {
         if src.lifecycle_generation < self.lifecycle_generation {
             return;
@@ -59,10 +57,7 @@ impl Instance {
                 self.agent_session_id = src.agent_session_id.clone();
             }
         } else if src.session_id_poller_is_running() {
-            // A concurrent launch already published a third generation. The
-            // restarted poller reloads tmux metadata on every tick, so keep
-            // that live worker and let it rebind to the newer generation
-            // without overwriting the newer durable identity.
+            // A concurrent launch already published a third generation.
             self.session_id_poller = src.session_id_poller.clone();
         }
         if generation_can_merge && marker_unchanged && self.agent_session_id == src.agent_session_id
@@ -76,25 +71,8 @@ impl Instance {
         }
     }
 
-    /// Carry runtime-only state across a storage reload without constructing a
-    /// lifecycle snapshot from two different generations.
-    ///
-    /// `status` and `idle_entered_at` ARE generation-governed: a strictly newer
-    /// disk snapshot (a peer's `commit_reserved_lifecycle_status`) must win over
-    /// the stale in-memory copy. A Purge reservation is the exception: its
-    /// generation bump deliberately leaves the durable status unchanged, so an
-    /// in-memory `Deleting` overlay stays authoritative until the result
-    /// arrives. `last_error`/`last_error_check`,
-    /// `ever_confirmed_present`, and
-    /// `unknown_since` are NOT generation-governed: no lifecycle writer
-    /// (`reserve_/commit_/advance_lifecycle_generation`) produces an
-    /// authoritative peer value for them. The reachability sentinels are
-    /// serde-skipped, and the only on-disk error value is the one
-    /// `reconcile_from_disk` round-trips back from this same in-memory poller
-    /// state. The in-memory values therefore always win. Gating them on the
-    /// generation would let an unrelated bump discard a poller's confirmed
-    /// reachability and unknown streak, or a freshly derived
-    /// `TMUX_SESSION_GONE_ERROR`, leaving the row stuck at `Error`+`None`.
+    /// Carry runtime-only state across a storage reload without constructing a lifecycle snapshot
+    /// from two different generations.
     pub(crate) fn merge_runtime_from_reload(&mut self, previous: &Self) {
         let purge_in_flight = previous.status == Status::Deleting
             && self.lifecycle_reservation_is_owned(
@@ -105,11 +83,8 @@ impl Instance {
             self.status = previous.status;
             self.idle_entered_at = previous.idle_entered_at;
         }
-        // Reachability sentinels and detection bookkeeping are runtime-only
-        // just like poller errors. A lifecycle generation bump does not make
-        // serde-skipped defaults from disk authoritative, and the TUI's
-        // heartbeat reload lands between two poll cycles: dropping `detection`
-        // here loses the proposal awaiting its confirming poll (#3642).
+        // Reachability sentinels and detection bookkeeping are runtime-only just like poller
+        // errors.
         self.ever_confirmed_present = previous.ever_confirmed_present;
         self.unknown_since = previous.unknown_since;
         self.detection = previous.detection;
@@ -123,11 +98,8 @@ impl Instance {
         self.acp_load_session_capable = previous.acp_load_session_capable;
     }
 
-    /// Carry every in-process field from a pre-move live row onto the
-    /// committed disk-derived candidate published by `HomeView`.
-    /// Adding a new `#[serde(skip)]` field requires deciding whether
-    /// `merge_runtime_from_reload`, this function, and
-    /// `server::merge_runtime_fields` must carry it.
+    /// Carry every in-process field from a pre-move live row onto the committed disk-derived
+    /// candidate published by `HomeView`.
     pub(crate) fn merge_runtime_for_profile_move(&mut self, previous: &Self) {
         self.merge_runtime_from_reload(previous);
         self.live_status_baseline = previous.live_status_baseline;
@@ -144,15 +116,7 @@ impl Instance {
         }
     }
 
-    /// Splice TUI-mirrored, persisted fields from `src` onto `self`. Used by
-    /// `HomeView::save` for fields the TUI is the canonical disk writer of
-    /// (the daemon's `status_poll_loop` keeps these in memory only). The
-    /// server's `send_message` respawn briefly writes `status` via
-    /// `apply_post_restart_sync`; the resulting transient mis-paint
-    /// converges on the next `status_poll` tick.
-    /// User-action fields (archived/favorited/snoozed/title/group_path/...)
-    /// are NOT here; they go through `apply_user_action` per-action so peer
-    /// writers (CLI) cannot be clobbered by a stale TUI snapshot.
+    /// Splice TUI-mirrored, persisted fields from `src` onto `self`.
     pub fn merge_from_tui(&mut self, src: &Self) {
         if src.lifecycle_generation >= self.lifecycle_generation {
             self.lifecycle_generation = src.lifecycle_generation;
@@ -165,36 +129,16 @@ impl Instance {
                 self.settle_archived_status();
             }
         }
-        // Launch-config fields are TUI-authoritative and only mutated after
-        // creation by the restart dialog (engine / command / args swap). They
-        // have no peer writer, so a plain copy is safe. Syncing them here is
-        // required: `reconcile_from_disk`'s `*self = disk` reload runs on every
-        // launch, so a swap that never reached disk is silently reverted and
-        // the session respawns with its original tool. See #switching-tools.
+        // Launch-config fields are TUI-authoritative and only mutated after creation by the restart
+        // dialog (engine / command / args swap).
         self.tool = src.tool.clone();
         self.command = src.command.clone();
         self.extra_args = src.extra_args.clone();
     }
 
-    /// Move this row to a different `tool` (the TUI restart dialog's engine
-    /// swap), parking the outgoing agent's session ids and picking up the
-    /// incoming agent's, if it has been here before.
-    ///
-    /// Session ids live in per-agent namespaces: a Claude UUID means nothing
-    /// to codex or gemini, but `is_valid_session_id` accepts any shape, so a
-    /// carried-over sid makes the next launch emit `--resume <foreign-sid>`
-    /// and the new engine starts by failing to resume. #3077 made the swap
-    /// reach disk, which is what exposed this. The rest of what this clears
-    /// mirrors the structured-view agent switch (`POST /api/acp/:id/switch`).
-    ///
-    /// A no-op when `new_tool` is the current tool, so a caller may apply it
-    /// to a disk row and an in-memory row independently without the second
-    /// call double-stashing.
-    ///
-    /// Callers must persist the result themselves: `merge_from_tui`
-    /// deliberately does not sync these fields (the capture pollers own
-    /// `agent_session_id` through CAS writes), so an in-memory-only swap is
-    /// reverted by `reconcile_from_disk` on the next launch.
+    /// Move this row to a different `tool` (the TUI restart dialog's engine swap), parking the
+    /// outgoing agent's session ids and picking up the incoming agent's, if it has been here
+    /// before.
     pub(crate) fn swap_tool(&mut self, new_tool: &str) {
         if new_tool == self.tool {
             return;
@@ -210,21 +154,12 @@ impl Instance {
                 .insert(self.tool.clone(), outgoing);
         }
         self.tool = new_tool.to_string();
-        // The alias is resolved per-tool, so the outgoing tool's answer cannot
-        // survive: kept, it points `resolved_agent` at the wrong built-in
-        // outright (a `codex-personal` -> `claude-personal` swap would keep
-        // detecting as codex); cleared, the row lands in the same
-        // empty-`detect_as` state a session built before its tool joined
-        // `[session.agent_detect_as]` does. Re-resolve against the same
-        // process-global registry `effective_detect_as` reads, so this stays a
-        // lookup rather than a config load, and the row ends up exactly as if
-        // it had been built on the new tool.
+        // The alias is resolved per-tool, so the outgoing tool's answer cannot survive.
         self.detect_as =
             tmux::status_rules::effective_detect_as(&self.source_profile, new_tool, "")
                 .into_owned();
-        // Consumed, not copied: the row owns exactly one live conversation per
-        // agent, and leaving the entry behind would let a later swap restore an
-        // id this session has since replaced.
+        // Consumed, not copied: the row owns exactly one live conversation per agent, and leaving
+        // the entry behind would let a later swap restore an id this session has since replaced.
         let restored = self
             .prior_tool_session_ids
             .remove(new_tool)
@@ -242,48 +177,16 @@ impl Instance {
         // Same for the pinned model: `claude-opus-4-7` means nothing to codex,
         // and it is re-injected on every spawn, so it has to go too.
         self.agent_model = None;
-        // `acp_mode_id` deliberately stays. It is the session's approval
-        // posture, and clearing it does not fall back to "default": the spawn
-        // path's mode gate is `acp_mode_id.is_some() || yolo_mode`, whose
-        // `None` arm resolves the adapter's *bypass* mode id, so dropping an
-        // explicit restrictive mode from a `yolo_mode` row would silently
-        // escalate the new agent to auto-approve. An unrecognized mode id is a
-        // warn-and-continue no-op instead, which is the safe failure. The
-        // structured-view agent switch passes it through for the same reason.
+        // `acp_mode_id` deliberately stays. It is the session's approval posture, and clearing it
+        // does not fall back to "default".
         self.import_pending = None;
         self.fork_pending = None;
-        // The pinned structured-view agent belongs to the old tool; clearing it
-        // lets the spawn path pick the new tool's default agent instead of
-        // silently keeping the old backend alive across the swap.
+        // The pinned structured-view agent belongs to the old tool.
         self.agent_name = None;
     }
 
-    /// Apply a passively-detected status transition to a disk row. Touches
-    /// the same three fields as [`Self::merge_from_tui`] (`status`,
-    /// `idle_entered_at`, `last_accessed_at`); the real distinction is the
-    /// API shape (a minimal [`PassiveStatusPatch`] rather than a full
-    /// `Self`) and the merge policy on `last_accessed_at`: `merge_from_tui`
-    /// takes the monotone max, this drops the incoming `last_accessed_at`
-    /// outright when disk already has a strictly newer one, so a
-    /// poller-produced patch loses to a newer explicit user touch instead of
-    /// racing it.
-    ///
-    /// `status`/`idle_entered_at` apply independently of timestamp only while
-    /// the patch's lifecycle generation is current. This prevents an old pane
-    /// poll from repainting a newer Stop/Restart/Archive commit.
-    ///
-    /// The `>=` guard on `last_accessed_at` compares `chrono::Utc::now()`
-    /// values, which delegate to `SystemTime::now()` (wall clock, not
-    /// monotonic). Under an NTP rewind, a genuinely newer live observation
-    /// stamped after the rewind can compare less than a value stamped
-    /// before it and be silently dropped. Best-effort monotone, not a hard
-    /// guarantee; the next poll tick converges regardless.
-    ///
-    /// A `last_accessed_at` older-or-equal to disk is silently dropped
-    /// (the `>=` guard) with a `session.store` debug log at drop time,
-    /// while `status` and `idle_entered_at` still apply unconditionally.
-    /// Callers relying on the observable `last_accessed_at` change must
-    /// re-read the field after `merge_passive_status_patch` returns.
+    /// Apply a passively-detected status transition to a disk row. Touches the same three fields as
+    /// [`Self::merge_from_tui`] (`status`, `idle_entered_at`, `last_accessed_at`).
     pub(crate) fn merge_passive_status_patch(&mut self, id: &str, patch: &PassiveStatusPatch) {
         if patch.lifecycle_generation < self.lifecycle_generation {
             tracing::debug!(
@@ -298,10 +201,8 @@ impl Instance {
         self.lifecycle_generation = patch.lifecycle_generation;
         self.status = patch.status;
         self.idle_entered_at = patch.idle_entered_at;
-        // A patch decided from a pane observed before a concurrent archive
-        // landed is stale by construction: the archive tore the tmux down.
-        // Writing its Running/Waiting verbatim would resurrect the frozen
-        // pending-permission row the archived poll guard settles.
+        // A patch decided from a pane observed before a concurrent archive landed is stale by
+        // construction: the archive tore the tmux down.
         if self.is_archived() {
             self.settle_archived_status();
         }
@@ -321,16 +222,12 @@ impl Instance {
         self.last_accessed_at = Some(incoming);
     }
 
-    /// Merge the complete user-requested delta for a cross-profile move while
-    /// preserving unrelated fields refreshed by a peer after `pre` was read.
-    /// A tool change is one atomic state transition: the tool name and every
-    /// conversation field staged by `swap_tool` must travel together.
+    /// Merge the complete user-requested delta for a cross-profile move while preserving unrelated
+    /// fields refreshed by a peer after `pre` was read.
     pub(crate) fn merge_profile_move_diff(&mut self, pre: &Self, post: &Self) {
         self.merge_user_action_diff(pre, post);
         if pre.tool != post.tool {
             // Apply the requested transition to the freshly locked disk row.
-            // The TUI post snapshot can carry parked session ids captured
-            // before a poller or peer refreshed the durable conversation state.
             self.swap_tool(&post.tool);
         }
         if pre.command != post.command {
@@ -341,16 +238,7 @@ impl Instance {
         }
     }
 
-    /// Per-field-conditional splice: copy `post.X` onto `self.X` only when
-    /// `pre.X != post.X`. Peer writes to fields the mutation did not touch
-    /// survive even when the field is in the user-action set.
-    /// `last_accessed_at` is monotone-max (no diff guard).
-    /// `source_profile` is excluded from this splice. Same-profile actions call
-    /// this directly; cross-profile moves call it through
-    /// `merge_profile_move_diff` and assign `source_profile` separately.
-    /// Post-splice rules enforce the same cross-field invariants the
-    /// per-mutation methods enforce (archive XOR favorite, touch unarchives)
-    /// so concurrent peer writes cannot violate them.
+    /// Per-field-conditional splice: copy `post.X` onto `self.X` only when `pre.X != post.X`.
     pub fn merge_user_action_diff(&mut self, pre: &Self, post: &Self) {
         debug_assert_eq!(
             pre.source_profile, post.source_profile,
@@ -389,27 +277,14 @@ impl Instance {
         if pre.color != post.color {
             self.color = post.color.clone();
         }
-        // Worktree workdir edit (move dir / rename branch) mutates these two;
-        // both the TUI and the CLI can write them, so they go through the
-        // same conditional-diff path as the triage fields. See #1723.
+        // Worktree workdir edit (move dir / rename branch) mutates these two.
         if pre.project_path != post.project_path {
             self.project_path = post.project_path.clone();
         }
         if pre.worktree_info != post.worktree_info {
             self.worktree_info = post.worktree_info.clone();
         }
-        // `workspace_info` deliberately has NO arm. Attaching a project (#3103)
-        // converts the session into a workspace, but it does that through
-        // `Storage::update` (which takes both lock layers) rather than through a
-        // user-action diff, so the value on disk is already authoritative here.
-        // Assigning `post`'s copy would let a stale TUI snapshot clobber a
-        // conversion a peer landed between the `pre` snapshot and this merge.
-        // `status` deliberately has no arm. It is runtime state, not user
-        // intent; copying it from a stale TUI snapshot could overwrite a
-        // lifecycle transition loaded under the storage lock.
-        // Lifecycle ownership is intentionally never spliced from a TUI
-        // snapshot. Only transition code holding the per-instance flock may
-        // mutate the durable reservation and generation.
+        // `workspace_info` deliberately has NO arm.
         self.last_accessed_at = self.last_accessed_at.max(post.last_accessed_at);
 
         let archived_changed = pre.archived_at != post.archived_at;
@@ -440,30 +315,18 @@ impl Instance {
             self.archived_at = None;
             self.snoozed_until = None;
         }
-        // touch_last_accessed(): clears archived + snoozed + idle-dormant.
-        // Does NOT clear favorite or pin (both are explicit user-surfacing
-        // signals, not sink states). Mirrors touch_last_accessed() so the
-        // wake-from-dormancy invariant holds on the concurrent-writer merge
-        // path too, not just direct touches (#1689).
+        // touch_last_accessed(): clears archived + snoozed + idle-dormant. Does NOT clear favorite
+        // or pin (both are explicit user-surfacing signals, not sink states).
         if touched {
             self.archived_at = None;
             self.snoozed_until = None;
             self.idle_dormant_since = None;
         }
-        // Final-state invariant: archive is the strongest dismiss and
-        // wins over snooze. The per-mutation rules above clear other
-        // flags on the change side, but the diff can also leave disk
-        // archived (pre-existing) AND snoozed (added by post); without
-        // this check the row would persist both and the web sidebar's
-        // tier comparator (which assumes exactly one active triage
-        // state) would render contradictory chips. See #1581.
+        // Final-state invariant: archive is the strongest dismiss and wins over snooze.
         if self.archived_at.is_some() {
             self.snoozed_until = None;
         }
-        // archive(): a row whose tmux archive tore down (#1868) cannot hold a
-        // live-interaction status. `status` has no splice arm above, so the
-        // Idle that `archive()` settled on `post` never travels here on its
-        // own; settle disk's own copy instead, whichever writer archived it.
+        // archive(): a row whose tmux archive tore down cannot hold a live-interaction status.
         if self.is_archived() {
             self.settle_archived_status();
         }
@@ -497,11 +360,8 @@ mod tests {
 
     #[test]
     fn test_merge_user_action_diff_archive_settles_live_status_on_disk() {
-        // The TUI archives through this splice, which deliberately has no
-        // `status` arm, so the Idle that `archive()` settled in memory never
-        // reaches disk on its own. The disk row must still leave the merge
-        // settled: an archived row has no tmux behind it, so a persisted
-        // Waiting is a pending-permission row nothing can clear.
+        // The TUI archives through this splice, which deliberately has no `status` arm, so the Idle
+        // that `archive()` settled in memory never reaches disk on its own.
         for status in [Status::Running, Status::Waiting, Status::Starting] {
             let mut pre = Instance::new("t", "/tmp");
             pre.status = status;
@@ -686,10 +546,8 @@ mod tests {
 
     #[test]
     fn runtime_reload_preserves_poller_gone_error_across_generation_bump() {
-        // A stop/unarchive bumps the disk generation with status: None, so the
-        // reloaded row carries no last_error. The poller's freshly derived
-        // TMUX_SESSION_GONE_ERROR (in memory) must survive, or the row freezes
-        // at Error+None and the stopped preview never renders (#3230).
+        // A stop/unarchive bumps the disk generation with status: None, so the reloaded row carries
+        // no last_error.
         let mut previous = Instance::new("session", "/tmp/test");
         previous.lifecycle_generation = 7;
         previous.status = Status::Error;
@@ -1003,21 +861,6 @@ mod tests {
     #[test]
     #[serial_test::serial]
     fn test_merge_diff_passive_transition_stamp_does_not_wipe_concurrent_sink_state() {
-        // #3465: a passive status transition restamped last_accessed_at
-        // (update_status_with_metadata wrote Some(now) on every detected
-        // transition, with no user gesture behind it), and the stamp
-        // reached disk through PassiveStatusPatch while a user action was
-        // in flight. The writer's stale pre snapshot then made the
-        // deliberate touched arm read the advance as a peer touch and wipe
-        // sink state the user had just set. That arm is correct for real
-        // gestures (pinned by test_merge_diff_peer_touch_clears_tui_archive,
-        // the messaging-unarchives rule); the poller stamp was the lie.
-        //
-        // Driven through the real transition path: the
-        // update_status_with_metadata call below detects a genuine
-        // Idle -> Error flip (session forced Absent, see #2936), which on
-        // the pre-fix tree restamped last_accessed_at between the pre
-        // snapshot and the merge.
         type SinkCase = (&'static str, fn(&mut Instance), fn(&Instance) -> bool);
         let cases: &[SinkCase] = &[
             // The issue's headline victim: a concurrent archive.
@@ -1037,10 +880,8 @@ mod tests {
             pre.status = Status::Idle;
             pre.last_accessed_at = Some(user_touch);
 
-            // One passive poller tick observes Idle -> Error. On the
-            // pre-fix tree this restamped last_accessed_at on the row that
-            // lands on disk; post-fix it leaves the user-gesture stamp
-            // alone and only updates idle_entered_at bookkeeping.
+            // One passive poller tick observes Idle -> Error. On the pre-fix tree this restamped
+            // last_accessed_at on the row that lands on disk.
             let mut disk = pre.clone();
             let _cache = force_session_absent();
             disk.update_status_with_metadata(None, None);
@@ -1062,12 +903,8 @@ mod tests {
 
     #[test]
     fn test_merge_diff_peer_archive_clears_concurrent_tui_snooze() {
-        // The web/TUI/CLI contract treats pinned/archived/snoozed as
-        // mutually exclusive (the sidebar tier comparator assumes a
-        // single active triage state, see #1581). When a TUI snooze
-        // races a peer archive, archive wins: snooze is a temporary
-        // sink and archive is the indefinite one, so leaving both set
-        // would surface contradictory triage state on the next render.
+        // The web/TUI/CLI contract treats pinned/archived/snoozed as mutually exclusive (the
+        // sidebar tier comparator assumes a single active triage state, see #1581).
         let pre = Instance::new("s", "/tmp/x");
         let mut post = pre.clone();
         post.snooze(15);
@@ -1087,14 +924,8 @@ mod tests {
     #[test]
     #[serial_test::serial]
     fn test_merge_diff_passive_transition_stamp_does_not_wake_dormant_row() {
-        // Dormancy is the third field the touched arm wipes (#3465), with
-        // one structural difference from the archive/snooze cases: it is
-        // never spliced from post, so the wipe only hits a value already
-        // on the row. Seed it on the base instance, drive one passive
-        // poller tick through the real transition path (session forced
-        // Absent, see #2936), and confirm an unrelated user action does
-        // not wake the row just because the pre-fix tree restamped
-        // last_accessed_at in between.
+        // Dormancy is the third field the touched arm wipes, with one structural difference from
+        // the archive/snooze cases.
         let mut pre = Instance::new("s", "/tmp/x");
         pre.live_status_baseline = Some(Status::Idle);
         pre.status = Status::Idle;
@@ -1285,11 +1116,8 @@ mod tests {
 
     #[test]
     fn test_merge_passive_status_patch_settles_live_status_on_archived_row() {
-        // A poll tick that observed the pane before a concurrent archive
-        // landed flushes its patch after it. The archive already tore the
-        // tmux down, so the observation is stale by construction; writing
-        // it verbatim would resurrect the frozen-Waiting row the archive
-        // guard settles, and nothing would revisit it until the next tick.
+        // A poll tick that observed the pane before a concurrent archive landed flushes its patch
+        // after it.
         for status in [Status::Running, Status::Waiting, Status::Starting] {
             let mut disk = Instance::new("session", "/tmp/test");
             disk.status = Status::Idle;
@@ -1322,10 +1150,7 @@ mod tests {
 
     #[test]
     fn test_merge_passive_status_patch_never_fabricates_last_accessed_at() {
-        // The source Instance was never touched by a user (last_accessed_at
-        // itself None); the patch must preserve that rather than fabricate
-        // a stamp, or a session that transitions status before anyone
-        // attaches gains a spurious "touched" signal.
+        // The source Instance was never touched by a user (last_accessed_at itself None).
         let mut disk = Instance::new("session", "/tmp/test");
         disk.status = Status::Starting;
         disk.last_accessed_at = None;
@@ -1348,10 +1173,8 @@ mod tests {
     #[test]
     fn test_merge_passive_status_patch_status_and_idle_entered_at_apply_even_when_last_accessed_at_is_stale(
     ) {
-        // A peer (CLI, TUI apply_user_action) touched last_accessed_at more
-        // recently than the passive patch's snapshot: only last_accessed_at
-        // is guarded. status/idle_entered_at still apply, or a real status
-        // transition would silently strand on disk until the next one.
+        // A peer (CLI, TUI apply_user_action) touched last_accessed_at more recently than the
+        // passive patch's snapshot: only last_accessed_at is guarded.
         let mut disk = Instance::new("session", "/tmp/test");
         let peer_touch = Utc::now();
         disk.status = Status::Running;
@@ -1397,17 +1220,12 @@ mod tests {
         };
         disk.merge_passive_status_patch(&disk.id.clone(), &patch);
 
-        // Guard is `>=`: equal timestamps are not a real advance, so the
-        // patch's last_accessed_at is dropped. The observable value stays
-        // equal to `ts` either way (disk == incoming), so the assertion
-        // does not change; the point of the guard is skipping the write.
+        // Guard is `>=`: equal timestamps are not a real advance, so the patch's last_accessed_at
+        // is dropped.
         assert_eq!(disk.last_accessed_at, Some(ts));
     }
 
-    /// Count the guard's drop-event log lines. `logs_assert` hands us lines
-    /// already scoped to the calling test's span, and the message is unique to
-    /// the drop branch, so matching the substring cannot be inflated by other
-    /// `session.store` events.
+    /// Count the guard's drop-event log lines.
     fn drop_log_count(lines: &[&str]) -> usize {
         lines
             .iter()
@@ -1416,19 +1234,9 @@ mod tests {
     }
 
     /// Closes I4 from #2756: the equal-timestamp guard's observability gap.
-    /// Under `disk == incoming` the drop branch and the write branch leave the
-    /// same observable `last_accessed_at`, so `boundary_equal_is_a_noop` above
-    /// cannot prove the drop branch ran. Here `disk == incoming` must fire the
-    /// `session.store` drop log exactly once.
     #[traced_test]
     #[test]
     fn test_merge_passive_status_patch_last_accessed_at_boundary_equal_logs_drop_event() {
-        // Tracing caches per-callsite `Interest` globally on first hit, so a
-        // parallel test that reaches the drop callsite first without a
-        // capturing subscriber pins it to `Interest::never()` and this
-        // capture silently sees zero lines. Re-evaluate the (already
-        // registered) callsite against `traced_test`'s subscriber first. Same
-        // race `run_with_capture` documents in session::deletion.
         tracing::callsite::rebuild_interest_cache();
 
         let mut disk = Instance::new("session", "/tmp/test");
@@ -1449,19 +1257,13 @@ mod tests {
         });
     }
 
-    /// Closes I4 from #2756 (write side): a strictly newer incoming timestamp
-    /// skips the guard, so the drop log must fire zero times and the value is
-    /// written. Pairing the zero-count write case with the exactly-once drop
-    /// case above proves the log is a faithful drop-vs-write signal, not a line
-    /// that fires regardless. Uses an explicit minute offset (as
-    /// `boundary_newer_applies` does) to avoid a same-instant flake.
+    /// Closes I4 from #2756 (write side): a strictly newer incoming timestamp skips the guard, so
+    /// the drop log must fire zero times and the value is written.
     #[traced_test]
     #[test]
     fn test_merge_passive_status_patch_last_accessed_at_boundary_newer_no_drop_event() {
-        // Same callsite-interest race as its paired test above. This one
-        // asserts zero drops, so a lost race would make it pass for the
-        // wrong reason; rebuild so the pair stays a faithful drop-vs-write
-        // signal.
+        // Same callsite-interest race as its paired test above. This one asserts zero drops, so a
+        // lost race would make it pass for the wrong reason.
         tracing::callsite::rebuild_interest_cache();
 
         let mut disk = Instance::new("session", "/tmp/test");
@@ -1587,9 +1389,7 @@ mod tests {
 
     #[test]
     fn test_merge_from_tui_settles_live_status_on_archived_row() {
-        // `save()` folds a TUI snapshot's status onto disk. When a peer
-        // archived the row in between, the snapshot's Running/Waiting is a
-        // pre-archive observation of a pane that no longer exists.
+        // `save()` folds a TUI snapshot's status onto disk.
         for status in [Status::Running, Status::Waiting, Status::Starting] {
             let mut stored = Instance::new("session", "/tmp/test");
             stored.status = Status::Idle;
@@ -1680,10 +1480,7 @@ mod tests {
 
     #[test]
     fn test_merge_from_tui_syncs_launch_config_swap() {
-        // The restart dialog mutates tool/command/extra_args in the TUI's
-        // in-memory row. save() -> merge_from_tui must carry those onto disk,
-        // otherwise reconcile_from_disk reverts the swap on the next launch and
-        // the session respawns with its original tool.
+        // The restart dialog mutates tool/command/extra_args in the TUI's in-memory row.
         let mut stored = Instance::new("session", "/tmp/test");
         stored.tool = "claude".to_string();
         stored.command = String::new();
@@ -1719,14 +1516,9 @@ mod tests {
         assert_eq!(stored.created_at, immutable_created);
     }
 
-    /// An engine swap parks the outgoing agent's conversation ids under its own
-    /// name and picks the incoming agent's back up, so claude -> pi -> claude
-    /// lands in the original Claude conversation instead of a third one. The
-    /// per-agent selectors go; the approval posture stays (clearing it resolves
-    /// the adapter's bypass mode on a `yolo_mode` row).
-    ///
-    /// Replaces a test that hand-assigned `agent_session_id = None` and then
-    /// asserted it was None, which could not fail.
+    /// An engine swap parks the outgoing agent's conversation ids under its own name and picks the
+    /// incoming agent's back up, so claude -> pi -> claude lands in the original Claude
+    /// conversation instead of a third one.
     #[test]
     fn swap_tool_parks_and_restores_per_tool_session_ids() {
         let mut inst = Instance::new("Test", "/home/user/project");
@@ -1784,9 +1576,8 @@ mod tests {
         assert!(!inst.prior_tool_session_ids.contains_key("claude"));
     }
 
-    /// `swap_tool` re-resolves the alias for the incoming tool. The alias is
-    /// per-tool, so carrying the outgoing tool's value forward aims every
-    /// launch-time reader at the wrong built-in.
+    /// `swap_tool` re-resolves the alias for the incoming tool. The alias is per-tool, so carrying
+    /// the outgoing tool's value forward aims every launch-time reader at the wrong built-in.
     #[test]
     fn swap_tool_reresolves_detect_as() {
         const PROFILE: &str = "detect-as-swap-test";

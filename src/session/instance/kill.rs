@@ -3,14 +3,8 @@
 use super::*;
 
 impl Instance {
-    /// Persist the conversation Pi's extension last published, before the
-    /// sidecar is cleaned up with the rest of the instance dir.
-    ///
-    /// Without this a CLI-only lifecycle loses a `/new`: no poller is running
-    /// to observe it, and by the next launch the sidecar is gone.
-    /// Record the transcript path for a conversation whose id has not moved,
-    /// which is the common case: the pane published a path this launch and the
-    /// row was already on that conversation.
+    /// Persist the conversation Pi's extension last published, before the sidecar is cleaned up
+    /// with the rest of the instance dir.
     fn persist_pi_session_path(&self, storage: &crate::session::storage::Storage) {
         let Some(path) = self.pi_published_session_path() else {
             return;
@@ -73,20 +67,8 @@ impl Instance {
         }
     }
 
-    /// Tear down the current tmux session cleanly so a fresh
-    /// `start_with_size_opts` can recreate it.
-    ///
-    /// `remain-on-exit on` keeps the tmux session alive after the agent
-    /// process exits, leaving a frozen pane. The plain kill-session +
-    /// new-session flow can race against the session cache
-    /// (kill_process_tree on a defunct pid stalls on macOS, and the
-    /// subsequent kill can run while start's exists() check still sees the
-    /// cached entry), leaving the dead pane in place. Respawning the pane
-    /// into a shell first puts it back in a live state so the kill path
-    /// proceeds cleanly. The kill below then sees a live pane and tears it
-    /// down. Caller is responsible for the subsequent
-    /// `start_with_size_opts` to recreate the session with the agent
-    /// command.
+    /// Tear down the current tmux session cleanly so a fresh `start_with_size_opts` can recreate
+    /// it.
     pub(super) fn kill_clean_locked(&self) -> Result<()> {
         let session = self.tmux_session()?;
         if !session.exists() {
@@ -173,11 +155,8 @@ impl Instance {
         }
     }
 
-    /// Kill every tmux session owned by this instance (agent, web
-    /// terminal, container terminal, tool sub-sessions). Best-effort
-    /// and silent; agent/terminal/container terminal failures log at
-    /// `debug!` target `session.tmux_cleanup`. Tool sub-sessions are
-    /// silent by design via `kill_all_tool_sessions_for_id`.
+    /// Kill every tmux session owned by this instance (agent, web terminal, container terminal,
+    /// tool sub-sessions).
     pub fn kill_all_tmux_sessions(&self) {
         let profile = self.effective_profile();
         let storage =
@@ -230,21 +209,13 @@ impl Instance {
         }
     }
 
-    /// Kill every tmux session owned by this instance while the caller holds
-    /// the selected profile's per-instance lifecycle lock.
-    ///
-    /// Destructive deletion keeps that guard across tmux/container/worktree
-    /// teardown and the durable row removal, so it must use this helper rather
-    /// than reacquiring the non-reentrant lock via [`Self::kill_all_tmux_sessions`].
+    /// Kill every tmux session owned by this instance while the caller holds the selected profile's
+    /// per-instance lifecycle lock.
     pub(crate) fn kill_all_tmux_sessions_locked(&self) {
         self.kill_all_tmux_sessions_uncoordinated();
     }
 
     /// Tear down tmux resources when no durable lifecycle row exists.
-    ///
-    /// Used after force-removal and when rolling back an instance that failed
-    /// before its row was committed. With no row, lifecycle reservation is
-    /// impossible; callers must already know the id cannot race a launch.
     pub(crate) fn kill_all_tmux_sessions_without_lifecycle_row(&self) {
         self.kill_all_tmux_sessions_uncoordinated();
     }
@@ -363,9 +334,8 @@ mod tests {
     #[test]
     #[serial_test::serial]
     fn pi_stop_persists_a_conversation_published_long_ago() {
-        // An idle pane's `/new` can be hours old by the time it stops. The
-        // freshness window that guards a resume must not apply to the last
-        // read before the sidecar is deleted.
+        // An idle pane's `/new` can be hours old by the time it stops. The freshness window that
+        // guards a resume must not apply to the last read before the sidecar is deleted.
         let (_guard, _base, _tmp) = crate::hooks::test_support::BaseGuard::ready();
         let home = tempfile::tempdir().unwrap();
         let _home_guard = crate::session::test_support::isolate_app_dir_at(home.path());
@@ -416,9 +386,8 @@ mod tests {
     #[test]
     #[serial_test::serial]
     fn pi_stop_persists_the_conversation_the_extension_published() {
-        // A `/new` inside a CLI-launched pane is observed by nobody: no poller
-        // outlives the CLI, and the instance dir is cleaned up at stop. The
-        // flush is the only thing that keeps it.
+        // A `/new` inside a CLI-launched pane is observed by nobody: no poller outlives the CLI,
+        // and the instance dir is cleaned up at stop.
         let (_guard, _base, _tmp) = crate::hooks::test_support::BaseGuard::ready();
         let home = tempfile::tempdir().unwrap();
         let _home_guard = crate::session::test_support::isolate_app_dir_at(home.path());
@@ -484,11 +453,7 @@ mod tests {
 
     use super::*;
 
-    /// Real-tmux integration for #3157: a session whose stored title moved
-    /// without its tmux session being renamed (smart rename, or a manual
-    /// rename whose tmux rename failed) must still be resolvable, so teardown
-    /// stops the running agent instead of a name that never existed, and a
-    /// later start adopts the live session instead of spawning a second one.
+    /// Real-tmux integration for #3157.
     // Serialized for the same reason as its neighbours: it creates and kills a
     // real tmux session on the shared test server.
     #[test]

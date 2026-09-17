@@ -4,20 +4,11 @@
 use super::*;
 
 /// omp's error banner footer, and the terminal retry lines it can replace.
-/// They live here rather than with detection: the manifest carries its own
-/// copies for deciding status, while these drive the message this module
-/// lifts out of the banner.
 const OMP_BANNER_DISMISSAL_ANCHOR: &str = "dismissed when you send your next message";
 const OMP_TERMINAL_RETRY_MARKERS: &[&str] =
     &["error: retry budget exhausted", "error: retry failed after"];
 
 /// Build a short human-readable hint for why a session transitioned to Error.
-///
-/// Called when we set Status::Error but don't already have a `last_error`
-/// populated (e.g. an agent process exited on its own). We grab the last few
-/// non-empty lines of the pane and pick something that looks like an error
-/// message; otherwise fall back to a generic "stopped responding" string so
-/// the UI never renders an Error state without any explanation.
 pub(super) fn summarize_error_from_pane(pane_content: &str) -> String {
     const MAX_BANNER_LINES: usize = 3;
 
@@ -30,11 +21,7 @@ pub(super) fn summarize_error_from_pane(pane_content: &str) -> String {
         .take(12)
         .collect();
 
-    // omp pins an error banner whose dismissal footer is the anchor. When the
-    // anchor is the lowest of {anchor, terminal retry lines} (positions are
-    // 1-based from the bottom of the tail), the banner message is the reason:
-    // walk up from the anchor (excluded), collecting the consecutive message
-    // lines until the first border line (all `─`), at most MAX_BANNER_LINES.
+    // omp pins an error banner whose dismissal footer is the anchor.
     let anchor_idx = tail
         .iter()
         .position(|l| l.to_lowercase().contains(OMP_BANNER_DISMISSAL_ANCHOR));
@@ -66,9 +53,8 @@ pub(super) fn summarize_error_from_pane(pane_content: &str) -> String {
             let mut reason = String::new();
             for line in msg_lines.iter().rev() {
                 let mut text = line.trim();
-                // status.error glyphs across omp themes (✘ default, ✖
-                // poimandres override, [!!] ascii, U+F00D nerd); ✕ is the
-                // tool-result icon.error slot, included defensively.
+                // status.error glyphs across omp themes (✘ default, ✖ poimandres override, [!!]
+                // ascii, U+F00D nerd); ✕ is the tool-result icon.error slot, included defensively.
                 for glyph in ["✖", "✘", "✕", "[!!]", "\u{f00d}"] {
                     if let Some(rest) = text.strip_prefix(glyph) {
                         text = rest.trim_start();
@@ -139,15 +125,8 @@ pub(super) fn resolve_detected_status(
 ) -> Status {
     match detected {
         Status::Idle if has_command_override => {
-            // Custom commands run agents through wrapper scripts that appear
-            // as shell processes to tmux, so we can't trust the pane's current
-            // command here; decide from pane *content* instead. A pane that is
-            // still rendering the agent TUI is genuinely parked at its prompt,
-            // so a detected Idle is real and we keep it (otherwise on_idle /
-            // on_waiting status hooks never fire for wrapped agents, e.g. an
-            // opencode session launched via agent_command_override, see #2022).
-            // Only declare Error when the pane is actually dead; a live pane
-            // without recognizable agent content stays Unknown.
+            // Custom commands run agents through wrapper scripts that appear as shell processes to
+            // tmux, so we can't trust the pane's current command here.
             if is_dead {
                 Status::Error
             } else if pane_has_agent_content(pane_content, tool) {
@@ -183,10 +162,7 @@ fn pane_looks_like_bare_shell_prompt(raw_content: &str) -> bool {
     last.ends_with('$') || last.ends_with('#') || last.ends_with('%') || last.ends_with('\u{276f}')
 }
 
-/// Check whether captured pane content indicates a living agent rather than
-/// a bare shell prompt. Used to prevent `is_shell_stale()` from producing
-/// false `Error` status when the agent binary is a shell wrapper or spawns
-/// persistent child shell processes.
+/// Check whether captured pane content indicates a living agent rather than a bare shell prompt.
 fn pane_has_agent_content(raw_content: &str, tool: &str) -> bool {
     let clean = crate::tmux::utils::strip_ansi(raw_content);
     let non_empty: Vec<&str> = clean.lines().filter(|l| !l.trim().is_empty()).collect();
@@ -195,16 +171,14 @@ fn pane_has_agent_content(raw_content: &str, tool: &str) -> bool {
         return false;
     }
 
-    // If the last visible line looks like a shell prompt, the agent likely
-    // exited and the shell took over. This catches servers with verbose MOTD
-    // that would otherwise exceed the line-count threshold.
+    // If the last visible line looks like a shell prompt, the agent likely exited and the shell
+    // took over.
     if pane_looks_like_bare_shell_prompt(raw_content) {
         return false;
     }
 
-    // Agent TUIs fill the screen with UI elements. A bare shell prompt
-    // (after MOTD) rarely exceeds this threshold once the prompt check
-    // above filters out typical shell endings.
+    // Agent TUIs fill the screen with UI elements. A bare shell prompt (after MOTD) rarely exceeds
+    // this threshold once the prompt check above filters out typical shell endings.
     if non_empty.len() > 5 {
         return true;
     }
@@ -366,10 +340,8 @@ mod tests {
 
     #[test]
     fn test_resolve_detected_status_command_override_agent_content_stays_idle() {
-        // A wrapped agent (agent_command_override) whose pane still renders the
-        // agent TUI must keep its detected Idle so on_idle / on_waiting status
-        // hooks fire; previously the override masked every Idle to Unknown and
-        // those hooks never ran (#2022).
+        // A wrapped agent (agent_command_override) whose pane still renders the agent TUI must keep
+        // its detected Idle so on_idle / on_waiting status hooks fire.
         let content = "ctrl+p commands \u{2022} OpenCode 1.16.2";
         assert_eq!(
             resolve_detected_status(Status::Idle, false, false, true, content, "opencode"),

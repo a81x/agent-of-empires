@@ -4,18 +4,6 @@
 use super::*;
 
 /// One durable ownership protocol for every session lifecycle transition.
-///
-/// A transition acquires the per-instance lifecycle flock, then records a
-/// fresh generation under `Storage::update`. Terminal launch is the ordered
-/// exception: it first takes the app-global per-session title flock so title
-/// writers and launch cannot derive different tmux names. The durable
-/// reservation stays held through hooks, external side effects, and the
-/// exact-generation commit; callers may release outer flocks for reentrant hooks.
-/// `status` is presentation state and never proves ownership.
-///
-/// A crashed owner loses both the flock and, after the TTL, its reservation.
-/// Recovery may then acquire a newer generation; exact-generation commits
-/// ensure a late result can never mutate or clear that replacement.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum LifecycleOperation {
@@ -64,17 +52,11 @@ pub struct LifecycleReservation {
 }
 
 impl Instance {
-    /// Longer than any bounded hook, teardown, or worktree move. A crashed
-    /// owner cannot retain the reservation forever; a late owner is still
-    /// harmless because every commit is generation-checked.
+    /// Longer than any bounded hook, teardown, or worktree move. A crashed owner cannot retain the
+    /// reservation forever.
     pub const LIFECYCLE_RESERVATION_TTL: chrono::Duration = chrono::Duration::minutes(10);
 
     /// Acquire exclusive durable ownership of the next lifecycle generation.
-    ///
-    /// Even a reservation for the same operation belongs to a peer: operation
-    /// kind is not an identity. A caller that already owns a reservation must
-    /// retain its returned generation and use
-    /// [`Self::lifecycle_reservation_is_owned`] rather than reacquiring by kind.
     pub fn try_acquire_lifecycle_reservation(
         &mut self,
         operation: LifecycleOperation,
@@ -634,9 +616,8 @@ mod tests {
             })
             .unwrap();
 
-        // The launch guard still recognizes the exact-generation reservation.
-        // A later launch failure must release it rather than stranding the
-        // marker until its TTL.
+        // The launch guard still recognizes the exact-generation reservation. A later launch
+        // failure must release it rather than stranding the marker until its TTL.
         inst.ensure_reservation_current_or_fail(&storage).unwrap();
         let error = anyhow::anyhow!("launch failed after status drift");
         inst.fail_reserved_launch(&storage, &error, false);

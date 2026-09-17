@@ -38,8 +38,6 @@ fn apply_yolo_mode(cmd: &mut String, yolo: &crate::agents::YoloMode, is_sandboxe
 }
 
 /// Write the Pi session-id extension into the app dir and return its path.
-///
-/// Rewritten when the content differs so an upgrade ships its own version.
 pub(super) fn session_identity_extension_path() -> Result<PathBuf> {
     const SOURCE: &str = crate::session::instance::SESSION_IDENTITY_EXTENSION;
     let root = crate::session::get_app_dir()?;
@@ -51,9 +49,7 @@ pub(super) fn session_identity_extension_path() -> Result<PathBuf> {
     Ok(path)
 }
 
-/// Whether a host `environment` list assigns `PATH`. Entries are either `KEY`
-/// (pass AoE's own value through, which cannot redirect a binary lookup) or
-/// `KEY=VALUE`, so only the assigning form counts.
+/// Whether a host `environment` list assigns `PATH`.
 pub(super) fn environment_defines_path(environment: &[String]) -> bool {
     environment.iter().any(|entry| {
         entry
@@ -104,10 +100,8 @@ pub(super) fn build_resume_flags(
     }
 }
 
-/// Build the launch flags for a one-shot terminal fork. Returns the empty
-/// string for an unforkable agent or an invalid id (mirroring
-/// `build_resume_flags`'s fail-closed contract). The child id is pre-pinned so
-/// the forked session is durable on disk before launch.
+/// Build the launch flags for a one-shot terminal fork. Returns the empty string for an unforkable
+/// agent or an invalid id (mirroring `build_resume_flags`'s fail-closed contract).
 pub(super) fn build_fork_flags(tool: &str, parent_id: &str, child_id: &str) -> String {
     use crate::agents::{get_agent, ForkStrategy, ResumeStrategy};
 
@@ -243,22 +237,12 @@ pub(super) fn append_resume_flags(
 }
 
 /// Format an environment variable assignment as a shell-safe command prefix.
-///
-/// Uses `shell_escape` (single-quote escaping) so the value is preserved
-/// verbatim when parsed by the inner `bash -c '...'` shell created by
-/// `wrap_command_ignore_suspend`.
 fn format_env_var_prefix(key: &str, value: &str, cmd: &str) -> String {
     let escaped = shell_escape(value);
     format!("{}={} {}", key, escaped, cmd)
 }
 
 /// Prepend agent-specific environment overrides to a launch command.
-///
-/// Some terminal agents inherit the parent tmux env, which can carry
-/// `NO_COLOR=1` and silently disable their terminal palettes even though the
-/// web renderer handles ANSI fine. Unsetting `NO_COLOR` and advertising
-/// `TERM=xterm-256color` plus `COLORTERM=truecolor` at launch keeps color on
-/// without pinning tools to a specific `FORCE_COLOR` depth.
 fn apply_agent_launch_env(cmd: &mut String, agent: Option<&'static crate::agents::AgentDef>) {
     if !matches!(agent.map(|a| a.name), Some("antigravity" | "codex")) {
         return;
@@ -270,10 +254,8 @@ fn apply_agent_launch_env(cmd: &mut String, agent: Option<&'static crate::agents
     );
 }
 
-/// Run a script through a dedicated descriptor so its size is not constrained
-/// by the per-argument exec limit and the launched agent retains the pane TTY
-/// on standard input. The delimiter grows until it cannot close a here-document
-/// present in user-controlled command text.
+/// Run a script through a dedicated descriptor so its size is not constrained by the per-argument
+/// exec limit and the launched agent retains the pane TTY on standard input.
 pub(super) fn shell_stdin_command(shell: &str, login: bool, script: &str, stem: &str) -> String {
     let mut delimiter = stem.to_string();
     while script.lines().any(|line| line == delimiter) {
@@ -286,15 +268,7 @@ pub(super) fn shell_stdin_command(shell: &str, login: bool, script: &str, stem: 
     )
 }
 
-/// Disable terminal suspension before replacing the pane process with the
-/// requested command. The user's POSIX login shell reads the launch script
-/// from a dedicated descriptor, keeping both large prompts and the pane TTY.
-///
-/// `working_dir` is re-asserted with `cd` as the first statement in that
-/// script, after the login shell's profile/rc files have run. tmux's
-/// `new-session -c` only sets the shell's initial cwd, and a `-l` login
-/// shell's rc files (or an nvm/direnv hook) can `cd` away before the agent
-/// starts; re-cd-ing here wins regardless (#3265).
+/// Disable terminal suspension before replacing the pane process with the requested command.
 pub(super) fn wrap_command_ignore_suspend(cmd: &str, working_dir: &str) -> String {
     let user = crate::session::environment::user_shell();
     let posix = crate::session::environment::user_posix_shell();
@@ -311,9 +285,8 @@ impl Instance {
         self.has_command_override()
     }
 
-    /// True only when the launch command differs from the agent's default
-    /// binary (ignores extra_args). Use this for status-detection and
-    /// restart guards where only a wrapper script matters.
+    /// True only when the launch command differs from the agent's default binary (ignores
+    /// extra_args).
     pub fn has_command_override(&self) -> bool {
         if self.command.is_empty() {
             return false;
@@ -337,10 +310,7 @@ impl Instance {
         }
     }
 
-    /// The text searched for a user-selected `--agent NAME` flag: both the
-    /// command override (where a custom command like `kiro-cli chat --agent x`
-    /// may live) and the extra-args field (the usual place). Joined so a flag
-    /// in either is found.
+    /// The text searched for a user-selected `--agent NAME` flag.
     pub(super) fn selected_agent_args(&self) -> String {
         if self.command.is_empty() {
             self.extra_args.clone()
@@ -351,10 +321,7 @@ impl Instance {
         }
     }
 
-    /// Launch command including any agent `launch_subcommand` (e.g.
-    /// `kiro-cli chat`). A user command override takes precedence verbatim and
-    /// the subcommand is not applied to it. Used when assembling the launch
-    /// command so subcommand-scoped flags (yolo, resume) parse correctly.
+    /// Launch command including any agent `launch_subcommand` (e.g. `kiro-cli chat`).
     fn get_launch_command(&self) -> String {
         if self.command.is_empty() {
             crate::agents::get_agent(&self.tool)
@@ -398,9 +365,8 @@ impl Instance {
         Ok(prepared)
     }
 
-    /// Construct the command only after hook execution has completed. Keeping
-    /// this phase hook-free prevents a revalidation retry from replaying user
-    /// code while the lifecycle lock is held.
+    /// Construct the command only after hook execution has completed. Keeping this phase hook-free
+    /// prevents a revalidation retry from replaying user code while the lifecycle lock is held.
     pub(super) fn build_launch_command(&mut self) -> Result<LaunchCommandParts> {
         if self.tool == "omp" && !self.has_command_override() {
             reject_omp_secret_args(&crate::session::config::quote_model_value_in_args(
@@ -419,9 +385,8 @@ impl Instance {
                 .clone();
             let container = DockerContainer::new(&self.id, &image);
 
-            // Snapshot only after container hooks have had their final chance
-            // to mutate OMP dotenv/config routing, but before any executable
-            // pane command exists.
+            // Snapshot only after container hooks have had their final chance to mutate OMP
+            // dotenv/config routing, but before any executable pane command exists.
             let omp_capture_plan = self
                 .omp_capture_options()
                 .and_then(|options| self.resolve_omp_capture_plan(&options));
@@ -430,10 +395,8 @@ impl Instance {
             let base_cmd = if self.extra_args.is_empty() {
                 launch_cmd
             } else if self.command.is_empty() {
-                // Default agent binary: quote a shell-active --model/-m value
-                // the same way the host launch path does (build_host_command).
-                // A custom command override is the user's own argv, so it is
-                // left untouched, matching that path's scoping.
+                // Default agent binary: quote a shell-active --model/-m value the same way the host
+                // launch path does (build_host_command).
                 format!(
                     "{} {}",
                     launch_cmd,
@@ -574,10 +537,8 @@ impl Instance {
                     .map(|(key, value)| tmux::PaneEnvMutation::set(key, value)),
             );
             if result.2.is_some() {
-                // Pin every routing input, including explicit empty values and
-                // true absence, so tmux's frozen server environment cannot
-                // select another OMP store. The in-pane fingerprint still
-                // detects login-file drift.
+                // Pin every routing input, including explicit empty values and true absence, so
+                // tmux's frozen server environment cannot select another OMP store.
                 env.extend(omp_host_routing_environment(
                     &self.resolved_host_environment(),
                 ));
@@ -611,9 +572,8 @@ impl Instance {
         agent: Option<&'static crate::agents::AgentDef>,
         identity_extension: Option<(String, String)>,
     ) -> Result<(Option<String>, bool, Option<OmpCapturePlan>)> {
-        // Resolve after `on_launch`. The snapshot is checked inside the
-        // profile environment assignment scope executed by the login shell;
-        // startup-file routing drift therefore disables capture.
+        // Resolve after `on_launch`. The snapshot is checked inside the profile environment
+        // assignment scope executed by the login shell.
         let omp_capture_plan = self
             .omp_capture_options()
             .and_then(|options| self.resolve_omp_capture_plan(&options));
@@ -638,9 +598,8 @@ impl Instance {
                         cmd.push_str(flag);
                     }
                     if !self.extra_args.is_empty() {
-                        // A model id carrying shell metacharacters (a
-                        // context-window suffix such as `[1m]`) would abort the
-                        // launch line before the agent starts.
+                        // A model id carrying shell metacharacters (a context-window suffix such as
+                        // `[1m]`) would abort the launch line before the agent starts.
                         cmd = format!(
                             "{} {}",
                             cmd,
@@ -752,13 +711,8 @@ mod tests {
     #[test]
     #[serial_test::serial]
     fn sandboxed_pi_publishes_without_a_command_line_extension() {
-        // `pi -e <missing path>` refuses to start, and a container created
-        // before this change has no mount for one, so a sandboxed launch names
-        // no extension: pi discovers it inside the config bind instead. The
-        // sidecar path it publishes to is a container path.
-        //
-        // The extension is written under `HOME`, so this owns one: the
-        // global lock keeps it from racing another test's `HOME` swap.
+        // `pi -e <missing path>` refuses to start, and a container created before this change has
+        // no mount for one, so a sandboxed launch names no extension.
         let temp_home = tempfile::tempdir().unwrap();
         let _home = crate::session::test_support::isolate_home(temp_home.path());
 
@@ -959,15 +913,9 @@ mod tests {
         );
     }
 
-    /// #3265: a login shell's own profile/rc files can `cd` elsewhere
-    /// (a stray line in `~/.bashrc`, or a legitimate nvm/pyenv/direnv hook)
-    /// after tmux's `-c` has already set the pane's cwd, silently landing
-    /// the agent in the wrong directory. The wrapper must re-assert
-    /// `working_dir` inside the login shell's own script, after profile
-    /// sourcing, so it wins regardless of what those files did.
-    ///
-    /// Holds `ENV_LOCK` across the `PATH` read, which is why the lock is taken
-    /// before the `which` rather than after it.
+    /// a login shell's own profile/rc files can `cd` elsewhere (a stray line in `~/.bashrc`, or a
+    /// legitimate nvm/pyenv/direnv hook) after tmux's `-c` has already set the pane's cwd, silently
+    /// landing the agent in the wrong directory.
     #[test]
     fn test_wrap_command_reasserts_working_dir_after_login_shell() {
         let _lock = EnvGuard::read_lock();
@@ -976,10 +924,8 @@ mod tests {
             eprintln!("skipping: bash not found on PATH");
             return;
         };
-        // The guard restores on unwind; the resolved path matters separately,
-        // because `wrap_command_ignore_suspend` execs `$SHELL` below. The
-        // `repo_config` hook tests used to read this override too and now pin
-        // their own (#3449).
+        // The guard restores on unwind; the resolved path matters separately, because
+        // `wrap_command_ignore_suspend` execs `$SHELL` below.
         let _shell = EnvGuard::set(&[("SHELL", &bash)]);
         let temp = tempfile::tempdir().unwrap();
         let working_dir = temp.path().join("some project's dir");
@@ -1198,9 +1144,8 @@ mod tests {
             );
         }
 
-        // A bare renamed wrapper is the program the pane runs, so the
-        // subcommand still lands in the position that reaches the agent it
-        // execs. Refusing it took resume from every renamed wrapper (#3638).
+        // A bare renamed wrapper is the program the pane runs, so the subcommand still lands in the
+        // position that reaches the agent it execs.
         let mut wrapper = Instance::new("wrapper", "/tmp/x");
         wrapper.tool = "codex-personal".to_string();
         wrapper.detect_as = "codex".to_string();
@@ -1262,9 +1207,7 @@ mod tests {
 
     #[test]
     fn test_build_pi_resume_flags() {
-        // An id already on file resumes with `--session`, which every pi
-        // version takes. A fresh launch pins the id AoE minted with
-        // `--session-id`, which creates the session when it is missing.
+        // An id already on file resumes with `--session`, which every pi version takes.
         let flags = build_resume_flags("pi", "019342ab-1234-7def-8901-abcdef012345", true);
         assert_eq!(flags, "--session 019342ab-1234-7def-8901-abcdef012345");
 

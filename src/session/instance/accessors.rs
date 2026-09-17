@@ -95,11 +95,8 @@ impl Instance {
         }
     }
 
-    /// Inject the live FileWatchService Arc into this Instance for
-    /// in-process Local fast-path notifications during subsequent storage
-    /// mutations. Called by `Storage::load*` automatically; manual call
-    /// sites are daemon-side recovery and TUI session-creation paths that
-    /// build Instances without going through Storage::load.
+    /// Inject the live FileWatchService Arc into this Instance for in-process Local fast-path
+    /// notifications during subsequent storage mutations.
     pub(crate) fn set_file_watch(
         &mut self,
         fw: std::sync::Arc<crate::file_watch::FileWatchService>,
@@ -107,20 +104,16 @@ impl Instance {
         self.file_watch = Some(fw);
     }
 
-    /// Resolve the live `Arc<FileWatchService>` for this Instance, falling
-    /// back to a noop service when none was injected (ad-hoc construction
-    /// or pre-injection state). Use sites pair this with `Storage::new`
-    /// directly because `new_unwatched` would shadow a live injection.
+    /// Resolve the live `Arc<FileWatchService>` for this Instance, falling back to a noop service
+    /// when none was injected (ad-hoc construction or pre-injection state).
     pub(super) fn resolve_file_watch(&self) -> std::sync::Arc<crate::file_watch::FileWatchService> {
         self.file_watch
             .clone()
             .unwrap_or_else(crate::file_watch::FileWatchService::noop)
     }
 
-    /// Whether a title rename should also move the worktree directory leaf,
-    /// given the resolved `session.tie_workdir_to_name` setting. True only for
-    /// aoe-managed worktree sessions: non-worktree (scratch, plain tmux) and
-    /// externally-attached worktrees are always a no-op. See #1927.
+    /// Whether a title rename should also move the worktree directory leaf, given the resolved
+    /// `session.tie_workdir_to_name` setting.
     pub fn tie_workdir_applies(&self, tie_setting: bool) -> bool {
         tie_setting
             && self
@@ -129,14 +122,8 @@ impl Instance {
                 .is_some_and(|w| w.managed_by_aoe)
     }
 
-    /// Whether deleting this session has aoe-managed worktree state to clean
-    /// up, covering BOTH single-repo and multi-repo (workspace) sessions.
-    /// Single-repo sessions carry an aoe-managed `worktree_info`; workspace
-    /// sessions carry `workspace_info` instead (with `worktree_info = None`),
-    /// and opt into cleanup via `cleanup_on_delete`. Entry points use this to
-    /// decide whether to set `delete_worktree`; gating on `worktree_info`
-    /// alone silently leaks the workspace directory (#2363). Mirrors the TUI
-    /// group-delete predicate so every surface agrees.
+    /// Whether deleting this session has aoe-managed worktree state to clean up, covering BOTH
+    /// single-repo and multi-repo (workspace) sessions.
     pub fn has_managed_worktree_or_workspace(&self) -> bool {
         self.worktree_info
             .as_ref()
@@ -148,12 +135,6 @@ impl Instance {
     }
 
     /// Every repo this session works in, empty for a single-repo session.
-    ///
-    /// The one accessor consumers read, so nothing has to know that a session
-    /// gains repos two ways: created multi-repo, or converted by
-    /// `attach_project` (#3103). Both end up in `workspace_info.repos`, which is
-    /// the point of converting rather than keeping a second list: a repo added
-    /// later is indistinguishable from one present at creation.
     pub fn all_repos(&self) -> &[WorkspaceRepo] {
         self.workspace_info
             .as_ref()
@@ -161,43 +142,25 @@ impl Instance {
             .unwrap_or(&[])
     }
 
-    /// Return the profile that should drive config resolution for this
-    /// instance, falling back to the user's globally configured default
-    /// when `source_profile` was never populated (e.g. legacy callers).
+    /// Return the profile that should drive config resolution for this instance, falling back to
+    /// the user's globally configured default when `source_profile` was never populated (e.g.
+    /// legacy callers).
     pub fn effective_profile(&self) -> String {
         crate::session::config::effective_profile(&self.source_profile)
     }
 
     /// The `agent_detect_as` alias that actually applies to this session.
-    ///
-    /// `detect_as` is resolved once at session build and persisted, so it is
-    /// empty on a row created before its tool gained an
-    /// `[session.agent_detect_as]` entry. Treat the stored field as a cache
-    /// and let [`tmux::status_rules::effective_detect_as`] consult the live
-    /// registry when it is empty, the same way the pane detector, hook
-    /// reconciliation, and the status-change log line already do (#3398).
     pub(super) fn effective_detect_as(&self) -> std::borrow::Cow<'_, str> {
         tmux::status_rules::effective_detect_as(&self.source_profile, &self.tool, &self.detect_as)
     }
 
-    /// The built-in agent backing this session: its own tool when that names
-    /// one, else the agent its `agent_detect_as` alias points at.
-    ///
-    /// Every launch-time consumer resolves through here rather than reading
-    /// `detect_as` raw, because a miss is silent and permanent. `None` drops
-    /// the `AOE_PROFILE`/`AOE_INSTANCE_ID` prefix from the launch line
-    /// ([`status_hook_env_prefix`]) and skips hook install, so every hook the
-    /// agent does have bails on `[ -n "$AOE_INSTANCE_ID" ]` and the session
-    /// reports Idle forever with nothing logged.
+    /// The built-in agent backing this session: its own tool when that names one, else the agent
+    /// its `agent_detect_as` alias points at.
     pub(crate) fn resolved_agent(&self) -> Option<&'static crate::agents::AgentDef> {
         resolved_agent_for(&self.source_profile, &self.tool, &self.detect_as)
     }
 
     /// The built-in identity used to compare capture stores and aliases.
-    ///
-    /// This is classification only. Capture and resume authorization still
-    /// goes through `resolved_session_support` or `supports_native_resume`,
-    /// which also prove the launch command and capture context.
     pub(crate) fn capture_agent_name(&self) -> Option<&'static str> {
         self.resolved_agent().map(|a| a.name)
     }
@@ -270,14 +233,8 @@ impl Instance {
             && !words.iter().any(|word| word == "--")
     }
 
-    /// The basename of the program this launch actually runs, which is the
-    /// token a live process carries in argv.
-    ///
-    /// A command override names it; otherwise it is the resolved agent's own
-    /// binary. Matching on this rather than on `agent.binary` is what lets the
-    /// orphan scan see a renamed wrapper, which carries the pane's
-    /// `AOE_INSTANCE_ID` because [`status_hook_env_prefix`] injects the marker
-    /// on hook presence alone.
+    /// The basename of the program this launch actually runs, which is the token a live process
+    /// carries in argv.
     pub(crate) fn launch_executable_token(&self) -> Option<String> {
         let words = parse_launch_command(self.get_tool_command())?.words;
         Path::new(words.first()?)
@@ -287,19 +244,6 @@ impl Instance {
     }
 
     /// Whether a resume selector appended to this launch reaches the agent.
-    ///
-    /// [`Self::launch_invokes_resolved_agent_directly`] is the stricter test
-    /// and stays the one that authorizes capture: inferring ownership from a
-    /// store, mirroring a binary under `opencode serve`, or matching a process
-    /// by argv all need the agent's own name. Emitting a selector needs less.
-    /// A single bare token is the program the pane runs whatever it is called,
-    /// which is the wrapper shape `custom_agents` and `agent_command_override`
-    /// document, and `agent_detect_as` is the user declaring what it wraps.
-    /// Refusing it takes resume away from every renamed wrapper and each
-    /// restart silently starts a fresh conversation (#3638).
-    ///
-    /// A path-qualified token still fails: a bare one resolves through the
-    /// launch shell's `PATH`, which AoE controls, and a path escapes it.
     pub(crate) fn launch_can_carry_resume_selector(&self, agent: &crate::agents::AgentDef) -> bool {
         if self.launch_invokes_resolved_agent_directly(agent) {
             return true;
@@ -323,9 +267,6 @@ impl Instance {
     }
 
     /// Whether this launch shape leaves Claude user hooks enabled.
-    ///
-    /// This is evidence for the identity publisher only. It does not change
-    /// native resume support.
     pub(crate) fn hook_session_publisher_allowed_by_argv(&self) -> bool {
         if !self
             .resolved_agent()
@@ -392,13 +333,8 @@ impl Instance {
         if context == crate::agents::SessionCaptureContext::Unsupported {
             return None;
         }
-        // These backends publish under this pane's own `AOE_INSTANCE_ID`, so
-        // the write proves its own attribution and a renamed wrapper cannot
-        // claim another pane's conversation. The rest infer ownership from the
-        // launch itself: OMP reads a store it routed through the launch
-        // environment, OpenCode mirrors the binary under `opencode serve`, and
-        // the managed stores match on cwd and a launch floor. Those need the
-        // agent's own binary on the command line to mean anything.
+        // These backends publish under this pane's own `AOE_INSTANCE_ID`, so the write proves its
+        // own attribution and a renamed wrapper cannot claim another pane's conversation.
         let self_attributing = matches!(
             capture.backend,
             crate::agents::SessionCaptureBackend::Claude
@@ -474,11 +410,8 @@ impl Instance {
         self.sandbox_info.as_ref().is_some_and(|s| s.enabled)
     }
 
-    /// The repo this session groups under: the worktree's main repo when
-    /// present (so all branches of a repo group together), else the project
-    /// path. Shared by sidebar project grouping and new-session prefill so
-    /// the "which directory does this session belong to" rule lives in one
-    /// place.
+    /// The repo this session groups under: the worktree's main repo when present (so all branches
+    /// of a repo group together), else the project path.
     pub fn repo_path(&self) -> &str {
         self.worktree_info
             .as_ref()
@@ -490,24 +423,14 @@ impl Instance {
         self.yolo_mode
     }
 
-    /// True when this session renders in the structured (ACP) view. Rows
-    /// damaged by pre-fix writers are healed on reload by the server's
-    /// structured row repair path.
+    /// True when this session renders in the structured (ACP) view. Rows damaged by pre-fix writers
+    /// are healed on reload by the server's structured row repair path.
     pub fn is_structured(&self) -> bool {
         self.view == View::Structured
     }
 
-    /// Switch this structured-view session to terminal mode while keeping the
-    /// conversation resumable (#2252). Carries the ACP-side `acp_session_id`
-    /// into the terminal-side `agent_session_id` and pins it as the resume
-    /// target (`ResumeIntent::Use`), so the next `start()` launches
-    /// `<tool> --resume <sid>` instead of a fresh pane, then drops the
-    /// structured-view-only ids.
-    ///
-    /// The caller must have confirmed the agent pairing shares a
-    /// CLI-resumable transcript (see `agents::acp_transcript_cli_resumable`).
-    /// When `acp_session_id` is unset this only flips the view, leaving no
-    /// resume target, which is why the caller also gates on it being present.
+    /// Switch this structured-view session to terminal mode while keeping the conversation
+    /// resumable.
     pub(crate) fn switch_to_terminal_keep_context(&mut self) {
         if let Some(sid) = self.acp_session_id.take() {
             self.agent_session_id = Some(sid.clone());
@@ -809,12 +732,8 @@ mod tests {
         assert_eq!(inst.agent_session_id, Some("new-session-456".to_string()));
     }
 
-    /// A custom-agent row whose stored `detect_as` is empty must still resolve
-    /// its built-in agent at launch. Without it `status_hook_env_prefix` drops
-    /// `AOE_INSTANCE_ID`, every hook in the agent's settings file bails on
-    /// `[ -n "$AOE_INSTANCE_ID" ]`, and the session reports Idle forever with
-    /// nothing logged. #3398 taught the read sites to consult the live
-    /// registry; this is the launch site.
+    /// A custom-agent row whose stored `detect_as` is empty must still resolve its built-in agent
+    /// at launch.
     #[test]
     fn empty_detect_as_still_resolves_the_launch_agent() {
         const PROFILE: &str = "detect-as-launch-path-test";
