@@ -21,7 +21,7 @@ function comment(over: Partial<DiffComment> = {}): DiffComment {
 }
 
 function anchored(over: Partial<AnchoredComment> = {}, c: Partial<DiffComment> = {}): AnchoredComment {
-  return { comment: comment(c), status: "active", contentChanged: false, ...over };
+  return { comment: comment(c), status: "active", ...over };
 }
 
 afterEach(cleanup);
