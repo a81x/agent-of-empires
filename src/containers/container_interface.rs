@@ -5,27 +5,16 @@ pub struct VolumeMount {
     pub read_only: bool,
 }
 
-/// A named Docker/Podman volume mounted at a specific container path.
-/// Used by `volume_ignores_strategy = "named"` to bypass VirtioFS shadowing on macOS.
 pub struct NamedVolumeMount {
     pub volume_name: String,
     pub container_path: String,
 }
 
-/// An environment variable entry for a container.
-///
-/// `Inherit` entries use Docker's `-e KEY` form (no value in argv), which reads
-/// the value from the calling process's environment. This prevents secrets from
-/// leaking into `ps` output.
-///
-/// `Literal` entries use `-e KEY=VALUE` and are appropriate for non-secret,
-/// hard-coded values.
+/// `Inherit` passes the value through the process environment (`-e KEY`) so secrets stay
+/// out of `ps`; `Literal` emits `-e KEY=VALUE`.
 #[derive(Debug, Clone, PartialEq)]
 pub enum EnvEntry {
-    /// Value inherited from host environment. Only the key appears in argv;
-    /// the value is passed to Docker via the process environment.
     Inherit { key: String, value: String },
-    /// Literal (non-secret) value. Both key and value appear in argv.
     Literal { key: String, value: String },
 }
 
@@ -43,23 +32,8 @@ impl EnvEntry {
     }
 }
 
-/// Translate env entries into docker `-e` argv flags plus an inherit list.
-///
-/// For each `Inherit` entry, pushes `-e KEY` to argv and `(KEY, value)` to the
-/// returned inherit list; the caller must apply the inherit pairs to the
-/// spawning process's environment via `Command::env(k, v)` so docker can
-/// resolve the bare `-e KEY` flag without the value ever appearing in argv
-/// or `ps` output. For each `Literal` entry, pushes `-e KEY=VALUE` to argv.
-///
-/// Both the create path (`docker run`) and every exec path (`docker exec` from
-/// tmux sessions, ACP agent spawn, and ACP `terminal/create`) share this
-/// translation. Keeping it in one place ensures they cannot drift.
-///
-/// Dedupes by key (first wins). `collect_environment` already dedupes its
-/// output, but the helper repeats the check so any caller that builds its
-/// own entry list cannot accidentally emit two `-e KEY` flags for the same
-/// key (which docker accepts but with last-write-wins semantics that aren't
-/// always intended).
+/// The caller must set the returned inherit pairs on the spawning `Command`. Dedupes by
+/// key, first wins.
 pub fn docker_env_args(entries: &[EnvEntry]) -> (Vec<String>, Vec<(String, String)>) {
     let mut argv = Vec::with_capacity(entries.len() * 2);
     let mut inherit = Vec::new();
@@ -83,7 +57,6 @@ pub fn docker_env_args(entries: &[EnvEntry]) -> (Vec<String>, Vec<(String, Strin
     (argv, inherit)
 }
 
-/// A Docker-style `run` flag supported by a container runtime.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RunFlag {
     Privileged,
@@ -92,7 +65,6 @@ pub enum RunFlag {
     SecurityOpt,
 }
 
-/// Container run-policy flags mapped from `[sandbox]` settings.
 #[derive(Debug, Default, Clone)]
 pub struct RunPolicy {
     pub privileged: bool,
@@ -107,37 +79,19 @@ pub struct ContainerConfig {
     pub working_dir: String,
     pub volumes: Vec<VolumeMount>,
     pub anonymous_volumes: Vec<String>,
-    /// Named volumes for volume_ignores when strategy = "named". Cleaned up explicitly on session delete.
     pub named_ignore_volumes: Vec<NamedVolumeMount>,
-    /// Whether these paths, `working_dir` included, follow from the project's real
-    /// layout rather than from the collapsed fallback a failed `find_main_repo` takes.
-    ///
-    /// Gates the volume reclaim in `stranded_named_ignore_volumes`, which reads a
-    /// changed `working_dir` as a move; under the fallback that change may be nothing
-    /// but the failure. Defaults to false, so a config that has not positively
-    /// established its paths never drives a deletion.
+    /// False unless the paths come from the real project layout; gates volume reclaim.
     pub named_ignore_volumes_authoritative: bool,
     pub environment: Vec<EnvEntry>,
     pub cpu_limit: Option<String>,
     pub memory_limit: Option<String>,
     pub port_mappings: Vec<String>,
-    /// Container network mode passed to `--network`. `None` uses the runtime
-    /// default (bridge). Set from `sandbox.network`; `bridge` and the rejected
-    /// `host` value are normalized to `None` before reaching here.
     pub network: Option<String>,
-    /// Append the SELinux relabel flag (`:z`) to host bind mounts so the container
-    /// can access them on SELinux-enforcing hosts (Fedora, RHEL). Set from
-    /// `sandbox.selinux_relabel`; only emitted for runtimes that support it.
     pub selinux_relabel: bool,
-    /// Runtime-only evidence that this config installed an identity publisher.
     pub identity_publisher_installed: bool,
-    /// Container paths of the credential files every store of the agent
-    /// shares, one bind mount each. Labelled at create, so a container built
-    /// before a file was shared, which mounts only the store, can be told apart.
+    /// Labelled at create so a container built before a file was shared can be told apart.
     pub shared_credential_mounts: Vec<String>,
-    /// The agent identity whose config this container mounts; see
-    /// `container_agent_identity`. Labelled at create, so a container reused
-    /// after a tool swap can be told apart.
+    /// Labelled at create so a container reused after a tool swap can be told apart.
     pub agent_tool: String,
     pub run_policy: RunPolicy,
 }
@@ -344,9 +298,6 @@ mod tests {
 
     #[test]
     fn docker_env_args_dedupes_duplicate_keys_first_wins() {
-        // Guards against a caller that hand-builds entries and accidentally
-        // passes the same key twice. Docker accepts duplicate `-e` flags
-        // with last-write-wins, which is rarely what the caller meant.
         let entries = vec![
             EnvEntry::Inherit {
                 key: "GH_TOKEN".to_string(),
@@ -362,7 +313,6 @@ mod tests {
             },
         ];
         let (argv, inherit) = docker_env_args(&entries);
-        // First GH_TOKEN entry wins; the literal duplicate is dropped.
         assert_eq!(
             argv,
             vec![

@@ -1,4 +1,4 @@
-//! Sound configuration: [`SoundConfig`], profile-level overrides, and volume helpers.
+//! Sound configuration, profile-level overrides, and volume helpers.
 
 use aoe_settings_derive::SettingsSection;
 use serde::{Deserialize, Serialize};
@@ -75,17 +75,14 @@ pub(super) fn is_default_volume(v: &f64) -> bool {
     (*v - 1.0).abs() < 1e-9
 }
 
-/// Returns the 15 volume level strings "0.1", "0.2", ..., "1.5"
 pub fn volume_options() -> Vec<String> {
     (1..=15).map(|i| format!("{:.1}", i as f64 * 0.1)).collect()
 }
 
-/// Convert an f64 volume to the nearest Select index (1..=15)
 pub fn volume_to_index(v: f64) -> usize {
     ((v.clamp(0.1, 1.5) / 0.1).round() as usize).min(15) - 1
 }
 
-/// Parse a volume option string back to f64
 pub fn volume_from_option(s: &str) -> f64 {
     s.parse::<f64>().unwrap_or(1.0).clamp(0.1, 1.5)
 }
@@ -104,8 +101,7 @@ mod tests {
         assert!(config.on_idle.is_none());
         assert!(config.on_error.is_none());
         assert!(config.on_approval.is_none());
-        // Fresh installs load `Config::default()` when no config.toml exists;
-        // a 0.0 default here would mute all playback on first run.
+        // A 0.0 default would mute playback on a fresh install.
         assert!((config.volume - 1.0).abs() < 1e-9);
     }
 
@@ -126,10 +122,7 @@ mod tests {
         assert_eq!(config.on_error, Some("alarm".to_string()));
     }
 
-    /// Regression: the schema used to have a `mode` field (`random` or
-    /// `{ specific = "name" }`). It is gone now; configs read between
-    /// upgrade and migration must still deserialize cleanly with the
-    /// unknown field silently dropped by serde.
+    /// The removed `mode` field must still deserialize.
     #[test]
     fn test_legacy_sound_mode_is_ignored() {
         let toml = r#"
