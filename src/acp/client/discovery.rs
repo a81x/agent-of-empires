@@ -17,6 +17,9 @@ pub struct DaemonEndpoint {
     /// Passphrase-login session for a daemon behind a login wall. Travels
     /// alongside the bearer token: `--remote` daemons require both.
     login: Option<crate::daemon::SessionCredential>,
+    /// Credentials may travel over non-loopback plain HTTP. Only a registry
+    /// entry added with `--insecure` sets it.
+    allow_plaintext: bool,
 }
 
 impl std::fmt::Debug for DaemonEndpoint {
@@ -24,6 +27,7 @@ impl std::fmt::Debug for DaemonEndpoint {
         f.debug_struct("DaemonEndpoint")
             .field("source", &self.source)
             .field("authenticated", &(self.has_token() || self.login.is_some()))
+            .field("allow_plaintext", &self.allow_plaintext)
             .finish_non_exhaustive()
     }
 }
@@ -38,6 +42,7 @@ impl DaemonEndpoint {
             source: Source::LocalDaemon,
             unix_path: Some(path),
             login: None,
+            allow_plaintext: false,
         }
     }
 
@@ -52,6 +57,7 @@ impl DaemonEndpoint {
             source,
             unix_path: None,
             login: None,
+            allow_plaintext: false,
         }
     }
 
@@ -65,11 +71,26 @@ impl DaemonEndpoint {
         self.login.as_ref()
     }
 
+    /// Permit credentials over non-loopback plain HTTP, per the registry entry.
+    pub(crate) fn with_plaintext_allowed(mut self, allow: bool) -> Self {
+        self.allow_plaintext = allow;
+        self
+    }
+
+    pub(crate) fn allows_plaintext(&self) -> bool {
+        self.allow_plaintext
+    }
+
     pub fn daemon_client(&self) -> Result<DaemonClient, DaemonClientError> {
         if let Some(path) = &self.unix_path {
             DaemonClient::new_unix(path)
         } else {
-            DaemonClient::with_login(&self.base_url, self.bearer_token(), self.login.as_ref())
+            DaemonClient::with_login(
+                &self.base_url,
+                self.bearer_token(),
+                self.login.as_ref(),
+                self.allow_plaintext,
+            )
         }
     }
 

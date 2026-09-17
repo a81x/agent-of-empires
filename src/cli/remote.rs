@@ -42,6 +42,12 @@ pub struct RemoteAddArgs {
     /// device-bound session; never stored.
     #[arg(long, env = "AOE_REMOTE_PASSPHRASE")]
     pub passphrase: Option<String>,
+
+    /// Send credentials over plain HTTP to a non-loopback URL, for a daemon
+    /// on a network you trust. Anyone on that network can read the token and
+    /// session.
+    #[arg(long)]
+    pub insecure: bool,
 }
 
 #[derive(Args)]
@@ -74,8 +80,16 @@ async fn add(args: RemoteAddArgs) -> Result<()> {
     let url = args.url.trim_end_matches('/').to_string();
     // The same URL and transport rules every later poll applies, so an entry
     // that could never be used is refused now rather than stored.
-    DaemonClient::new(&url, args.token.as_deref())
-        .with_context(|| format!("cannot use {url:?} as a remote"))?;
+    let plaintext_refused = |url: &str| {
+        format!(
+            "cannot use {url:?} as a remote; credentials need HTTPS, or pass --insecure \
+             for a daemon on a trusted LAN"
+        )
+    };
+    match DaemonClient::with_login(&url, args.token.as_deref(), None, args.insecure) {
+        Err(DaemonClientError::InsecureBearerTransport) => bail!(plaintext_refused(&url)),
+        other => other.with_context(|| format!("cannot use {url:?} as a remote"))?,
+    };
 
     let mut entry = Remote {
         name: args.name.clone(),
@@ -84,12 +98,21 @@ async fn add(args: RemoteAddArgs) -> Result<()> {
         token: args.token.clone(),
         session: None,
         binding: None,
+        insecure: args.insecure,
     };
 
     let mut no_login_wall = false;
     if let Some(passphrase) = args.passphrase.as_deref() {
         let binding = login::new_binding_secret().context("generate device binding secret")?;
-        match login::login(&url, args.token.as_deref(), passphrase, &binding).await {
+        match login::login(
+            &url,
+            args.token.as_deref(),
+            passphrase,
+            &binding,
+            args.insecure,
+        )
+        .await
+        {
             Ok(credentials) => {
                 entry.session = Some(credentials.session);
                 entry.binding = Some(credentials.binding);
@@ -97,6 +120,7 @@ async fn add(args: RemoteAddArgs) -> Result<()> {
             // Either a token-only daemon or a wrong URL; the session read
             // below tells them apart.
             Err(LoginError::NotEnabled) => no_login_wall = true,
+            Err(LoginError::InsecureTransport) => bail!(plaintext_refused(&url)),
             Err(e) => return Err(e).context("passphrase login failed"),
         }
     }
@@ -132,7 +156,12 @@ async fn verify(entry: &Remote) -> Result<()> {
         .clone()
         .zip(entry.binding.clone())
         .map(|(session, binding)| SessionCredential { session, binding });
-    let client = DaemonClient::with_login(&entry.url, entry.token.as_deref(), login.as_ref())?;
+    let client = DaemonClient::with_login(
+        &entry.url,
+        entry.token.as_deref(),
+        login.as_ref(),
+        entry.insecure,
+    )?;
     match client.list_sessions(None).await {
         Ok(_) => Ok(()),
         Err(DaemonClientError::Status { status, .. }) if status == StatusCode::NOT_FOUND => bail!(
@@ -172,11 +201,12 @@ fn list() -> Result<()> {
             (false, false) => "none",
         };
         println!(
-            "{:<16} {:<44} {:<8} {}",
+            "{:<16} {:<44} {:<8} {}{}",
             remote.name,
             remote.url,
             if remote.enabled { "enabled" } else { "off" },
-            auth
+            auth,
+            if remote.insecure { " (insecure)" } else { "" }
         );
     }
     Ok(())

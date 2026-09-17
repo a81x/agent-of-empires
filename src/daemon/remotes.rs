@@ -34,6 +34,9 @@ pub struct Remote {
     /// base64url of the 32-byte device-binding secret paired with `session`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub binding: Option<String>,
+    /// Added with `--insecure`: credentials may travel over non-loopback HTTP.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub insecure: bool,
 }
 
 fn default_enabled() -> bool {
@@ -46,6 +49,7 @@ impl std::fmt::Debug for Remote {
             .field("name", &self.name)
             .field("enabled", &self.enabled)
             .field("authenticated", &(self.token.is_some() || self.has_login()))
+            .field("insecure", &self.insecure)
             .finish_non_exhaustive()
     }
 }
@@ -161,6 +165,7 @@ mod tests {
             token: Some("tok".to_string()),
             session: None,
             binding: None,
+            insecure: false,
         }
     }
 
@@ -170,10 +175,15 @@ mod tests {
         let path = dir.path().join("remotes.toml");
         let mut registry = Registry::default();
         registry.upsert(remote("mini"));
+        registry.upsert(Remote {
+            insecure: true,
+            ..remote("lan")
+        });
         save_to(&path, &registry).unwrap();
 
         let loaded = load_from(&path).unwrap();
         assert_eq!(loaded.remotes(), registry.remotes());
+        assert!(loaded.get("lan").unwrap().insecure);
         assert_eq!(loaded.version, REMOTES_SCHEMA_VERSION);
     }
 

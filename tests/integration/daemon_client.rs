@@ -215,6 +215,10 @@ async fn daemon_client_http_contract() {
         Err(DaemonClientError::InsecureBearerTransport)
     ));
     assert!(DaemonClient::new("http://example.test", None).is_ok());
+    assert!(
+        DaemonClient::with_login("http://192.168.1.20:8081", Some("secret-token"), None, true)
+            .is_ok()
+    );
     assert!(DaemonClient::new("https://example.test", Some("secret-token")).is_ok());
     for invalid_token in ["bad value", "tøken"] {
         assert!(matches!(
@@ -518,7 +522,7 @@ async fn daemon_client_api_errors_classify_from_status_and_header_only() {
         reflected,
     ))
     .await;
-    let error = DaemonClient::with_login(&origin, None, Some(&login))
+    let error = DaemonClient::with_login(&origin, None, Some(&login), false)
         .unwrap()
         .get_api::<serde_json::Value>("profiles", &[])
         .await
@@ -560,7 +564,8 @@ async fn daemon_client_api_errors_classify_from_status_and_header_only() {
     request.await.unwrap();
 
     assert!(matches!(
-        DaemonClient::with_login("http://example.test", None, Some(&login)),
+        DaemonClient::with_login("http://example.test", None, Some(&login), false),
         Err(DaemonClientError::InsecureBearerTransport)
     ));
+    assert!(DaemonClient::with_login("http://example.test", None, Some(&login), true).is_ok());
 }

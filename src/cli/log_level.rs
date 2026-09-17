@@ -44,7 +44,9 @@ pub async fn run(args: LogLevelArgs) -> Result<()> {
     let endpoint = format!("{base}/api/log-level");
     let token = crate::daemon::authorization_header(extract_token(&primary.url))?;
     let endpoint = crate::daemon::native_url(&endpoint)?;
-    let client = crate::daemon::native_http_client(&endpoint, token.is_some())?;
+    // This daemon is the one serving `serve.url` on this machine, so it never
+    // needs the plaintext exemption a registered remote can carry.
+    let client = crate::daemon::native_http_client(&endpoint, token.is_some(), false)?;
 
     if args.get || (args.level.is_none() && args.filter.is_none()) {
         let mut req = client.get(endpoint);

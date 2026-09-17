@@ -62,8 +62,9 @@ pub async fn login(
     token: Option<&str>,
     passphrase: &str,
     binding: &str,
+    allow_plaintext: bool,
 ) -> Result<SessionCredential, LoginError> {
-    ensure_secure_transport(base_url)?;
+    ensure_secure_transport(base_url, allow_plaintext)?;
     let url = format!("{}/api/login", base_url.trim_end_matches('/'));
     let http = reqwest::Client::builder()
         .timeout(LOGIN_TIMEOUT)
@@ -107,7 +108,7 @@ pub async fn login(
 
 /// A passphrase is a stronger secret than the token and travels in a body, so
 /// it gets the same transport rule the bearer already has.
-fn ensure_secure_transport(base_url: &str) -> Result<(), LoginError> {
+fn ensure_secure_transport(base_url: &str, allow_plaintext: bool) -> Result<(), LoginError> {
     let url = crate::daemon::native_url(base_url).map_err(|error| match error {
         crate::daemon::DaemonClientError::InvalidBaseUrl { reason } => {
             LoginError::InvalidBaseUrl { reason }
@@ -116,10 +117,8 @@ fn ensure_secure_transport(base_url: &str) -> Result<(), LoginError> {
             reason: "could not parse URL",
         },
     })?;
-    if url.scheme() == "http" && !crate::daemon::is_loopback_url(&url) {
-        return Err(LoginError::InsecureTransport);
-    }
-    Ok(())
+    crate::daemon::ensure_credential_transport(&url, true, allow_plaintext)
+        .map_err(|_| LoginError::InsecureTransport)
 }
 
 /// Pull `aoe_session` out of one `Set-Cookie` value. The daemon sets
@@ -165,14 +164,18 @@ mod tests {
     }
 
     #[test]
-    fn a_passphrase_is_refused_over_non_loopback_plaintext() {
-        let err = ensure_secure_transport("http://mini.example.com:8080").unwrap_err();
-        assert!(matches!(err, LoginError::InsecureTransport));
-    }
-
-    #[test]
-    fn loopback_http_and_remote_https_are_allowed() {
-        assert!(ensure_secure_transport("http://127.0.0.1:8080").is_ok());
-        assert!(ensure_secure_transport("https://mini.example.ts.net").is_ok());
+    fn passphrase_transport_rule() {
+        for (url, allow_plaintext, allowed) in [
+            ("http://mini.example.com:8080", false, false),
+            ("http://192.168.1.20:8081", true, true),
+            ("http://127.0.0.1:8080", false, true),
+            ("https://mini.example.ts.net", false, true),
+        ] {
+            let result = ensure_secure_transport(url, allow_plaintext);
+            assert_eq!(result.is_ok(), allowed, "{url} {allow_plaintext}");
+            if !allowed {
+                assert!(matches!(result, Err(LoginError::InsecureTransport)));
+            }
+        }
     }
 }

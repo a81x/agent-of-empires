@@ -218,7 +218,6 @@ pub(crate) fn error_summary(error: &crate::daemon::DaemonClientError) -> String 
             ApiErrorCode::CityhallMode => "the daemon is in city hall mode",
             ApiErrorCode::LifecycleLocked => "the session is busy with another operation",
             ApiErrorCode::PendingTargetGone => "the target no longer exists",
-            ApiErrorCode::TlsRequired => "the daemon requires HTTPS",
             ApiErrorCode::RuntimeEpochMismatch => "the daemon restarted; retry",
             ApiErrorCode::ResumeFailed => "the session could not be resumed",
             ApiErrorCode::CreationTrustChanged => "the repo's configuration changed; retry",
@@ -245,7 +244,9 @@ pub(crate) fn endpoint_for(
         .clone()
         .zip(remote.binding.clone())
         .map(|(session, binding)| crate::daemon::SessionCredential { session, binding });
-    DaemonEndpoint::new(remote.url.clone(), remote.token.clone(), Source::Remote).with_login(login)
+    DaemonEndpoint::new(remote.url.clone(), remote.token.clone(), Source::Remote)
+        .with_login(login)
+        .with_plaintext_allowed(remote.insecure)
 }
 
 /// A remote the TUI can reach, by the name its rows carry.
@@ -699,6 +700,7 @@ mod tests {
             token: Some("tok-secret".into()),
             session: session.map(str::to_string),
             binding: binding.map(str::to_string),
+            insecure: false,
         }
     }
 
@@ -709,6 +711,19 @@ mod tests {
         let endpoint = endpoint_for(&registered(Some("s"), Some("b")));
         let login = endpoint.login().expect("login present");
         assert_eq!((login.session.as_str(), login.binding.as_str()), ("s", "b"));
+    }
+
+    #[test]
+    fn only_an_insecure_entry_allows_plaintext() {
+        let remote = registered(None, None);
+        assert!(!endpoint_for(&remote).allows_plaintext());
+        let insecure = crate::daemon::remotes::Remote {
+            insecure: true,
+            ..remote
+        };
+        let endpoint = endpoint_for(&insecure);
+        assert!(endpoint.allows_plaintext());
+        assert!(format!("{endpoint:?}").contains("allow_plaintext: true"));
     }
 
     #[test]

@@ -19,7 +19,8 @@ session expires, add the remote again.
 
 `aoe remote add` refuses a URL it could never use: it must be `http` or
 `https` with a host and no credentials, query or fragment, and a token or
-login travels only over HTTPS or a loopback `http://` URL. It then reads the
+login travels only over HTTPS or a loopback `http://` URL unless you pass
+`--insecure` (see below). It then reads the
 remote's session list with those credentials and saves the entry only if that
 works, so a wrong base path (HTTP 404) or a rejected token (HTTP 401 or 403)
 fails the add instead of every later refresh.
@@ -30,6 +31,28 @@ the app directory, which must stay owner-only (`0600`). If that file cannot
 be read, for example because its permissions were loosened, the home list
 shows a `remotes.toml` row carrying the error instead of silently dropping
 every remote.
+
+## Plain HTTP on a trusted LAN
+
+Without Tailscale Funnel or a TLS proxy, a daemon bound to a LAN address can
+still be registered over plain HTTP. On the remote machine (debug builds
+listen on port 8081, release builds on 8080):
+
+```sh
+./target/debug/aoe serve --daemon --host 0.0.0.0 --passphrase <passphrase>
+./target/debug/aoe serve --status   # the URL line carries ?token=<token>
+```
+
+On your machine:
+
+```sh
+aoe remote add box1 http://192.168.1.20:8081 --token <token> --passphrase <passphrase> --insecure
+```
+
+`--insecure` is stored on that entry only, and `aoe remote list` marks it.
+The token, passphrase and login session travel unencrypted, so anyone who can
+see traffic on that network can read them and run commands as the remote
+user. Use it only on a network you trust.
 
 ## Remote sessions in the home view
 

@@ -106,6 +106,7 @@ fn register_mini() {
         token: Some("tok".into()),
         session: None,
         binding: None,
+        insecure: false,
     });
     crate::daemon::remotes::save(&registry).unwrap();
 }

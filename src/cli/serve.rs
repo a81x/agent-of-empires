@@ -1271,7 +1271,7 @@ async fn fetch_cityhall_bundle(url: &str, token: &str) -> Result<String> {
     use crate::daemon::{self, ApiErrorCode, DaemonClientError};
     let url = daemon::native_url(url)?;
     let authorization = daemon::authorization_header((!token.is_empty()).then_some(token))?;
-    let client = daemon::native_http_client(&url, authorization.is_some())?;
+    let client = daemon::native_http_client(&url, authorization.is_some(), false)?;
     let mut request = client.get(url).timeout(BUNDLE_FETCH_TIMEOUT);
     if let Some(authorization) = authorization {
         request = request.header(reqwest::header::AUTHORIZATION, authorization);

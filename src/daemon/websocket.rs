@@ -56,9 +56,7 @@ pub(crate) async fn connect(
     let token = endpoint.bearer_token();
     let base = super::native_url(&endpoint.base_url)?;
     let authenticated = token.is_some() || endpoint.login().is_some();
-    if authenticated && base.scheme() == "http" && !super::is_loopback_url(&base) {
-        return Err(DaemonClientError::InsecureBearerTransport.into());
-    }
+    super::ensure_credential_transport(&base, authenticated, endpoint.allows_plaintext())?;
     let mut url = base.clone();
     url.set_scheme(if base.scheme() == "https" {
         "wss"

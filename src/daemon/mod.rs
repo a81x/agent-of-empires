@@ -168,32 +168,30 @@ impl DaemonClient {
     ///
     /// Bearer authentication requires HTTPS except for loopback HTTP endpoints.
     pub fn new(base_url: &str, bearer_token: Option<&str>) -> Result<Self, DaemonClientError> {
+        Self::with_login(base_url, bearer_token, None, false)
+    }
+
+    /// [`Self::new`] plus the session credential from a passphrase login, for
+    /// a daemon started with `--remote` (which mandates both factors).
+    /// `allow_plaintext` lifts the HTTPS requirement for a remote the user
+    /// registered with `--insecure`.
+    pub fn with_login(
+        base_url: &str,
+        bearer_token: Option<&str>,
+        login: Option<&SessionCredential>,
+        allow_plaintext: bool,
+    ) -> Result<Self, DaemonClientError> {
         let sessions_url = sessions_url(base_url)?;
         let authorization = authorization_header(bearer_token)?;
-        let http = native_http_client(&sessions_url, authorization.is_some())?;
+        let authenticated = authorization.is_some() || login.is_some();
+        let http = native_http_client(&sessions_url, authenticated, allow_plaintext)?;
         Ok(Self {
             http,
             sessions_url,
             authorization,
             unix_path: None,
-            login: None,
+            login: login.cloned(),
         })
-    }
-
-    /// [`Self::new`] plus the session credential from a passphrase login, for
-    /// a daemon started with `--remote` (which mandates both factors).
-    pub fn with_login(
-        base_url: &str,
-        bearer_token: Option<&str>,
-        login: Option<&SessionCredential>,
-    ) -> Result<Self, DaemonClientError> {
-        let Some(login) = login else {
-            return Self::new(base_url, bearer_token);
-        };
-        let mut client = Self::new(base_url, bearer_token)?;
-        client.http = native_http_client(&client.sessions_url, true)?;
-        client.login = Some(login.clone());
-        Ok(client)
     }
 
     /// Authenticated GET of an `/api/*` endpoint beside the sessions list, such
@@ -842,10 +840,9 @@ async fn read_bounded_body(
 pub(crate) fn native_http_client(
     url: &Url,
     authenticated: bool,
+    allow_plaintext: bool,
 ) -> Result<reqwest::Client, DaemonClientError> {
-    if authenticated && url.scheme() == "http" && !is_loopback_url(url) {
-        return Err(DaemonClientError::InsecureBearerTransport);
-    }
+    ensure_credential_transport(url, authenticated, allow_plaintext)?;
     let mut builder = reqwest::Client::builder()
         .timeout(DEFAULT_TIMEOUT)
         .user_agent(concat!("aoe-daemon-client/", env!("CARGO_PKG_VERSION")))
@@ -866,6 +863,19 @@ pub(crate) fn native_http_client(
         }
     }
     builder.build().map_err(|_| DaemonClientError::ClientBuild)
+}
+
+/// Credentials need HTTPS or loopback HTTP unless the caller opted into
+/// plaintext for a trusted LAN remote.
+pub(crate) fn ensure_credential_transport(
+    url: &Url,
+    authenticated: bool,
+    allow_plaintext: bool,
+) -> Result<(), DaemonClientError> {
+    if authenticated && !allow_plaintext && url.scheme() == "http" && !is_loopback_url(url) {
+        return Err(DaemonClientError::InsecureBearerTransport);
+    }
+    Ok(())
 }
 
 pub(crate) fn is_loopback_url(url: &Url) -> bool {

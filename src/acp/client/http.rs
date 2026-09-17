@@ -100,7 +100,8 @@ impl HttpClient {
         let token = endpoint.bearer_token();
         crate::daemon::authorization_header(token)?;
         let authenticated = token.is_some() || endpoint.login().is_some();
-        let http = crate::daemon::native_http_client(&url, authenticated)?;
+        let http =
+            crate::daemon::native_http_client(&url, authenticated, endpoint.allows_plaintext())?;
         Ok(Self { http, endpoint })
     }
 

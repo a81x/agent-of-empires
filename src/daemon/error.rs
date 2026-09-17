@@ -11,7 +11,6 @@ pub enum ApiErrorCode {
     CityhallMode,
     LifecycleLocked,
     PendingTargetGone,
-    TlsRequired,
     RuntimeEpochMismatch,
     ResumeFailed,
     CreationTrustChanged,
@@ -27,7 +26,6 @@ impl ApiErrorCode {
             Self::CityhallMode => "cityhall_mode",
             Self::LifecycleLocked => "lifecycle_locked",
             Self::PendingTargetGone => "pending_target_gone",
-            Self::TlsRequired => "tls_required",
             Self::RuntimeEpochMismatch => "runtime_epoch_mismatch",
             Self::ResumeFailed => "resume_failed",
             Self::CreationTrustChanged => "creation_trust_changed",
@@ -46,7 +44,6 @@ impl ApiErrorCode {
             | Self::CreationCancelled
             | Self::CreationNotPending => StatusCode::CONFLICT,
             Self::PendingTargetGone => StatusCode::NOT_FOUND,
-            Self::TlsRequired => StatusCode::UPGRADE_REQUIRED,
         }
     }
 
@@ -71,7 +68,6 @@ impl ApiErrorCode {
             b"cityhall_mode" => Self::CityhallMode,
             b"lifecycle_locked" => Self::LifecycleLocked,
             b"pending_target_gone" if resolving_pending_target => Self::PendingTargetGone,
-            b"tls_required" => Self::TlsRequired,
             b"runtime_epoch_mismatch" => Self::RuntimeEpochMismatch,
             b"resume_failed" => Self::ResumeFailed,
             b"creation_trust_changed" => Self::CreationTrustChanged,
