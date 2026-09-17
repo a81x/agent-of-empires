@@ -47,6 +47,19 @@ When the browser fails to reach a working terminal, the disconnect banner shows 
 | 1013 | `tmux_not_ready`  | Pane did not become capturable within 2s. Usually a benign warm-up on first session open. | Retry with normal backoff. |
 | 4001 | `pty_dead`        | The live view was running but the pane permanently exited.                                | Show "Click retry" banner. |
 
+## Who sets the pane size
+
+One client at a time sets a session's pane size, and every surface follows the
+same rule: the TUI, the web live view, a remote client, and `aoe attach`.
+
+Opening a session live, or attaching a terminal to it, takes that right and
+sizes the pane to your grid; whoever held it is told who took over and drops
+back to watching. Merely selecting or previewing a session takes it only while
+nobody else holds it and no live client has sized the pane, so a second device
+renders at the size the first one set instead of fighting it. Letting go, by
+leaving live mode, deselecting, or disconnecting, never resizes the pane again;
+it keeps the size it was given until the session restarts.
+
 ## Read-only mode
 
 When the server runs with `aoe serve --read-only`, the terminal renders the live stream but drops keystrokes: you can watch sessions but not type into them. The session-row Delete and triage actions are hidden too.

@@ -364,13 +364,6 @@ fn fleet_passive_step(
     }
 }
 
-/// How long a declined passive resize stays parked before the fleet retries
-/// it. Declines come from a live attach or an active size owner; nothing
-/// announces when those go away, so a bounded retry turns "parked until the
-/// next geometry change" into "recovers within half a minute", at one
-/// guarded worker attempt per declined session per interval.
-pub(super) const PASSIVE_DECLINE_RETRY: Duration = Duration::from_secs(30);
-
 /// Whether a pane observation contradicts an applied passive resize: taken
 /// after adoption (the shared list-panes snapshot can lag our own resize,
 /// and acting on an older one would re-SIGWINCH a pane that is already
@@ -2473,7 +2466,9 @@ impl HomeView {
     /// the same fleet geometry is wanted on two consecutive refreshes (the
     /// fleet analogue of `passive_resize_step`'s one-frame-toast rule), and a
     /// geometry the worker declined is not retried until the wanted fleet
-    /// geometry changes or [`PASSIVE_DECLINE_RETRY`] elapses.
+    /// geometry changes. A decline means another client owns that pane's
+    /// size; nothing re-asserts over it, so the geometry stays parked until
+    /// the fleet wants a different one.
     ///
     /// Single-TUI only: with more than one aoe TUI alive, each would treat
     /// the other's fleet resizes as external (the observed-size invalidation
@@ -2489,6 +2484,21 @@ impl HomeView {
         exclude: Option<&str>,
     ) {
         self.adopt_passive_resize_completions();
+        // Watching the selected row is a `view` claim on its size: it licenses
+        // the pre-size below and tells other clients the pane is being read.
+        // A remote row's claim is made by the daemon serving it.
+        let watched = self
+            .selected_session
+            .clone()
+            .filter(|_| self.selected_remote.is_none())
+            .and_then(|id| {
+                let inst = self.get_instance(&id)?;
+                Some(crate::tmux::Session::resolve_name_for_display(
+                    &id,
+                    &inst.title,
+                ))
+            });
+        self.view_lock.watch(watched.as_deref());
         if self.active_tui_count > 1 {
             return;
         }
@@ -2556,13 +2566,7 @@ impl HomeView {
             }
             let want = (cols, rows);
             let synced = self.passive_pane_synced.get(&id).map(|s| (s.cols, s.rows));
-            // An expired decline reads as absent so the session is retried
-            // once its blocking attach or size owner may have gone away.
-            let declined = self
-                .passive_pane_declined
-                .get(&id)
-                .filter(|(_, at)| at.elapsed() < PASSIVE_DECLINE_RETRY)
-                .map(|(geometry, _)| *geometry);
+            let declined = self.passive_pane_declined.get(&id).map(|(want, _)| *want);
             match fleet_passive_step(
                 want,
                 synced,
@@ -2580,6 +2584,7 @@ impl HomeView {
                             &id,
                             &inst.title,
                         ),
+                        who: crate::tui::view_lock::viewer_id(),
                         cols,
                         rows,
                         // The viewed session (selected here in Terminal/Tool
@@ -2679,6 +2684,7 @@ impl HomeView {
                                     &want.0,
                                     &inst.title,
                                 ),
+                                who: crate::tui::view_lock::viewer_id(),
                                 cols: want.1,
                                 rows: want.2,
                                 // The user is viewing this session; its
@@ -2926,6 +2932,13 @@ impl HomeView {
                 ViewMode::Structured => " Preview ".to_string(),
                 ViewMode::Terminal => " Terminal Preview ".to_string(),
                 ViewMode::Tool(name) => format!(" {} Preview ", name),
+            };
+            // Another client holds this pane's size, so it renders at their
+            // grid and nothing here resizes it. Say who, or the pane looks
+            // mis-sized for no reason.
+            let title = match self.view_lock.held_by() {
+                Some(holder) => format!("{}· size set by {holder} ", title),
+                None => title,
             };
             block = block
                 .title(title)

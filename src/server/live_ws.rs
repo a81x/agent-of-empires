@@ -40,8 +40,9 @@
 //!   grew by that many lines), appends `shift` blank rows, then replaces the
 //!   listed rows. `base` names the `seq` the patch applies to; a client that
 //!   is not at `base` sends `{"type":"resync"}` and receives a full frame.
-//!   `{"type":"size_owner","is_owner":bool}`: whether this client holds
-//!     the session's size-owner lock. Only the owner resizes the shared
+//!   `{"type":"size_owner","is_owner":bool,"holder":"<label>"|null}`:
+//!     whether this client holds the session's size lock, and who holds it
+//!     instead when it does not. Only the owner resizes the shared
 //!     tmux window and may type; a non-owner renders best-effort at the
 //!     owner's grid and shows a "take over" affordance. A visible
 //!     non-owner at fast cadence auto-reclaims the lock (claim, never
@@ -82,8 +83,10 @@
 //!     Servers without it ignore the message.
 //!   `{"type":"resync"}`: the client lost patch continuity; the next publish
 //!     is a full frame.
-//!   `{"type":"caps","deflate":bool,"patch":bool}`: client capability
-//!     advertisement. `patch:true` enables row patches (above).
+//!   `{"type":"caps","deflate":bool,"patch":bool,"label":"<name>"}`: client
+//!     capability advertisement. `patch:true` enables row patches (above).
+//!     `label` is what other clients call this one when it takes the size
+//!     lock from them; it defaults to `web`.
 //!     With `deflate:true`, frame messages switch from JSON text to
 //!     BINARY: a connection-lifetime raw-deflate stream, sync-flushed per
 //!     frame, carrying `u32-LE length || frame JSON` records in the
@@ -157,6 +160,9 @@ const PATCH_MAX_CHANGED_RATIO: f32 = 0.5;
 const MAX_WINDOW_LINES: usize = 4000;
 /// Floor for the capture window when the client hasn't sized yet.
 const DEFAULT_WINDOW_LINES: usize = 50;
+/// What a client is called before it names itself in `caps`. The dashboard
+/// does not, and "web" is what its viewers are to everyone else.
+const DEFAULT_CLIENT_LABEL: &str = "web";
 /// Keepalive ping interval; the recv side relies on the browser's pong.
 const PING_INTERVAL: Duration = Duration::from_secs(30);
 /// Floor between drift re-asserts (see the capture loop): both known
@@ -245,6 +251,9 @@ enum LiveControlMessage {
         deflate: bool,
         #[serde(default)]
         patch: bool,
+        /// What to call this client in another client's "took over" message.
+        #[serde(default)]
+        label: Option<String>,
     },
     /// The client lost patch continuity and needs a full frame.
     #[serde(rename = "resync")]
@@ -285,12 +294,21 @@ struct LiveSettings {
     patch: AtomicBool,
     /// The next publish must be a full frame (client resync).
     force_full: AtomicBool,
+    /// True while this connection holds the size lock as a viewer, which its
+    /// heartbeat keeps alive (see `crate::tmux::size_lock`).
+    holds_view: AtomicBool,
+    /// What other clients call this viewer.
+    label: std::sync::Mutex<String>,
     /// [`live_now_ms`] until which frames at a pane geometry other than the
     /// requested grid are withheld after an owner resize; 0 when none.
     resize_settle_until_ms: AtomicU64,
 }
 
 impl LiveSettings {
+    fn label(&self) -> String {
+        self.label.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
     fn new() -> Self {
         Self {
             window_lines: AtomicUsize::new(DEFAULT_WINDOW_LINES),
@@ -301,6 +319,8 @@ impl LiveSettings {
             deflate: AtomicBool::new(false),
             patch: AtomicBool::new(false),
             force_full: AtomicBool::new(false),
+            holds_view: AtomicBool::new(false),
+            label: std::sync::Mutex::new(DEFAULT_CLIENT_LABEL.to_string()),
             resize_settle_until_ms: AtomicU64::new(0),
         }
     }
@@ -493,8 +513,23 @@ fn plan_patch<'a>(
 
 /// JSON control frame telling the client whether it currently owns the
 /// session's size (and may resize/type) or is a read-only viewer.
-fn size_owner_json(is_owner: bool) -> String {
-    serde_json::json!({ "type": "size_owner", "is_owner": is_owner }).to_string()
+fn size_owner_json(is_owner: bool, holder: Option<&str>) -> String {
+    serde_json::json!({
+        "type": "size_owner",
+        "is_owner": is_owner,
+        "holder": holder,
+    })
+    .to_string()
+}
+
+/// Label of whoever holds this session's size now, for a client being told it
+/// lost the lock. `None` when the lock is free (the holder let go rather than
+/// took over).
+fn current_holder_label(tmux_name: &str) -> Option<String> {
+    crate::tmux::Session::from_name(tmux_name)
+        .size_state()
+        .active(crate::util::now_ms(), SIZE_OWNER_TTL)
+        .map(|lock| lock.label.clone())
 }
 
 fn clipboard_json(text: &str) -> String {
@@ -956,6 +991,25 @@ async fn handle_live_ws_inner(
     // Wakes the capture loop out of its inter-capture sleep: after
     // dispatched input (echo latency) and after cadence/window changes.
     let nudge = Arc::new(tokio::sync::Notify::new());
+    // Watching is a `view` claim on the pane's size
+    // (`crate::tmux::size_lock`): it tells every other client the pane is
+    // being read, and it is refused on a pane a live client has sized. The
+    // capture loop heartbeats it; the disconnect release below frees it.
+    {
+        let name = tmux_name.clone();
+        let who = owner_id.clone();
+        let label = settings.label();
+        let held = tokio::task::spawn_blocking(move || {
+            crate::tmux::Session::from_name(&name).claim_size_lock(
+                &who,
+                &label,
+                crate::tmux::SizeMode::View,
+            )
+        })
+        .await
+        .unwrap_or(false);
+        settings.holds_view.store(held, Ordering::Relaxed);
+    }
 
     #[cfg(unix)]
     let config = crate::session::config::Config::load_or_warn();
@@ -1200,22 +1254,32 @@ async fn handle_live_ws_inner(
                     // Keep the size-owner lock alive while we hold it, and
                     // notice promptly if another client took over (then we
                     // demote ourselves to a read-only viewer).
-                    if capture_settings.is_owner.load(Ordering::Relaxed)
+                    if (capture_settings.is_owner.load(Ordering::Relaxed)
+                        || capture_settings.holds_view.load(Ordering::Relaxed))
                         && last_heartbeat.elapsed() >= SIZE_OWNER_HEARTBEAT
                     {
                         last_heartbeat = std::time::Instant::now();
                         let name = capture_tmux.clone();
                         let who = capture_owner.clone();
-                        let still_owner = tokio::task::spawn_blocking(move || {
-                            crate::tmux::Session::from_name(&name).refresh_size_owner(&who)
+                        let was_owner = capture_settings.is_owner.load(Ordering::Relaxed);
+                        let (still_holding, holder) = tokio::task::spawn_blocking(move || {
+                            let held =
+                                crate::tmux::Session::from_name(&name).refresh_size_owner(&who);
+                            let holder = (!held).then(|| current_holder_label(&name)).flatten();
+                            (held, holder)
                         })
                         .await
-                        .unwrap_or(false);
-                        if !still_owner {
+                        .unwrap_or((false, None));
+                        if !still_holding {
                             capture_settings.is_owner.store(false, Ordering::Relaxed);
-                            let _ = capture_tx
-                                .send(Message::Text(size_owner_json(false).into()))
-                                .await;
+                            capture_settings.holds_view.store(false, Ordering::Relaxed);
+                            if was_owner {
+                                let _ = capture_tx
+                                    .send(Message::Text(
+                                        size_owner_json(false, holder.as_deref()).into(),
+                                    ))
+                                    .await;
+                            }
                         }
                     }
                     // Auto-reclaim: a non-owner viewer re-CLAIMS (never
@@ -1241,9 +1305,10 @@ async fn handle_live_ws_inner(
                             let who = capture_owner.clone();
                             #[cfg(unix)]
                             let reclaim_vt = capture_vt.clone();
+                            let label = capture_settings.label();
                             let claimed = tokio::task::spawn_blocking(move || {
                                 let session = crate::tmux::Session::from_name(&name);
-                                if !session.claim_size_owner(&who, SIZE_OWNER_TTL) {
+                                if !session.claim_vacant_size_lock(&who, &label) {
                                     return false;
                                 }
                                 #[cfg(unix)]
@@ -1267,7 +1332,7 @@ async fn handle_live_ws_inner(
                                 capture_settings.is_owner.store(true, Ordering::Relaxed);
                                 last_heartbeat = std::time::Instant::now();
                                 let _ = capture_tx
-                                    .send(Message::Text(size_owner_json(true).into()))
+                                    .send(Message::Text(size_owner_json(true, None).into()))
                                     .await;
                             }
                         }
@@ -1347,8 +1412,11 @@ async fn handle_live_ws_inner(
                                 capture_settings.record_owner_resize(still_owner);
                                 if !still_owner {
                                     capture_settings.is_owner.store(false, Ordering::Relaxed);
+                                    let holder = current_holder_label(&capture_tmux);
                                     let _ = capture_tx
-                                        .send(Message::Text(size_owner_json(false).into()))
+                                        .send(Message::Text(
+                                            size_owner_json(false, holder.as_deref()).into(),
+                                        ))
                                         .await;
                                 }
                             }
@@ -1669,9 +1737,14 @@ async fn handle_live_ws_inner(
                                 let who = owner_id.clone();
                                 #[cfg(unix)]
                                 let resize_vt = vt.clone();
+                                let label = settings.label();
                                 let owned = tokio::task::spawn_blocking(move || {
                                     let session = crate::tmux::Session::from_name(&name);
-                                    if !session.claim_size_owner(&who, SIZE_OWNER_TTL) {
+                                    if !session.claim_size_lock(
+                                        &who,
+                                        &label,
+                                        crate::tmux::SizeMode::Live,
+                                    ) {
                                         return false;
                                     }
                                     #[cfg(unix)]
@@ -1684,14 +1757,18 @@ async fn handle_live_ws_inner(
                                     );
                                     #[cfg(not(unix))]
                                     let owned = resize_and_reseed(&session, &who, cols, rows);
+                                    if owned {
+                                        session.mark_live_sized();
+                                    }
                                     owned
                                 })
                                 .await
                                 .unwrap_or(false);
                                 settings.record_owner_resize(owned);
                                 settings.is_owner.store(owned, Ordering::Relaxed);
+                                settings.holds_view.store(false, Ordering::Relaxed);
                                 let _ = out_tx
-                                    .send(Message::Text(size_owner_json(owned).into()))
+                                    .send(Message::Text(size_owner_json(owned, None).into()))
                                     .await;
                                 nudge.notify_one();
                             }
@@ -1718,15 +1795,16 @@ async fn handle_live_ws_inner(
                                 // never takes control from another viewer.
                                 let name = tmux_name.clone();
                                 let who = owner_id.clone();
+                                let label = settings.label();
                                 let owned = tokio::task::spawn_blocking(move || {
                                     crate::tmux::Session::from_name(&name)
-                                        .claim_size_owner(&who, SIZE_OWNER_TTL)
+                                        .claim_vacant_size_lock(&who, &label)
                                 })
                                 .await
                                 .unwrap_or(false);
                                 settings.is_owner.store(owned, Ordering::Relaxed);
                                 let _ = out_tx
-                                    .send(Message::Text(size_owner_json(owned).into()))
+                                    .send(Message::Text(size_owner_json(owned, None).into()))
                                     .await;
                                 nudge.notify_one();
                             }
@@ -1740,9 +1818,14 @@ async fn handle_live_ws_inner(
                                 let rows = settings.screen_rows.load(Ordering::Relaxed) as u16;
                                 #[cfg(unix)]
                                 let claim_vt = vt.clone();
+                                let label = settings.label();
                                 let (owned, resized) = tokio::task::spawn_blocking(move || {
                                     let session = crate::tmux::Session::from_name(&name);
-                                    if !session.steal_size_owner(&who) {
+                                    if !session.claim_size_lock(
+                                        &who,
+                                        &label,
+                                        crate::tmux::SizeMode::Live,
+                                    ) {
                                         return (false, false);
                                     }
                                     if cols == 0 || rows == 0 {
@@ -1758,18 +1841,30 @@ async fn handle_live_ws_inner(
                                     );
                                     #[cfg(not(unix))]
                                     let owned = resize_and_reseed(&session, &who, cols, rows);
+                                    if owned {
+                                        session.mark_live_sized();
+                                    }
                                     (owned, owned)
                                 })
                                 .await
                                 .unwrap_or((false, false));
                                 settings.record_owner_resize(resized);
                                 settings.is_owner.store(owned, Ordering::Relaxed);
+                                settings.holds_view.store(false, Ordering::Relaxed);
                                 let _ = out_tx
-                                    .send(Message::Text(size_owner_json(owned).into()))
+                                    .send(Message::Text(size_owner_json(owned, None).into()))
                                     .await;
                                 nudge.notify_one();
                             }
-                            LiveControlMessage::Caps { deflate, patch } => {
+                            LiveControlMessage::Caps {
+                                deflate,
+                                patch,
+                                label,
+                            } => {
+                                if let Some(label) = label.filter(|l| !l.trim().is_empty()) {
+                                    *settings.label.lock().unwrap_or_else(|e| e.into_inner()) =
+                                        label;
+                                }
                                 // Set-once: a client never revokes deflate (it
                                 // has no way to reset its inflate stream), so
                                 // ignore a false re-advertisement.
@@ -2296,18 +2391,25 @@ mod tests {
             m,
             LiveControlMessage::Caps {
                 deflate: true,
-                patch: false
+                patch: false,
+                label: None
             }
         ));
-        let m: LiveControlMessage =
-            serde_json::from_str(r#"{"type":"caps","deflate":true,"patch":true}"#).unwrap();
-        assert!(matches!(
-            m,
+        let m: LiveControlMessage = serde_json::from_str(
+            r#"{"type":"caps","deflate":true,"patch":true,"label":"mac-mini (aoe)"}"#,
+        )
+        .unwrap();
+        match m {
             LiveControlMessage::Caps {
-                deflate: true,
-                patch: true
-            }
-        ));
+                deflate,
+                patch,
+                label,
+            } => assert_eq!(
+                (deflate, patch, label.as_deref()),
+                (true, true, Some("mac-mini (aoe)"))
+            ),
+            _ => panic!("expected caps"),
+        }
         let m: LiveControlMessage = serde_json::from_str(r#"{"type":"resync"}"#).unwrap();
         assert!(matches!(m, LiveControlMessage::Resync));
     }
@@ -2519,6 +2621,55 @@ mod tests {
         let full = json(encoder.encode(mailbox.take().unwrap(), true, &deflate));
         assert_eq!((&full["type"], &full["seq"]), (&"frame".into(), &3.into()));
         assert_eq!(full["content"], "a\nb\nc\ny\n");
+    }
+
+    /// The connect-and-resize sequence a viewer drives, against the shared
+    /// rule: connecting watches, a second viewer does not displace the first,
+    /// and a resize takes the pane live and names its new holder.
+    #[test]
+    #[serial_test::serial]
+    fn a_viewer_connection_watches_and_a_resize_takes_the_pane_live() {
+        if crate::tmux::tmux_command().arg("-V").output().is_err() {
+            eprintln!("Skipping test: tmux unavailable");
+            return;
+        }
+        let pane = crate::tmux::test_helpers::TmuxTestSession::new("aoe_test_ws_lock");
+        let out = crate::tmux::tmux_command()
+            .args(["new-session", "-d", "-s", pane.name(), "sleep 30"])
+            .output()
+            .expect("tmux new-session");
+        assert!(out.status.success());
+        crate::tmux::refresh_session_cache();
+        let session = crate::tmux::Session::from_name(pane.name());
+
+        assert!(session.claim_size_lock("live-1", "web", crate::tmux::SizeMode::View));
+        assert!(
+            !session.claim_size_lock("live-2", "phone (web)", crate::tmux::SizeMode::View),
+            "a second viewer renders at the first one's grid"
+        );
+
+        assert!(session.claim_size_lock("live-2", "phone (web)", crate::tmux::SizeMode::Live));
+        session.mark_live_sized();
+        assert_eq!(
+            current_holder_label(pane.name()).as_deref(),
+            Some("phone (web)"),
+            "the displaced client is told who took over"
+        );
+        assert!(
+            !session.claim_size_lock("live-3", "web", crate::tmux::SizeMode::View),
+            "a live-sized pane takes no viewer claims"
+        );
+    }
+
+    #[test]
+    fn size_owner_json_names_the_holder_when_this_client_is_not_it() {
+        let mine: serde_json::Value = serde_json::from_str(&size_owner_json(true, None)).unwrap();
+        assert_eq!(mine["is_owner"], true);
+        assert_eq!(mine["holder"], serde_json::Value::Null);
+        let theirs: serde_json::Value =
+            serde_json::from_str(&size_owner_json(false, Some("mac-mini (aoe)"))).unwrap();
+        assert_eq!(theirs["is_owner"], false);
+        assert_eq!(theirs["holder"], "mac-mini (aoe)");
     }
 
     #[test]

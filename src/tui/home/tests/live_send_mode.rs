@@ -100,6 +100,20 @@ fn poll_live_send_takeover_exits_live_mode_with_dialog() {
         "dialog must explain the takeover, got: {}",
         dialog.message()
     );
+    // The notice guards the keyboard: keys typed for the pane before the
+    // take-over land on it, not on the session list.
+    env.view.handle_key(
+        crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Char('d'),
+            crossterm::event::KeyModifiers::NONE,
+        ),
+        None,
+    );
+    assert!(env.view.confirm_dialog.is_none());
+    assert!(
+        env.view.info_dialog.is_some(),
+        "the notice stays until read"
+    );
 }
 
 #[test]
@@ -986,7 +1000,7 @@ fn stale_observation_published_after_adoption_does_not_invalidate() {
 
 #[test]
 #[serial]
-fn fleet_reconcile_retries_expired_declines() {
+fn fleet_reconcile_parks_a_declined_session_until_its_geometry_changes() {
     let mut env = create_test_env_with_sessions(2);
     let ids: Vec<String> = env
         .view
@@ -1010,29 +1024,22 @@ fn fleet_reconcile_retries_expired_declines() {
         .map(|&(_, cols, rows)| (cols, rows))
         .expect("armed epoch covers ids[1]");
 
-    // A decline older than the retry window reads as absent, so the
-    // session recovers once its blocking attach or size owner may have
-    // gone away, instead of staying parked until a geometry change.
-    let expired = std::time::Instant::now()
-        .checked_sub(
-            crate::tui::home::render::PASSIVE_DECLINE_RETRY + std::time::Duration::from_secs(1),
-        )
-        .expect("test clock predates the retry window");
-    env.view
-        .passive_pane_declined
-        .insert(ids[1].clone(), (want, expired));
-    env.view
-        .reconcile_passive_fleet(inner, false, Some(&selected));
-    assert!(env.view.passive_pane_queued.contains_key(&ids[1]));
-
-    // A fresh decline parks it again.
-    env.view.passive_pane_queued.clear();
+    // Another client owns that pane's size, so nothing re-asserts over it.
     env.view
         .passive_pane_declined
         .insert(ids[1].clone(), (want, std::time::Instant::now()));
     env.view
         .reconcile_passive_fleet(inner, false, Some(&selected));
     assert!(!env.view.passive_pane_queued.contains_key(&ids[1]));
+
+    // A different wanted geometry is a new question and is asked once.
+    env.view.passive_pane_declined.insert(
+        ids[1].clone(),
+        ((want.0 + 1, want.1), std::time::Instant::now()),
+    );
+    env.view
+        .reconcile_passive_fleet(inner, false, Some(&selected));
+    assert!(env.view.passive_pane_queued.contains_key(&ids[1]));
 }
 
 #[test]

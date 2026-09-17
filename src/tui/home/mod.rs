@@ -452,14 +452,13 @@ pub struct HomeView {
     /// `refresh_preview_cache_if_needed` and `reconcile_passive_fleet`.
     pub(super) passive_pane_synced: std::collections::HashMap<String, PassiveSynced>,
     /// Per-session `(cols, rows)` the worker declined to apply (session
-    /// missing, client attached, or size owner active), with when. The fleet
-    /// reconcile skips a session while it still wants its declined geometry,
-    /// so background sessions get one attempt per geometry change instead of
-    /// a per-frame retry loop; the selected session ignores this and keeps
-    /// its historical retry-until-applied behavior. Cleared whenever the
-    /// fleet's wanted geometry changes, and an entry older than
-    /// `PASSIVE_DECLINE_RETRY` reads as absent so a session recovers once its
-    /// blocking attach or size owner goes away.
+    /// missing, client attached, live sized, or another client holding the
+    /// size lock), with when. The fleet reconcile skips a session while it
+    /// still wants its declined geometry, so background sessions get one
+    /// attempt per geometry change instead of a per-frame retry loop; the
+    /// selected session ignores this and keeps its historical
+    /// retry-until-applied behavior. Cleared whenever the fleet's wanted
+    /// geometry changes.
     pub(super) passive_pane_declined:
         std::collections::HashMap<String, ((u16, u16), std::time::Instant)>,
     /// Per-session `(cols, rows)` handed to the passive-resize worker whose
@@ -584,6 +583,8 @@ pub struct HomeView {
     pub(super) collapsed_remotes: super::remote_feed::CollapsedRemotes,
     /// Live socket for the selected remote row's preview.
     pub(super) remote_preview: super::remote_preview::RemotePreview,
+    /// Holds this TUI's `view` claim on the selected session's size.
+    pub(super) view_lock: super::view_lock::ViewLock,
     /// The row that socket is watching.
     pub(super) remote_preview_key: Option<super::remote_preview::RemoteKey>,
     pub(super) remote_preview_cache: preview::PreviewCache,

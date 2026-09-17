@@ -7,6 +7,7 @@ pub(crate) mod mouse;
 pub(crate) mod osc8;
 mod session;
 mod session_kind;
+pub mod size_lock;
 pub mod status_bar;
 pub(crate) mod status_detection;
 pub(crate) mod status_rules;
@@ -19,7 +20,11 @@ pub(crate) mod utils;
 pub(crate) mod vt;
 
 pub use composite::PaneGeom;
-pub use session::{PaneCursor, PaneEnvMutation, Session, SIZE_OWNER_HEARTBEAT, SIZE_OWNER_TTL};
+pub use session::{
+    PaneCursor, PaneEnvMutation, Session, SIZE_OWNER_HEARTBEAT, SIZE_OWNER_TTL,
+    TERMINAL_ATTACH_LABEL,
+};
+pub use size_lock::{SizeMode, SizeState};
 pub use status_bar::{get_session_info_for_current, get_status_for_current_session};
 pub use status_detection::{
     detect_claude, detect_status_from_content, detect_status_from_content_in, detect_via_manifest,
@@ -2257,6 +2262,9 @@ fn pane_snapshot_refresh_due() -> bool {
 pub(crate) struct PassiveResizeIntent {
     pub session_id: String,
     pub session_name: String,
+    /// Size-lock identity of the TUI asking, so the shared rule can tell its
+    /// own lock from another client's.
+    pub who: String,
     pub cols: u16,
     pub rows: u16,
     /// Resize before any queued non-priority work: this is the session the
@@ -2414,16 +2422,18 @@ pub(crate) fn take_passive_resize_dones() -> Vec<PassiveResizeDone> {
 }
 
 /// Execute one queued passive resize under an atomic final tmux guard. The
-/// worker first rejects a missing session; the Session helper then fences both
-/// a newly attached client and a size-owner takeover at resize execution. A
-/// resize the guard refuses (or that errors) still completes, as declined, so
-/// render can park the geometry instead of retrying it every frame.
+/// worker first rejects a missing session; the Session helper then applies the
+/// shared size-lock rule and fences an attach or takeover that arrives at
+/// resize execution. A resize the guard refuses (or that errors) still
+/// completes, as declined, so render can park the geometry instead of retrying
+/// it every frame.
 fn execute_passive_resize(work: &PassiveResizeWork) -> PassiveResizeDone {
     let intent = &work.intent;
     let deadline = TmuxCommandDeadline::new();
     let session = Session::from_name(&intent.session_name);
     let applied_window_rows = if session.exists_with_deadline(&deadline) {
-        session.resize_window_if_detached_without_active_owner_after_exists_with_deadline(
+        session.resize_window_for_viewer_with_deadline(
+            &intent.who,
             intent.cols,
             intent.rows,
             &deadline,
@@ -3214,6 +3224,7 @@ mod tests {
             intent: PassiveResizeIntent {
                 session_id: session_id.to_string(),
                 session_name: format!("aoe_test_{session_id}"),
+                who: "tui-view-test".to_string(),
                 cols,
                 rows,
                 priority: false,
@@ -3340,6 +3351,7 @@ mod tests {
             intent: PassiveResizeIntent {
                 session_id: ID.to_string(),
                 session_name: name.clone(),
+                who: "tui-view-test".to_string(),
                 cols: 100,
                 rows: 30,
                 priority: false,

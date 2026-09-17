@@ -49,6 +49,9 @@ struct WireMessage {
     mouse_sgr: bool,
     #[serde(default, rename = "is_owner")]
     is_owner: Option<bool>,
+    /// Who holds the size lock instead of us.
+    #[serde(default)]
+    holder: Option<String>,
 }
 
 /// What the reader task hands its owner.
@@ -68,7 +71,10 @@ pub(crate) enum LiveMessage {
         lines: Vec<(usize, String)>,
         cursor: PaneCursor,
     },
-    SizeOwner(bool),
+    SizeOwner {
+        is_owner: bool,
+        holder: Option<String>,
+    },
     Closed(String),
 }
 
@@ -108,7 +114,10 @@ fn parse_text(text: &str) -> Option<LiveMessage> {
             cursor: msg.pane_cursor(),
             lines: msg.lines,
         }),
-        "size_owner" => Some(LiveMessage::SizeOwner(msg.is_owner.unwrap_or(true))),
+        "size_owner" => Some(LiveMessage::SizeOwner {
+            is_owner: msg.is_owner.unwrap_or(true),
+            holder: msg.holder,
+        }),
         _ => None,
     }
 }
@@ -245,8 +254,17 @@ mod tests {
     fn reads_ownership_notices() {
         assert!(matches!(
             parse_text(r#"{"type":"size_owner","is_owner":false}"#),
-            Some(LiveMessage::SizeOwner(false))
+            Some(LiveMessage::SizeOwner {
+                is_owner: false,
+                holder: None
+            })
         ));
+        match parse_text(r#"{"type":"size_owner","is_owner":false,"holder":"mac-mini (aoe)"}"#) {
+            Some(LiveMessage::SizeOwner { holder, .. }) => {
+                assert_eq!(holder.as_deref(), Some("mac-mini (aoe)"))
+            }
+            other => panic!("expected an ownership notice, got {other:?}"),
+        }
     }
 
     #[test]

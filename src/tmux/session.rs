@@ -6,6 +6,7 @@ use std::process::Stdio;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
+use super::size_lock::{SizeLock, SizeMode, SizeState};
 use super::{
     composite::{CapturedPane, PaneGeom, WindowLayout},
     probe_session_existence, refresh_session_cache,
@@ -52,6 +53,17 @@ impl PaneEnvMutation {
 /// the web daemon and the native TUI read and write the same state.
 const SIZE_OWNER_OPT: &str = "@aoe_size_owner";
 const SIZE_OWNER_HB_OPT: &str = "@aoe_size_owner_hb";
+/// How the holder holds it (`live`/`view`) and what the user is told it is.
+/// An older writer set neither, which reads as an unlabelled live holder.
+const SIZE_MODE_OPT: &str = "@aoe_size_mode";
+const SIZE_LABEL_OPT: &str = "@aoe_size_label";
+/// Set once a live client has sized this pane, so watchers leave it alone.
+/// Outlives the holder and is cleared when the pane restarts.
+const LIVE_SIZED_OPT: &str = "@aoe_live_sized";
+
+/// Stands in for a real terminal attached to the session: it sized the pane
+/// and no watcher may resize under it, but it writes no lock of its own.
+pub const TERMINAL_ATTACH_LABEL: &str = "terminal attach";
 
 /// tmux user options holding the cross-process VT-pipe owner lock. `tmux
 /// pipe-pane` is exclusive per pane: a second process arming it silently
@@ -633,6 +645,9 @@ impl Session {
             bail!("Failed to respawn dead pane: {}", stderr);
         }
 
+        // The respawned pane carries no layout worth protecting, so watchers
+        // may size it again.
+        self.clear_live_sized();
         super::refresh_session_cache();
         Ok(true)
     }
@@ -676,6 +691,19 @@ impl Session {
         if !self.exists() {
             bail!("Session does not exist: {}", self.name);
         }
+        // A full attach drives the pane like live mode: it takes the size
+        // lock, and the terminal it runs in sizes the window, so watchers
+        // must not resize under it afterwards.
+        let label = match crate::util::hostname() {
+            Some(host) => format!("{host} (attached)"),
+            None => TERMINAL_ATTACH_LABEL.to_string(),
+        };
+        self.claim_size_lock(
+            &format!("attach-{}", std::process::id()),
+            &label,
+            SizeMode::Live,
+        );
+        self.mark_live_sized();
         let target = format!("={}:", self.name);
 
         if crate::tmux::utils::inside_tmux() {
@@ -2106,6 +2134,143 @@ impl Session {
         let _ = deadline.run(&mut command);
     }
 
+    /// This session's size lock plus whether a live client has sized the pane,
+    /// in one tmux read. A real terminal attached to the session reads as a
+    /// live holder: it sized the pane itself, and nothing here can write a
+    /// lock on its behalf.
+    pub fn size_state(&self) -> SizeState {
+        let deadline = crate::tmux::TmuxCommandDeadline::new();
+        self.size_state_with_deadline(&deadline)
+    }
+
+    pub(crate) fn size_state_with_deadline(
+        &self,
+        deadline: &crate::tmux::TmuxCommandDeadline,
+    ) -> SizeState {
+        let format = format!(
+            "#{{{SIZE_OWNER_OPT}}}|#{{{SIZE_OWNER_HB_OPT}}}|#{{{SIZE_MODE_OPT}}}|#{{{SIZE_LABEL_OPT}}}|#{{{LIVE_SIZED_OPT}}}|#{{session_attached}}"
+        );
+        let mut command = crate::tmux::tmux_command();
+        command.args([
+            "display-message",
+            "-p",
+            "-t",
+            &format!("={}:", self.name),
+            "-F",
+            &format,
+        ]);
+        let Ok(output) = deadline.run(&mut command) else {
+            return SizeState::default();
+        };
+        if !output.status.success() {
+            return SizeState::default();
+        }
+        let line = String::from_utf8_lossy(&output.stdout);
+        let fields: Vec<&str> = line.trim().split('|').collect();
+        let [owner, heartbeat, mode, label, live_sized, attached] = fields[..] else {
+            return SizeState::default();
+        };
+        let attached = attached.trim().parse::<u32>().unwrap_or(0) > 0;
+        let lock = match Self::parse_owner_snapshot(owner, heartbeat) {
+            Ok(Some((holder, heartbeat_ms))) => Some(SizeLock {
+                holder,
+                label: if label.is_empty() {
+                    owner.to_string()
+                } else {
+                    label.to_string()
+                },
+                mode: SizeMode::parse(mode),
+                heartbeat_ms,
+            }),
+            _ => None,
+        };
+        // An attach beats a stored lock: the terminal is sizing the window
+        // right now, whoever wrote the option last.
+        let lock = if attached {
+            Some(SizeLock {
+                holder: TERMINAL_ATTACH_LABEL.to_string(),
+                label: TERMINAL_ATTACH_LABEL.to_string(),
+                mode: SizeMode::Live,
+                heartbeat_ms: now_ms(),
+            })
+        } else {
+            lock
+        };
+        SizeState {
+            lock,
+            live_sized: live_sized == "1" || attached,
+        }
+    }
+
+    /// Take the size lock for `who` under the shared rules
+    /// ([`crate::tmux::size_lock`]). A live claim always wins and marks the
+    /// pane live sized; a view claim only takes a free lock on a pane no live
+    /// client has sized. Returns whether the lock is held afterwards.
+    pub fn claim_size_lock(&self, who: &str, label: &str, mode: SizeMode) -> bool {
+        // Each step takes its own command budget: the read, the claim and the
+        // labelling are separate tmux round trips, and sharing one deadline
+        // across them fails the last of them on a loaded machine.
+        if !crate::tmux::size_lock::may_claim(
+            now_ms(),
+            &self.size_state(),
+            who,
+            mode,
+            SIZE_OWNER_TTL,
+        ) {
+            return false;
+        }
+        let held = match mode {
+            // Entering live mode or attaching is explicit intent on this pane,
+            // so it displaces whoever holds the lock.
+            SizeMode::Live => self.steal_size_owner(who),
+            SizeMode::View => self.claim_size_owner(who, SIZE_OWNER_TTL),
+        };
+        if held {
+            self.describe_size_lock(label, mode, &crate::tmux::TmuxCommandDeadline::new());
+        }
+        held
+    }
+
+    /// Take the lock for a live client that will not resize yet, and only
+    /// while nobody holds it. The mobile view claims this way before it can
+    /// measure a keyboard-free grid.
+    pub fn claim_vacant_size_lock(&self, who: &str, label: &str) -> bool {
+        let held = self.claim_size_owner(who, SIZE_OWNER_TTL);
+        if held {
+            self.describe_size_lock(
+                label,
+                SizeMode::Live,
+                &crate::tmux::TmuxCommandDeadline::new(),
+            );
+        }
+        held
+    }
+
+    fn describe_size_lock(
+        &self,
+        label: &str,
+        mode: SizeMode,
+        deadline: &crate::tmux::TmuxCommandDeadline,
+    ) {
+        self.set_user_option_with_deadline(SIZE_MODE_OPT, mode.wire(), deadline);
+        self.set_user_option_with_deadline(SIZE_LABEL_OPT, label, deadline);
+    }
+
+    /// Record that a live client has sized this pane, so watchers leave its
+    /// geometry alone until the pane restarts.
+    pub fn mark_live_sized(&self) {
+        let deadline = crate::tmux::TmuxCommandDeadline::new();
+        self.set_user_option_with_deadline(LIVE_SIZED_OPT, "1", &deadline);
+    }
+
+    /// Forget that a live client sized this pane. Called where the pane is
+    /// respawned or the session is (re)started: the new pane carries no
+    /// layout worth protecting.
+    pub fn clear_live_sized(&self) {
+        let deadline = crate::tmux::TmuxCommandDeadline::new();
+        self.set_user_option_with_deadline(LIVE_SIZED_OPT, "", &deadline);
+    }
+
     /// Force ownership to owner_id, even over a live holder. Used by the
     /// explicit "take over" action: a user tap is an intentional steal, not
     /// the passive flap the heartbeat guards against.
@@ -2189,36 +2354,35 @@ impl Session {
             return false;
         }
     }
-    /// Resize a detached pane only if the inactive owner state observed here
-    /// is unchanged when tmux executes resize-window. This fences a live owner
-    /// or terminal attach that arrives after the preliminary worker checks.
-    /// Returns the applied window row count on success, `None` when declined.
-    pub(crate) fn resize_window_if_detached_without_active_owner_after_exists_with_deadline(
+    /// Pre-size a pane for `who`, who only watches it: allowed while the size
+    /// lock is free (or already theirs) and no live client has sized the pane
+    /// ([`crate::tmux::size_lock`]). The owner state observed here is re-checked
+    /// inside tmux when resize-window runs, so a live holder or an attach that
+    /// arrives in between fences the resize out. Returns the applied window row
+    /// count, `None` when declined.
+    pub(crate) fn resize_window_for_viewer_with_deadline(
         &self,
+        who: &str,
         cols: u16,
         rows: u16,
         deadline: &crate::tmux::TmuxCommandDeadline,
     ) -> Option<u16> {
-        let owner_condition = match self.owner_at_result_with_deadline(
-            SIZE_OWNER_OPT,
-            SIZE_OWNER_HB_OPT,
-            deadline,
-        ) {
-            Ok(None) => {
+        let state = self.size_state_with_deadline(deadline);
+        if !crate::tmux::size_lock::may_claim(now_ms(), &state, who, SizeMode::View, SIZE_OWNER_TTL)
+        {
+            return None;
+        }
+        let owner_condition = match &state.lock {
+            None => {
                 format!("#{{&&:#{{==:#{{{SIZE_OWNER_OPT}}},}},#{{==:#{{{SIZE_OWNER_HB_OPT}}},}}}}")
             }
-            Ok(Some((_, heartbeat)))
-                if now_ms().saturating_sub(heartbeat) <= SIZE_OWNER_TTL.as_millis() as u64 =>
-            {
-                return None;
-            }
-            Ok(Some((owner, heartbeat))) => {
-                let owner = Self::tmux_format_literal(&owner);
+            Some(lock) => {
+                let owner = Self::tmux_format_literal(&lock.holder);
+                let heartbeat = lock.heartbeat_ms;
                 format!(
                     "#{{&&:#{{==:#{{{SIZE_OWNER_OPT}}},{owner}}},#{{==:#{{{SIZE_OWNER_HB_OPT}}},{heartbeat}}}}}"
                 )
             }
-            Err(_) => return None,
         };
         let condition = format!("#{{&&:#{{==:#{{session_attached}},0}},{owner_condition}}}");
         self.resize_window_if_format_with_deadline(&condition, cols, rows, deadline)
@@ -2311,7 +2475,6 @@ impl Session {
         let _ = self.set_user_option_with_deadline(opt, value, &deadline);
     }
 
-    #[cfg(test)]
     fn set_user_option_with_deadline(
         &self,
         opt: &str,
@@ -3540,17 +3703,13 @@ mod tests {
 
         let deadline = crate::tmux::TmuxCommandDeadline::new();
         assert!(session
-            .resize_window_if_detached_without_active_owner_after_exists_with_deadline(
-                91, 31, &deadline,
-            )
+            .resize_window_for_viewer_with_deadline("viewer", 91, 31, &deadline)
             .is_some());
         assert_eq!(pane_size(), (91, 31));
         assert!(session.claim_size_owner("active", Duration::from_secs(10)));
         let deadline = crate::tmux::TmuxCommandDeadline::new();
         assert!(session
-            .resize_window_if_detached_without_active_owner_after_exists_with_deadline(
-                92, 32, &deadline,
-            )
+            .resize_window_for_viewer_with_deadline("viewer", 92, 32, &deadline)
             .is_none());
         assert_eq!(pane_size(), (91, 31));
         session.release_size_owner("active");
@@ -3567,9 +3726,7 @@ mod tests {
         assert!(out.status.success());
         let deadline = crate::tmux::TmuxCommandDeadline::new();
         assert!(session
-            .resize_window_if_detached_without_active_owner_after_exists_with_deadline(
-                93, 33, &deadline,
-            )
+            .resize_window_for_viewer_with_deadline("viewer", 93, 33, &deadline)
             .is_some());
         assert_eq!(
             pane_size(),
@@ -3602,6 +3759,68 @@ mod tests {
         session.release_size_owner(literal_owner);
         assert!(session.size_owner().is_none());
     }
+    /// The one rule every surface asks: live takes the lock and marks the
+    /// pane, a viewer only takes a free lock on a pane no live client sized,
+    /// and the mark clears when the pane restarts.
+    #[test]
+    #[serial_test::serial]
+    fn the_size_lock_lets_live_take_over_and_keeps_viewers_off_a_live_sized_pane() {
+        if !tmux_available() {
+            eprintln!("Skipping test: tmux not available");
+            return;
+        }
+        let (_guard, session) = owner_lock_session("aoe_test_size_lock");
+        let deadline = || crate::tmux::TmuxCommandDeadline::new();
+
+        // Nobody holds it: a watcher takes it and may pre-size.
+        assert!(session.claim_size_lock("viewer", "laptop (aoe)", SizeMode::View));
+        let state = session.size_state();
+        let lock = state.lock.as_ref().expect("a viewer holds the lock");
+        assert_eq!(
+            (lock.holder.as_str(), lock.label.as_str(), lock.mode),
+            ("viewer", "laptop (aoe)", SizeMode::View)
+        );
+        assert!(!state.live_sized);
+        assert!(session
+            .resize_window_for_viewer_with_deadline("viewer", 81, 25, &deadline())
+            .is_some());
+
+        // A second watcher takes neither the lock nor the pane's size.
+        assert!(!session.claim_size_lock("viewer2", "mini (aoe)", SizeMode::View));
+        assert!(session
+            .resize_window_for_viewer_with_deadline("viewer2", 82, 26, &deadline())
+            .is_none());
+
+        // Live takes it from the watcher and marks the pane.
+        assert!(session.claim_size_lock("live", "mac-mini (aoe)", SizeMode::Live));
+        session.mark_live_sized();
+        let state = session.size_state();
+        let lock = state.lock.as_ref().expect("the live client holds the lock");
+        assert_eq!(
+            (lock.holder.as_str(), lock.label.as_str(), lock.mode),
+            ("live", "mac-mini (aoe)", SizeMode::Live)
+        );
+        assert!(state.live_sized);
+
+        // The pane keeps its size when the live client leaves, and no watcher
+        // takes it back.
+        session.release_size_owner("live");
+        assert!(session.size_state().lock.is_none());
+        assert!(!session.claim_size_lock("viewer", "laptop (aoe)", SizeMode::View));
+        assert!(session
+            .resize_window_for_viewer_with_deadline("viewer", 83, 27, &deadline())
+            .is_none());
+
+        // A restarted pane carries no layout worth protecting.
+        session.clear_live_sized();
+        assert!(!session.size_state().live_sized);
+        assert!(session.claim_size_lock("viewer", "laptop (aoe)", SizeMode::View));
+        assert!(session
+            .resize_window_for_viewer_with_deadline("viewer", 84, 28, &deadline())
+            .is_some());
+        session.release_size_owner("viewer");
+    }
+
     /// A guarded resize that never got to run leaves the shared budget spent.
     /// Verification and cleanup must run on that same budget: on a fresh
     /// deadline they read back the unchanged heartbeat and release the lock.

@@ -580,7 +580,8 @@ impl LiveSendWorker {
             // confirm-read race; the retry on the next resize batch tells
             // those apart (a slow-to-appear pane still gets owned, a real
             // takeover is flagged instead of fought).
-            let mut owned = session.steal_size_owner(&owner_id);
+            let label = crate::tui::view_lock::viewer_label();
+            let mut owned = session.claim_size_lock(&owner_id, &label, crate::tmux::SizeMode::Live);
             // Refresh-or-flag: bump our heartbeat iff we still hold the
             // lock; a failed refresh means another surface took over, which
             // is flagged once and never fought.
@@ -2421,11 +2422,13 @@ fn dispatch_via_fork(
             // batches; it cannot authorize a later subprocess safely.
             let owner = resize_owner
                 .ok_or_else(|| anyhow::anyhow!("live-send resize has no owner token"))?;
-            if !crate::tmux::Session::from_name(tmux_name)
-                .resize_window_if_owner(owner, *cols, *rows)
-            {
+            let session = crate::tmux::Session::from_name(tmux_name);
+            if !session.resize_window_if_owner(owner, *cols, *rows) {
                 anyhow::bail!("live-send resize lost ownership, failed, or timed out");
             }
+            // This pane now carries a live client's layout, so watchers leave
+            // its geometry alone until it restarts.
+            session.mark_live_sized();
             return Ok(());
         }
     }
@@ -4198,7 +4201,19 @@ mod tests {
         assert!(!worker.lock_lost());
 
         // A web live viewer takes over (what live_ws's Claim handler does).
-        assert!(session.steal_size_owner("live-test-thief"));
+        assert!(session.claim_size_lock(
+            "live-test-thief",
+            "phone (web)",
+            crate::tmux::SizeMode::Live
+        ));
+        assert_eq!(
+            session
+                .size_state()
+                .active(crate::util::now_ms(), crate::tmux::SIZE_OWNER_TTL)
+                .map(|lock| lock.label.clone()),
+            Some("phone (web)".to_string()),
+            "the taker's label is what the displaced client names"
+        );
 
         // The next resize must verify, observe the loss, flag it, and be
         // dropped. (The idle heartbeat may flag it first; either path is

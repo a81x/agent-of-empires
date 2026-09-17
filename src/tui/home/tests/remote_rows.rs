@@ -555,6 +555,43 @@ fn a_wheel_over_a_full_screen_remote_pane_asks_the_daemon_unless_live_send_drive
     }
 }
 
+/// Another client taking the pane ends live mode with a notice naming it. The
+/// notice also swallows the keys already typed for the pane, so none of them
+/// reaches the session list as a shortcut.
+#[test]
+#[serial]
+fn a_take_over_ends_remote_live_send_behind_a_notice_naming_the_taker() {
+    use crate::tui::remote_preview::{PreviewEvent, RemotePreview};
+    let mut env = remote_preview_env();
+    let (preview, _commands) = RemotePreview::recording();
+    env.view.remote_preview = preview;
+    assert!(env.view.activate_selected_session().is_none());
+    let key = env.view.remote_live_key().expect("remote live-send");
+    env.view.remote_live_granted = true;
+
+    env.view.remote_preview.emit(PreviewEvent::SizeOwner {
+        key,
+        is_owner: false,
+        holder: Some("mac-mini (aoe)".into()),
+    });
+    assert!(env.view.apply_remote_preview());
+    assert!(env.view.live_send.is_none(), "live mode ends");
+    let dialog = env
+        .view
+        .info_dialog
+        .as_ref()
+        .expect("a notice guards input");
+    assert!(
+        dialog.message().contains("mac-mini (aoe) took over"),
+        "{:?}",
+        dialog.message()
+    );
+    // A key that would otherwise delete a session is consumed by the notice.
+    env.view
+        .handle_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE), None);
+    assert!(env.view.confirm_dialog.is_none());
+}
+
 #[test]
 #[serial]
 fn a_scrolled_back_remote_preview_holds_frames_until_it_returns_to_the_live_edge() {

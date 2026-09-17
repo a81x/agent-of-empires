@@ -313,6 +313,9 @@ impl Instance {
             &prepared.launch_env.pane,
             &prepared.launch_env.container,
         )?;
+        // This pane has no layout worth protecting yet, whatever a previous
+        // pane under the same name left behind.
+        session.clear_live_sized();
         if let Some(metadata) = omp_capture_metadata.as_ref() {
             let pane_generation =
                 crate::tmux::env::get_env(session.name(), crate::tmux::env::AOE_OMP_LAUNCH_ID_KEY);

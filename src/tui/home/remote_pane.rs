@@ -81,23 +81,37 @@ impl HomeView {
         while let Some(event) = self.remote_preview.try_recv() {
             let current = self.remote_preview_key.clone();
             match event {
-                PreviewEvent::SizeOwner { key, is_owner }
-                    if self.remote_live_key().as_ref() == Some(&key) =>
-                {
+                PreviewEvent::SizeOwner {
+                    key,
+                    is_owner,
+                    holder,
+                } if self.remote_live_key().as_ref() == Some(&key) => {
                     if is_owner {
                         self.remote_live_granted = true;
                         continue;
                     }
-                    // Refused, or another viewer took the pane; local
-                    // live-send yields the same way rather than fighting.
+                    // Refused, or another client took the pane; local
+                    // live-send yields the same way rather than fighting. A
+                    // take-over gets the notice, not a flash: it swallows the
+                    // keys already typed for the pane so none of them lands on
+                    // the session list as a shortcut.
                     let title = self.live_send.as_ref().map_or("", |l| l.title.as_str());
-                    let message = if self.remote_live_granted {
-                        format!("Another viewer took over {title} on {}", key.0)
+                    let taken = self.remote_live_granted;
+                    let taker = holder.unwrap_or_else(|| "another client".to_string());
+                    let message = if taken {
+                        format!("Live mode ended: {taker} took over {title} on {}.", key.0)
                     } else {
                         format!("{} did not grant input to {title}", key.0)
                     };
                     self.exit_live_send_if_active();
-                    self.flash_status(message);
+                    if taken {
+                        self.info_dialog = Some(crate::tui::dialogs::InfoDialog::new(
+                            "Live send ended",
+                            &message,
+                        ));
+                    } else {
+                        self.flash_status(message);
+                    }
                     changed = true;
                 }
                 PreviewEvent::Closed { key, reason } if current.as_ref() == Some(&key) => {

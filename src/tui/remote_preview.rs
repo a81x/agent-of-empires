@@ -62,8 +62,16 @@ pub(crate) struct PreviewFrame {
 /// Socket state changes, delivered in order and never coalesced.
 #[derive(Debug)]
 pub(crate) enum PreviewEvent {
-    SizeOwner { key: RemoteKey, is_owner: bool },
-    Closed { key: RemoteKey, reason: String },
+    SizeOwner {
+        key: RemoteKey,
+        is_owner: bool,
+        /// Who holds the pane's size instead of us.
+        holder: Option<String>,
+    },
+    Closed {
+        key: RemoteKey,
+        reason: String,
+    },
 }
 
 type FrameSlot = Arc<Mutex<Option<PreviewFrame>>>;
@@ -94,6 +102,10 @@ pub struct RemotePreview {
     commands: mpsc::UnboundedSender<PreviewCommand>,
     events: std_mpsc::Receiver<PreviewEvent>,
     frame: FrameSlot,
+    /// Kept only by [`RemotePreview::recording`], so a test can deliver an
+    /// event the way the worker does.
+    #[cfg(test)]
+    sink: Option<EventSink>,
 }
 
 impl RemotePreview {
@@ -137,6 +149,8 @@ impl RemotePreview {
                 commands,
                 events,
                 frame,
+                #[cfg(test)]
+                sink: None,
             },
             sink,
         )
@@ -146,7 +160,18 @@ impl RemotePreview {
     #[cfg(test)]
     pub(crate) fn recording() -> (Self, mpsc::UnboundedReceiver<PreviewCommand>) {
         let (commands, recorded) = mpsc::unbounded_channel();
-        (Self::with_sink(commands, Arc::default()).0, recorded)
+        let (mut preview, sink) = Self::with_sink(commands, Arc::default());
+        preview.sink = Some(sink);
+        (preview, recorded)
+    }
+
+    /// Deliver an event as the worker would.
+    #[cfg(test)]
+    pub(crate) fn emit(&self, event: PreviewEvent) {
+        self.sink
+            .as_ref()
+            .expect("a recording preview")
+            .event(event);
     }
 
     pub(crate) fn send(&self, command: PreviewCommand) {
@@ -375,7 +400,12 @@ async fn run(mut commands: mpsc::UnboundedReceiver<PreviewCommand>, events: Even
                             gate: InputGate::Viewer,
                             base: PatchBase::default(),
                         };
-                        next.control(json!({"type": "caps", "patch": true})).await;
+                        next.control(json!({
+                            "type": "caps",
+                            "patch": true,
+                            "label": crate::tui::view_lock::viewer_label(),
+                        }))
+                        .await;
                         next.window(lines, true).await;
                         rx = Some(socket.rx);
                         conn = Some(next);
@@ -471,11 +501,15 @@ async fn on_message(
             }
             None
         }
-        Some(LiveMessage::SizeOwner(is_owner)) => {
+        Some(LiveMessage::SizeOwner { is_owner, holder }) => {
             for bytes in c.gate.ownership(is_owner) {
                 let _ = c.tx.send(Message::Binary(bytes.into())).await;
             }
-            events.event(PreviewEvent::SizeOwner { key, is_owner });
+            events.event(PreviewEvent::SizeOwner {
+                key,
+                is_owner,
+                holder,
+            });
             None
         }
         Some(LiveMessage::Closed(reason)) => Some((key, reason)),
@@ -552,6 +586,7 @@ mod tests {
                 sink.event(PreviewEvent::SizeOwner {
                     key: key.clone(),
                     is_owner: i % 50 == 0,
+                    holder: None,
                 });
             }
         }

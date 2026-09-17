@@ -222,6 +222,7 @@ impl HomeView {
             local_machine_collapsed: false,
             collapsed_remotes: std::collections::HashSet::new(),
             remote_preview: crate::tui::remote_preview::RemotePreview::new(preview_wake.clone()),
+            view_lock: crate::tui::view_lock::ViewLock::new(),
             remote_preview_key: None,
             remote_preview_cache: Default::default(),
             remote_preview_frame: None,

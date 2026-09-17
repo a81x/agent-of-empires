@@ -6485,20 +6485,20 @@ impl HomeView {
         if self.end_live_send_on_drift(&state) {
             return true;
         }
-        // Name the thief where the owner id makes it unambiguous. The web
-        // dashboard's live viewers register as `live-*`
-        // (src/server/live_ws.rs); other aoe TUIs as `tui-*`.
-        let message = match crate::tmux::Session::from_name(&state.tmux_name).size_owner() {
-            Some((id, _)) if id.starts_with("live-") => {
-                "The web dashboard took over this session's live view."
-            }
-            Some((id, _)) if id.starts_with("tui-") => {
-                "Another aoe TUI took over this session's live view."
-            }
-            _ => "Another surface took over this session's live view.",
+        // Name the taker from the label it wrote with the lock. The notice
+        // also guards the keyboard: it swallows every key until dismissed, so
+        // the keystrokes already in flight for the pane cannot land on the
+        // session list as shortcuts.
+        let holder = crate::tmux::Session::from_name(&state.tmux_name)
+            .size_state()
+            .active(crate::util::now_ms(), crate::tmux::SIZE_OWNER_TTL)
+            .map(|lock| lock.label.clone());
+        let message = match holder {
+            Some(label) => format!("Live mode ended: taken over by {label}."),
+            None => "Another surface took over this session's live view.".to_string(),
         };
         self.teardown_live_send();
-        self.info_dialog = Some(InfoDialog::new("Live send ended", message));
+        self.info_dialog = Some(InfoDialog::new("Live send ended", &message));
         true
     }
 
