@@ -8,17 +8,42 @@ use std::sync::mpsc::TryRecvError;
 use reqwest::StatusCode;
 
 use crate::daemon::{CreateSessionBody, DaemonClient, DaemonClientError};
+use crate::session::hook_disclosure::HookDisclosure;
 use crate::tui::dialogs::NewSessionData;
 use crate::tui::worker::Worker;
+
+/// The daemon route carrying the remote's one-time agent hook acknowledgement.
+const HOOKS_ACK_PATH: [&str; 2] = ["app-state", "agent-hooks-acknowledgement"];
 
 pub(crate) struct CreateRequest {
     pub remote: String,
     pub client: DaemonClient,
     pub body: CreateSessionBody,
+    /// Record the remote's agent hook acknowledgement first. Set only after
+    /// the user approved [`CreateResult::NeedsHookAcknowledgement`].
+    pub acknowledge_agent_hooks: bool,
 }
 
-/// `(remote, new session id or error)`.
-pub(crate) type CreateOutcome = (String, Result<String, String>);
+/// What one remote create produced.
+pub(crate) enum CreateResult {
+    Created(String),
+    /// The remote owes the one-time acknowledgement of what installing its
+    /// agent's hooks writes. Nothing was created; approving and resubmitting
+    /// with `acknowledge_agent_hooks` is the whole fix.
+    NeedsHookAcknowledgement(Box<HookDisclosure>),
+    Failed(String),
+}
+
+/// `(remote, result)`.
+pub(crate) type CreateOutcome = (String, CreateResult);
+
+/// The remote's answer about its own hook acknowledgement.
+#[derive(serde::Deserialize)]
+struct HooksAcknowledgement {
+    required: bool,
+    acknowledged: bool,
+    disclosure: Option<HookDisclosure>,
+}
 
 pub struct RemoteCreate {
     worker: Worker<CreateRequest, CreateOutcome>,
@@ -31,14 +56,11 @@ impl RemoteCreate {
             .build();
         Self {
             worker: Worker::spawn("aoe-remote-create", move |request: CreateRequest| {
-                let outcome = match runtime.as_ref() {
-                    Ok(rt) => rt
-                        .block_on(request.client.create_session_unpinned(&request.body))
-                        .map(|created| created.id)
-                        .map_err(|e| create_failure_message(&e)),
-                    Err(e) => Err(format!("no runtime: {e}")),
+                let result = match runtime.as_ref() {
+                    Ok(rt) => rt.block_on(run_create(&request)),
+                    Err(e) => CreateResult::Failed(format!("no runtime: {e}")),
                 };
-                (request.remote, outcome)
+                (request.remote, result)
             }),
         }
     }
@@ -52,17 +74,65 @@ impl RemoteCreate {
     }
 }
 
+/// Ask first, then create: the daemon refuses the launch outright when it owes
+/// the acknowledgement, and that refusal still leaves a failed session row
+/// behind, so it is worth one extra request to avoid.
+async fn run_create(request: &CreateRequest) -> CreateResult {
+    if request.acknowledge_agent_hooks {
+        if let Err(e) = request
+            .client
+            .post_api::<_, serde_json::Value>(&HOOKS_ACK_PATH, &serde_json::json!({}))
+            .await
+        {
+            return CreateResult::Failed(format!("could not record the approval: {}", e.summary()));
+        }
+    } else if let Some(disclosure) = owed_hook_disclosure(&request.client, &request.body).await {
+        return CreateResult::NeedsHookAcknowledgement(Box::new(disclosure));
+    }
+    match request.client.create_session_unpinned(&request.body).await {
+        Ok(created) => CreateResult::Created(created.id),
+        Err(e) => CreateResult::Failed(create_failure_message(&request.remote, &e)),
+    }
+}
+
+/// The disclosure the remote still owes for this create, or `None` when it
+/// owes none, cannot answer (an older daemon has no such route), or the
+/// session is sandboxed and so never writes host hooks.
+async fn owed_hook_disclosure(
+    client: &DaemonClient,
+    body: &CreateSessionBody,
+) -> Option<HookDisclosure> {
+    if body.sandbox {
+        return None;
+    }
+    let mut query = vec![("tool", body.tool.as_str())];
+    if let Some(profile) = body.profile.as_deref() {
+        query.push(("profile", profile));
+    }
+    let answer: HooksAcknowledgement = client.get_api(&HOOKS_ACK_PATH, &query).await.ok()?;
+    (answer.required && !answer.acknowledged).then_some(answer.disclosure?)
+}
+
 impl Default for RemoteCreate {
     fn default() -> Self {
         Self::new()
     }
 }
 
-/// Why a create failed, from the status alone: the daemon's error body is
-/// never read. A bare 403 is most often a repo whose hooks the remote has not
-/// trusted, since this dialog has no remote trust prompt to approve them.
-fn create_failure_message(error: &DaemonClientError) -> String {
+/// Why a create failed, from the status and the `aoe-error-code` header: the
+/// daemon's error body is never read. A bare 403 is most often a repo whose
+/// hooks the remote has not trusted, since this dialog has no remote trust
+/// prompt to approve them.
+fn create_failure_message(remote: &str, error: &DaemonClientError) -> String {
     match error {
+        DaemonClientError::Status {
+            code: Some(crate::daemon::ApiErrorCode::AgentHooksNotAcknowledged),
+            ..
+        } => format!(
+            "{remote} has never approved what installing its agent's status hooks writes; \
+             run `aoe` there once and accept the prompt, or create the session again to \
+             approve it from here"
+        ),
         DaemonClientError::Status {
             status: StatusCode::FORBIDDEN,
             code: None,
@@ -155,9 +225,26 @@ mod tests {
             ),
             (status(StatusCode::NOT_FOUND, None), "HTTP 404"),
         ] {
-            let message = create_failure_message(&error);
+            let message = create_failure_message("mini", &error);
             assert!(message.contains(expected), "{message}");
             assert!(!message.contains("server text"), "{message}");
         }
+    }
+
+    #[test]
+    fn the_hook_acknowledgement_code_names_the_remote_and_the_fix() {
+        let message = create_failure_message(
+            "mini",
+            &DaemonClientError::Status {
+                status: StatusCode::BAD_REQUEST,
+                code: Some(crate::daemon::ApiErrorCode::AgentHooksNotAcknowledged),
+                body: "server text".into(),
+                truncated: false,
+            },
+        );
+        assert!(message.starts_with("mini has never approved"), "{message}");
+        assert!(message.contains("status hooks"), "{message}");
+        // The generic 400 advice sent the user chasing the path and branch.
+        assert!(!message.contains("check the path"), "{message}");
     }
 }

@@ -16,6 +16,7 @@ pub enum ApiErrorCode {
     CreationTrustChanged,
     CreationCancelled,
     CreationNotPending,
+    AgentHooksNotAcknowledged,
 }
 
 impl ApiErrorCode {
@@ -31,6 +32,7 @@ impl ApiErrorCode {
             Self::CreationTrustChanged => "creation_trust_changed",
             Self::CreationCancelled => "creation_cancelled",
             Self::CreationNotPending => "creation_not_pending",
+            Self::AgentHooksNotAcknowledged => "agent_hooks_not_acknowledged",
         }
     }
 
@@ -44,6 +46,7 @@ impl ApiErrorCode {
             | Self::CreationCancelled
             | Self::CreationNotPending => StatusCode::CONFLICT,
             Self::PendingTargetGone => StatusCode::NOT_FOUND,
+            Self::AgentHooksNotAcknowledged => StatusCode::BAD_REQUEST,
         }
     }
 
@@ -73,6 +76,7 @@ impl ApiErrorCode {
             b"creation_trust_changed" => Self::CreationTrustChanged,
             b"creation_cancelled" => Self::CreationCancelled,
             b"creation_not_pending" => Self::CreationNotPending,
+            b"agent_hooks_not_acknowledged" => Self::AgentHooksNotAcknowledged,
             _ => return None,
         };
         (status == code.status()).then_some(code)
@@ -113,6 +117,18 @@ mod tests {
                 "runtime_epoch_mismatch",
                 false,
                 Some(ApiErrorCode::RuntimeEpochMismatch),
+            ),
+            (
+                StatusCode::BAD_REQUEST,
+                "agent_hooks_not_acknowledged",
+                false,
+                Some(ApiErrorCode::AgentHooksNotAcknowledged),
+            ),
+            (
+                StatusCode::CONFLICT,
+                "agent_hooks_not_acknowledged",
+                false,
+                None,
             ),
         ] {
             let mut headers = HeaderMap::new();

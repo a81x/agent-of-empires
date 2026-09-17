@@ -439,6 +439,24 @@ structured sessions). The receipt cursor is carried in `aoe-runtime-epoch` and
 attach only after applying a snapshot at or beyond that receipt in the same
 epoch, with matching lifecycle generation, profile, and live terminal identity.
 
+## Agent hook acknowledgement
+
+A host (non-sandboxed) session whose agent installs AoE status hooks will not
+launch until the daemon's machine has acknowledged what that install writes.
+Until then `POST /api/sessions` answers `400` with
+`aoe-error-code: agent_hooks_not_acknowledged`.
+
+`GET /api/app-state/agent-hooks-acknowledgement?tool=&profile=` reports it for
+one agent. Both query parameters are optional and default to what a create with
+no explicit choice would use. The response names the resolved `agent`, whether
+the acknowledgement is `required` and already `acknowledged`, and a
+`disclosure` of the settings files the install writes, the hook events it adds,
+and the command each hook runs.
+
+`POST /api/app-state/agent-hooks-acknowledgement` records the acknowledgement.
+It is refused in read-only and CityHall modes: consenting writes into the
+daemon user's own agent settings.
+
 ## POST /api/sessions/{id}/send
 
 Type a message into the agent and press Enter, the same way the TUI's

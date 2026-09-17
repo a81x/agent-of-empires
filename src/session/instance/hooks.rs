@@ -258,16 +258,8 @@ impl Instance {
         if !hook_install_required {
             return Ok(());
         }
-        if !sandboxed
-            && hook_install_required
-            && !crate::session::config::load_config()
-                .ok()
-                .flatten()
-                .is_some_and(|config| config.app_state.has_acknowledged_agent_hooks)
-        {
-            bail!(
-                "agent hook paths have not been acknowledged; approve them in the AoE TUI before launching this host session"
-            );
+        if !crate::session::hook_disclosure::agent_hooks_acknowledged() {
+            return Err(crate::session::hook_disclosure::AgentHooksNotAcknowledged.into());
         }
         let profile_environment = self.profile_host_environment();
         let resolved_environment = self.resolved_host_environment();
@@ -354,10 +346,7 @@ impl Instance {
             && agent.is_some_and(|agent| {
                 crate::agents::hook_install_required(agent, status_hooks_enabled)
             })
-            && !crate::session::config::load_config()
-                .ok()
-                .flatten()
-                .is_some_and(|config| config.app_state.has_acknowledged_agent_hooks)
+            && !crate::session::hook_disclosure::agent_hooks_acknowledged()
         {
             tracing::warn!(
                 target: "hooks.install",
@@ -1058,7 +1047,8 @@ mod tests {
             .unwrap_err();
         inst.install_agent_status_hooks(crate::agents::get_agent("cursor"));
 
-        assert!(error.to_string().contains("have not been acknowledged"));
+        // The marker type, not the text: the daemon maps it to an error code.
+        assert!(error.is::<crate::session::hook_disclosure::AgentHooksNotAcknowledged>());
         assert!(!tmp.path().join(".cursor/hooks.json").exists());
     }
 

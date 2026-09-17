@@ -109,10 +109,13 @@ impl HomeView {
     }
 
     /// Hand a remote-targeted dialog submit to the create worker.
+    /// `acknowledge_agent_hooks` records the remote's one-time hook approval
+    /// first, and is set only after the user accepted its disclosure.
     pub(super) fn start_remote_create(
         &mut self,
         remote: String,
         data: &crate::tui::dialogs::NewSessionData,
+        acknowledge_agent_hooks: bool,
     ) {
         let client = match remote_feed::remote_endpoint(&remote).map(|e| e.daemon_client()) {
             Some(Ok(client)) => client,
@@ -125,32 +128,66 @@ impl HomeView {
                 return;
             }
         };
+        // Kept so an answer of `NeedsHookAcknowledgement` can resume this exact
+        // create once the user approves that machine's disclosure.
+        self.pending_hooks_install_data = Some(data.clone());
         self.remote_create
             .request(crate::tui::remote_create::CreateRequest {
                 remote: remote.clone(),
                 client,
                 body: crate::tui::remote_create::create_body(data),
+                acknowledge_agent_hooks,
             });
         self.flash_status(format!("Creating session on {remote}…"));
     }
 
     /// Land finished remote creates. Returns whether anything changed.
     pub fn apply_remote_create(&mut self) -> bool {
+        use crate::tui::remote_create::CreateResult;
         let mut changed = false;
-        while let Ok((remote, outcome)) = self.remote_create.try_recv() {
-            match outcome {
-                Ok(id) => {
+        while let Ok((remote, result)) = self.remote_create.try_recv() {
+            if !matches!(result, CreateResult::NeedsHookAcknowledgement(_)) {
+                // This create is settled, so it can no longer be resumed.
+                self.pending_hooks_install_data
+                    .take_if(|data| data.remote.as_deref() == Some(remote.as_str()));
+            }
+            match result {
+                CreateResult::Created(id) => {
                     self.flash_status(format!("Created on {remote}"));
                     self.collapsed_remotes
                         .remove(&(remote.clone(), crate::session::RemoteShelf::Live));
                     self.pending_remote_select = Some((remote, id));
                     self.request_remote_feed_refresh();
                 }
-                Err(message) => self.flash_status(format!("{remote}: {message}")),
+                CreateResult::NeedsHookAcknowledgement(disclosure) => {
+                    self.ask_remote_hooks_install(remote, *disclosure);
+                }
+                CreateResult::Failed(message) => self.flash_status(format!("{remote}: {message}")),
             }
             changed = true;
         }
         changed
+    }
+
+    /// Show the remote's own hook disclosure. The pending dialog data still
+    /// carries the remote, so accepting resubmits the create against it.
+    fn ask_remote_hooks_install(
+        &mut self,
+        remote: String,
+        disclosure: crate::session::hook_disclosure::HookDisclosure,
+    ) {
+        if self
+            .pending_hooks_install_data
+            .as_ref()
+            .is_none_or(|data| data.remote.as_deref() != Some(remote.as_str()))
+        {
+            self.flash_status(format!("{remote}: agent hooks are not approved there"));
+            return;
+        }
+        self.hooks_install_dialog = Some(crate::tui::dialogs::HooksInstallDialog::new(
+            disclosure,
+            Some(remote),
+        ));
     }
 
     fn select_pending_remote_row(&mut self) {

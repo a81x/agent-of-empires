@@ -1112,6 +1112,13 @@ pub async fn create_session(
                 let code = crate::daemon::ApiErrorCode::CreationTrustChanged;
                 return (code.status(), code.header()).into_response();
             }
+            // The one-time hook disclosure this machine still owes. Without a
+            // code the client sees a bare 400 and cannot offer the approval
+            // that `/api/app-state/agent-hooks-acknowledgement` records.
+            if e.is::<crate::session::hook_disclosure::AgentHooksNotAcknowledged>() {
+                let code = crate::daemon::ApiErrorCode::AgentHooksNotAcknowledged;
+                return (code.status(), code.header()).into_response();
+            }
             if e.is::<crate::session::NativeStoreUnavailable>() {
                 return StatusCode::SERVICE_UNAVAILABLE.into_response();
             }

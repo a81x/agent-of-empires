@@ -458,6 +458,9 @@ pub(super) const CITYHALL_MUTATION_DENY: &[(&str, &str)] = &[
     ("POST", "/api/sessions/{id}/acp/mode"),
     ("POST", "/api/sessions/{id}/acp/spawn"),
     ("POST", "/api/sessions/{id}/acp/switch-agent"),
+    // Consenting to agent hook installation writes into the daemon user's own
+    // agent settings, so it stays with the operator, not a CityHall client.
+    ("POST", "/api/app-state/agent-hooks-acknowledgement"),
     // Global settings / ops / shared workspace ordering.
     ("PATCH", "/api/settings"),
     ("PATCH", "/api/log-level"),

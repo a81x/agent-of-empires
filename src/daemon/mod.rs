@@ -208,6 +208,9 @@ impl DaemonClientError {
                 ApiErrorCode::CreationTrustChanged => "the repo's configuration changed; retry",
                 ApiErrorCode::CreationCancelled => "the create was cancelled",
                 ApiErrorCode::CreationNotPending => "the session is no longer being created",
+                ApiErrorCode::AgentHooksNotAcknowledged => {
+                    "the daemon has not acknowledged its agent hook paths"
+                }
             }
             .to_string(),
             Self::Status {

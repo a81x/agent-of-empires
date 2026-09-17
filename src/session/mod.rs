@@ -19,6 +19,7 @@ pub mod deletion;
 pub(crate) mod environment;
 pub mod fork;
 mod groups;
+pub mod hook_disclosure;
 pub mod idle_reap;
 mod instance;
 pub mod mcp;

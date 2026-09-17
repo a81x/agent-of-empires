@@ -336,20 +336,6 @@ fn wheel_forward_key(
     crate::tmux::mouse::wheel_notch_bytes(cursor, up, cx, cy).map(live_send::TmuxKey::HexBytes)
 }
 
-fn resolve_hook_install_agent(
-    tool_name: &str,
-    session_config: &crate::session::config::SessionConfig,
-) -> Option<&'static crate::agents::AgentDef> {
-    crate::agents::get_agent(tool_name)
-        .or_else(|| {
-            session_config
-                .agent_detect_as
-                .get(tool_name)
-                .and_then(|detect_as| crate::agents::get_agent(detect_as))
-        })
-        .filter(|agent| agent.hook_config.is_some() || agent.sidecar_hooks.is_some())
-}
-
 pub(super) fn parse_hotkey(s: &str) -> Option<(KeyCode, KeyModifiers)> {
     let (modifier, key) = s.split_once('+')?;
     if !modifier.eq_ignore_ascii_case("alt") {
@@ -1596,20 +1582,7 @@ impl HomeView {
                         self.pending_hooks_install_data = None;
                     }
                     DialogResult::Submit(_) => {
-                        match crate::session::config::update_app_state(|state| {
-                            state.has_acknowledged_agent_hooks = true;
-                        }) {
-                            Ok(()) => {
-                                self.hooks_install_dialog = None;
-                                if let Some(data) = self.pending_hooks_install_data.take() {
-                                    self.pending_dialog_click_action =
-                                        self.maybe_confirm_volume_ignores_globs(data);
-                                }
-                            }
-                            Err(e) => {
-                                tracing::warn!(target: "tui.input", "Failed to save config: {e}")
-                            }
-                        }
+                        self.pending_dialog_click_action = self.accept_hooks_install();
                     }
                 }
             }
@@ -2027,19 +2000,7 @@ impl HomeView {
                     self.hooks_install_dialog = None;
                     self.pending_hooks_install_data = None;
                 }
-                DialogResult::Submit(_) => {
-                    match crate::session::config::update_app_state(|state| {
-                        state.has_acknowledged_agent_hooks = true;
-                    }) {
-                        Ok(()) => {
-                            self.hooks_install_dialog = None;
-                            if let Some(data) = self.pending_hooks_install_data.take() {
-                                return self.maybe_confirm_volume_ignores_globs(data);
-                            }
-                        }
-                        Err(e) => tracing::warn!(target: "tui.input", "Failed to save config: {e}"),
-                    }
-                }
+                DialogResult::Submit(_) => return self.accept_hooks_install(),
             }
             return None;
         }
@@ -2134,7 +2095,7 @@ impl HomeView {
                     // this machine; a remote's daemon does its own.
                     if let Some(remote) = data.remote.clone() {
                         self.new_dialog = None;
-                        self.start_remote_create(remote, &data);
+                        self.start_remote_create(remote, &data, false);
                         return None;
                     }
                     // Check if the tool uses hooks and user hasn't acknowledged yet
@@ -2148,25 +2109,19 @@ impl HomeView {
                         &data.profile,
                         std::path::Path::new(&data.path),
                     );
-                    if let Some(hook_agent) =
-                        resolve_hook_install_agent(&tool_name, &resolved_config.session)
-                    {
-                        let config = crate::session::config::load_config().ok().flatten();
+                    if let Some(hook_agent) = crate::session::hook_disclosure::hook_install_agent(
+                        &tool_name,
+                        &resolved_config.session,
+                    ) {
                         let hooks_enabled = resolved_config.session.agent_status_hooks;
-                        let acknowledged = config
-                            .as_ref()
-                            .map(|c| c.app_state.has_acknowledged_agent_hooks)
-                            .unwrap_or(false);
-
                         if crate::agents::hook_install_required(hook_agent, hooks_enabled)
-                            && !acknowledged
+                            && !crate::session::hook_disclosure::agent_hooks_acknowledged()
                         {
-                            self.hooks_install_dialog =
-                                Some(HooksInstallDialog::new_for_profile_resolved(
-                                    &tool_name,
-                                    hook_agent.name,
-                                    Some(&data.profile),
-                                ));
+                            self.hooks_install_dialog = Some(HooksInstallDialog::local(
+                                &tool_name,
+                                hook_agent.name,
+                                Some(&data.profile),
+                            ));
                             self.pending_hooks_install_data = Some(data);
                             return None;
                         }
@@ -6827,6 +6782,34 @@ impl HomeView {
     /// shadow directories a build creates later inside the container (#2045). Shows
     /// the dialog once (unless already acknowledged or no glob is configured),
     /// otherwise proceeds straight to creation.
+    /// Accept the pending hook-install disclosure and resume the create it
+    /// blocked. A local create persists the acknowledgement here; a remote one
+    /// hands it to that machine along with the retried create.
+    fn accept_hooks_install(&mut self) -> Option<Action> {
+        let Some(data) = self.pending_hooks_install_data.take() else {
+            self.hooks_install_dialog = None;
+            return None;
+        };
+        if let Some(remote) = data.remote.clone() {
+            self.hooks_install_dialog = None;
+            self.start_remote_create(remote, &data, true);
+            return None;
+        }
+        match crate::session::config::update_app_state(|state| {
+            state.has_acknowledged_agent_hooks = true;
+        }) {
+            Ok(()) => {
+                self.hooks_install_dialog = None;
+                self.maybe_confirm_volume_ignores_globs(data)
+            }
+            Err(e) => {
+                tracing::warn!(target: "tui.input", "Failed to save config: {e}");
+                self.pending_hooks_install_data = Some(data);
+                None
+            }
+        }
+    }
+
     fn maybe_confirm_volume_ignores_globs(&mut self, data: NewSessionData) -> Option<Action> {
         if data.sandbox && !Self::volume_ignores_globs_acknowledged() {
             if let Some(message) = Self::volume_ignores_glob_confirm_message(&data) {
@@ -6981,7 +6964,7 @@ impl HomeView {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::session::config::{SessionConfig, ToolSessionConfig};
+    use crate::session::config::ToolSessionConfig;
 
     #[test]
     fn wheel_forward_key_maps_the_cell_into_the_pane() {
@@ -7283,38 +7266,6 @@ mod tests {
             format_target_label("my-session", &LiveSendTarget::ContainerTerminal),
             "my-session (container)",
         );
-    }
-
-    #[test]
-    fn hook_install_agent_uses_detect_as_for_custom_codex_wrapper() {
-        let mut config = SessionConfig::default();
-        config
-            .agent_detect_as
-            .insert("wrapped-codex".to_string(), "codex".to_string());
-
-        let agent = resolve_hook_install_agent("wrapped-codex", &config).unwrap();
-
-        assert_eq!(agent.name, "codex");
-    }
-
-    #[test]
-    fn hook_install_agent_keeps_builtin_agent_resolution_first() {
-        let mut config = SessionConfig::default();
-        config
-            .agent_detect_as
-            .insert("opencode".to_string(), "codex".to_string());
-
-        assert!(resolve_hook_install_agent("opencode", &config).is_none());
-    }
-
-    #[test]
-    fn hook_install_agent_ignores_unknown_detect_as_target() {
-        let mut config = SessionConfig::default();
-        config
-            .agent_detect_as
-            .insert("wrapped-agent".to_string(), "missing-agent".to_string());
-
-        assert!(resolve_hook_install_agent("wrapped-agent", &config).is_none());
     }
 
     #[test]

@@ -261,6 +261,10 @@ pub(super) fn build_router(state: Arc<AppState>) -> Router {
             post(api::mark_volume_ignores_globs_acknowledged),
         )
         .route(
+            "/api/app-state/agent-hooks-acknowledgement",
+            get(api::get_agent_hooks_acknowledgement).post(api::mark_agent_hooks_acknowledged),
+        )
+        .route(
             "/api/sandbox/volume-ignores-preview",
             get(api::preview_volume_ignores_globs),
         )

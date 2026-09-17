@@ -997,6 +997,111 @@ pub async fn mark_volume_ignores_globs_acknowledged(
     }
 }
 
+/// Which agent the hook disclosure is asked about. Both default to what a
+/// create with no explicit choice would use on this daemon.
+#[derive(Deserialize)]
+pub struct AgentHooksQuery {
+    pub tool: Option<String>,
+    pub profile: Option<String>,
+}
+
+/// What installing an agent's status hooks writes here, and whether this
+/// machine still owes the one-time acknowledgement that
+/// `Instance::ensure_disclosed_host_hook_path` demands before a host launch.
+/// A client creating a session on this daemon shows the disclosure and, on
+/// approval, posts to [`mark_agent_hooks_acknowledged`].
+pub async fn get_agent_hooks_acknowledgement(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Query(query): axum::extract::Query<AgentHooksQuery>,
+) -> impl IntoResponse {
+    let default_profile = state
+        .canonical_metadata
+        .read()
+        .await
+        .default_profile
+        .clone();
+    let result = tokio::task::spawn_blocking(move || {
+        let profile = query
+            .profile
+            .filter(|profile| !profile.is_empty())
+            .unwrap_or(default_profile);
+        let config = crate::session::config::profile_config::resolve_config_or_warn(&profile);
+        let tool = query
+            .tool
+            .filter(|tool| !tool.is_empty())
+            .or_else(|| config.session.default_tool.clone())
+            .unwrap_or_else(|| "claude".to_string());
+        let agent = crate::session::hook_disclosure::hook_install_agent(&tool, &config.session);
+        serde_json::json!({
+            "tool": tool,
+            "agent": agent.map(|agent| agent.name),
+            "required": agent.is_some_and(|agent| {
+                crate::agents::hook_install_required(agent, config.session.agent_status_hooks)
+            }),
+            "acknowledged": crate::session::hook_disclosure::agent_hooks_acknowledged(),
+            "disclosure": agent.map(|agent| {
+                crate::session::hook_disclosure::hook_disclosure(&tool, agent.name, Some(&profile))
+            }),
+        })
+    })
+    .await;
+
+    match result {
+        Ok(body) => (StatusCode::OK, Json(body)).into_response(),
+        Err(e) => {
+            tracing::error!(target: "http.api.system", "Reading the agent hook disclosure panicked: {}", e);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": "internal", "message": "Internal server error"})),
+            )
+                .into_response()
+        }
+    }
+}
+
+/// Records the acknowledgement [`get_agent_hooks_acknowledgement`] reports as
+/// owed, unblocking host launches on this machine. Unlike the other one-time
+/// app-state flips it grants a capability (writing into the user's agent
+/// settings), so CityHall clients cannot reach it.
+pub async fn mark_agent_hooks_acknowledged(
+    State(state): State<Arc<AppState>>,
+) -> impl IntoResponse {
+    if state.read_only {
+        return super::read_only_response();
+    }
+
+    let result = tokio::task::spawn_blocking(|| {
+        crate::session::config::update_app_state(|state| {
+            state.has_acknowledged_agent_hooks = true;
+        })
+    })
+    .await;
+
+    match result {
+        Ok(Ok(())) => (
+            StatusCode::OK,
+            Json(serde_json::json!({"has_acknowledged_agent_hooks": true})),
+        )
+            .into_response(),
+        Ok(Err(e)) => {
+            tracing::warn!(target: "http.api.system", "Marking agent hooks acknowledged failed: {}", e);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": "save_failed", "message": "Failed to persist acknowledgment"})),
+            )
+                .into_response()
+        }
+        Err(e) => {
+            tracing::error!(target: "http.api.system", "Marking agent hooks acknowledged panicked: {}", e);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": "internal", "message": "Internal server error"})),
+            )
+                .into_response()
+        }
+    }
+}
+
 // --- Themes ---
 
 pub async fn list_themes() -> Json<Vec<String>> {
@@ -2111,6 +2216,106 @@ mod tests {
     use super::*;
     use axum::body::to_bytes;
     use std::collections::HashMap;
+
+    async fn json_of(response: axum::response::Response) -> serde_json::Value {
+        let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        serde_json::from_slice(&bytes).unwrap()
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn the_agent_hook_acknowledgement_is_reported_then_recorded() -> anyhow::Result<()> {
+        let temp = tempfile::tempdir()?;
+        let _guard = crate::session::test_support::isolate_app_dir_at(temp.path());
+        let _home = crate::session::test_support::EnvGuard::unset(&["CLAUDE_CONFIG_DIR"]);
+        let state = crate::server::test_support::build_test_app_state(Vec::new());
+
+        let owed = json_of(
+            get_agent_hooks_acknowledgement(
+                State(state.clone()),
+                axum::extract::Query(AgentHooksQuery {
+                    tool: Some("claude".into()),
+                    profile: None,
+                }),
+            )
+            .await
+            .into_response(),
+        )
+        .await;
+        assert_eq!(owed["required"], true);
+        assert_eq!(owed["acknowledged"], false);
+        assert_eq!(owed["agent"], "claude");
+        assert!(
+            owed["disclosure"]["settings_paths"][0]
+                .as_str()
+                .unwrap()
+                .ends_with(".claude/settings.json"),
+            "{owed}"
+        );
+
+        let recorded = mark_agent_hooks_acknowledged(State(state.clone()))
+            .await
+            .into_response();
+        assert_eq!(recorded.status(), StatusCode::OK);
+
+        let after = json_of(
+            get_agent_hooks_acknowledgement(
+                State(state.clone()),
+                axum::extract::Query(AgentHooksQuery {
+                    tool: Some("claude".into()),
+                    profile: None,
+                }),
+            )
+            .await
+            .into_response(),
+        )
+        .await;
+        assert_eq!(after["acknowledged"], true);
+        Ok(())
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn a_tool_that_installs_no_hooks_owes_no_acknowledgement() -> anyhow::Result<()> {
+        let temp = tempfile::tempdir()?;
+        let _guard = crate::session::test_support::isolate_app_dir_at(temp.path());
+        let state = crate::server::test_support::build_test_app_state(Vec::new());
+
+        let answer = json_of(
+            get_agent_hooks_acknowledgement(
+                State(state),
+                axum::extract::Query(AgentHooksQuery {
+                    tool: Some("bash".into()),
+                    profile: None,
+                }),
+            )
+            .await
+            .into_response(),
+        )
+        .await;
+        assert_eq!(answer["required"], false);
+        assert_eq!(answer["agent"], serde_json::Value::Null);
+        assert_eq!(answer["disclosure"], serde_json::Value::Null);
+        Ok(())
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn a_read_only_daemon_refuses_to_record_the_acknowledgement() -> anyhow::Result<()> {
+        let temp = tempfile::tempdir()?;
+        let _guard = crate::session::test_support::isolate_app_dir_at(temp.path());
+        let state =
+            crate::server::test_support::build_test_app_state_configured(Vec::new(), |state| {
+                state.read_only = true
+            });
+
+        let response = mark_agent_hooks_acknowledged(State(state))
+            .await
+            .into_response();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        assert!(!crate::session::hook_disclosure::agent_hooks_acknowledged());
+        Ok(())
+    }
 
     #[tokio::test]
     #[serial_test::serial]
