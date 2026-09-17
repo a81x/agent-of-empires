@@ -943,110 +943,60 @@ mod tests {
         assert_eq!(b.defer(now), Some(Duration::from_secs(5)), "restarts at 5s");
     }
 
-    #[test]
-    fn test_adaptive_interval_initial() {
-        let interval =
-            AdaptiveInterval::new(Duration::from_secs(2), Duration::from_secs(60), 1.5, 3);
-        assert_eq!(interval.current(), Duration::from_secs(2));
-    }
+
+
+
+
+
+
+
+
+
 
     #[test]
-    fn test_adaptive_interval_record_no_change_increments_count() {
-        let mut interval =
-            AdaptiveInterval::new(Duration::from_secs(2), Duration::from_secs(60), 1.5, 3);
-        assert_eq!(interval.stable_count, 0);
-        interval.record_no_change();
-        assert_eq!(interval.stable_count, 1);
-        interval.record_no_change();
-        assert_eq!(interval.stable_count, 2);
-    }
-
-    #[test]
-    fn test_adaptive_interval_backoff_at_threshold() {
-        let mut interval =
-            AdaptiveInterval::new(Duration::from_secs(2), Duration::from_secs(60), 1.5, 3);
-        interval.record_no_change();
-        interval.record_no_change();
-        interval.record_no_change();
-        assert_eq!(interval.current(), Duration::from_secs(3));
-        assert_eq!(interval.stable_count, 0);
-    }
-
-    #[test]
-    fn test_adaptive_interval_multiple_backoffs() {
-        let mut interval =
-            AdaptiveInterval::new(Duration::from_secs(2), Duration::from_secs(60), 1.5, 3);
-        for _ in 0..3 {
-            interval.record_no_change();
-        }
-        assert_eq!(interval.current(), Duration::from_secs(3));
-
-        for _ in 0..3 {
-            interval.record_no_change();
-        }
-        let expected_secs = 3.0 * 1.5;
-        assert_eq!(interval.current(), Duration::from_secs_f64(expected_secs));
-    }
-
-    #[test]
-    fn test_adaptive_interval_respects_max() {
+    fn adaptive_interval_backs_off_to_the_cap_and_resets_on_change() {
         let mut interval = AdaptiveInterval::new(
-            Duration::from_secs(2),
-            Duration::from_secs(60),
-            1.5,
-            1, // threshold of 1 for faster test
+            POLL_INITIAL_INTERVAL,
+            POLL_MAX_INTERVAL,
+            POLL_BACKOFF_FACTOR,
+            POLL_STABLE_THRESHOLD,
         );
-        interval.record_no_change(); // 2 * 1.5 = 3.0
-        interval.record_no_change(); // 3.0 * 1.5 = 4.5
-        interval.record_no_change(); // 4.5 * 1.5 = 6.75
-        interval.record_no_change(); // 6.75 * 1.5 = 10.125
-        interval.record_no_change(); // 10.125 * 1.5 = 15.1875
-        interval.record_no_change(); // 15.1875 * 1.5 = 22.78125
-        interval.record_no_change(); // 22.78125 * 1.5 = 34.171875
-        interval.record_no_change(); // 34.171875 * 1.5 = 51.2578125
-        interval.record_no_change(); // 51.2578125 * 1.5 = 76.88671875 > 60, capped at 60
-        assert!(interval.current() <= Duration::from_secs(60));
-    }
-
-    #[test]
-    fn test_adaptive_interval_record_change_resets() {
-        let mut interval =
-            AdaptiveInterval::new(Duration::from_secs(2), Duration::from_secs(60), 1.5, 3);
-        for _ in 0..3 {
+        assert_eq!(interval.current(), Duration::from_secs(2));
+        for _ in 1..POLL_STABLE_THRESHOLD {
             interval.record_no_change();
         }
-        assert_eq!(interval.current(), Duration::from_secs(3));
+        assert_eq!(interval.current(), Duration::from_secs(2), "below the threshold");
+        interval.record_no_change();
+        assert_eq!(
+            (interval.current(), interval.stable_count),
+            (Duration::from_secs(3), 0)
+        );
+        for _ in 0..POLL_STABLE_THRESHOLD {
+            interval.record_no_change();
+        }
+        assert_eq!(interval.current(), Duration::from_secs_f64(4.5));
 
+        interval.record_no_change();
         interval.record_change();
-        assert_eq!(interval.current(), Duration::from_secs(2));
-        assert_eq!(interval.stable_count, 0);
+        assert_eq!(
+            (interval.current(), interval.stable_count),
+            (Duration::from_secs(2), 0)
+        );
+
+        for _ in 0..1000 {
+            interval.record_no_change();
+            assert!(interval.current() <= POLL_MAX_INTERVAL);
+        }
+        assert_eq!(interval.current(), POLL_MAX_INTERVAL);
     }
 
     #[test]
-    fn test_session_poller_new() {
-        let poller = SessionPoller::new("test-session".to_string());
-        assert!(!poller.is_running());
-    }
-
-    #[test]
-    fn test_session_poller_stop_when_no_thread() {
+    fn stopping_an_unstarted_poller_is_a_no_op() {
         let mut poller = SessionPoller::new("test-session".to_string());
-        poller.stop(); // Should not panic
         assert!(!poller.is_running());
-    }
-
-    #[test]
-    fn test_session_poller_double_stop_safe() {
-        let mut poller = SessionPoller::new("test-session".to_string());
         poller.stop();
-        poller.stop(); // Should not panic
+        poller.stop();
         assert!(!poller.is_running());
-    }
-
-    #[test]
-    fn test_session_poller_drop_is_clean() {
-        let poller = SessionPoller::new("test-session".to_string());
-        drop(poller); // Should not panic
     }
 
     #[test]
@@ -1145,20 +1095,6 @@ mod tests {
         assert_eq!(flaky.record(name, PaneProbe::Missing, t0), (true, false));
     }
 
-    #[test]
-    fn test_adaptive_interval_with_constants() {
-        let mut interval = AdaptiveInterval::new(
-            POLL_INITIAL_INTERVAL,
-            POLL_MAX_INTERVAL,
-            POLL_BACKOFF_FACTOR,
-            POLL_STABLE_THRESHOLD,
-        );
-        assert_eq!(interval.current(), Duration::from_secs(2));
-        for _ in 0..POLL_STABLE_THRESHOLD {
-            interval.record_no_change();
-        }
-        assert_eq!(interval.current(), Duration::from_secs(3));
-    }
 
     #[test]
     #[serial]
@@ -1363,65 +1299,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_interval_exact_at_threshold() {
-        let mut interval = AdaptiveInterval::new(
-            Duration::from_secs(2),
-            Duration::from_secs(60),
-            1.5,
-            POLL_STABLE_THRESHOLD,
-        );
 
-        for _ in 0..POLL_STABLE_THRESHOLD {
-            interval.record_no_change();
-        }
-        assert_eq!(interval.current(), Duration::from_secs(3));
-        assert_eq!(interval.stable_count, 0);
 
-        interval.record_no_change();
-        assert_eq!(interval.current(), Duration::from_secs(3));
-        assert_eq!(interval.stable_count, 1);
-    }
-
-    #[test]
-    fn test_interval_max_clamping_precision() {
-        let mut interval = AdaptiveInterval::new(
-            Duration::from_secs(2),
-            POLL_MAX_INTERVAL,
-            POLL_BACKOFF_FACTOR,
-            POLL_STABLE_THRESHOLD,
-        );
-
-        for _ in 0..1000 {
-            interval.record_no_change();
-            assert!(
-                interval.current() <= POLL_MAX_INTERVAL,
-                "interval {} exceeded max {}",
-                interval.current().as_secs(),
-                POLL_MAX_INTERVAL.as_secs()
-            );
-        }
-        assert_eq!(interval.current(), POLL_MAX_INTERVAL);
-    }
-
-    #[test]
-    fn test_interval_change_mid_backoff() {
-        let mut interval = AdaptiveInterval::new(
-            Duration::from_secs(2),
-            Duration::from_secs(60),
-            1.5,
-            POLL_STABLE_THRESHOLD,
-        );
-
-        interval.record_no_change();
-        interval.record_no_change();
-        assert_eq!(interval.stable_count, 2);
-        assert_eq!(interval.current(), Duration::from_secs(2));
-
-        interval.record_change();
-        assert_eq!(interval.current(), Duration::from_secs(2));
-        assert_eq!(interval.stable_count, 0);
-    }
 
     #[test]
     #[serial]

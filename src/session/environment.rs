@@ -120,12 +120,8 @@ pub(crate) fn known_shell_case_pattern() -> String {
 /// the user's profile and rc files (`~/.zprofile`, `~/.zshrc`, oh-my-zsh, Homebrew/nvm PATH setup)
 /// exactly as a native terminal would.
 pub(crate) fn login_shell_command(shell: &str) -> String {
-    let basename = std::path::Path::new(shell)
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or(shell);
     let escaped = shell_escape(shell);
-    if LOGIN_FLAG_SHELLS.contains(&basename) {
+    if LOGIN_FLAG_SHELLS.contains(&shell_basename(shell)) {
         format!("{escaped} -l")
     } else {
         escaped
@@ -136,15 +132,18 @@ pub(crate) fn login_shell_command(shell: &str) -> String {
 /// nushell, pwsh).
 pub(crate) fn user_posix_shell() -> String {
     let shell = user_shell();
-    let basename = std::path::Path::new(&shell)
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or(&shell);
-    if NON_POSIX_SHELLS.contains(&basename) {
+    if NON_POSIX_SHELLS.contains(&shell_basename(&shell)) {
         "bash".to_string()
     } else {
         shell
     }
+}
+
+fn shell_basename(shell: &str) -> &str {
+    std::path::Path::new(shell)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or(shell)
 }
 
 /// Shell-escape a value for safe interpolation into a shell command string.
@@ -371,35 +370,24 @@ pub fn validate_env_entry(entry: &str) -> Option<String> {
             key
         ));
     }
-    if let Some((_, value)) = entry.split_once('=') {
-        if value.starts_with("$$") {
-            // Escaped literal $, always valid
-            None
-        } else if let Some(var_name) = value.strip_prefix('$') {
-            if var_name.is_empty() {
-                Some("Warning: bare '$' in value has no variable name".to_string())
-            } else if resolve_env_value(value).is_none() {
-                Some(format!(
-                    "Warning: ${} is not set on the host, so the value will be empty in the container",
-                    var_name
-                ))
-            } else {
-                None
-            }
-        } else {
-            // Literal value, always valid
-            None
-        }
-    } else {
-        // Bare key -- pass through from host
-        if std::env::var(entry).is_err() {
-            Some(format!(
+    let Some((_, value)) = entry.split_once('=') else {
+        return std::env::var(entry).is_err().then(|| {
+            format!(
                 "Warning: {} is not set on the host, so the value will be empty in the container",
                 entry
-            ))
-        } else {
-            None
-        }
+            )
+        });
+    };
+    if value.starts_with("$$") {
+        return None;
+    }
+    match value.strip_prefix('$') {
+        Some("") => Some("Warning: bare '$' in value has no variable name".to_string()),
+        Some(var_name) if resolve_env_value(value).is_none() => Some(format!(
+            "Warning: ${} is not set on the host, so the value will be empty in the container",
+            var_name
+        )),
+        _ => None,
     }
 }
 
@@ -418,35 +406,25 @@ pub(crate) fn collect_environment(
         .as_deref()
         .unwrap_or(&sandbox_config.environment);
 
-    // Always ensure the terminal defaults are present (pass-through from host)
-    for &key in DEFAULT_TERMINAL_ENV_VARS {
+    // Terminal defaults, plus Vertex provider vars when Vertex is enabled on the host. A key is
+    // claimed even when unset on the host, so later entries cannot supply it.
+    let vertex: &[&str] = if host_vertex_enabled() {
+        AUTO_FORWARD_VERTEX_ENV_VARS
+    } else {
+        &[]
+    };
+    for &key in DEFAULT_TERMINAL_ENV_VARS.iter().chain(vertex) {
         if seen_keys.insert(key.to_string()) {
-            if let Ok(val) = std::env::var(key) {
+            if let Ok(value) = std::env::var(key) {
                 result.push(EnvEntry::Inherit {
                     key: key.to_string(),
-                    value: val,
+                    value,
                 });
             }
         }
     }
 
-    // Auto-forward Vertex provider env vars when Vertex is enabled on the host.
-    // Gating on the host flag keeps non-Vertex users' sandboxes unchanged.
-    if host_vertex_enabled() {
-        for &key in AUTO_FORWARD_VERTEX_ENV_VARS {
-            if seen_keys.insert(key.to_string()) {
-                if let Ok(val) = std::env::var(key) {
-                    result.push(EnvEntry::Inherit {
-                        key: key.to_string(),
-                        value: val,
-                    });
-                }
-            }
-        }
-    }
-
-    // Host-minted `before_start` values are injected as inherited entries so the value is passed to
-    // docker via the process environment, never in argv.
+    // Host-minted `before_start` values travel via the process environment, never argv.
     for (key, value) in &sandbox_info.before_start_env {
         if !is_valid_env_key(key) {
             tracing::warn!(target: "session.create", "invalid before_start environment key '{}'; skipping", key);
@@ -461,76 +439,58 @@ pub(crate) fn collect_environment(
     }
 
     for entry in entries {
-        let key = entry.split_once('=').map(|(key, _)| key).unwrap_or(entry);
+        let (key, value) = match entry.split_once('=') {
+            Some((key, value)) => (key, Some(value)),
+            None => (entry.as_str(), None),
+        };
         if !is_valid_env_key(key) {
             tracing::warn!(target: "session.create", "invalid sandbox environment key '{}'; skipping", key);
             continue;
         }
-        if let Some((key, value)) = entry.split_once('=') {
-            if seen_keys.insert(key.to_string()) {
-                if let Some(rest) = value.strip_prefix("$$") {
-                    // Escaped literal $, e.g. KEY=$$FOO -> KEY=$FOO
-                    let literal = format!("${}", rest);
-                    result.push(EnvEntry::Literal {
-                        key: key.to_string(),
-                        value: literal,
-                    });
-                } else if value.starts_with('$') {
-                    // Host env reference, e.g. GH_TOKEN=$GH_TOKEN
-                    if let Some(resolved) = resolve_env_value(value) {
-                        result.push(EnvEntry::Inherit {
-                            key: key.to_string(),
-                            value: resolved,
-                        });
-                    }
-                } else {
-                    // Literal value, e.g. TERM=xterm-256color
-                    result.push(EnvEntry::Literal {
-                        key: key.to_string(),
-                        value: value.to_string(),
-                    });
-                }
-            }
-        } else {
-            // Bare key -- pass through from host
-            if seen_keys.insert(entry.clone()) {
-                match std::env::var(entry) {
-                    Ok(val) => {
-                        result.push(EnvEntry::Inherit {
-                            key: entry.clone(),
-                            value: val,
-                        });
-                    }
-                    Err(_) => {
-                        tracing::warn!(target: "session.create",
-                            "Environment variable {} is not set on host, skipping",
-                            entry
-                        );
-                    }
-                }
-            }
+        if !seen_keys.insert(key.to_string()) {
+            continue;
         }
+        let key = key.to_string();
+        let resolved = match value {
+            Some(value) => match value.strip_prefix("$$") {
+                Some(rest) => Some(EnvEntry::Literal {
+                    key,
+                    value: format!("${rest}"),
+                }),
+                None if value.starts_with('$') => {
+                    resolve_env_value(value).map(|value| EnvEntry::Inherit { key, value })
+                }
+                None => Some(EnvEntry::Literal {
+                    key,
+                    value: value.to_string(),
+                }),
+            },
+            None => match std::env::var(&key) {
+                Ok(value) => Some(EnvEntry::Inherit { key, value }),
+                Err(_) => {
+                    tracing::warn!(target: "session.create",
+                        "Environment variable {} is not set on host, skipping",
+                        key
+                    );
+                    None
+                }
+            },
+        };
+        result.extend(resolved);
     }
 
-    // Git's safe-directory check fails when the container user (root) does not match the file owner
-    // (host UID 1000, shown as "ubuntu" inside the aoe-dev-sandbox image).
-    if seen_keys.insert("GIT_CONFIG_COUNT".to_string()) {
-        result.push(EnvEntry::Literal {
-            key: "GIT_CONFIG_COUNT".to_string(),
-            value: "1".to_string(),
-        });
-    }
-    if seen_keys.insert("GIT_CONFIG_KEY_0".to_string()) {
-        result.push(EnvEntry::Literal {
-            key: "GIT_CONFIG_KEY_0".to_string(),
-            value: "safe.directory".to_string(),
-        });
-    }
-    if seen_keys.insert("GIT_CONFIG_VALUE_0".to_string()) {
-        result.push(EnvEntry::Literal {
-            key: "GIT_CONFIG_VALUE_0".to_string(),
-            value: "*".to_string(),
-        });
+    // Git's safe-directory check fails when the container user does not own the mounted files.
+    for (key, value) in [
+        ("GIT_CONFIG_COUNT", "1"),
+        ("GIT_CONFIG_KEY_0", "safe.directory"),
+        ("GIT_CONFIG_VALUE_0", "*"),
+    ] {
+        if seen_keys.insert(key.to_string()) {
+            result.push(EnvEntry::Literal {
+                key: key.to_string(),
+                value: value.to_string(),
+            });
+        }
     }
 
     result
@@ -631,7 +591,9 @@ pub(crate) fn build_docker_env_args_with_managed_codex_home(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::session::test_support::EnvGuard;
+    use crate::session::test_support::{isolate_app_dir, isolate_home, EnvGuard};
+    use serial_test::serial;
+    use std::path::Path;
 
     fn owned(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
         pairs
@@ -640,150 +602,141 @@ mod tests {
             .collect()
     }
 
-    #[test]
-    fn test_inherited_host_env_desktop_only_by_default() {
-        let result = inherited_host_env_from(
-            owned(&[
-                ("DISPLAY", ":0"),
-                ("XDG_RUNTIME_DIR", "/run/user/1000"),
-                ("XDG_SESSION_TYPE", "wayland"),
-                ("DBUS_SESSION_BUS_ADDRESS", "unix:path=/run/user/1000/bus"),
-                ("WAYLAND_DISPLAY", ""),
-                ("PATH", "/usr/bin"),
-                ("HOME", "/home/me"),
-                ("GOPATH", "/home/me/go"),
-                ("SECRET_TOKEN", "abc"),
-            ]),
-            false,
-        );
-        assert_eq!(
-            result,
-            owned(&[
-                ("DBUS_SESSION_BUS_ADDRESS", "unix:path=/run/user/1000/bus"),
-                ("DISPLAY", ":0"),
-                ("XDG_RUNTIME_DIR", "/run/user/1000"),
-                ("XDG_SESSION_TYPE", "wayland"),
-            ])
-        );
-        assert!(
-            inherited_host_env_from(owned(&[("PATH", "/bin")]), false).is_empty(),
-            "a process with no desktop env forwards nothing, which is the case \
-             for a daemon launched without the operator's environment"
-        );
+    fn strings(entries: &[&str]) -> Vec<String> {
+        entries.iter().map(|e| e.to_string()).collect()
     }
 
-    #[test]
-    fn test_inherited_host_env_passthrough_keeps_custom_vars() {
-        let result = inherited_host_env_from(
-            owned(&[
-                ("GOPATH", "/home/me/go"),
-                ("DISPLAY", ":0"),
-                ("PATH", "/usr/bin"),
-                ("AOE_TOKEN", "secret"),
-                ("AOE_DAEMON_TOKEN", "secret"),
-                ("AOE_ACP_SOCKET", "/tmp/sock"),
-                ("AGENT_OF_EMPIRES_DEBUG", "1"),
-                ("TERM", "dumb"),
-            ]),
-            true,
-        );
-        assert_eq!(
-            result,
-            owned(&[
-                ("DISPLAY", ":0"),
-                ("GOPATH", "/home/me/go"),
-                ("PATH", "/usr/bin"),
-            ])
-        );
-    }
-
-    #[test]
-    fn test_passthrough_denyreason() {
-        for key in ["GOPATH", "DISPLAY", "PATH", "HOME", "MY_CUSTOM_VAR"] {
-            assert!(
-                passthrough_denyreason(key).is_none(),
-                "{key} should pass through"
-            );
+    fn sandbox(extra_env: Option<&[&str]>) -> SandboxInfo {
+        SandboxInfo {
+            enabled: true,
+            container_id: None,
+            image: "test".to_string(),
+            container_name: "test".to_string(),
+            extra_env: extra_env.map(strings),
+            custom_instruction: None,
+            before_start_env: Vec::new(),
+            container_workdir: None,
         }
-        for key in [
-            "AOE_TOKEN",
-            "AOE_ACP_SOCKET",
-            "AGENT_OF_EMPIRES_DEBUG",
-            "AGENT_OF_EMPIRES_PROFILE",
-            "TERM",
-            "",
-            "1BAD",
-            "HAS-DASH",
-        ] {
-            assert!(
-                passthrough_denyreason(key).is_some(),
-                "{key:?} should be refused"
-            );
+    }
+
+    fn config(environment: &[&str]) -> SandboxConfig {
+        SandboxConfig {
+            environment: strings(environment),
+            ..Default::default()
+        }
+    }
+
+    /// `(value, inherited)` for every entry with `key`.
+    fn lookup(entries: &[EnvEntry], key: &str) -> Vec<(String, bool)> {
+        entries
+            .iter()
+            .filter(|e| e.key() == key)
+            .map(|e| (e.value().to_string(), matches!(e, EnvEntry::Inherit { .. })))
+            .collect()
+    }
+
+    #[test]
+    fn inherited_host_env_filtering() {
+        let vars = owned(&[
+            ("DISPLAY", ":0"),
+            ("XDG_RUNTIME_DIR", "/run/user/1000"),
+            ("DBUS_SESSION_BUS_ADDRESS", "unix:path=/run/user/1000/bus"),
+            ("WAYLAND_DISPLAY", ""),
+            ("PATH", "/usr/bin"),
+            ("GOPATH", "/home/me/go"),
+            ("AOE_TOKEN", "secret"),
+            ("AGENT_OF_EMPIRES_DEBUG", "1"),
+            ("TERM", "dumb"),
+            ("1BAD", "x"),
+        ]);
+        assert_eq!(
+            inherited_host_env_from(vars.clone(), false),
+            owned(&[
+                ("DBUS_SESSION_BUS_ADDRESS", "unix:path=/run/user/1000/bus"),
+                ("DISPLAY", ":0"),
+                ("XDG_RUNTIME_DIR", "/run/user/1000"),
+            ])
+        );
+        assert_eq!(
+            inherited_host_env_from(vars, true),
+            owned(&[
+                ("DBUS_SESSION_BUS_ADDRESS", "unix:path=/run/user/1000/bus"),
+                ("DISPLAY", ":0"),
+                ("GOPATH", "/home/me/go"),
+                ("PATH", "/usr/bin"),
+                ("XDG_RUNTIME_DIR", "/run/user/1000"),
+            ])
+        );
+        for key in ["AOE_ACP_SOCKET", "AGENT_OF_EMPIRES_PROFILE", "", "HAS-DASH"] {
+            assert!(passthrough_denyreason(key).is_some(), "{key:?}");
         }
     }
 
     #[test]
-    #[serial_test::serial]
-    fn test_inherited_host_env_reads_the_setting_from_config() {
+    #[serial]
+    fn inherited_host_env_reads_the_setting_from_config() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let _app_dir = crate::session::test_support::isolate_app_dir_at(tmp.path());
-        let _env = crate::session::test_support::EnvGuard::set(&[
-            ("DISPLAY", ":7"),
-            ("ENVTEST_CUSTOM_VAR", "custom-value"),
-        ]);
-
+        let _env = EnvGuard::set(&[("DISPLAY", ":7"), ("ENVTEST_CUSTOM_VAR", "custom-value")]);
         let config_path = crate::session::config::config_path().expect("config path");
         std::fs::create_dir_all(config_path.parent().expect("app dir")).expect("app dir");
+        let custom = |env: &[(String, String)]| {
+            env.iter()
+                .find(|(k, _)| k == "ENVTEST_CUSTOM_VAR")
+                .map(|(_, v)| v.clone())
+        };
 
         std::fs::write(&config_path, "").expect("write config");
         let default = inherited_host_env("");
-        assert!(
-            default.iter().any(|(k, _)| k == "DISPLAY"),
-            "the desktop layer is unconditional, got {default:?}"
-        );
-        assert!(
-            !default.iter().any(|(k, _)| k == "ENVTEST_CUSTOM_VAR"),
-            "an ordinary var must stay out by default, got {default:?}"
-        );
+        assert!(default.iter().any(|(k, _)| k == "DISPLAY"), "{default:?}");
+        assert_eq!(custom(&default), None);
 
         std::fs::write(&config_path, "[session]\ninherit_host_environment = true\n")
             .expect("write config");
-        let opted_in = inherited_host_env("");
         assert_eq!(
-            opted_in
-                .iter()
-                .find(|(k, _)| k == "ENVTEST_CUSTOM_VAR")
-                .map(|(_, v)| v.as_str()),
-            Some("custom-value"),
-            "inherit_host_environment must widen the layer, got {opted_in:?}"
+            custom(&inherited_host_env("")).as_deref(),
+            Some("custom-value")
         );
     }
 
     #[test]
-    fn test_login_shell_command_adds_login_flag_for_known_shells() {
-        assert_eq!(login_shell_command("/bin/zsh"), "'/bin/zsh' -l");
-        assert_eq!(login_shell_command("/bin/bash"), "'/bin/bash' -l");
-        assert_eq!(
-            login_shell_command("/opt/homebrew/bin/fish"),
-            "'/opt/homebrew/bin/fish' -l"
-        );
+    fn login_shell_command_flags_known_shells_only() {
+        for (shell, want) in [
+            ("/bin/zsh", "'/bin/zsh' -l"),
+            ("/opt/homebrew/bin/fish", "'/opt/homebrew/bin/fish' -l"),
+            ("/usr/bin/nu", "'/usr/bin/nu'"),
+            ("/usr/bin/pwsh", "'/usr/bin/pwsh'"),
+        ] {
+            assert_eq!(login_shell_command(shell), want);
+        }
     }
 
     #[test]
-    fn test_login_shell_command_plain_for_non_login_shells() {
-        assert_eq!(login_shell_command("/usr/bin/nu"), "'/usr/bin/nu'");
-        assert_eq!(login_shell_command("/usr/bin/pwsh"), "'/usr/bin/pwsh'");
+    #[serial(shell_env)]
+    fn user_shell_resolution() {
+        for (shell, user, posix) in [
+            (Some("/bin/zsh"), "/bin/zsh", "/bin/zsh"),
+            (Some("  "), "bash", "bash"),
+            (None, "bash", "bash"),
+            (Some("/usr/bin/fish"), "/usr/bin/fish", "bash"),
+            (Some("/usr/bin/nu"), "/usr/bin/nu", "bash"),
+        ] {
+            let _shell = match shell {
+                Some(shell) => EnvGuard::set(&[("SHELL", shell)]),
+                None => EnvGuard::unset(&["SHELL"]),
+            };
+            assert_eq!(user_shell(), user);
+            assert_eq!(user_posix_shell(), posix);
+        }
     }
 
-    // Regression test: when an instance is created under a non-default profile and has no
-    // per-session `extra_env` overrides, the docker env args must come from THAT profile's
-    // `sandbox.environment`, not from the user's globally configured default profile.
+    // Regression: without `extra_env`, docker env comes from the session's profile, not the
+    // global default profile.
     #[test]
-    #[serial_test::serial]
-    fn test_build_docker_env_args_uses_passed_profile_not_global_default() {
+    #[serial]
+    fn docker_env_args_use_passed_profile_not_global_default() {
         let temp_home = tempfile::TempDir::new().unwrap();
-        let _home_guard = crate::session::test_support::isolate_home(temp_home.path());
-
+        let _home_guard = isolate_home(temp_home.path());
         #[cfg(any(target_os = "linux", target_os = "macos"))]
         let app_dir = temp_home
             .path()
@@ -791,87 +744,49 @@ mod tests {
             .join(crate::session::APP_DIR_NAME_XDG);
         #[cfg(not(any(target_os = "linux", target_os = "macos")))]
         let app_dir = temp_home.path().join(crate::session::APP_DIR_NAME_OTHER);
-
-        let profiles_dir = app_dir.join("profiles");
-        std::fs::create_dir_all(profiles_dir.join("default")).unwrap();
-        std::fs::create_dir_all(profiles_dir.join("personal")).unwrap();
-
+        std::fs::create_dir_all(&app_dir).unwrap();
         std::fs::write(
             app_dir.join("config.toml"),
             r#"default_profile = "default""#,
         )
         .unwrap();
+        for (profile, token) in [("default", "read_only_token"), ("personal", "write_token")] {
+            let dir = app_dir.join("profiles").join(profile);
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(
+                dir.join("config.toml"),
+                format!("[sandbox]\nenvironment = [\"GH_TOKEN={token}\"]\n"),
+            )
+            .unwrap();
+        }
 
-        std::fs::write(
-            profiles_dir.join("default").join("config.toml"),
-            r#"
-[sandbox]
-environment = ["GH_TOKEN=read_only_token"]
-"#,
-        )
-        .unwrap();
-        std::fs::write(
-            profiles_dir.join("personal").join("config.toml"),
-            r#"
-[sandbox]
-environment = ["GH_TOKEN=write_token"]
-"#,
-        )
-        .unwrap();
-
-        let sandbox = SandboxInfo {
-            enabled: true,
-            container_id: None,
-            image: "test".to_string(),
-            container_name: "test".to_string(),
-            extra_env: None,
-            custom_instruction: None,
-            before_start_env: Vec::new(),
-            container_workdir: None,
-        };
+        let sandbox = sandbox(None);
         let project_path = temp_home.path().join("nonexistent_project");
-
-        let result_personal = build_docker_env_args("personal", &sandbox, &project_path);
-        assert_eq!(result_personal.docker_args, "--env-file /dev/fd/9");
-        assert!(
-            !result_personal.docker_args.contains("write_token"),
-            "configured values must stay out of docker argv: {}",
-            result_personal.docker_args,
-        );
-        assert!(result_personal
-            .env
-            .contains(&("GH_TOKEN".to_string(), "write_token".to_string())));
-        assert!(
-            resolved_sandbox_environment("personal", &sandbox, &project_path)
-                .contains(&("GH_TOKEN".to_string(), "write_token".to_string())),
-            "capture metadata must see the exact exec-only sandbox value"
-        );
-
-        let result_default = build_docker_env_args("default", &sandbox, &project_path);
-        assert_eq!(result_default.docker_args, "--env-file /dev/fd/9");
-        assert!(!result_default.docker_args.contains("read_only_token"));
-        assert!(result_default
-            .env
-            .contains(&("GH_TOKEN".to_string(), "read_only_token".to_string())));
-
-        let result_empty = build_docker_env_args("", &sandbox, &project_path);
-        assert_eq!(result_empty.docker_args, "--env-file /dev/fd/9");
-        assert!(!result_empty.docker_args.contains("read_only_token"));
-        assert!(result_empty
-            .env
-            .contains(&("GH_TOKEN".to_string(), "read_only_token".to_string())));
+        for (profile, token) in [
+            ("personal", "write_token"),
+            ("default", "read_only_token"),
+            ("", "read_only_token"),
+        ] {
+            let result = build_docker_env_args(profile, &sandbox, &project_path);
+            assert_eq!(result.docker_args, "--env-file /dev/fd/9");
+            let expected = ("GH_TOKEN".to_string(), token.to_string());
+            assert!(result.env.contains(&expected), "{profile:?}");
+            assert!(
+                resolved_sandbox_environment(profile, &sandbox, &project_path).contains(&expected),
+                "capture metadata must see the exec-only sandbox value"
+            );
+        }
     }
 
     #[test]
-    #[serial_test::serial]
-    fn test_build_docker_env_args_ignores_repo_host_passthrough() {
+    #[serial]
+    fn docker_env_args_ignore_repo_host_passthrough() {
         let temp_home = tempfile::TempDir::new().unwrap();
-        let _home_guard = crate::session::test_support::isolate_home(temp_home.path());
-        let _env = crate::session::test_support::EnvGuard::set(&[
+        let _home_guard = isolate_home(temp_home.path());
+        let _env = EnvGuard::set(&[
             ("AOE_TEST_REPO_SECRET_3710", "repo-secret"),
             ("AOE_TEST_PROFILE_PT_3710", "profile-value"),
         ]);
-
         let profile: crate::session::ProfileConfig = serde_json::from_value(serde_json::json!({
             "sandbox": {"environment": ["PROFILE_PT=$AOE_TEST_PROFILE_PT_3710"]}
         }))
@@ -881,36 +796,71 @@ environment = ["GH_TOKEN=write_token"]
         let project = temp_home.path().join("project");
         std::fs::create_dir_all(project.join(".agent-of-empires")).unwrap();
         std::fs::write(
-            project.join(".agent-of-empires").join("config.toml"),
-            r#"
-[sandbox]
-environment = ["AOE_TEST_REPO_SECRET_3710", "LEAK=$AOE_TEST_REPO_SECRET_3710"]
-"#,
+            project.join(".agent-of-empires/config.toml"),
+            "[sandbox]\nenvironment = [\"AOE_TEST_REPO_SECRET_3710\", \"LEAK=$AOE_TEST_REPO_SECRET_3710\"]\n",
         )
         .unwrap();
 
-        let sandbox = SandboxInfo {
-            enabled: true,
-            container_id: None,
-            image: "test".to_string(),
-            container_name: "test".to_string(),
-            extra_env: None,
-            custom_instruction: None,
-            before_start_env: Vec::new(),
-            container_workdir: None,
-        };
-        let env = build_docker_env_args("default", &sandbox, &project).env;
-
+        let env = build_docker_env_args("default", &sandbox(None), &project).env;
         assert!(
             !env.iter().any(|(_, v)| v == "repo-secret"),
-            "repo config resolved a host variable: {:?}",
-            env.iter().map(|(k, _)| k).collect::<Vec<_>>()
+            "repo config resolved a host variable"
         );
         assert!(env.contains(&("PROFILE_PT".to_string(), "profile-value".to_string())));
     }
 
     #[test]
-    fn test_shell_escape_quotes_and_metacharacters() {
+    #[serial]
+    fn docker_env_values_never_reach_argv() {
+        let _app_guard = isolate_app_dir();
+        let _env = EnvGuard::set(&[
+            ("AOE_TEST_TOKEN", "secret123"),
+            ("AOE_TEST_SOURCE", "secret456"),
+            ("AOE_TEST_BARE", "barevalue"),
+        ]);
+        let sandbox = sandbox(Some(&[
+            "AOE_TEST_TOKEN=$AOE_TEST_TOKEN",
+            "MY_MAPPED=$AOE_TEST_SOURCE",
+            "AOE_TEST_BARE",
+            "MY_LITERAL=literal-secret",
+        ]));
+        let result = build_docker_env_args("", &sandbox, Path::new("/nonexistent"));
+        assert_eq!(result.docker_args, "--env-file /dev/fd/9");
+        for pair in owned(&[
+            ("AOE_TEST_TOKEN", "secret123"),
+            ("MY_MAPPED", "secret456"),
+            ("AOE_TEST_BARE", "barevalue"),
+            ("MY_LITERAL", "literal-secret"),
+        ]) {
+            assert!(result.env.contains(&pair), "{pair:?}");
+        }
+    }
+
+    #[test]
+    fn managed_codex_home_is_passed_to_exec_unless_overridden() {
+        let _app_guard = isolate_app_dir();
+        let managed_home = "/root/.codex/codex-upgrade-test";
+        let custom: &[&str] = &["CODEX_HOME=/root/custom-codex"];
+        for (extra_env, expected_home) in [(None, managed_home), (Some(custom), "/root/custom-codex")]
+        {
+            let result = build_docker_env_args_with_managed_codex_home(
+                "",
+                &sandbox(extra_env),
+                Path::new("/nonexistent"),
+                Some(managed_home),
+            );
+            let homes: Vec<&str> = result
+                .env
+                .iter()
+                .filter(|(k, _)| k == "CODEX_HOME")
+                .map(|(_, v)| v.as_str())
+                .collect();
+            assert_eq!(homes, [expected_home]);
+        }
+    }
+
+    #[test]
+    fn shell_escape_quotes_and_metacharacters() {
         let cases = [
             ("hello", "'hello'"),
             ("Don't do that", "'Don'\\''t do that'"),
@@ -920,996 +870,228 @@ environment = ["AOE_TEST_REPO_SECRET_3710", "LEAK=$AOE_TEST_REPO_SECRET_3710"]
             ("run `cmd`", "'run `cmd`'"),
             ("hello!", "'hello!'"),
             ("line1\nline2", "'line1\\nline2'"),
-            ("line1\rline2", "'line1\\rline2'"),
             ("line1\r\nline2", "'line1\\r\\nline2'"),
-            (
-                "First instruction.\nSecond instruction.\nThird instruction.",
-                "'First instruction.\\nSecond instruction.\\nThird instruction.'",
-            ),
-            (
-                "Say \"hello\"\nRun `echo $HOME`",
-                "'Say \"hello\"\\nRun `echo $HOME`'",
-            ),
             ("He said \"don't\"", "'He said \"don'\\''t\"'"),
         ];
         for (input, expected) in cases {
-            let escaped = shell_escape(input);
-            assert_eq!(escaped, expected, "shell_escape({input:?})");
-            assert!(
-                !escaped.contains('\n') && !escaped.contains('\r'),
-                "shell_escape({input:?}) must stay on one line, got {escaped:?}"
-            );
+            assert_eq!(shell_escape(input), expected, "shell_escape({input:?})");
         }
     }
 
     #[test]
-    #[serial_test::serial]
-    fn test_resolve_host_environment_value_uses_last_resolved_entry() {
-        std::env::remove_var("AOE_TEST_MISSING_HOST_ENV_VALUE");
-        let entries = vec![
-            "CODEX_HOME=/first".to_string(),
-            "OTHER=value".to_string(),
-            "CODEX_HOME=$AOE_TEST_MISSING_HOST_ENV_VALUE".to_string(),
-            "CODEX_HOME=/second".to_string(),
-        ];
+    #[serial]
+    fn host_environment_grammar() {
+        let _env = EnvGuard::set(&[
+            ("AOE_TEST_HOST_REF", "from-host"),
+            ("AOE_TEST_HOST_BARE", "bare"),
+        ]);
+        let _unset = EnvGuard::unset(&["AOE_TEST_HOST_MISSING"]);
+        let entries = strings(&[
+            "CODEX_HOME=/first",
+            "FROM_HOST=$AOE_TEST_HOST_REF",
+            "ESCAPED=$$LIT",
+            "AOE_TEST_HOST_BARE",
+            "MISSING=$AOE_TEST_HOST_MISSING",
+            "1BAD=x",
+            "CODEX_HOME=/second",
+            "CODEX_HOME=$AOE_TEST_HOST_MISSING",
+            "FROM_HOST=second",
+        ]);
 
-        assert_eq!(
-            resolve_host_environment_value(&entries, "CODEX_HOME"),
-            Some("/second".to_string())
-        );
-    }
-
-    #[test]
-    #[serial_test::serial]
-    fn test_resolve_host_environment_value_matches_host_env_grammar() {
-        std::env::set_var("AOE_TEST_CODEX_HOME_REF", "/from-host");
-        let entries = vec!["CODEX_HOME=$AOE_TEST_CODEX_HOME_REF".to_string()];
-
-        assert_eq!(
-            resolve_host_environment_value(&entries, "CODEX_HOME"),
-            Some("/from-host".to_string())
-        );
-
-        std::env::remove_var("AOE_TEST_CODEX_HOME_REF");
-    }
-
-    #[test]
-    #[serial_test::serial]
-    fn test_resolve_host_environment_pairs_matches_prefix_grammar() {
-        std::env::set_var("AOE_TEST_HOST_PAIRS_REF", "from-host");
-        std::env::set_var("AOE_TEST_HOST_PAIRS_BARE", "bare-val");
-        std::env::remove_var("AOE_TEST_HOST_PAIRS_MISSING");
-        let entries = vec![
-            "CODEX_HOME=/literal".to_string(),
-            "FROM_HOST=$AOE_TEST_HOST_PAIRS_REF".to_string(),
-            "ESCAPED=$$LIT".to_string(),
-            "AOE_TEST_HOST_PAIRS_BARE".to_string(),
-            "MISSING=$AOE_TEST_HOST_PAIRS_MISSING".to_string(), // unset ref: skipped
-            "1BAD=x".to_string(),                               // invalid key: skipped
-        ];
+        // Host agent env: the last resolvable entry for a key wins and moves to the end.
         assert_eq!(
             resolve_host_environment_pairs(&entries),
-            vec![
-                ("CODEX_HOME".to_string(), "/literal".to_string()),
-                ("FROM_HOST".to_string(), "from-host".to_string()),
-                ("ESCAPED".to_string(), "$LIT".to_string()),
-                (
-                    "AOE_TEST_HOST_PAIRS_BARE".to_string(),
-                    "bare-val".to_string()
-                ),
-            ]
+            owned(&[
+                ("ESCAPED", "$LIT"),
+                ("AOE_TEST_HOST_BARE", "bare"),
+                ("CODEX_HOME", "/second"),
+                ("FROM_HOST", "second"),
+            ])
         );
-        std::env::remove_var("AOE_TEST_HOST_PAIRS_REF");
-        std::env::remove_var("AOE_TEST_HOST_PAIRS_BARE");
-    }
-
-    #[test]
-    #[serial_test::serial]
-    fn test_resolve_host_environment_pairs_last_entry_wins() {
-        std::env::remove_var("AOE_TEST_HOST_PAIRS_UNSET");
-        let entries = vec![
-            "CODEX_HOME=/first".to_string(),
-            "OTHER=keep".to_string(),
-            "CODEX_HOME=/second".to_string(),
-            "CODEX_HOME=$AOE_TEST_HOST_PAIRS_UNSET".to_string(),
-        ];
         assert_eq!(
-            resolve_host_environment_pairs(&entries),
-            vec![
-                ("OTHER".to_string(), "keep".to_string()),
-                ("CODEX_HOME".to_string(), "/second".to_string()),
-            ]
+            resolve_host_environment_value(&entries, "CODEX_HOME").as_deref(),
+            Some("/second")
         );
-    }
-
-    #[test]
-    fn test_drop_shadowed_host_entries_no_mint_is_identity() {
-        let entries = vec![
-            "CLAUDE_CONFIG_DIR=/a".to_string(),
-            "TERM".to_string(),
-            "GH_TOKEN=$GH_TOKEN".to_string(),
-        ];
         assert_eq!(
-            drop_shadowed_host_entries(entries.clone(), &[]),
-            entries,
-            "no minted keys must not perturb the list"
+            resolve_host_environment_value(&entries[..2], "FROM_HOST").as_deref(),
+            Some("from-host")
+        );
+
+        // Host hooks: the first entry for a key wins; invalid keys are skipped.
+        let mut hook_entries = entries.clone();
+        hook_entries.extend(strings(&["HAS SPACE=y", "=novalue", "_OK=2"]));
+        assert_eq!(
+            resolve_hook_env_pairs(&hook_entries),
+            owned(&[
+                ("CODEX_HOME", "/first"),
+                ("FROM_HOST", "from-host"),
+                ("ESCAPED", "$LIT"),
+                ("AOE_TEST_HOST_BARE", "bare"),
+                ("_OK", "2"),
+            ])
         );
     }
 
     #[test]
-    fn test_drop_shadowed_host_entries_removes_every_entry_form() {
-        let entries = vec![
-            "CLAUDE_CONFIG_DIR=/stale".to_string(),
-            "KEEP_LITERAL=keep".to_string(),
-            "ANTHROPIC_BASE_URL=$SOME_REF".to_string(),
-            "TERM".to_string(),
-            "KEEP_BARE".to_string(),
-        ];
-        let minted = vec![
-            ("CLAUDE_CONFIG_DIR".to_string(), "/fresh".to_string()),
-            ("ANTHROPIC_BASE_URL".to_string(), "http://x".to_string()),
-            ("TERM".to_string(), "xterm".to_string()),
-        ];
+    fn drop_shadowed_host_entries_matches_whole_keys() {
+        let entries = strings(&[
+            "CLAUDE_CONFIG_DIR=/stale",
+            "KEEP_LITERAL=keep",
+            "ANTHROPIC_BASE_URL=$SOME_REF",
+            "TERM",
+            "FOOBAR=2",
+        ]);
+        assert_eq!(drop_shadowed_host_entries(entries.clone(), &[]), entries);
+        let minted = owned(&[
+            ("CLAUDE_CONFIG_DIR", "/fresh"),
+            ("ANTHROPIC_BASE_URL", "http://x"),
+            ("TERM", "xterm"),
+            ("FOO", "minted"),
+        ]);
         assert_eq!(
             drop_shadowed_host_entries(entries, &minted),
-            vec!["KEEP_LITERAL=keep".to_string(), "KEEP_BARE".to_string()]
+            strings(&["KEEP_LITERAL=keep", "FOOBAR=2"])
         );
     }
 
     #[test]
-    fn test_drop_shadowed_host_entries_matches_whole_key_only() {
-        let entries = vec![
-            "FOO=1".to_string(),
-            "FOOBAR=2".to_string(),
-            "FOO_BAR=3".to_string(),
-        ];
-        let minted = vec![("FOO".to_string(), "minted".to_string())];
-        assert_eq!(
-            drop_shadowed_host_entries(entries, &minted),
-            vec!["FOOBAR=2".to_string(), "FOO_BAR=3".to_string()]
-        );
-    }
-
-    fn find_entry<'a>(entries: &'a [EnvEntry], key: &str) -> Option<&'a EnvEntry> {
-        entries.iter().find(|e| e.key() == key)
-    }
-
-    #[test]
-    #[serial_test::serial]
-    fn test_collect_environment_passthrough() {
-        std::env::set_var("AOE_TEST_ENV_PT", "test_value");
-        let config = SandboxConfig {
-            environment: vec!["AOE_TEST_ENV_PT".to_string()],
-            ..Default::default()
-        };
-        let info = SandboxInfo {
-            enabled: true,
-            container_id: None,
-            image: "test".to_string(),
-            container_name: "test".to_string(),
-            extra_env: None,
-            custom_instruction: None,
-            before_start_env: Vec::new(),
-            container_workdir: None,
-        };
-
-        let result = collect_environment(&config, &info);
-        let entry = find_entry(&result, "AOE_TEST_ENV_PT").expect("AOE_TEST_ENV_PT not found");
-        assert_eq!(entry.value(), "test_value");
-        assert!(matches!(entry, EnvEntry::Inherit { .. }));
-        std::env::remove_var("AOE_TEST_ENV_PT");
-    }
-
-    #[test]
-    #[serial_test::serial]
-    fn test_resolve_hook_env_pairs_grammar() {
-        std::env::set_var("AOE_TEST_HOST_PAIR_REF", "from_host");
-        std::env::set_var("AOE_TEST_HOST_PAIR_BARE", "bare_val");
-        std::env::remove_var("AOE_TEST_HOST_PAIR_MISSING");
-        let entries = vec![
-            "TEST_VAR=literal".to_string(),
-            "FROM_HOST=$AOE_TEST_HOST_PAIR_REF".to_string(),
-            "ESCAPED=$$LIT".to_string(),
-            "AOE_TEST_HOST_PAIR_BARE".to_string(),
-            "MISSING=$AOE_TEST_HOST_PAIR_MISSING".to_string(), // unset host ref: skipped
-            "TEST_VAR=second".to_string(),                     // dup key: first wins
-        ];
-        let pairs = resolve_hook_env_pairs(&entries);
-        assert_eq!(
-            pairs,
-            vec![
-                ("TEST_VAR".to_string(), "literal".to_string()),
-                ("FROM_HOST".to_string(), "from_host".to_string()),
-                ("ESCAPED".to_string(), "$LIT".to_string()),
-                (
-                    "AOE_TEST_HOST_PAIR_BARE".to_string(),
-                    "bare_val".to_string()
-                ),
-            ]
-        );
-        std::env::remove_var("AOE_TEST_HOST_PAIR_REF");
-        std::env::remove_var("AOE_TEST_HOST_PAIR_BARE");
-    }
-
-    #[test]
-    fn test_resolve_hook_env_pairs_skips_invalid_keys() {
-        let entries = vec![
-            "GOOD=1".to_string(),
-            "1BAD=x".to_string(),      // starts with a digit
-            "HAS SPACE=y".to_string(), // contains a space
-            "=novalue".to_string(),    // empty key
-            "_OK=2".to_string(),
-        ];
-        assert_eq!(
-            resolve_hook_env_pairs(&entries),
-            vec![
-                ("GOOD".to_string(), "1".to_string()),
-                ("_OK".to_string(), "2".to_string()),
-            ]
-        );
-    }
-
-    #[test]
-    fn test_host_hook_entries_drops_repo_contributed() {
-        let extra = vec![
-            "TEST_VAR=foo".to_string(),  // user-typed
-            "NODE_ENV=test".to_string(), // repo-contributed
-            "SHARED=keep".to_string(),   // also in profile/global baseline
-        ];
-        let trusted = vec!["SHARED=keep".to_string()];
-        let repo_aware = vec!["NODE_ENV=test".to_string(), "SHARED=keep".to_string()];
+    fn host_hook_env_excludes_repo_contributed_entries() {
+        let extra = strings(&["TEST_VAR=foo", "NODE_ENV=test", "SHARED=keep"]);
+        let trusted = strings(&["SHARED=keep"]);
+        let repo_aware = strings(&["NODE_ENV=test", "SHARED=keep"]);
         assert_eq!(
             host_hook_entries(&extra, &trusted, &repo_aware),
-            vec!["TEST_VAR=foo".to_string(), "SHARED=keep".to_string()],
+            strings(&["TEST_VAR=foo", "SHARED=keep"])
         );
-    }
 
-    #[test]
-    fn test_session_host_env_pairs_uses_extra_env() {
-        let _app_guard = crate::session::test_support::isolate_app_dir();
+        let _app_guard = isolate_app_dir();
         let tmp = tempfile::tempdir().unwrap();
-        let info = SandboxInfo {
-            enabled: true,
-            container_id: None,
-            image: "img".to_string(),
-            container_name: "ctr".to_string(),
-            extra_env: Some(vec!["TEST_VAR=foo".to_string(), "OTHER=bar".to_string()]),
-            custom_instruction: None,
-            before_start_env: Vec::new(),
-            container_workdir: None,
-        };
-        let pairs = session_host_env_pairs("any-profile", tmp.path(), &info);
+        let info = sandbox(Some(&["TEST_VAR=foo", "OTHER=bar"]));
         assert_eq!(
-            pairs,
-            vec![
-                ("TEST_VAR".to_string(), "foo".to_string()),
-                ("OTHER".to_string(), "bar".to_string()),
-            ]
+            session_host_env_pairs("any-profile", tmp.path(), &info),
+            owned(&[("TEST_VAR", "foo"), ("OTHER", "bar")])
         );
     }
 
     #[test]
-    fn test_collect_environment_before_start_is_inherited() {
-        let config = SandboxConfig {
-            environment: vec!["GH_TOKEN=stale_literal".to_string()],
-            ..Default::default()
-        };
-        let info = SandboxInfo {
-            enabled: true,
-            container_id: None,
-            image: "test".to_string(),
-            container_name: "test".to_string(),
-            extra_env: None,
-            custom_instruction: None,
-            before_start_env: vec![("GH_TOKEN".to_string(), "ghs_fresh".to_string())],
-            container_workdir: None,
-        };
-
-        let result = collect_environment(&config, &info);
-        let entries: Vec<_> = result.iter().filter(|e| e.key() == "GH_TOKEN").collect();
-        assert_eq!(entries.len(), 1, "deduped to a single GH_TOKEN entry");
-        assert_eq!(entries[0].value(), "ghs_fresh");
-        assert!(
-            matches!(entries[0], EnvEntry::Inherit { .. }),
-            "before_start values must be Inherit (leak-safe), not Literal"
-        );
-    }
-
-    #[test]
-    fn test_collect_environment_rejects_invalid_config_extra_and_hook_keys() {
-        let config = SandboxConfig {
-            environment: vec![
-                "CFG; touch /tmp/cfg_injected; #=secret".to_string(),
-                "VALID_CONFIG=ok".to_string(),
-            ],
-            ..Default::default()
-        };
-        let base = SandboxInfo {
-            enabled: true,
-            container_id: None,
-            image: "test".to_string(),
-            container_name: "test".to_string(),
-            extra_env: None,
-            custom_instruction: None,
-            before_start_env: vec![
-                (
-                    "HOOK$(touch /tmp/hook_injected)".to_string(),
-                    "secret".to_string(),
-                ),
-                ("VALID_HOOK".to_string(), "minted".to_string()),
-            ],
-            container_workdir: None,
-        };
-        let configured = collect_environment(&config, &base);
-        assert!(find_entry(&configured, "VALID_CONFIG").is_some());
-        assert!(find_entry(&configured, "VALID_HOOK").is_some());
-        assert!(!configured
-            .iter()
-            .any(|entry| { entry.key().contains("touch") || entry.key().contains(';') }));
-
-        let mut extra = base;
-        extra.extra_env = Some(vec![
-            "EXTRA`touch /tmp/extra_injected`=secret".to_string(),
-            "VALID_EXTRA=ok".to_string(),
+    #[serial]
+    fn collect_environment_entry_grammar() {
+        let _env = EnvGuard::set(&[
+            ("AOE_TEST_ENV_PT", "test_value"),
+            ("AOE_TEST_HOST_REF", "host_val"),
         ]);
-        let resolved_extra = collect_environment(&config, &extra);
-        assert!(find_entry(&resolved_extra, "VALID_EXTRA").is_some());
-        assert!(!resolved_extra
-            .iter()
-            .any(|entry| { entry.key().contains("touch") || entry.key().contains('`') }));
-    }
-
-    #[test]
-    fn test_collect_environment_key_value() {
-        let config = SandboxConfig {
-            environment: vec!["MY_KEY=my_value".to_string()],
-            ..Default::default()
-        };
-        let info = SandboxInfo {
-            enabled: true,
-            container_id: None,
-            image: "test".to_string(),
-            container_name: "test".to_string(),
-            extra_env: None,
-            custom_instruction: None,
-            before_start_env: Vec::new(),
-            container_workdir: None,
-        };
+        let config = config(&[
+            "AOE_TEST_ENV_PT",
+            "MY_KEY=my_value",
+            "INJECTED=$AOE_TEST_HOST_REF",
+            "ESCAPED=$$LITERAL",
+            "GH_TOKEN=stale_literal",
+            "CFG; touch /tmp/cfg_injected; #=secret",
+        ]);
+        let mut info = sandbox(None);
+        info.before_start_env = owned(&[
+            ("GH_TOKEN", "ghs_fresh"),
+            ("HOOK$(touch /tmp/hook_injected)", "secret"),
+        ]);
 
         let result = collect_environment(&config, &info);
-        let entry = find_entry(&result, "MY_KEY").expect("MY_KEY not found");
-        assert_eq!(entry.value(), "my_value");
-        assert!(matches!(entry, EnvEntry::Literal { .. }));
-    }
+        for (key, value, inherited) in [
+            ("AOE_TEST_ENV_PT", "test_value", true),
+            ("MY_KEY", "my_value", false),
+            ("INJECTED", "host_val", true),
+            ("ESCAPED", "$LITERAL", false),
+            ("GH_TOKEN", "ghs_fresh", true),
+            ("GIT_CONFIG_COUNT", "1", false),
+            ("GIT_CONFIG_KEY_0", "safe.directory", false),
+            ("GIT_CONFIG_VALUE_0", "*", false),
+        ] {
+            assert_eq!(
+                lookup(&result, key),
+                [(value.to_string(), inherited)],
+                "{key}"
+            );
+        }
+        assert!(!result.iter().any(|e| e.key().contains("touch")));
 
-    #[test]
-    fn test_collect_environment_includes_git_safe_directory() {
-        let config = SandboxConfig::default();
-        let info = SandboxInfo {
-            enabled: true,
-            container_id: None,
-            image: "test".to_string(),
-            container_name: "test".to_string(),
-            extra_env: None,
-            custom_instruction: None,
-            before_start_env: Vec::new(),
-            container_workdir: None,
-        };
-
+        // Per-session `extra_env` replaces the configured list and can override git defaults.
+        info.extra_env = Some(strings(&[
+            "MY_KEY=from_session",
+            "GIT_CONFIG_COUNT=2",
+            "GIT_CONFIG_VALUE_0=/workspace/custom",
+            "EXTRA`touch /tmp/extra_injected`=secret",
+        ]));
         let result = collect_environment(&config, &info);
-        let count = find_entry(&result, "GIT_CONFIG_COUNT").expect("GIT_CONFIG_COUNT not found");
-        assert_eq!(count.value(), "1");
-        assert!(matches!(count, EnvEntry::Literal { .. }));
-
-        let key = find_entry(&result, "GIT_CONFIG_KEY_0").expect("GIT_CONFIG_KEY_0 not found");
-        assert_eq!(key.value(), "safe.directory");
-        assert!(matches!(key, EnvEntry::Literal { .. }));
-
-        let value =
-            find_entry(&result, "GIT_CONFIG_VALUE_0").expect("GIT_CONFIG_VALUE_0 not found");
-        assert_eq!(value.value(), "*");
-        assert!(matches!(value, EnvEntry::Literal { .. }));
+        for (key, value) in [
+            ("MY_KEY", "from_session"),
+            ("GIT_CONFIG_COUNT", "2"),
+            ("GIT_CONFIG_VALUE_0", "/workspace/custom"),
+        ] {
+            assert_eq!(lookup(&result, key), [(value.to_string(), false)], "{key}");
+        }
+        assert!(lookup(&result, "INJECTED").is_empty());
+        assert!(!result.iter().any(|e| e.key().contains("touch")));
     }
 
     #[test]
-    fn test_collect_environment_git_safe_directory_user_override() {
-        let config = SandboxConfig::default();
-        let info = SandboxInfo {
-            enabled: true,
-            container_id: None,
-            image: "test".to_string(),
-            container_name: "test".to_string(),
-            extra_env: Some(vec![
-                "GIT_CONFIG_COUNT=2".to_string(),
-                "GIT_CONFIG_KEY_0=safe.directory".to_string(),
-                "GIT_CONFIG_VALUE_0=/workspace/custom".to_string(),
-                "GIT_CONFIG_KEY_1=safe.directory".to_string(),
-                "GIT_CONFIG_VALUE_1=/workspace/other".to_string(),
-            ]),
-            custom_instruction: None,
-            before_start_env: Vec::new(),
-            container_workdir: None,
-        };
-
-        let result = collect_environment(&config, &info);
-        let count = find_entry(&result, "GIT_CONFIG_COUNT").expect("GIT_CONFIG_COUNT not found");
-        assert_eq!(count.value(), "2");
-        assert!(matches!(count, EnvEntry::Literal { .. }));
-
-        let value0 =
-            find_entry(&result, "GIT_CONFIG_VALUE_0").expect("GIT_CONFIG_VALUE_0 not found");
-        assert_eq!(value0.value(), "/workspace/custom");
-        assert!(matches!(value0, EnvEntry::Literal { .. }));
-
-        let value1 =
-            find_entry(&result, "GIT_CONFIG_VALUE_1").expect("GIT_CONFIG_VALUE_1 not found");
-        assert_eq!(value1.value(), "/workspace/other");
-        assert!(matches!(value1, EnvEntry::Literal { .. }));
+    #[serial]
+    fn collect_environment_auto_forwards_vertex_vars_only_when_enabled() {
+        for (flag, forwarded) in [(Some("1"), true), (Some(""), false), (None, false)] {
+            let _env = EnvGuard::set(&[
+                ("ANTHROPIC_VERTEX_PROJECT_ID", "my-proj"),
+                ("CLOUD_ML_REGION", "us-east5"),
+                ("ANTHROPIC_API_KEY", "sk-host-key"),
+            ]);
+            let _flag = match flag {
+                Some(flag) => EnvGuard::set(&[("CLAUDE_CODE_USE_VERTEX", flag)]),
+                None => EnvGuard::unset(&["CLAUDE_CODE_USE_VERTEX"]),
+            };
+            let result = collect_environment(&config(&["ANTHROPIC_VERTEX_PROJECT_ID"]), &sandbox(None));
+            assert_eq!(
+                lookup(&result, "ANTHROPIC_VERTEX_PROJECT_ID"),
+                [("my-proj".to_string(), true)],
+                "never duplicated"
+            );
+            assert_eq!(
+                lookup(&result, "CLOUD_ML_REGION").len(),
+                usize::from(forwarded),
+                "{flag:?}"
+            );
+            assert!(lookup(&result, "ANTHROPIC_API_KEY").is_empty(), "never auto-forwarded");
+        }
     }
 
     #[test]
-    #[serial_test::serial]
-    fn test_collect_environment_extra_env() {
-        std::env::set_var("AOE_TEST_EXTRA", "extra_val");
-        let config = SandboxConfig::default();
-        let info = SandboxInfo {
-            enabled: true,
-            container_id: None,
-            image: "test".to_string(),
-            container_name: "test".to_string(),
-            extra_env: Some(vec!["AOE_TEST_EXTRA".to_string(), "FOO=bar".to_string()]),
-            custom_instruction: None,
-            before_start_env: Vec::new(),
-            container_workdir: None,
-        };
-
-        let result = collect_environment(&config, &info);
-        let extra = find_entry(&result, "AOE_TEST_EXTRA").expect("AOE_TEST_EXTRA not found");
-        assert_eq!(extra.value(), "extra_val");
-        assert!(matches!(extra, EnvEntry::Inherit { .. }));
-        let foo = find_entry(&result, "FOO").expect("FOO not found");
-        assert_eq!(foo.value(), "bar");
-        assert!(matches!(foo, EnvEntry::Literal { .. }));
-        std::env::remove_var("AOE_TEST_EXTRA");
-    }
-
-    #[test]
-    fn test_collect_environment_extra_env_is_authoritative() {
-        let config = SandboxConfig {
-            environment: vec!["DUP_KEY=from_config".to_string()],
-            ..Default::default()
-        };
-        let info = SandboxInfo {
-            enabled: true,
-            container_id: None,
-            image: "test".to_string(),
-            container_name: "test".to_string(),
-            extra_env: Some(vec!["DUP_KEY=from_session".to_string()]),
-            custom_instruction: None,
-            before_start_env: Vec::new(),
-            container_workdir: None,
-        };
-
-        let result = collect_environment(&config, &info);
-        let dup_entries: Vec<_> = result.iter().filter(|e| e.key() == "DUP_KEY").collect();
-        assert_eq!(dup_entries.len(), 1);
-        assert_eq!(dup_entries[0].value(), "from_session");
-    }
-
-    #[test]
-    fn test_collect_environment_falls_back_to_config_when_no_extra() {
-        let config = SandboxConfig {
-            environment: vec!["CONFIG_KEY=config_val".to_string()],
-            ..Default::default()
-        };
-        let info = SandboxInfo {
-            enabled: true,
-            container_id: None,
-            image: "test".to_string(),
-            container_name: "test".to_string(),
-            extra_env: None,
-            custom_instruction: None,
-            before_start_env: Vec::new(),
-            container_workdir: None,
-        };
-
-        let result = collect_environment(&config, &info);
-        let entry = find_entry(&result, "CONFIG_KEY").expect("CONFIG_KEY not found");
-        assert_eq!(entry.value(), "config_val");
-    }
-
-    #[test]
-    #[serial_test::serial]
-    fn test_collect_environment_dollar_ref() {
-        std::env::set_var("AOE_TEST_HOST_REF", "host_val");
-        let config = SandboxConfig {
-            environment: vec!["INJECTED=$AOE_TEST_HOST_REF".to_string()],
-            ..Default::default()
-        };
-        let info = SandboxInfo {
-            enabled: true,
-            container_id: None,
-            image: "test".to_string(),
-            container_name: "test".to_string(),
-            extra_env: None,
-            custom_instruction: None,
-            before_start_env: Vec::new(),
-            container_workdir: None,
-        };
-
-        let result = collect_environment(&config, &info);
-        let entry = find_entry(&result, "INJECTED").expect("INJECTED not found");
-        assert_eq!(entry.value(), "host_val");
-        assert!(matches!(entry, EnvEntry::Inherit { .. }));
-        std::env::remove_var("AOE_TEST_HOST_REF");
-    }
-
-    #[test]
-    fn test_collect_environment_dollar_dollar_escape() {
-        let config = SandboxConfig {
-            environment: vec!["ESCAPED=$$LITERAL".to_string()],
-            ..Default::default()
-        };
-        let info = SandboxInfo {
-            enabled: true,
-            container_id: None,
-            image: "test".to_string(),
-            container_name: "test".to_string(),
-            extra_env: None,
-            custom_instruction: None,
-            before_start_env: Vec::new(),
-            container_workdir: None,
-        };
-
-        let result = collect_environment(&config, &info);
-        let entry = find_entry(&result, "ESCAPED").expect("ESCAPED not found");
-        assert_eq!(entry.value(), "$LITERAL");
-        assert!(matches!(entry, EnvEntry::Literal { .. }));
-    }
-
-    #[test]
-    #[serial_test::serial]
-    fn test_validate_env_entry_bare_key_present() {
-        std::env::set_var("AOE_TEST_VALIDATE_BARE", "exists");
-        assert_eq!(validate_env_entry("AOE_TEST_VALIDATE_BARE"), None);
-        std::env::remove_var("AOE_TEST_VALIDATE_BARE");
-    }
-
-    #[test]
-    #[serial_test::serial]
-    fn test_validate_env_entry_bare_key_missing() {
-        std::env::remove_var("AOE_TEST_VALIDATE_MISSING_BARE");
-        let result = validate_env_entry("AOE_TEST_VALIDATE_MISSING_BARE");
-        assert!(result.is_some());
-        assert!(result.unwrap().contains("AOE_TEST_VALIDATE_MISSING_BARE"));
-    }
-
-    #[test]
-    #[serial_test::serial]
-    fn test_validate_env_entry_key_dollar_var_present() {
-        std::env::set_var("AOE_TEST_VALIDATE_REF", "value");
-        assert_eq!(validate_env_entry("MY_KEY=$AOE_TEST_VALIDATE_REF"), None);
-        std::env::remove_var("AOE_TEST_VALIDATE_REF");
-    }
-
-    #[test]
-    #[serial_test::serial]
-    fn test_validate_env_entry_key_dollar_var_missing() {
-        std::env::remove_var("AOE_TEST_VALIDATE_MISSING_REF");
-        let result = validate_env_entry("MY_KEY=$AOE_TEST_VALIDATE_MISSING_REF");
-        assert!(result.is_some());
-        assert!(result.unwrap().contains("AOE_TEST_VALIDATE_MISSING_REF"));
-    }
-
-    #[test]
-    fn test_validate_env_entry_literal_value() {
-        assert_eq!(validate_env_entry("MY_KEY=some_literal"), None);
-    }
-
-    #[test]
-    fn test_validate_env_entry_escaped_dollar() {
-        assert_eq!(validate_env_entry("MY_KEY=$$ESCAPED"), None);
-    }
-
-    #[test]
-    #[serial_test::serial]
-    fn test_validate_env_entries_returns_one_warning_per_missing_var() {
-        std::env::remove_var("AOE_TEST_BATCH_MISSING_A");
-        std::env::remove_var("AOE_TEST_BATCH_MISSING_B");
-        std::env::set_var("AOE_TEST_BATCH_PRESENT", "ok");
-
-        let entries = vec![
-            "GH_TOKEN=$AOE_TEST_BATCH_MISSING_A".to_string(),
-            "OK=$AOE_TEST_BATCH_PRESENT".to_string(),
-            "ALSO_BROKEN=$AOE_TEST_BATCH_MISSING_B".to_string(),
-            "LITERAL=fine".to_string(),
-        ];
-        let warnings = validate_env_entries(&entries);
-        assert_eq!(
-            warnings.len(),
-            2,
-            "expected 2 warnings, got: {:?}",
-            warnings
-        );
-        assert!(warnings
-            .iter()
-            .any(|w| w.contains("AOE_TEST_BATCH_MISSING_A")));
-        assert!(warnings
-            .iter()
-            .any(|w| w.contains("AOE_TEST_BATCH_MISSING_B")));
-
-        std::env::remove_var("AOE_TEST_BATCH_PRESENT");
-    }
-
-    #[test]
-    fn test_validate_env_entries_empty_list() {
+    #[serial]
+    fn validate_env_entries_warns_only_for_unresolvable_entries() {
+        let _env = EnvGuard::set(&[("AOE_TEST_VALIDATE_PRESENT", "exists")]);
+        let _unset = EnvGuard::unset(&["AOE_TEST_VALIDATE_MISSING"]);
+        for (entry, warns) in [
+            ("AOE_TEST_VALIDATE_PRESENT", false),
+            ("MY_KEY=$AOE_TEST_VALIDATE_PRESENT", false),
+            ("MY_KEY=some_literal", false),
+            ("MY_KEY=$$ESCAPED", false),
+            ("AOE_TEST_VALIDATE_MISSING", true),
+            ("MY_KEY=$AOE_TEST_VALIDATE_MISSING", true),
+        ] {
+            let warning = validate_env_entry(entry);
+            assert_eq!(warning.is_some(), warns, "{entry}");
+            if let Some(warning) = warning {
+                assert!(warning.contains("AOE_TEST_VALIDATE_MISSING"), "{warning}");
+            }
+        }
+        let warnings = validate_env_entries([
+            "A=$AOE_TEST_VALIDATE_MISSING",
+            "OK=fine",
+            "B=$AOE_TEST_VALIDATE_MISSING",
+        ]);
+        assert_eq!(warnings.len(), 2, "{warnings:?}");
         assert!(validate_env_entries(Vec::<String>::new()).is_empty());
     }
 
     #[test]
-    #[serial_test::serial(shell_env)]
-    fn test_validate_env_entries_skips_default_terminal_vars_when_unset() {
+    #[serial(shell_env)]
+    fn validate_env_entries_skips_default_terminal_vars_when_unset() {
         let _env = EnvGuard::unset(DEFAULT_TERMINAL_ENV_VARS);
-
-        let entries: Vec<String> = DEFAULT_TERMINAL_ENV_VARS
-            .iter()
-            .map(|s| s.to_string())
-            .collect();
-        let warnings = validate_env_entries(&entries);
-
-        assert!(
-            warnings.is_empty(),
-            "expected no warnings for default terminal vars even when unset, got: {:?}",
-            warnings
-        );
-    }
-
-    #[test]
-    #[serial_test::serial]
-    fn test_build_docker_env_args_inherit_uses_key_only_in_args() {
-        let _app_guard = crate::session::test_support::isolate_app_dir();
-        let _env_0 = EnvGuard::set(&[("AOE_TEST_TOKEN", "secret123")]);
-        let sandbox = SandboxInfo {
-            enabled: true,
-            container_id: None,
-            image: "test".to_string(),
-            container_name: "test".to_string(),
-            extra_env: Some(vec!["AOE_TEST_TOKEN=$AOE_TEST_TOKEN".to_string()]),
-            custom_instruction: None,
-            before_start_env: Vec::new(),
-            container_workdir: None,
-        };
-        let result = build_docker_env_args("", &sandbox, std::path::Path::new("/nonexistent"));
-        assert_eq!(result.docker_args, "--env-file /dev/fd/9");
-        assert!(!result.docker_args.contains("secret123"));
-        assert!(result
-            .env
-            .contains(&("AOE_TEST_TOKEN".to_string(), "secret123".to_string())));
-    }
-
-    #[test]
-    #[serial_test::serial]
-    fn test_build_docker_env_args_inherit_with_different_key() {
-        let _app_guard = crate::session::test_support::isolate_app_dir();
-        let _env_0 = EnvGuard::set(&[("AOE_TEST_SOURCE", "secret456")]);
-        let sandbox = SandboxInfo {
-            enabled: true,
-            container_id: None,
-            image: "test".to_string(),
-            container_name: "test".to_string(),
-            extra_env: Some(vec!["MY_MAPPED=$AOE_TEST_SOURCE".to_string()]),
-            custom_instruction: None,
-            before_start_env: Vec::new(),
-            container_workdir: None,
-        };
-        let result = build_docker_env_args("", &sandbox, std::path::Path::new("/nonexistent"));
-        assert_eq!(result.docker_args, "--env-file /dev/fd/9");
-        assert!(!result.docker_args.contains("secret456"));
-        assert!(result
-            .env
-            .contains(&("MY_MAPPED".to_string(), "secret456".to_string())));
-    }
-
-    #[test]
-    #[serial_test::serial]
-    fn test_build_docker_env_args_bare_key_uses_protected_env() {
-        let _app_guard = crate::session::test_support::isolate_app_dir();
-        let _env_0 = EnvGuard::set(&[("AOE_TEST_BARE", "barevalue")]);
-        let sandbox = SandboxInfo {
-            enabled: true,
-            container_id: None,
-            image: "test".to_string(),
-            container_name: "test".to_string(),
-            extra_env: Some(vec!["AOE_TEST_BARE".to_string()]),
-            custom_instruction: None,
-            before_start_env: Vec::new(),
-            container_workdir: None,
-        };
-        let result = build_docker_env_args("", &sandbox, std::path::Path::new("/nonexistent"));
-        assert_eq!(result.docker_args, "--env-file /dev/fd/9");
-        assert!(!result.docker_args.contains("barevalue"));
-        assert!(result
-            .env
-            .contains(&("AOE_TEST_BARE".to_string(), "barevalue".to_string())));
-    }
-
-    #[test]
-    fn test_build_docker_env_args_literal_uses_protected_env() {
-        let _app_guard = crate::session::test_support::isolate_app_dir();
-        let sandbox = SandboxInfo {
-            enabled: true,
-            container_id: None,
-            image: "test".to_string(),
-            container_name: "test".to_string(),
-            extra_env: Some(vec!["MY_LITERAL=literal-secret".to_string()]),
-            custom_instruction: None,
-            before_start_env: Vec::new(),
-            container_workdir: None,
-        };
-        let result = build_docker_env_args("", &sandbox, std::path::Path::new("/nonexistent"));
-        assert_eq!(result.docker_args, "--env-file /dev/fd/9");
-        assert!(!result.docker_args.contains("literal-secret"));
-        assert!(result
-            .env
-            .contains(&("MY_LITERAL".to_string(), "literal-secret".to_string())));
-    }
-
-    #[test]
-    #[serial_test::serial]
-    fn test_build_docker_env_args_mixed_values_never_inline() {
-        let _app_guard = crate::session::test_support::isolate_app_dir();
-        let _env_0 = EnvGuard::set(&[("AOE_TEST_SECRET", "mysecret")]);
-        let sandbox = SandboxInfo {
-            enabled: true,
-            container_id: None,
-            image: "test".to_string(),
-            container_name: "test".to_string(),
-            extra_env: Some(vec![
-                "AOE_TEST_SECRET=$AOE_TEST_SECRET".to_string(),
-                "MY_LITERAL=literal-secret".to_string(),
-            ]),
-            custom_instruction: None,
-            before_start_env: Vec::new(),
-            container_workdir: None,
-        };
-        let result = build_docker_env_args("", &sandbox, std::path::Path::new("/nonexistent"));
-        assert_eq!(result.docker_args, "--env-file /dev/fd/9");
-        assert!(!result.docker_args.contains("mysecret"));
-        assert!(!result.docker_args.contains("literal-secret"));
-        assert!(result
-            .env
-            .contains(&("AOE_TEST_SECRET".to_string(), "mysecret".to_string())));
-        assert!(result
-            .env
-            .contains(&("MY_LITERAL".to_string(), "literal-secret".to_string())));
-    }
-
-    #[test]
-    fn test_managed_codex_home_is_passed_to_exec_unless_overridden() {
-        let _app_guard = crate::session::test_support::isolate_app_dir();
-        let project_path = std::path::Path::new("/nonexistent");
-        let managed_home = "/root/.codex/codex-upgrade-test";
-        let cases = [
-            (None, managed_home, true),
-            (
-                Some("CODEX_HOME=/root/custom-codex"),
-                "/root/custom-codex",
-                false,
-            ),
-        ];
-
-        for (extra_env, expected_home, managed_expected) in cases {
-            let sandbox = SandboxInfo {
-                enabled: true,
-                container_id: None,
-                image: "test".to_string(),
-                container_name: "test".to_string(),
-                extra_env: extra_env.map(|entry| vec![entry.to_string()]),
-                custom_instruction: None,
-                before_start_env: Vec::new(),
-                container_workdir: None,
-            };
-            let result = build_docker_env_args_with_managed_codex_home(
-                "",
-                &sandbox,
-                project_path,
-                Some(managed_home),
-            );
-            let codex_home = result
-                .env
-                .iter()
-                .find(|(key, _)| key == "CODEX_HOME")
-                .map(|(_, value)| value.as_str());
-            assert_eq!(
-                codex_home,
-                Some(expected_home),
-                "expected CODEX_HOME={expected_home} in the protected env-file entries, got {:?}",
-                result.env
-            );
-            assert_eq!(
-                codex_home == Some(managed_home),
-                managed_expected,
-                "an explicit CODEX_HOME must suppress the managed home, got {:?}",
-                result.env
-            );
-        }
-    }
-
-    #[test]
-    #[serial_test::serial(shell_env)]
-    fn test_user_shell_reads_env() {
-        let _shell = EnvGuard::set(&[("SHELL", "/bin/zsh")]);
-        assert_eq!(user_shell(), "/bin/zsh");
-    }
-
-    #[test]
-    #[serial_test::serial(shell_env)]
-    fn test_user_shell_fallback() {
-        let _shell = EnvGuard::unset(&["SHELL"]);
-        assert_eq!(user_shell(), "bash");
-    }
-
-    #[test]
-    #[serial_test::serial(shell_env)]
-    fn test_user_shell_empty_falls_back() {
-        let _shell = EnvGuard::set(&[("SHELL", "  ")]);
-        assert_eq!(user_shell(), "bash");
-    }
-
-    #[test]
-    #[serial_test::serial(shell_env)]
-    fn test_user_posix_shell_returns_posix() {
-        let _shell = EnvGuard::set(&[("SHELL", "/bin/zsh")]);
-        assert_eq!(user_posix_shell(), "/bin/zsh");
-    }
-
-    #[test]
-    #[serial_test::serial(shell_env)]
-    fn test_user_posix_shell_falls_back_for_fish() {
-        let _shell = EnvGuard::set(&[("SHELL", "/usr/bin/fish")]);
-        assert_eq!(user_posix_shell(), "bash");
-    }
-
-    #[test]
-    #[serial_test::serial(shell_env)]
-    fn test_user_posix_shell_falls_back_for_nu() {
-        let _shell = EnvGuard::set(&[("SHELL", "/usr/bin/nu")]);
-        assert_eq!(user_posix_shell(), "bash");
-    }
-
-    #[test]
-    #[serial_test::serial]
-    fn test_collect_environment_auto_forwards_vertex_vars_when_enabled() {
-        let _env_0 = EnvGuard::set(&[("CLAUDE_CODE_USE_VERTEX", "1")]);
-        let _env_1 = EnvGuard::set(&[("ANTHROPIC_VERTEX_PROJECT_ID", "my-proj")]);
-        let _env_2 = EnvGuard::set(&[("CLOUD_ML_REGION", "us-east5")]);
-        let config = SandboxConfig::default();
-        let info = SandboxInfo {
-            enabled: true,
-            container_id: None,
-            image: "test".to_string(),
-            container_name: "test".to_string(),
-            extra_env: None,
-            custom_instruction: None,
-            before_start_env: Vec::new(),
-            container_workdir: None,
-        };
-
-        let result = collect_environment(&config, &info);
-
-        let vertex_flag = find_entry(&result, "CLAUDE_CODE_USE_VERTEX")
-            .expect("CLAUDE_CODE_USE_VERTEX not found");
-        assert_eq!(vertex_flag.value(), "1");
-        assert!(matches!(vertex_flag, EnvEntry::Inherit { .. }));
-
-        let project = find_entry(&result, "ANTHROPIC_VERTEX_PROJECT_ID")
-            .expect("ANTHROPIC_VERTEX_PROJECT_ID not found");
-        assert_eq!(project.value(), "my-proj");
-
-        let region = find_entry(&result, "CLOUD_ML_REGION").expect("CLOUD_ML_REGION not found");
-        assert_eq!(region.value(), "us-east5");
-    }
-
-    #[test]
-    #[serial_test::serial]
-    fn test_collect_environment_skips_vertex_vars_when_flag_unset() {
-        let _vertex = EnvGuard::unset(&["CLAUDE_CODE_USE_VERTEX"]);
-        let _env_0 = EnvGuard::set(&[("ANTHROPIC_VERTEX_PROJECT_ID", "my-proj")]);
-        let _env_1 = EnvGuard::set(&[("CLOUD_ML_REGION", "us-east5")]);
-        let config = SandboxConfig::default();
-        let info = SandboxInfo {
-            enabled: true,
-            container_id: None,
-            image: "test".to_string(),
-            container_name: "test".to_string(),
-            extra_env: None,
-            custom_instruction: None,
-            before_start_env: Vec::new(),
-            container_workdir: None,
-        };
-
-        let result = collect_environment(&config, &info);
-        assert!(
-            find_entry(&result, "ANTHROPIC_VERTEX_PROJECT_ID").is_none(),
-            "Vertex vars should not auto-forward when CLAUDE_CODE_USE_VERTEX is unset",
-        );
-        assert!(find_entry(&result, "CLOUD_ML_REGION").is_none());
-    }
-
-    #[test]
-    #[serial_test::serial]
-    fn test_collect_environment_skips_vertex_vars_when_flag_empty() {
-        let _env_0 = EnvGuard::set(&[("CLAUDE_CODE_USE_VERTEX", "")]);
-        let _env_1 = EnvGuard::set(&[("ANTHROPIC_VERTEX_PROJECT_ID", "my-proj")]);
-        let config = SandboxConfig::default();
-        let info = SandboxInfo {
-            enabled: true,
-            container_id: None,
-            image: "test".to_string(),
-            container_name: "test".to_string(),
-            extra_env: None,
-            custom_instruction: None,
-            before_start_env: Vec::new(),
-            container_workdir: None,
-        };
-
-        let result = collect_environment(&config, &info);
-        assert!(
-            find_entry(&result, "ANTHROPIC_VERTEX_PROJECT_ID").is_none(),
-            "Empty CLAUDE_CODE_USE_VERTEX must be treated as unset",
-        );
-    }
-
-    #[test]
-    #[serial_test::serial]
-    fn test_collect_environment_does_not_auto_forward_anthropic_api_key() {
-        let _env_0 = EnvGuard::set(&[("CLAUDE_CODE_USE_VERTEX", "1")]);
-        let _env_1 = EnvGuard::set(&[("ANTHROPIC_API_KEY", "sk-host-key")]);
-        let config = SandboxConfig::default();
-        let info = SandboxInfo {
-            enabled: true,
-            container_id: None,
-            image: "test".to_string(),
-            container_name: "test".to_string(),
-            extra_env: None,
-            custom_instruction: None,
-            before_start_env: Vec::new(),
-            container_workdir: None,
-        };
-
-        let result = collect_environment(&config, &info);
-        assert!(
-            find_entry(&result, "ANTHROPIC_API_KEY").is_none(),
-            "ANTHROPIC_API_KEY must not be auto-forwarded; users opt in via sandbox.environment",
-        );
-    }
-
-    #[test]
-    #[serial_test::serial]
-    fn test_collect_environment_vertex_vars_not_duplicated() {
-        let _env_0 = EnvGuard::set(&[("CLAUDE_CODE_USE_VERTEX", "1")]);
-        let _env_1 = EnvGuard::set(&[("ANTHROPIC_VERTEX_PROJECT_ID", "my-proj")]);
-        let config = SandboxConfig {
-            environment: vec!["ANTHROPIC_VERTEX_PROJECT_ID".to_string()],
-            ..Default::default()
-        };
-        let info = SandboxInfo {
-            enabled: true,
-            container_id: None,
-            image: "test".to_string(),
-            container_name: "test".to_string(),
-            extra_env: None,
-            custom_instruction: None,
-            before_start_env: Vec::new(),
-            container_workdir: None,
-        };
-
-        let result = collect_environment(&config, &info);
-        let matches: Vec<_> = result
-            .iter()
-            .filter(|e| e.key() == "ANTHROPIC_VERTEX_PROJECT_ID")
-            .collect();
-        assert_eq!(matches.len(), 1);
-        assert_eq!(matches[0].value(), "my-proj");
+        assert!(validate_env_entries(DEFAULT_TERMINAL_ENV_VARS).is_empty());
     }
 }
