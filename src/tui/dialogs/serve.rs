@@ -311,6 +311,18 @@ impl ServeView {
         self.show_web = false;
     }
 
+    /// Stop the daemon and start it again on the same exposure, or start one
+    /// on localhost when none answers. Rebuilding the binary leaves the
+    /// running daemon on the old code, so this is how a new build takes over.
+    fn restart(&mut self, mode: Option<Exposure>) {
+        let mode = mode.unwrap_or(Exposure::Localhost);
+        let tunnel = mode == Exposure::Tunnel;
+        let transport = tunnel.then(running_transport);
+        let passphrase =
+            tunnel.then(|| recall_passphrase().unwrap_or_else(|| self.pending_passphrase.clone()));
+        self.apply(mode, transport, passphrase);
+    }
+
     /// Probe tunnel readiness on entering Confirm or pressing `[R]`
     /// after fixing an ACL.
     fn assess_transports() -> (TransportStatus, TransportStatus) {
@@ -437,7 +449,10 @@ impl ServeView {
     pub fn handle_key(&mut self, key: KeyEvent) -> ServeAction {
         match &mut self.state {
             ServeViewState::Picker {
-                selected, flash, ..
+                selected,
+                current,
+                flash,
+                ..
             } => {
                 if flash
                     .as_ref()
@@ -467,6 +482,27 @@ impl ServeView {
                     KeyCode::Enter => {
                         let target = *selected;
                         self.choose(target)
+                    }
+                    KeyCode::Char('r') | KeyCode::Char('R') => {
+                        let current = *current;
+                        if self
+                            .pending_confirm
+                            .take()
+                            .filter(|(action, at)| {
+                                *action == PendingConfirm::Restart
+                                    && at.elapsed() <= Duration::from_secs(3)
+                            })
+                            .is_some()
+                        {
+                            self.restart(current);
+                        } else {
+                            self.pending_confirm = Some((PendingConfirm::Restart, Instant::now()));
+                            *flash = Some((
+                                "Press r again to restart the daemon.".to_string(),
+                                Instant::now(),
+                            ));
+                        }
+                        ServeAction::Continue
                     }
                     KeyCode::Esc | KeyCode::Char('q') => ServeAction::Close,
                     _ => ServeAction::Continue,
@@ -567,7 +603,6 @@ impl ServeView {
                 transport,
                 urls,
                 url_index,
-                passphrase,
                 ..
             } => {
                 if self.show_help {
@@ -609,12 +644,7 @@ impl ServeView {
                     }
                     KeyCode::Char('r') | KeyCode::Char('R') => {
                         if confirmed == Some(PendingConfirm::Restart) {
-                            let passphrase = (mode == Exposure::Tunnel).then(|| {
-                                passphrase
-                                    .clone()
-                                    .unwrap_or_else(|| self.pending_passphrase.clone())
-                            });
-                            self.apply(mode, transport, passphrase);
+                            self.restart(Some(mode));
                         } else {
                             self.pending_confirm = Some((PendingConfirm::Restart, Instant::now()));
                         }
@@ -1076,7 +1106,7 @@ fn render_picker(frame: &mut Frame, area: Rect, theme: &Theme, model: PickerMode
         Style::default().fg(theme.waiting).bold(),
     )));
     lines.push(Line::from(Span::styled(
-        "[\u{2191}/\u{2193}] choose  [1-3] pick  [Enter] apply  [Esc] close",
+        "[\u{2191}/\u{2193}] choose  [1-3] pick  [Enter] apply  [r] restart daemon  [Esc] close",
         dimmed,
     )));
     frame.render_widget(Paragraph::new(lines), body);
@@ -2858,6 +2888,25 @@ mod tests {
             };
             assert_eq!(message, flash);
         }
+    }
+
+    /// A rebuilt binary only takes over once the daemon restarts, so the
+    /// picker offers one. It costs every session its connection, so the first
+    /// press only asks.
+    #[test]
+    fn picker_restart_asks_before_it_replaces_the_daemon() {
+        let mut view = picker(Some(Exposure::Localhost));
+        press(&mut view, KeyCode::Char('r'));
+        assert!(matches!(view.state, ServeViewState::Picker { .. }));
+        assert_eq!(
+            view.pending_confirm.map(|(action, _)| action),
+            Some(PendingConfirm::Restart)
+        );
+
+        press(&mut view, KeyCode::Char('r'));
+        // No async runtime in a unit test, so the restart reports that rather
+        // than reaching the daemon; either way the picker is left behind.
+        assert!(!matches!(view.state, ServeViewState::Picker { .. }));
     }
 
     #[test]
