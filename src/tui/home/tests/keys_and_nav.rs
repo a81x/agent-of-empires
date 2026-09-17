@@ -306,6 +306,7 @@ fn preview_info_follows_flag_and_never_auto_shows_in_live() {
         target: LiveSendTarget::Agent,
         exit_chords: Vec::new(),
         leader: None,
+        remote: None,
     };
 
     // Hidden via the toggle: gone outside live...
@@ -364,6 +365,7 @@ fn is_live_send_capturing_tracks_state_and_overlays() {
         target: LiveSendTarget::Agent,
         exit_chords: Vec::new(),
         leader: None,
+        remote: None,
     });
     assert!(
         env.view.is_live_send_capturing(),
@@ -401,6 +403,7 @@ fn ctrl_c_in_live_mode_forwards_to_agent_and_flashes() {
         target: LiveSendTarget::Agent,
         exit_chords: parse_chord_list("C-q"),
         leader: None,
+        remote: None,
     });
 
     assert!(!env.view.live_send_ctrl_c_flash_active());
@@ -464,6 +467,7 @@ fn ctrl_c_flash_renders_in_live_footer() {
         target: LiveSendTarget::Agent,
         exit_chords: parse_chord_list("C-q"),
         leader: None,
+        remote: None,
     });
 
     let without = render_to_string(&mut env.view);

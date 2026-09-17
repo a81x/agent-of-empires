@@ -3059,6 +3059,7 @@ fn reconcile_reload_waits_for_live_send_to_finish() {
         target: LiveSendTarget::Agent,
         exit_chords: Vec::new(),
         leader: None,
+        remote: None,
     });
 
     assert!(
@@ -3247,6 +3248,7 @@ fn startup_recovery_gate_expires_during_live_send() {
         target: LiveSendTarget::Agent,
         exit_chords: Vec::new(),
         leader: None,
+        remote: None,
     });
     view.startup_recovery_gate =
         Some(std::time::Instant::now() - HomeView::STARTUP_RECOVERY_GATE_TIMEOUT);
@@ -3356,6 +3358,7 @@ fn a_queued_repair_keeps_the_gate_armed_while_live_send_holds_the_reload() {
         target: LiveSendTarget::Agent,
         exit_chords: Vec::new(),
         leader: None,
+        remote: None,
     });
 
     assert!(

@@ -42,6 +42,7 @@ fn install_live_for_first_session(env: &mut TestEnv) -> String {
             crate::tui::home::live_send::DEFAULT_EXIT_CHORD,
         ),
         leader: None,
+        remote: None,
     });
     id
 }
@@ -59,6 +60,7 @@ fn install_live_orphan(env: &mut TestEnv) {
             crate::tui::home::live_send::DEFAULT_EXIT_CHORD,
         ),
         leader: None,
+        remote: None,
     });
 }
 
@@ -313,6 +315,7 @@ fn drift_check_does_not_exit_for_tool_target_named_via_tool_session() {
             crate::tui::home::live_send::DEFAULT_EXIT_CHORD,
         ),
         leader: None,
+        remote: None,
     });
 
     env.view

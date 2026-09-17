@@ -133,8 +133,7 @@ impl HomeView {
     /// lifted into a helper so the app-level global keybindings (Ctrl+C in
     /// particular) can defer to live-send instead of quitting aoe (#2894).
     pub(in crate::tui) fn is_live_send_capturing(&self) -> bool {
-        (self.live_send.is_some() || self.remote_live.is_some())
-            && !self.has_non_live_send_overlay()
+        self.live_send.is_some() && !self.has_non_live_send_overlay()
     }
 
     /// Arm the live-send footer's "Ctrl+C sent to agent" flash. Called each
@@ -189,7 +188,6 @@ impl HomeView {
         let serve_open = self.serve_view.is_some();
 
         self.live_send.is_some()
-            || self.remote_live.is_some()
             || self.show_help
             || self.search_active
             || self.new_dialog.is_some()

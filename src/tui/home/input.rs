@@ -1768,10 +1768,6 @@ impl HomeView {
         // overlay, not the underlying tmux pane. Otherwise the user
         // sees the dialog but Esc / Enter / typed characters silently
         // get routed to the session behind it.
-        if self.remote_live.is_some() && !self.has_non_live_send_overlay() {
-            self.handle_remote_live_key(key);
-            return None;
-        }
         if self.live_send.is_some() && !self.has_non_live_send_overlay() {
             self.handle_live_send_key(key);
             return None;
@@ -4248,6 +4244,7 @@ impl HomeView {
     pub(super) fn update_selected(&mut self) {
         if let Some(item) = self.flat_items.get(self.cursor) {
             let prev_session = self.selected_session.clone();
+            let prev_remote = self.selected_remote.clone();
             match item {
                 Item::Session { id, .. } => {
                     self.selected_session = Some(id.clone());
@@ -4293,7 +4290,7 @@ impl HomeView {
                     }
                 }
             }
-            if self.selected_session != prev_session {
+            if self.selected_session != prev_session || self.selected_remote != prev_remote {
                 self.cancel_native_attachment();
                 self.system_health_open = false;
                 self.preview_scroll_offset = 0;
@@ -4503,6 +4500,15 @@ impl HomeView {
     /// different pane than the one on screen) fork a one-shot send. Returns
     /// true when something was dispatched.
     fn send_to_preview_pane(&self, key: live_send::TmuxKey) -> bool {
+        // A remote pane only takes input from its live-send owner.
+        if self.selected_remote.is_some() {
+            let driving = self.live_send.as_ref().and_then(|l| l.remote_key());
+            if driving.is_none() || driving != self.remote_preview_key {
+                return false;
+            }
+            self.send_remote_input(&key);
+            return true;
+        }
         let Some(target) = self.preview_capture_target.as_deref() else {
             return false;
         };
@@ -4685,7 +4691,7 @@ impl HomeView {
                 return false;
             }
         }
-        if self.selected_session.is_none() {
+        if self.selected_session.is_none() && self.selected_remote.is_none() {
             return false;
         }
         // Full-screen (alternate-screen) app: send the wheel to the app
@@ -4696,28 +4702,7 @@ impl HomeView {
             return true;
         }
 
-        let active_cache = match self.view_mode {
-            ViewMode::Structured => &self.preview_cache,
-            ViewMode::Terminal => {
-                let terminal_mode = self
-                    .selected_session
-                    .as_ref()
-                    .and_then(|id| self.get_instance(id))
-                    .map(|inst| {
-                        if inst.is_sandboxed() {
-                            self.get_terminal_mode(&inst.id)
-                        } else {
-                            TerminalMode::Host
-                        }
-                    })
-                    .unwrap_or(TerminalMode::Host);
-                match terminal_mode {
-                    TerminalMode::Container => &self.container_terminal_preview_cache,
-                    TerminalMode::Host => &self.terminal_preview_cache,
-                }
-            }
-            ViewMode::Tool(_) => &self.tool_preview_cache,
-        };
+        let active_cache = self.active_preview_cache();
 
         let visible_height = active_cache.dimensions.1.saturating_sub(1) as usize;
         let real_max = active_cache.captured_lines.saturating_sub(visible_height) as u16;
@@ -6044,7 +6029,7 @@ impl HomeView {
                 return false;
             }
         }
-        if self.selected_session.is_none() {
+        if self.selected_session.is_none() && self.selected_remote.is_none() {
             return false;
         }
         // Mirror handle_scroll_up: a full-screen app gets the wheel
@@ -6088,14 +6073,9 @@ impl HomeView {
         // highlight, since that path never goes through `handle_key`.
         self.clear_preview_selection();
         if !self.has_non_live_send_overlay() {
-            if self.paste_into_remote_live(text) {
-                return;
-            }
             if let Some(state) = self.live_send.clone() {
-                if let Some(worker) = &self.live_send_worker {
-                    for key in split_paste_for_live_send(text) {
-                        worker.send(key);
-                    }
+                for key in split_paste_for_live_send(text) {
+                    self.send_live_key(key);
                 }
                 self.stamp_last_accessed(&state.session_id);
                 return;
@@ -6295,9 +6275,7 @@ impl HomeView {
             if let Some(leader) = state.leader {
                 if live_send::chord_matches(leader, key) {
                     if let live_send::LiveDispatch::Send(tmux_key) = live_send::translate(key) {
-                        if let Some(worker) = &self.live_send_worker {
-                            worker.send(tmux_key);
-                        }
+                        self.send_live_key(tmux_key);
                     }
                     return;
                 }
@@ -6388,9 +6366,7 @@ impl HomeView {
         match live_send::translate(key) {
             live_send::LiveDispatch::Ignore => {}
             live_send::LiveDispatch::Send(tmux_key) => {
-                if let Some(worker) = &self.live_send_worker {
-                    worker.send(tmux_key);
-                }
+                self.send_live_key(tmux_key);
                 if is_ctrl_c {
                     self.flash_ctrl_c_hint();
                 }
@@ -6424,13 +6400,40 @@ impl HomeView {
     /// `window-size latest` is best-effort: failures are swallowed so
     /// a stuck pane never blocks the user's exit.
     fn exit_live_send_and_restore_sizing(&mut self, state: &live_send::LiveSendState) {
+        if state.remote.is_some() {
+            self.teardown_live_send();
+            self.release_remote_pane();
+            return;
+        }
         let session = crate::tmux::Session::from_name(&state.tmux_name);
         session.reset_size_to_latest_client();
         self.teardown_live_send();
     }
 
-    /// Drop live-send without resizing a pane whose ownership may have changed.
+    /// Deliver one translated key to the live-send target: the ordered local
+    /// worker, or the remote pane's socket.
+    fn send_live_key(&self, key: live_send::TmuxKey) {
+        if self.live_send.as_ref().is_some_and(|l| l.remote.is_some()) {
+            self.send_remote_input(&key);
+        } else if let Some(worker) = &self.live_send_worker {
+            worker.send(key);
+        }
+    }
+
+    /// Shared live-send teardown; touches no tmux sizing. Normal exits
+    /// call it via `exit_live_send_and_restore_sizing`; the lost-lock exit
+    /// (`poll_live_send_takeover`) calls it directly, because the surface
+    /// that took over has already sized the window to its own grid and
+    /// re-asserting `window-size latest` would stomp it (the exact flap
+    /// the size-owner lock exists to kill).
     pub(super) fn teardown_live_send(&mut self) {
+        self.clear_live_send_state();
+        self.reseat_cursor_after_rebuild();
+    }
+
+    /// Teardown without moving the selection, for callers already reacting
+    /// to a selection change.
+    pub(super) fn clear_live_send_state(&mut self) {
         let live_session_id = self.live_send.take().map(|state| state.session_id);
         self.live_send_worker = None;
         // Leave the capture worker running: the same pane is still
@@ -6453,7 +6456,6 @@ impl HomeView {
         if let Some(id) = &live_session_id {
             self.clear_preview_pane_sync(id);
         }
-        self.reseat_cursor_after_rebuild();
         // Preview selections also work outside live mode now, but a
         // live-mode highlight pins to the live-resized pane coords,
         // and exiting reflows the preview back to its normal size.
@@ -6465,6 +6467,13 @@ impl HomeView {
     /// Detect deletion, a changed transport name, or confirmed pane disappearance.
     /// Unknown auxiliary observations do not establish disappearance.
     fn live_send_drift_reason(&self, state: &live_send::LiveSendState) -> Option<&'static str> {
+        if let Some((remote, id)) = state.remote_key() {
+            // The socket reports a pane that goes away; only the row can vanish here.
+            return self
+                .remote_session(&remote, &id)
+                .is_none()
+                .then_some("Session was deleted while live mode was active.");
+        }
         let Some(inst) = self.get_instance(&state.session_id) else {
             return Some("Session was deleted while live mode was active.");
         };

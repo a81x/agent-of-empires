@@ -317,6 +317,72 @@ pub(in crate::tui) struct LiveSendState {
     /// the agent). Snapshotted per-entry for the same reason as
     /// `exit_chords`.
     pub leader: Option<(KeyCode, KeyModifiers)>,
+    /// The remote daemon whose session this drives, or `None` for a local
+    /// tmux pane. A remote live-send has no `tmux_name`: keys travel over the
+    /// preview's live socket instead of a local worker.
+    pub remote: Option<String>,
+}
+
+impl LiveSendState {
+    /// Snapshot the configured exit chords and leader for a new live-send.
+    pub(super) fn new(
+        session_id: String,
+        title: String,
+        tmux_name: String,
+        target: LiveSendTarget,
+        remote: Option<String>,
+        config: &crate::session::config::SessionConfig,
+    ) -> Self {
+        // The leader is a single chord, not a list. An empty configured
+        // value disables it (so every key, including the default `C-b`,
+        // passes straight through). A non-empty but unparseable value is
+        // treated as a typo and falls back to the default leader rather
+        // than silently dropping the feature, mirroring how the exit
+        // chord recovers from a bad spec.
+        let leader_spec = &config.live_send_leader;
+        let leader = if leader_spec.trim().is_empty() {
+            None
+        } else {
+            parse_chord(leader_spec).or_else(|| {
+                tracing::warn!(
+                    "live-send: unparseable leader chord '{}'; falling back to default '{}'",
+                    leader_spec,
+                    DEFAULT_LEADER
+                );
+                parse_chord(DEFAULT_LEADER)
+            })
+        };
+        Self {
+            session_id,
+            title,
+            tmux_name,
+            target,
+            exit_chords: parse_chord_list(&config.live_send_exit_chord),
+            leader,
+            remote,
+        }
+    }
+
+    /// `(remote, session id)` when this drives a remote session.
+    pub(in crate::tui) fn remote_key(&self) -> Option<crate::tui::remote_preview::RemoteKey> {
+        self.remote
+            .clone()
+            .map(|remote| (remote, self.session_id.clone()))
+    }
+
+    /// The banner label: the pane, and the machine when it is not this one.
+    pub(super) fn label(&self) -> String {
+        let title = if self.title.is_empty() {
+            "session"
+        } else {
+            self.title.as_str()
+        };
+        let label = format_target_label(title, &self.target);
+        match &self.remote {
+            Some(remote) => format!("{label} @ {remote}"),
+            None => label,
+        }
+    }
 }
 
 /// Which paired tmux pane a live-send dispatch targets. The agent

@@ -181,6 +181,7 @@ fn no_buttons_during_live_send() {
             crate::tui::home::live_send::DEFAULT_EXIT_CHORD,
         ),
         leader: None,
+        remote: None,
     });
     render_at(&mut env, 120, 12);
     assert!(

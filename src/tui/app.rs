@@ -3409,7 +3409,6 @@ impl App {
             return Ok(());
         };
         self.home.exit_live_send_if_active();
-        self.home.exit_remote_live_send();
         let result = crate::tui::structured_view::run_for_endpoint(
             terminal,
             event_stream,

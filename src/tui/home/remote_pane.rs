@@ -1,14 +1,14 @@
 //! A selected remote session in the preview pane: its live output, its info
 //! panel, and live-send into it, mirroring a local session's pane.
 
-use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
-use ratatui::layout::{Alignment, Position, Rect};
+use ratatui::layout::{Alignment, Rect};
 use ratatui::style::Style;
 use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 
 use super::live_send;
 use super::preview::PreviewCache;
+use super::render::{capture_apply_step, capture_lines_for, clamp_scroll_to_capture, CaptureFit};
 use super::HomeView;
 use crate::daemon::SessionResponse;
 use crate::session::{Instance, RemoteShelf, SandboxInfo, Status, View, WorktreeInfo};
@@ -18,16 +18,12 @@ use crate::tui::remote_feed::shelf_of;
 use crate::tui::remote_preview::{PreviewCommand, PreviewEvent, RemoteKey};
 use crate::tui::styles::Theme;
 
-/// Live-send routed to a remote pane rather than a local tmux one.
-#[derive(Debug, Clone)]
-pub(in crate::tui) struct RemoteLiveSend {
-    pub(in crate::tui) remote: String,
-    pub(in crate::tui) session_id: String,
-    pub(in crate::tui) title: String,
-    pub(in crate::tui) exit_chords: Vec<(KeyCode, KeyModifiers)>,
-    /// The daemon granted the size-owner lock; until then typed input waits
-    /// in the preview worker.
-    pub(in crate::tui) granted: bool,
+/// A frame from the remote pane awaiting render, with the window it was
+/// requested at so the shared capture rules can judge it.
+pub(in crate::tui) struct RemoteFrame {
+    pub(in crate::tui) content: String,
+    pub(in crate::tui) cursor: crate::tmux::PaneCursor,
+    pub(in crate::tui) budget: usize,
 }
 
 /// A render-only `Instance` for the info panel. Never enters the instance map:
@@ -93,13 +89,13 @@ impl HomeView {
         if want == self.remote_preview_key {
             return;
         }
-        if let Some(live) = &self.remote_live {
-            if want.as_ref() != Some(&(live.remote.clone(), live.session_id.clone())) {
-                self.remote_live = None;
+        if let Some(live) = self.remote_live_key() {
+            if want.as_ref() != Some(&live) {
+                self.clear_live_send_state();
             }
         }
         self.remote_preview_cache = PreviewCache::default();
-        self.remote_preview_cursor = None;
+        self.remote_preview_frame = None;
         self.remote_preview_key = None;
         let Some(key) = want else {
             self.remote_preview_error = None;
@@ -109,12 +105,13 @@ impl HomeView {
         match remote_endpoint(&key.0) {
             Some(endpoint) => {
                 self.remote_preview_error = None;
-                let lines = (self.preview_visible_rows as u16).max(24);
+                let lines = capture_lines_for(self.preview_visible_rows as u16, 0);
                 self.remote_preview.send(PreviewCommand::Watch {
                     key: key.clone(),
                     endpoint,
                     lines,
                 });
+                self.remote_window_sent = Some((lines, true));
                 self.remote_preview_key = Some(key);
             }
             None => {
@@ -136,43 +133,37 @@ impl HomeView {
                     content,
                     cursor,
                 } if current.as_ref() == Some(&key) => {
-                    let dims = (self.preview_pane_area.width, self.preview_pane_area.height);
-                    self.remote_preview_cache.store_capture(
+                    self.remote_preview_frame = Some(RemoteFrame {
                         content,
-                        key.1.clone(),
-                        format!("remote:{}", key.0),
-                        0,
-                        dims,
-                        None,
-                    );
-                    self.remote_preview_cursor = cursor;
+                        cursor,
+                        budget: self.remote_window_sent.map_or(0, |(lines, _)| lines),
+                    });
                     self.remote_preview_error = None;
                     changed = true;
                 }
                 PreviewEvent::SizeOwner { key, is_owner }
                     if self.remote_live_key().as_ref() == Some(&key) =>
                 {
-                    let Some(live) = self.remote_live.as_mut() else {
-                        continue;
-                    };
                     if is_owner {
-                        live.granted = true;
+                        self.remote_live_granted = true;
                         continue;
                     }
                     // Refused, or another viewer took the pane; local
                     // live-send yields the same way rather than fighting.
-                    let message = if live.granted {
-                        format!("Another viewer took over {} on {}", live.title, key.0)
+                    let title = self.live_send.as_ref().map_or("", |l| l.title.as_str());
+                    let message = if self.remote_live_granted {
+                        format!("Another viewer took over {title} on {}", key.0)
                     } else {
-                        format!("{} did not grant input to {}", key.0, live.title)
+                        format!("{} did not grant input to {title}", key.0)
                     };
-                    self.exit_remote_live_send();
+                    self.exit_live_send_if_active();
                     self.flash_status(message);
                     changed = true;
                 }
                 PreviewEvent::Closed { key, reason } if current.as_ref() == Some(&key) => {
                     if self.remote_live_key().as_ref() == Some(&key) {
-                        if let Some(live) = self.remote_live.take() {
+                        if let Some(live) = self.live_send.clone() {
+                            self.clear_live_send_state();
                             self.flash_status(format!(
                                 "Live input to {} ended: {reason}",
                                 live.title
@@ -191,9 +182,7 @@ impl HomeView {
     }
 
     fn remote_live_key(&self) -> Option<RemoteKey> {
-        self.remote_live
-            .as_ref()
-            .map(|l| (l.remote.clone(), l.session_id.clone()))
+        self.live_send.as_ref()?.remote_key()
     }
 
     /// Enter live-send on the selected remote row: claim the pane's size and
@@ -221,17 +210,15 @@ impl HomeView {
             RemoteShelf::Live => {}
         }
         let title = row.title.clone();
+        let key = (remote.clone(), id.clone());
+        if self.remote_live_key().as_ref() == Some(&key) {
+            return None;
+        }
         self.exit_live_send_if_active();
         self.sync_remote_preview();
-        let key = (remote.clone(), id.clone());
         if self.remote_preview_key.as_ref() != Some(&key) {
             return Some(Action::SetTransientStatus(format!("Can't reach {remote}")));
         }
-        let exit_chords = live_send::parse_chord_list(
-            &crate::session::config::profile_config::resolve_config_or_warn(&self.config_profile())
-                .session
-                .live_send_exit_chord,
-        );
         let (cols, rows) = (
             self.preview_pane_area.width.max(1),
             self.preview_pane_area.height.max(1),
@@ -241,56 +228,35 @@ impl HomeView {
         self.remote_preview
             .send(PreviewCommand::TakeOver { cols, rows });
         self.remote_live_size = (cols, rows);
-        self.remote_live = Some(RemoteLiveSend {
-            remote,
-            session_id: id,
+        self.remote_live_granted = false;
+        self.live_send_pending_leader = false;
+        self.live_send = Some(live_send::LiveSendState::new(
+            id,
             title,
-            exit_chords,
-            granted: false,
-        });
+            String::new(),
+            live_send::LiveSendTarget::Agent,
+            Some(remote),
+            &crate::session::config::profile_config::resolve_config_or_warn(&self.config_profile())
+                .session,
+        ));
         None
     }
 
-    /// Leave remote live-send and reconnect the watch, which releases the
+    /// Reconnect the watch after remote live-send, which releases the
     /// size-owner lock the live-send took.
-    pub(in crate::tui) fn exit_remote_live_send(&mut self) {
-        if self.remote_live.take().is_some() {
-            self.remote_preview_key = None;
-            self.sync_remote_preview();
-        }
+    pub(super) fn release_remote_pane(&mut self) {
+        self.remote_live_granted = false;
+        self.remote_preview_key = None;
+        self.sync_remote_preview();
     }
 
-    pub(super) fn handle_remote_live_key(&mut self, key: KeyEvent) {
-        let Some(state) = self.remote_live.clone() else {
-            return;
-        };
-        if !matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat) {
-            return;
+    /// Send a live-send key to the remote pane; the worker holds it until the
+    /// daemon grants input.
+    pub(super) fn send_remote_input(&self, key: &live_send::TmuxKey) {
+        let bytes = live_send::encode_key_bytes(key, false);
+        if !bytes.is_empty() {
+            self.remote_preview.send(PreviewCommand::Input(bytes));
         }
-        if live_send::chord_list_matches(&state.exit_chords, key) {
-            self.exit_remote_live_send();
-            return;
-        }
-        if let live_send::LiveDispatch::Send(tmux_key) = live_send::translate(key) {
-            let bytes = live_send::encode_key_bytes(&tmux_key, false);
-            if !bytes.is_empty() {
-                self.remote_preview.send(PreviewCommand::Input(bytes));
-            }
-        }
-    }
-
-    /// Paste into remote live-send. Returns whether it was consumed.
-    pub(super) fn paste_into_remote_live(&mut self, text: &str) -> bool {
-        if self.remote_live.is_none() {
-            return false;
-        }
-        for key in super::input::split_paste_for_live_send(text) {
-            let bytes = live_send::encode_key_bytes(&key, false);
-            if !bytes.is_empty() {
-                self.remote_preview.send(PreviewCommand::Input(bytes));
-            }
-        }
-        true
     }
 
     /// Render the selected remote row into the preview pane.
@@ -317,7 +283,7 @@ impl HomeView {
         self.preview_pane_area = layout.output;
         self.preview_visible_rows = layout.output.height as usize;
 
-        if self.remote_live.is_some() {
+        if self.remote_live_key().is_some() {
             let size = (layout.output.width.max(1), layout.output.height.max(1));
             if size != self.remote_live_size {
                 self.remote_live_size = size;
@@ -353,12 +319,14 @@ impl HomeView {
             return;
         }
 
+        self.apply_remote_frame(&id, layout.output);
         self.remote_preview_cache.ensure_parsed();
         let line_count = self
             .remote_preview_cache
             .parsed_text
             .as_ref()
             .map_or(0, |t| t.lines.len());
+        self.set_preview_text_view(layout.output, line_count);
         Preview::render_with_cache(
             frame,
             inner,
@@ -373,21 +341,54 @@ impl HomeView {
             compact,
             self.show_preview_info,
         );
+    }
 
-        // Typed echo needs a caret. Only at the live edge: a scrolled-back
-        // view shows history, where the pane's cursor row is off screen.
-        if self.remote_live.is_some() && self.preview_scroll_offset == 0 {
-            if let Some((x, y)) = self.remote_preview_cursor {
-                let visible = layout.output.height as usize;
-                let first = line_count.saturating_sub(visible);
-                let y = y as usize;
-                if y >= first && y - first < visible && x < layout.output.width {
-                    frame.set_cursor_position(Position::new(
-                        layout.output.x + x,
-                        layout.output.y + (y - first) as u16,
-                    ));
-                }
-            }
+    /// Ask the socket for the window the read needs and apply the newest
+    /// frame under the local capture rules: hold it while reading scrollback
+    /// unless it extends what the held snapshot covers.
+    fn apply_remote_frame(&mut self, id: &str, output: Rect) {
+        let scroll_offset = self.preview_scroll_offset;
+        let window = (
+            capture_lines_for(output.height, scroll_offset),
+            scroll_offset == 0,
+        );
+        if self.remote_window_sent != Some(window) {
+            self.remote_preview.send(PreviewCommand::Window {
+                lines: window.0,
+                fast: window.1,
+            });
+            self.remote_window_sent = Some(window);
+        }
+        let Some(frame) = self.remote_preview_frame.take() else {
+            return;
+        };
+        let cache = &self.remote_preview_cache;
+        let held_covers = cache.session_id.as_deref() == Some(id)
+            && self.preview_visible_rows + scroll_offset as usize <= cache.captured_lines;
+        let Some(clamp) = capture_apply_step(CaptureFit {
+            frozen: self.preview_is_frozen(),
+            held_covers,
+            incoming_lines: frame.content.lines().count(),
+            empty: frame.content.is_empty(),
+            budget: frame.budget,
+            capture_lines: window.0,
+            height: output.height,
+            scroll_offset,
+        }) else {
+            self.remote_preview_frame = Some(frame);
+            return;
+        };
+        let captured_lines = self.remote_preview_cache.store_capture(
+            frame.content,
+            id.to_string(),
+            String::new(),
+            0,
+            (output.width, output.height),
+            Some(frame.cursor),
+        );
+        if clamp {
+            self.preview_scroll_offset =
+                clamp_scroll_to_capture(scroll_offset, captured_lines, self.preview_visible_rows);
         }
     }
 }

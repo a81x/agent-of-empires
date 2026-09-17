@@ -137,14 +137,10 @@ fn a_remote_row_never_selects_a_local_session_and_enter_live_sends_in_the_pane()
     );
 
     assert!(env.view.activate_selected_session().is_none());
-    let live = env
-        .view
-        .remote_live
-        .as_ref()
-        .expect("live-send in the pane");
+    let live = env.view.live_send.as_ref().expect("live-send in the pane");
     assert_eq!(
-        (live.remote.as_str(), live.session_id.as_str()),
-        ("mini", "r1")
+        live.remote_key(),
+        Some(("mini".to_string(), "r1".to_string()))
     );
 }
 
@@ -164,10 +160,10 @@ fn the_exit_chord_leaves_remote_live_send_and_moving_off_the_row_stops_watching(
         .unwrap();
     env.view.update_selected();
     env.view.activate_selected_session();
-    let chord = env.view.remote_live.as_ref().unwrap().exit_chords[0];
+    let chord = env.view.live_send.as_ref().unwrap().exit_chords[0];
 
     env.view.handle_key(KeyEvent::new(chord.0, chord.1), None);
-    assert!(env.view.remote_live.is_none());
+    assert!(env.view.live_send.is_none());
     assert!(
         env.view.remote_preview_key.is_some(),
         "still previewing after live-send ends"
@@ -433,5 +429,115 @@ fn enter_on_a_remote_structured_row_opens_it_and_tab_explains_there_is_no_pane()
         }
         other => panic!("expected a hint, got {other:?}"),
     }
-    assert!(env.view.remote_live.is_none());
+    assert!(env.view.live_send.is_none());
+}
+
+/// A remote row selected with its preview laid out like a local one.
+fn remote_preview_env() -> TestEnv {
+    let mut env = create_test_env_with_sessions(1);
+    register_mini();
+    env.view.group_by = GroupByMode::Remote;
+    env.view.group_by_is_default = false;
+    with_remote(&mut env, vec![wire("r1", "remote one")]);
+    env.view.cursor = position_of_remote_row(&env, "r1").expect("listed");
+    env.view.update_selected();
+    env.view.list_area = ratatui::layout::Rect::new(0, 0, 30, 40);
+    env.view.preview_area = ratatui::layout::Rect::new(30, 0, 100, 40);
+    env
+}
+
+fn remote_frame(lines: usize, tag: &str) -> crate::tui::home::remote_pane::RemoteFrame {
+    crate::tui::home::remote_pane::RemoteFrame {
+        content: (0..lines).map(|i| format!("{tag} {i}\n")).collect(),
+        cursor: crate::tmux::PaneCursor {
+            x: 0,
+            y: 0,
+            visible: false,
+            pane_height: 24,
+            history_size: 0,
+            pane_width: 80,
+            alternate_on: false,
+            mouse_tracking: false,
+            mouse_sgr: false,
+            mouse_all: false,
+            position_reliable: true,
+            composite_pane0: None,
+        },
+        budget: 4000,
+    }
+}
+
+#[test]
+#[serial]
+fn remote_live_send_lights_the_preview_and_footer_like_local_live_send() {
+    let theme = crate::tui::styles::load_theme("empire");
+    let mut env = remote_preview_env();
+    for live in [false, true] {
+        if live {
+            assert!(env.view.activate_selected_session().is_none());
+        }
+        let screen = render_home_to_string(&mut env.view, 120, 30);
+        let footer = screen.lines().last().unwrap_or_default().to_string();
+        let border = {
+            let mut terminal =
+                ratatui::Terminal::new(ratatui::backend::TestBackend::new(120, 30)).unwrap();
+            terminal
+                .draw(|f| env.view.render(f, f.area(), &theme, None, None, None))
+                .unwrap();
+            let outer = env.view.preview_outer_area;
+            terminal.backend().buffer()[(outer.x + outer.width / 2, outer.y)].fg
+        };
+        assert_eq!(border == theme.accent, live, "border accent, live={live}");
+        assert_eq!(footer.contains("LIVE"), live, "{footer}");
+        assert_eq!(footer.contains("remote one @ mini"), live, "{footer}");
+        assert_eq!(footer.contains("Ctrl+Q to exit"), live, "{footer}");
+    }
+}
+
+#[test]
+#[serial]
+fn a_remote_preview_scrolls_like_a_local_one_in_preview_and_live_send() {
+    for live in [false, true] {
+        let mut env = remote_preview_env();
+        if live {
+            assert!(env.view.activate_selected_session().is_none());
+        }
+        env.view.remote_preview_cache.dimensions = (80, 24);
+        env.view.remote_preview_cache.captured_lines = 200;
+
+        assert!(env.view.handle_scroll_up(50, 10), "live={live}");
+        let after_wheel = env.view.preview_scroll_offset;
+        assert!(after_wheel > 0, "live={live}");
+        assert!(env.view.handle_scroll_down(50, 10), "live={live}");
+        assert!(env.view.preview_scroll_offset < after_wheel, "live={live}");
+
+        if live {
+            env.view
+                .handle_key(KeyEvent::new(KeyCode::PageUp, KeyModifiers::SHIFT), None);
+            assert!(env.view.preview_scroll_offset > 0);
+            assert!(env.view.live_send.is_some(), "scrolling stays live");
+        }
+    }
+}
+
+#[test]
+#[serial]
+fn a_scrolled_back_remote_preview_holds_frames_until_it_returns_to_the_live_edge() {
+    let mut env = remote_preview_env();
+    env.view.remote_preview_frame = Some(remote_frame(200, "old"));
+    render_home_to_string(&mut env.view, 120, 40);
+    assert!(env.view.remote_preview_cache.content.starts_with("old 0"));
+
+    env.view.preview_scroll_offset = 10;
+    env.view.remote_preview_frame = Some(remote_frame(200, "new"));
+    render_home_to_string(&mut env.view, 120, 40);
+    assert!(
+        env.view.remote_preview_cache.content.starts_with("old 0"),
+        "reading scrollback keeps the held text still"
+    );
+    assert!(env.view.remote_preview_frame.is_some(), "the frame waits");
+
+    env.view.preview_scroll_offset = 0;
+    render_home_to_string(&mut env.view, 120, 40);
+    assert!(env.view.remote_preview_cache.content.starts_with("new 0"));
 }

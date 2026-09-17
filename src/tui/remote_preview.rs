@@ -26,7 +26,7 @@ pub(crate) enum PreviewCommand {
     Watch {
         key: RemoteKey,
         endpoint: DaemonEndpoint,
-        lines: u16,
+        lines: usize,
     },
     Stop,
     Input(Vec<u8>),
@@ -39,6 +39,11 @@ pub(crate) enum PreviewCommand {
         cols: u16,
         rows: u16,
     },
+    /// Capture `lines` of history plus screen; `fast` while at the live edge.
+    Window {
+        lines: usize,
+        fast: bool,
+    },
 }
 
 #[derive(Debug)]
@@ -46,7 +51,7 @@ pub(crate) enum PreviewEvent {
     Frame {
         key: RemoteKey,
         content: String,
-        cursor: Option<(u16, u16)>,
+        cursor: crate::tmux::PaneCursor,
     },
     SizeOwner {
         key: RemoteKey,
@@ -163,8 +168,12 @@ impl Connection {
     async fn size(&self, cols: u16, rows: u16) {
         self.control(json!({"type": "resize", "cols": cols.max(1), "rows": rows.max(1)}))
             .await;
-        self.control(json!({"type": "window", "lines": rows.max(1)}))
+    }
+
+    async fn window(&self, lines: usize, fast: bool) {
+        self.control(json!({"type": "window", "lines": lines.max(1)}))
             .await;
+        self.control(json!({"type": "cadence", "fast": fast})).await;
     }
 
     fn close(self) {
@@ -248,9 +257,7 @@ async fn run(
                             task: socket.task,
                             gate: InputGate::Viewer,
                         };
-                        next.control(json!({"type": "window", "lines": lines.max(1)}))
-                            .await;
-                        next.control(json!({"type": "cadence", "fast": true})).await;
+                        next.window(lines, true).await;
                         rx = Some(socket.rx);
                         conn = Some(next);
                     }
@@ -291,6 +298,11 @@ async fn run(
             PreviewCommand::Resize { cols, rows } => {
                 if let Some(c) = &conn {
                     c.size(cols, rows).await;
+                }
+            }
+            PreviewCommand::Window { lines, fast } => {
+                if let Some(c) = &conn {
+                    c.window(lines, fast).await;
                 }
             }
         }

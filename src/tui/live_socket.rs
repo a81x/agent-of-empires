@@ -12,6 +12,7 @@ use tokio_tungstenite::WebSocketStream;
 
 use crate::acp::client::discovery::DaemonEndpoint;
 use crate::daemon::websocket::{self, NativeSocket};
+use crate::tmux::PaneCursor;
 
 #[derive(Debug, Deserialize)]
 struct WireCursor {
@@ -20,6 +21,7 @@ struct WireCursor {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct WireMessage {
     #[serde(rename = "type")]
     kind: String,
@@ -28,16 +30,23 @@ struct WireMessage {
     #[serde(default)]
     cursor: Option<WireCursor>,
     #[serde(default)]
+    rows: u16,
+    #[serde(default)]
+    history: u32,
+    #[serde(default)]
+    alt_screen: bool,
+    #[serde(default)]
+    mouse: bool,
+    #[serde(default)]
+    mouse_sgr: bool,
+    #[serde(default, rename = "is_owner")]
     is_owner: Option<bool>,
 }
 
 /// What the reader task hands its owner.
 #[derive(Debug)]
 pub(crate) enum LiveMessage {
-    Frame {
-        content: String,
-        cursor: Option<(u16, u16)>,
-    },
+    Frame { content: String, cursor: PaneCursor },
     SizeOwner(bool),
     Closed(String),
 }
@@ -49,7 +58,22 @@ fn parse_text(text: &str) -> Option<LiveMessage> {
     match msg.kind.as_str() {
         "frame" => Some(LiveMessage::Frame {
             content: msg.content.unwrap_or_default(),
-            cursor: msg.cursor.map(|c| (c.x, c.y)),
+            // The daemon already moved the cursor onto the window grid, so no
+            // composite origin is applied again here.
+            cursor: PaneCursor {
+                x: msg.cursor.as_ref().map_or(0, |c| c.x),
+                y: msg.cursor.as_ref().map_or(0, |c| c.y),
+                visible: msg.cursor.is_some(),
+                pane_height: msg.rows,
+                history_size: msg.history,
+                pane_width: 0,
+                alternate_on: msg.alt_screen,
+                mouse_tracking: msg.mouse,
+                mouse_sgr: msg.mouse_sgr,
+                mouse_all: false,
+                position_reliable: true,
+                composite_pane0: None,
+            },
         }),
         "size_owner" => Some(LiveMessage::SizeOwner(msg.is_owner.unwrap_or(true))),
         _ => None,
@@ -129,27 +153,35 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parses_a_full_frame_with_a_cursor() {
-        let msg = parse_text(
-            r#"{"type":"frame","seq":7,"content":"hello\n","rows":2,"history":0,"cursor":{"x":3,"y":1}}"#,
-        )
-        .expect("frame parses");
-        match msg {
-            LiveMessage::Frame { content, cursor } => {
-                assert_eq!(content, "hello\n");
-                assert_eq!(cursor, Some((3, 1)));
+    fn a_frame_carries_the_cursor_and_the_panes_scroll_modes() {
+        let cases = [
+            (
+                r#"{"type":"frame","seq":7,"content":"hello\n","rows":2,"history":40,"cursor":{"x":3,"y":1},"altScreen":false,"mouse":false,"mouseSgr":false}"#,
+                (3, 1, true, 2, 40, false, false, false),
+            ),
+            (
+                r#"{"type":"frame","content":"x\n","rows":5,"cursor":null,"altScreen":true,"mouse":true,"mouseSgr":true}"#,
+                (0, 0, false, 5, 0, true, true, true),
+            ),
+        ];
+        for (text, expected) in cases {
+            match parse_text(text).expect("frame parses") {
+                LiveMessage::Frame { cursor: c, .. } => assert_eq!(
+                    (
+                        c.x,
+                        c.y,
+                        c.visible,
+                        c.pane_height,
+                        c.history_size,
+                        c.alternate_on,
+                        c.mouse_tracking,
+                        c.mouse_sgr
+                    ),
+                    expected,
+                    "{text}"
+                ),
+                other => panic!("expected a frame, got {other:?}"),
             }
-            other => panic!("expected a frame, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn a_hidden_cursor_is_absent_rather_than_zero() {
-        let msg =
-            parse_text(r#"{"type":"frame","content":"x\n","cursor":null}"#).expect("frame parses");
-        match msg {
-            LiveMessage::Frame { cursor, .. } => assert_eq!(cursor, None),
-            other => panic!("expected a frame, got {other:?}"),
         }
     }
 

@@ -584,10 +584,15 @@ pub struct HomeView {
     /// The row that socket is watching.
     pub(super) remote_preview_key: Option<super::remote_preview::RemoteKey>,
     pub(super) remote_preview_cache: preview::PreviewCache,
-    pub(super) remote_preview_cursor: Option<(u16, u16)>,
+    /// The newest frame not yet applied, with the window it was requested at.
+    /// Render applies it under the same freeze rules as a local capture.
+    pub(super) remote_preview_frame: Option<remote_pane::RemoteFrame>,
+    /// Capture window and cadence last sent to the socket.
+    pub(super) remote_window_sent: Option<(usize, bool)>,
     pub(super) remote_preview_error: Option<String>,
-    /// Live-send into the watched remote row, when active.
-    pub(super) remote_live: Option<remote_pane::RemoteLiveSend>,
+    /// The daemon granted remote live-send the size-owner lock; until then
+    /// typed input waits in the preview worker.
+    pub(super) remote_live_granted: bool,
     /// Pane size last sent to the remote while live-sending.
     pub(super) remote_live_size: (u16, u16),
     pub(super) remote_create: super::remote_create::RemoteCreate,

@@ -437,6 +437,7 @@ fn left_click_on_empty_sidebar_in_live_mode_exits_live_mode() {
         target: live_send::LiveSendTarget::Agent,
         exit_chords: live_send::parse_chord_list(live_send::DEFAULT_EXIT_CHORD),
         leader: None,
+        remote: None,
     });
     assert!(env.view.live_send.is_some());
     assert!(env.view.handle_empty_list_click(5, 5));

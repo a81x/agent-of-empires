@@ -170,7 +170,7 @@ pub(super) fn map_live_preview_cursor(
 /// Number of pane lines to capture for the preview, accounting for the user's
 /// scrollback offset. A small buffer is added so moderate scrolls don't force a
 /// fresh capture on every wheel tick.
-fn capture_lines_for(height: u16, scroll_offset: u16) -> usize {
+pub(super) fn capture_lines_for(height: u16, scroll_offset: u16) -> usize {
     // Off the live edge (reading scrollback): capture the whole scrollback once
     // so the snapshot stays put. A window that grew by the scroll step each
     // notch was re-anchored to the advancing live edge on every capture, so on a
@@ -203,6 +203,46 @@ fn capture_lines_for(height: u16, scroll_offset: u16) -> usize {
 /// and a drag-select tracks exactly the cells under the pointer.
 fn preview_frozen(scroll_offset: u16, has_selection: bool) -> bool {
     scroll_offset > 0 || has_selection
+}
+
+/// A fresh capture of the displayed pane, measured against the read in progress.
+pub(super) struct CaptureFit {
+    pub(super) frozen: bool,
+    /// The held snapshot already covers the visible rows at the offset.
+    pub(super) held_covers: bool,
+    pub(super) incoming_lines: usize,
+    pub(super) empty: bool,
+    /// Lines the capture was requested at.
+    pub(super) budget: usize,
+    /// Lines the current read needs (`capture_lines_for`).
+    pub(super) capture_lines: usize,
+    pub(super) height: u16,
+    pub(super) scroll_offset: u16,
+}
+
+/// Whether to apply a capture, shared by local and remote previews. `None`
+/// holds it: while frozen a routine frame would shift the held content out
+/// from under the reader, so only a frame that extends coverage the held
+/// snapshot lacks (or that came back short at the full requested budget, the
+/// pane simply ending there) applies. `Some(clamp)` applies it, and `clamp`
+/// says whether the scroll offset may be clamped against it.
+///
+/// An EMPTY frame always clamps: terminal panes forward empties so a cleared
+/// shell drops its stale text, and there is nothing to clamp against. A frame
+/// captured under a smaller budget than the read needs (the budget change is
+/// async) is stored but not clamped against, or it would snap the view toward
+/// the live edge; an *exhausted* capture (the pane has no more lines) is not
+/// undersized and clamps.
+pub(super) fn capture_apply_step(fit: CaptureFit) -> Option<bool> {
+    let exceeds = scroll_exceeds_cache(fit.incoming_lines, fit.height, fit.scroll_offset);
+    if fit.frozen {
+        let grows = !fit.held_covers
+            && (!exceeds || (fit.budget >= fit.capture_lines && fit.incoming_lines > 0));
+        if !grows {
+            return None;
+        }
+    }
+    Some(fit.empty || !exceeds || capture_is_exhausted(fit.incoming_lines, fit.budget))
 }
 
 /// Grace beyond the shared tmux operation deadline before a preview worker is
@@ -356,7 +396,7 @@ fn passive_synced_contradicted(
 /// fixed `- 1` would over-count the max offset by a row whenever the inner
 /// banner is hidden, leaving a phantom offset that stalls live-follow one row
 /// early.
-fn clamp_scroll_to_capture(
+pub(super) fn clamp_scroll_to_capture(
     scroll_offset: u16,
     captured_lines: usize,
     visible_height: usize,
@@ -2119,7 +2159,7 @@ impl HomeView {
     /// `sync_preview_capture_worker`.
     pub(super) fn displayed_pane_tmux_name(&self) -> Option<String> {
         if let Some(state) = &self.live_send {
-            return Some(state.tmux_name.clone());
+            return state.remote.is_none().then(|| state.tmux_name.clone());
         }
         let id = self.selected_session.as_ref()?;
         let inst = self.get_instance(id)?;
@@ -2327,29 +2367,24 @@ impl HomeView {
             worker.restore_latest(frame);
             return;
         }
-        if frozen {
-            // While frozen, a routine fresh frame would shift the held
-            // content out from under the reader, so apply ONLY when the HELD
-            // snapshot cannot cover the read (the removed synchronous path's
-            // single-grow-on-read-begin trigger) AND this frame actually
-            // extends coverage, or was captured at the full requested budget
-            // yet still falls short (the pane simply ends there). Anything
-            // else goes back into the mailbox: the worker's content dedup
-            // would never republish it, and once unfrozen it is exactly what
-            // the preview must show.
-            let incoming_lines = frame.content.lines().count();
-            let grows = !held_covers
-                && (!scroll_exceeds_cache(incoming_lines, height, scroll_offset)
-                    || (frame.budget >= capture_lines && incoming_lines > 0));
-            if !grows {
-                worker.restore_latest(frame);
-                return;
-            }
-        }
+        let Some(clamp) = capture_apply_step(CaptureFit {
+            frozen,
+            held_covers,
+            incoming_lines: frame.content.lines().count(),
+            empty: frame.content.is_empty(),
+            budget: frame.budget,
+            capture_lines,
+            height,
+            scroll_offset,
+        }) else {
+            // Anything held goes back into the mailbox: the worker's content
+            // dedup would never republish it, and once unfrozen it is exactly
+            // what the preview must show.
+            worker.restore_latest(frame);
+            return;
+        };
         // All reject/restore paths are complete. Move the owned mailbox frame
         // into the cache without copying its content.
-        let frame_budget = frame.budget;
-        let content_is_empty = frame.content.is_empty();
         let captured_lines = select(self).store_capture(
             frame.content,
             id,
@@ -2358,27 +2393,7 @@ impl HomeView {
             (width, height),
             frame.cursor,
         );
-
-        // An EMPTY frame always applies: terminal / container panes forward
-        // empties precisely so a cleared shell drops its stale text (#1501's
-        // counterpart outside the agent kill switch), and there is nothing to
-        // clamp an offset against anyway.
-        //
-        // Otherwise: `set_capture_lines` is async, so this frame may carry a
-        // capture produced under a smaller line budget (the user just
-        // scrolled back or the pane grew). If it doesn't cover the requested
-        // window, skip clamping against the undersized capture (it would snap
-        // the preview toward the live edge); the worker republishes at the
-        // new budget and the next adequate frame clamps properly. There is NO
-        // synchronous catch-up anymore.
-        //
-        // An *exhausted* capture (fewer lines than requested because the pane
-        // simply has no more, e.g. an alternate-screen agent with no scrollback)
-        // is not undersized: apply it so scroll state tracks the real pane.
-        if !content_is_empty
-            && scroll_exceeds_cache(captured_lines, height, scroll_offset)
-            && !capture_is_exhausted(captured_lines, frame_budget)
-        {
+        if !clamp {
             return;
         }
         self.preview_scroll_offset =
@@ -2388,7 +2403,7 @@ impl HomeView {
     /// Whether the preview holds its captured snapshot instead of following
     /// live output. Decision lives in the pure [`preview_frozen`] helper so it
     /// is unit-tested away from a live `HomeView`.
-    fn preview_is_frozen(&self) -> bool {
+    pub(super) fn preview_is_frozen(&self) -> bool {
         preview_frozen(self.preview_scroll_offset, self.preview_selection.is_some())
     }
 
@@ -2756,7 +2771,7 @@ impl HomeView {
     /// derived from the same `compute_scroll` the renderer feeds to
     /// `Paragraph::scroll`, so the snapshot agrees cell-for-cell with what
     /// was painted this frame.
-    fn set_preview_text_view(&mut self, pane: Rect, total_lines: usize) {
+    pub(super) fn set_preview_text_view(&mut self, pane: Rect, total_lines: usize) {
         let first_line = preview::compute_scroll(
             total_lines,
             pane.height as usize,
@@ -2775,6 +2790,9 @@ impl HomeView {
     /// drag-select copy so they all read the same content the renderer
     /// painted.
     pub(super) fn active_preview_cache(&self) -> &super::PreviewCache {
+        if self.selected_remote.is_some() {
+            return &self.remote_preview_cache;
+        }
         match &self.view_mode {
             ViewMode::Structured => &self.preview_cache,
             ViewMode::Tool(_) => &self.tool_preview_cache,
@@ -2800,6 +2818,12 @@ impl HomeView {
     }
 
     pub(super) fn active_preview_cursor(&self) -> Option<crate::tmux::PaneCursor> {
+        if let Some(key) = &self.selected_remote {
+            return self
+                .remote_preview_cache
+                .cursor
+                .filter(|_| !self.remote_preview_cache.is_pending_for(&key.1));
+        }
         let cache = self.active_preview_cache();
         let target = cache.capture_target.as_deref()?;
         if self.preview_capture_target.as_deref() != Some(target) {
@@ -3987,40 +4011,11 @@ impl HomeView {
         // indicator (only present when the user has scrolled back from
         // the live edge) sits between the title and the exit chord
         // hint so it gets noticed when there's something to notice.
-        if let Some(state) = &self.remote_live {
-            let chip = " \u{25CF} LIVE \u{2192} ";
-            let exit = format!(
-                " {} to exit ",
-                live_send::display_chord_list(&state.exit_chords)
-            );
-            let budget = (area.width as usize)
-                .saturating_sub(unicode_width::UnicodeWidthStr::width(chip))
-                .saturating_sub(unicode_width::UnicodeWidthStr::width(exit.as_str()));
-            let title = truncate_to_width(&format!(" {} @ {} ", state.title, state.remote), budget);
-            let spans = vec![
-                Span::styled(
-                    chip,
-                    Style::default()
-                        .fg(theme.background)
-                        .bg(theme.running)
-                        .bold(),
-                ),
-                Span::styled(title, Style::default().fg(theme.accent).bold()),
-                Span::styled(exit, Style::default().fg(theme.dimmed)),
-            ];
-            frame.render_widget(Paragraph::new(Line::from(spans)), area);
-            return;
-        }
         if let Some(state) = &self.live_send {
-            let base_title = if state.title.is_empty() {
-                "session"
-            } else {
-                state.title.as_str()
-            };
-            // Surface which pane keystrokes are landing on; the shared
-            // formatter keeps this label in lockstep with the compose
+            // Surface which pane (and machine) keystrokes are landing on; the
+            // shared formatter keeps this label in lockstep with the compose
             // dialog's title.
-            let raw_title = live_send::format_target_label(base_title, &state.target);
+            let raw_title = state.label();
             let chip = " \u{25CF} LIVE \u{2192} ";
             let chip_style = Style::default()
                 .fg(theme.background)

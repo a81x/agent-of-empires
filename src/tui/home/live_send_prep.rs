@@ -110,6 +110,10 @@ impl HomeView {
                 return Err(());
             }
         };
+        // A remote live-send owns no local pane to reset; leave it first.
+        if self.live_send.as_ref().is_some_and(|s| s.remote.is_some()) {
+            self.exit_live_send_if_active();
+        }
         let tmux_name = tmux_name.to_string();
         let prev_tmux_name = self
             .live_send
@@ -137,41 +141,18 @@ impl HomeView {
                 crate::tmux::Session::from_name(name).reset_size_to_latest_client();
             }
         }
-        // Parse the configured exit-chord list now so the per-keystroke
-        // dispatch path doesn't re-parse on every event. Config edits
-        // during live mode aren't possible (settings_view participates
-        // in has_dialog and lives in its own takeover), so a snapshot
-        // at entry time is sufficient.
-        let resolved_config = resolve_config_or_warn(&self.config_profile());
-        let exit_chord_spec = resolved_config.session.live_send_exit_chord;
-        let exit_chords = live_send::parse_chord_list(&exit_chord_spec);
-        // The leader is a single chord, not a list. An empty configured
-        // value disables it (so every key, including the default `C-b`,
-        // passes straight through). A non-empty but unparseable value is
-        // treated as a typo and falls back to the default leader rather
-        // than silently dropping the feature, mirroring how the exit
-        // chord recovers from a bad spec.
-        let leader_spec = resolved_config.session.live_send_leader;
-        let leader = if leader_spec.trim().is_empty() {
-            None
-        } else {
-            live_send::parse_chord(&leader_spec).or_else(|| {
-                tracing::warn!(
-                    "live-send: unparseable leader chord '{}'; falling back to default '{}'",
-                    leader_spec,
-                    live_send::DEFAULT_LEADER
-                );
-                live_send::parse_chord(live_send::DEFAULT_LEADER)
-            })
-        };
-        self.live_send = Some(live_send::LiveSendState {
-            session_id: inst.id.clone(),
-            title: inst.title.clone(),
-            tmux_name: tmux_name.clone(),
+        // Snapshot the configured chords now so the per-keystroke dispatch
+        // path doesn't re-parse on every event. Config edits during live mode
+        // aren't possible (settings_view participates in has_dialog and lives
+        // in its own takeover), so a snapshot at entry time is sufficient.
+        self.live_send = Some(live_send::LiveSendState::new(
+            inst.id.clone(),
+            inst.title.clone(),
+            tmux_name.clone(),
             target,
-            exit_chords,
-            leader,
-        });
+            None,
+            &resolve_config_or_warn(&self.config_profile()).session,
+        ));
         // Entering live-send means the user is now viewing this session, so
         // clear any unread marker.
         self.clear_unread_on_view(&inst.id);

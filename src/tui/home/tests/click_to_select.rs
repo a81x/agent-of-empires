@@ -93,6 +93,7 @@ fn select_only_click_on_different_row_exits_live_mode() {
         target: LiveSendTarget::Agent,
         exit_chords: Vec::new(),
         leader: None,
+        remote: None,
     });
 
     let action = env.view.handle_click(5, 3);
@@ -133,6 +134,7 @@ fn select_only_click_on_live_row_exits_live_mode() {
         target: LiveSendTarget::Agent,
         exit_chords: Vec::new(),
         leader: None,
+        remote: None,
     });
 
     let action = env.view.handle_click(5, 3);
@@ -301,6 +303,7 @@ fn double_click_tears_down_live_send_before_tmux_attach() {
         target: crate::tui::home::live_send::LiveSendTarget::Agent,
         exit_chords: Vec::new(),
         leader: None,
+        remote: None,
     });
 
     let t0 = std::time::Instant::now();
@@ -727,6 +730,7 @@ fn click_on_other_session_while_live_switches_target() {
         target: crate::tui::home::live_send::LiveSendTarget::Agent,
         exit_chords: Vec::new(),
         leader: None,
+        remote: None,
     });
 
     // Click session B's row.
@@ -763,6 +767,7 @@ fn click_on_already_live_session_is_noop() {
         target: crate::tui::home::live_send::LiveSendTarget::Agent,
         exit_chords: Vec::new(),
         leader: None,
+        remote: None,
     });
 
     let action = env.view.handle_click(5, 3);

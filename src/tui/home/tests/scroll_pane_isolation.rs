@@ -29,6 +29,7 @@ fn live_env_with_cursor(cursor: crate::tmux::PaneCursor) -> TestEnv {
             crate::tui::home::live_send::DEFAULT_EXIT_CHORD,
         ),
         leader: None,
+        remote: None,
     });
     env.view.live_send_worker = Some(LiveSendWorker::spawn("fake".to_string(), None));
     env.view
@@ -628,6 +629,7 @@ fn wheel_over_preview_in_live_mode_scrolls_preview() {
             crate::tui::home::live_send::DEFAULT_EXIT_CHORD,
         ),
         leader: None,
+        remote: None,
     });
 
     let up_handled = env.view.handle_scroll_up(50, 10);
@@ -660,6 +662,7 @@ fn wheel_over_list_in_live_mode_does_not_change_selection() {
             crate::tui::home::live_send::DEFAULT_EXIT_CHORD,
         ),
         leader: None,
+        remote: None,
     });
 
     let handled = env.view.handle_scroll_down(5, 10);
@@ -691,6 +694,7 @@ fn live_env_with_leader() -> TestEnv {
         leader: crate::tui::home::live_send::parse_chord(
             crate::tui::home::live_send::DEFAULT_LEADER,
         ),
+        remote: None,
     });
     env
 }
