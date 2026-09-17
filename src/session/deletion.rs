@@ -19,14 +19,10 @@ pub struct DeletionRequest {
     pub delete_branch: bool,
     pub delete_sandbox: bool,
     pub force_delete: bool,
-    /// When `true`, on_destroy hooks run detached from the controlling
-    /// terminal (TUI/web). When `false`, hooks inherit stdin/stdout so
-    /// interactive prompts work (CLI).
+    /// When `true`, on_destroy hooks run detached from the controlling terminal (TUI/web).
     pub detach_hooks: bool,
-    /// When `true` AND `instance.scratch` is `true`, the scratch directory
-    /// is left on disk instead of being removed. The kept path is logged at
-    /// info level and surfaced in the deletion result's messages. Has no
-    /// effect on non-scratch sessions.
+    /// When `true` AND `instance.scratch` is `true`, the scratch directory is left on disk instead
+    /// of being removed.
     pub keep_scratch: bool,
 }
 
@@ -75,9 +71,7 @@ pub enum PurgeReservation {
     Rejected(DeletionResult),
 }
 
-/// Owned purge transition. The durable reservation spans hooks, teardown, and
-/// final commit. The lifecycle flock is deliberately released around hooks and
-/// reacquired before any irreversible work.
+/// Owned purge transition.
 pub struct PurgeTransaction {
     storage: Storage,
     request: DeletionRequest,
@@ -291,9 +285,8 @@ impl PurgeTransaction {
         )
     }
 
-    /// Atomically validate this reservation and remove its durable row before
-    /// any irreversible external teardown. The lifecycle flock acquired before
-    /// reservation remains held through [`CommittedPurge::finish`].
+    /// Atomically validate this reservation and remove its durable row before any irreversible
+    /// external teardown.
     pub fn begin_irreversible(
         mut self,
     ) -> std::result::Result<CommittedPurge, Box<DeletionResult>> {
@@ -553,20 +546,8 @@ pub fn execute_deletion(request: DeletionRequest) -> DeletionResult {
     result
 }
 
-/// Whether `workspace_dir` has the workspace layout AoE creates and may
-/// therefore be removed once empty.
-///
-/// The workspace stage ends in a non-recursive removal of a path read from the
-/// session record. The shape check remains a defense against future writers
-/// setting `workspace_dir` to a session's own checkout, but it does not claim
-/// to prove ownership by itself.
-///
-/// There must be at least one repo, and every repo's worktree must be a strict
-/// descendant of `workspace_dir`. A `workspace_dir` that is one of the
-/// worktrees, or that holds none of them, was not laid out by the workspace
-/// builder. The final `remove_dir` succeeds only after the managed worktrees
-/// have been removed and the directory is empty, so a corrupt ancestor path
-/// cannot recursively remove unrelated user data.
+/// Whether `workspace_dir` has the workspace layout AoE creates and may therefore be removed once
+/// empty.
 fn workspace_dir_is_aoe_owned(ws_info: &crate::session::WorkspaceInfo) -> bool {
     let ws_path = Path::new(&ws_info.workspace_dir);
     if ws_info.repos.is_empty() {
@@ -578,12 +559,8 @@ fn workspace_dir_is_aoe_owned(ws_info: &crate::session::WorkspaceInfo) -> bool {
     })
 }
 
-/// Whether `branch` is one of the branches git states is `main_repo`'s default,
-/// so its worktree must be preserved (#3215).
-///
-/// A repo aoe cannot open is a repo git cannot remove a worktree from either,
-/// so a failure here is not treated as protection: the removal stage surfaces
-/// its own error exactly as it did before this guard existed.
+/// Whether `branch` is one of the branches git states is `main_repo`'s default, so its worktree
+/// must be preserved.
 fn is_protected_default_branch(main_repo: &Path, branch: &str) -> bool {
     GitWorktree::new(main_repo.to_path_buf())
         .and_then(|git| git.protected_default_branch_names())
@@ -604,14 +581,8 @@ fn perform_deletion_teardown_lifecycle_locked(request: &DeletionRequest) -> Dele
     })
 }
 
-/// Core deletion routine, parameterized over how the sandbox container is torn
-/// down so the container-removal contract can be exercised without a live
-/// runtime.
-///
-/// NOTE: when the session is sandboxed and `delete_sandbox` is set, `teardown`
-/// must be invoked unconditionally; it must not be gated behind a separate
-/// existence probe, whose transient failure would skip removal and orphan a
-/// live container.
+/// Core deletion routine, parameterized over how the sandbox container is torn down so the
+/// container-removal contract can be exercised without a live runtime.
 #[cfg(test)]
 fn perform_deletion_with(
     request: &DeletionRequest,
@@ -645,14 +616,7 @@ fn perform_deletion_core(
     // on_destroy hooks run in the transaction's unlocked hook phase, before
     // this lifecycle-locked resource teardown begins.
 
-    // Stage 2: sever the live agent BEFORE we touch the working tree it
-    // may be writing to. Killing the tmux session terminates the user's
-    // `docker exec`; for sandboxed sessions we also wipe root-owned
-    // worktree contents from INSIDE the container so the host's
-    // `git worktree remove` below doesn't fight permissions or a still-
-    // running bind mount. Previously the order was reversed (worktree
-    // first, container second, tmux last), which raced the in-container
-    // agent and produced flaky deletions on Docker + worktree sessions.
+    // Stage 2: sever the live agent BEFORE we touch the working tree it may be writing to.
     tracing::debug!(target: "session.delete", session_id = %request.session_id, stage = "tmux_kill", "perform_deletion: stage");
     if lifecycle_locked {
         request.instance.kill_all_tmux_sessions_locked();
@@ -694,39 +658,24 @@ fn perform_deletion_core(
 
     let preserved_worktree_paths =
         stage_collect_preserved_worktrees(request, repos, &mut errors, &mut messages);
-    // Any preserved worktree, dirty or default-branch, blocks the in-container
-    // preclean (a recursive `find . -delete` that would reach through and
-    // destroy the contents we just decided to keep) and the host workspace-dir
-    // removal alike: with a worktree preserved under it the directory is not
-    // ours to remove, so we skip it rather than surface a spurious failure.
+    // Any preserved worktree, dirty or default-branch, blocks the in-container preclean (a
+    // recursive `find. -delete` that would reach through and destroy the contents we just decided
+    // to keep) and the host workspace-dir removal alike: with a worktree preserved under it the
+    // directory is not ours to remove, so we skip it rather than surface a spurious failure.
     let any_preserved = !preserved_worktree_paths.is_empty();
 
     if request.delete_worktree && is_sandboxed && !any_preserved {
         tracing::debug!(target: "session.delete", session_id = %request.session_id, stage = "sandbox_worktree_preclean", "perform_deletion: stage");
-        // Best-effort. The container's workdir is the session's main
-        // worktree (or, for workspace sessions, the workspace root that
-        // contains every per-repo worktree). `find . -delete` from
-        // there recursively wipes everything we care about under the
-        // bind mount. If this fails, the host-side removal below will
-        // surface a permission error and exit cleanly. We do NOT walk
-        // workspace_info.repos here: their container mount paths are
-        // computed relative to the common ancestor of all repos
-        // (see compute_workspace_volume_paths) and don't necessarily
-        // match `/workspace/{repo.name}`, and the workspace-root walk
-        // already covers their contents.
         let _ = crate::git::cleanup::cleanup_sandbox_worktree(&request.instance);
     }
 
-    // Stage 3: container removal. Releases the bind mount on the
-    // worktree so the host can finish cleanup without racing in-
-    // container processes.
+    // Stage 3: container removal.
     let mut container_gone = false;
     if request.delete_sandbox && is_sandboxed {
         tracing::debug!(target: "session.delete", session_id = %request.session_id, stage = "container_remove", "perform_deletion: stage");
         let outcome = teardown(&request.instance.id);
-        // A failed teardown can leave the container live with the store still
-        // bind mounted, so the store may only go once the container is
-        // provably gone.
+        // A failed teardown can leave the container live with the store still bind mounted, so the
+        // store may only go once the container is provably gone.
         container_gone = !matches!(outcome, crate::containers::Teardown::Failed(_));
         deletion_messages_for(outcome, &mut messages, &mut errors);
     }
@@ -742,10 +691,9 @@ fn perform_deletion_core(
 
     stage_cleanup_scratch(request, &mut errors, &mut messages);
 
-    // Last, and only when nothing else failed: any error here rolls the purge
-    // back (`PurgeTransaction::complete_inner`), and a session that survives
-    // its own purge must survive with the store holding its login and history.
-    // One stranded by a rolled-back purge is the reclaim pass's job.
+    // Last, and only when nothing else failed: any error here rolls the purge back
+    // (`PurgeTransaction::complete_inner`), and a session that survives its own purge must survive
+    // with the store holding its login and history.
     if container_gone && errors.is_empty() {
         stage_remove_agent_stores(request, &mut messages);
     }
@@ -785,14 +733,7 @@ fn stage_collect_preserved_worktrees(
     let mut preserved_worktree_paths: std::collections::HashSet<PathBuf> =
         std::collections::HashSet::new();
 
-    // Default-branch guard, deliberately NOT behind the `!force_delete` gate
-    // below. A bare-repo layout checks the repo's default branch out as a
-    // linked worktree, and removing it lets the branch stage delete the branch
-    // and leave the repo's HEAD dangling. Trash auto-purge and `empty-trash`
-    // both pass `force_delete`, so they are the paths that destroy such a
-    // checkout unattended (#3215). Reported as a message rather than an error
-    // so the purge still clears the row; an error would make it retry the same
-    // refusal every hour, forever.
+    // Default-branch guard, deliberately NOT behind the `!force_delete` gate below.
     if request.delete_worktree {
         if let Some(wt_info) = &request.instance.worktree_info {
             if wt_info.managed_by_aoe
@@ -834,10 +775,9 @@ fn stage_collect_preserved_worktrees(
         if let Some(wt_info) = &request.instance.worktree_info {
             if wt_info.managed_by_aoe {
                 let path = PathBuf::from(&request.instance.project_path);
-                // A path the guard above already preserved must not also
-                // report dirty: that error would fail the deletion and strand
-                // the row in the trash, which is what the guard exists to
-                // avoid.
+                // A path the guard above already preserved must not also report dirty: that error
+                // would fail the deletion and strand the row in the trash, which is what the guard
+                // exists to avoid.
                 if !preserved_worktree_paths.contains(&path) {
                     if let Some(msg) = crate::git::cleanup::dirty_worktree_message(&path) {
                         tracing::debug!(target: "session.delete",
@@ -880,10 +820,7 @@ fn stage_remove_worktrees_and_branches(
     errors: &mut Vec<String>,
     messages: &mut Vec<String>,
 ) {
-    // Stage 4: worktree cleanup. Container is gone, agent is gone, no
-    // bind mount holds the directory open, and (for sandboxed sessions)
-    // the preclean above wiped any root-owned files. Must happen
-    // before branch deletion since the worktree is using the branch.
+    // Stage 4: worktree cleanup.
     tracing::debug!(target: "session.delete", session_id = %request.session_id, stage = "worktree_remove", "perform_deletion: stage");
     let branch_to_delete = if request.delete_branch {
         request
@@ -900,10 +837,7 @@ fn stage_remove_worktrees_and_branches(
     }
 
     // Branch cleanup is gated on the worktree actually being removed, not on
-    // `request.delete_worktree`. A branch checked out in a preserved (or
-    // failed-to-remove) worktree cannot be deleted, so track real removal
-    // outcomes here instead of inferring them from error-message prefixes
-    // (#2532).
+    // `request.delete_worktree`.
     let mut main_worktree_removed = false;
     // Keyed by worktree path, not repo name: two workspace repos can share a
     // name, and the path is what uniquely identifies the removed worktree.
@@ -942,11 +876,7 @@ fn stage_remove_worktrees_and_branches(
         }
     }
 
-    // Per-repo worktree cleanup, for both creation-time workspace repos and
-    // repos attached later. One worktree at a time; the enclosing-directory
-    // delete below applies only to a workspace dir, since an attached repo never
-    // owns the directory above it (that is either the workspace dir handled here
-    // or the shared per-session attachment dir).
+    // Per-repo worktree cleanup, for both creation-time workspace repos and repos attached later.
     if request.delete_worktree {
         for repo in repos {
             if !repo.managed_by_aoe {
@@ -990,23 +920,13 @@ fn stage_remove_worktrees_and_branches(
         }
 
         if let Some(ws_info) = &request.instance.workspace_info {
-            // Remove workspace parent directory only when no repo under it was
-            // preserved; otherwise we'd nuke the user's uncommitted changes,
-            // or a default-branch checkout, through the back door.
-            //
-            // The ownership guard is the second half of that: the workspace dir
-            // is read straight off the session record, so the shape check is a
-            // defense-in-depth guard that the record was not mislaid onto an
-            // unrelated path. The removal itself is non-recursive and succeeds
-            // only once the managed worktrees are gone and the directory is
-            // empty. See `workspace_dir_is_aoe_owned`.
+            // Remove workspace parent directory only when no repo under it was preserved; otherwise
+            // we'd nuke the user's uncommitted changes, or a default-branch checkout, through the
+            // back door.
             if ws_info.cleanup_on_delete && !any_preserved {
                 let ws_path = PathBuf::from(&ws_info.workspace_dir);
-                // A record whose shape is not aoe-owned should never occur: it
-                // means workspace_dir was mis-written (e.g. set to the user's
-                // own checkout). Unlike the benign non-empty case below, fail
-                // loud with an error so a corrupt record is surfaced rather than
-                // silently clearing the row over it.
+                // A record whose shape is not aoe-owned should never occur: it means workspace_dir
+                // was mis-written (e.g. set to the user's own checkout).
                 if !workspace_dir_is_aoe_owned(ws_info) {
                     tracing::warn!(target: "session.delete",
                         session_id = %request.session_id,
@@ -1020,21 +940,12 @@ fn stage_remove_worktrees_and_branches(
                     ));
                 } else if ws_path.exists() {
                     match std::fs::remove_dir(&ws_path) {
-                        // Normally unreachable: prune_empty_parent_dirs, run
-                        // after each worktree removal, already deletes the
-                        // emptied workspace dir. This is the fallback for the
-                        // rare case where prune stopped early (hop cap, or a
-                        // home / main-repo boundary) yet the dir is empty here.
+                        // Normally unreachable: prune_empty_parent_dirs, run after each worktree
+                        // removal, already deletes the emptied workspace dir.
                         Ok(()) => messages.push("Workspace directory removed".to_string()),
-                        // A non-empty dir still holds something that is not one of
-                        // the managed worktrees: unrelated content under a mislaid
-                        // record, or files written at the workspace root, which is
-                        // the session's own cwd. We cannot tell which, so we keep
-                        // them. The removal is non-recursive, so this is a safe
-                        // refusal, not a failure worth retrying: report it as a
-                        // message so the purge still clears the row instead of
-                        // retrying the same non-convergent refusal forever, as the
-                        // default-branch guard above does (#3215).
+                        // A non-empty dir still holds something that is not one of the managed
+                        // worktrees: unrelated content under a mislaid record, or files written at
+                        // the workspace root, which is the session's own cwd.
                         Err(e) if e.kind() == std::io::ErrorKind::DirectoryNotEmpty => {
                             messages.push(format!(
                                 "Workspace directory kept: {} is not empty, so it was not removed",
@@ -1081,27 +992,22 @@ fn stage_remove_worktrees_and_branches(
 
     if request.delete_branch {
         for repo in repos {
-            // Branch ownership is tracked separately from worktree ownership: for
-            // a creation-time workspace repo the two coincide, because the
-            // builder makes both, but attaching a repo on a branch the user
-            // already had records `branch_preexisting = true`, and that branch
-            // is not ours to delete however the worktree around it was created
-            // (#3103). `all_repos` carries the distinction so this reads the same
-            // for both kinds.
+            // Branch ownership is tracked separately from worktree ownership: for a creation-time
+            // workspace repo the two coincide, because the builder makes both, but attaching a repo
+            // on a branch the user already had records `branch_preexisting = true`, and that branch
+            // is not ours to delete however the worktree around it was created.
             if repo.branch_preexisting {
-                // Silent for an unmanaged workspace repo before the merge; now it
-                // says so, which matches what the attached path already reported
-                // and is the same reason the worktree stage reports a preserve.
+                // Silent for an unmanaged workspace repo before the merge; now it says so, which
+                // matches what the attached path already reported and is the same reason the
+                // worktree stage reports a preserve.
                 messages.push(format!(
                     "Branch '{}' ({}) kept; aoe did not create it",
                     repo.branch, repo.name
                 ));
                 continue;
             }
-            // Per-repo gate: only delete a repo's branch when that repo's
-            // worktree was actually removed. A repo whose worktree was
-            // preserved (or failed to remove) keeps its branch checked
-            // out (#2532).
+            // Per-repo gate: only delete a repo's branch when that repo's worktree was actually
+            // removed.
             if !removed_session_worktrees.contains(&PathBuf::from(&repo.worktree_path)) {
                 messages.push(format!(
                     "Branch '{}' ({}) kept; its worktree was preserved",
@@ -1126,21 +1032,11 @@ fn stage_cleanup_scratch(
     errors: &mut Vec<String>,
     messages: &mut Vec<String>,
 ) {
-    // Scratch directory cleanup. Runs unconditionally for scratch sessions
-    // regardless of `request.delete_worktree`, since the scratch directory
-    // is the entire reason the session has any on-disk state. Skipped when
-    // the user opted in to keeping the directory via `request.keep_scratch`.
-    // Guarded by `is_scratch_path` to refuse to follow a tampered or
-    // corrupted `project_path` (e.g. JSON edited by hand to claim
-    // `scratch: true` while pointing at `/etc`).
+    // Scratch directory cleanup.
     if request.instance.scratch {
         let path = PathBuf::from(&request.instance.project_path);
-        // keep_scratch + tampered project_path used to surface
-        // "Scratch directory kept at: /etc" which implied AoE was
-        // intentionally leaving a path it never owned. Gate the
-        // keep-scratch message on the same `is_scratch_path` guard
-        // the remove branch uses so the message only fires for
-        // paths AoE actually controls.
+        // keep_scratch + tampered project_path used to surface "Scratch directory kept at: /etc"
+        // which implied AoE was intentionally leaving a path it never owned.
         let guard_ok = path.exists() && super::scratch::is_scratch_path(&path);
         if request.keep_scratch && guard_ok {
             tracing::info!(
@@ -1160,11 +1056,7 @@ fn stage_cleanup_scratch(
                 "keep-scratch requested but project_path failed the guard or is missing"
             );
         } else if !path.exists() {
-            // Already gone (user removed it manually, FS hiccup, prior
-            // partial cleanup). Nothing to do, and we must not reach the
-            // guard branch: a canonicalized `is_scratch_path` rejects
-            // missing paths and would otherwise surface this as a guard
-            // refusal even though it is not a tampering case.
+            // Already gone (user removed it manually, FS hiccup, prior partial cleanup).
             tracing::debug!(
                 target: "session.delete",
                 session_id = %request.session_id,
@@ -1187,11 +1079,9 @@ fn stage_cleanup_scratch(
                 }
             }
         } else {
-            // Tampered `project_path` (e.g. JSON edited by hand to claim
-            // `scratch: true` while pointing outside the scratch root)
-            // is the only path that reaches this branch in normal use.
-            // The session record will still be deleted, so callers need
-            // a visible signal that on-disk cleanup was skipped.
+            // Tampered `project_path` (e.g. JSON edited by hand to claim `scratch: true` while
+            // pointing outside the scratch root) is the only path that reaches this branch in
+            // normal use.
             tracing::warn!(
                 target: "session.delete",
                 session_id = %request.session_id,
@@ -1206,17 +1096,7 @@ fn stage_cleanup_scratch(
     }
 }
 
-/// Final stage: the session's own agent stores. Each holds a copy of the
-/// agent's credentials and is named by an instance id that stops resolving
-/// with this purge, so leaving it behind strands a credential nothing will
-/// ever open.
-///
-/// Runs with the container already removed, and only then: the store is bind
-/// mounted into it, so a kept container keeps its store.
-///
-/// Reports rather than fails. An error here would roll the purge back and
-/// keep the session, which is the outcome this stage exists to avoid; a store
-/// left behind is the reclaim pass's job instead.
+/// Final stage: the session's own agent stores.
 fn stage_remove_agent_stores(request: &DeletionRequest, messages: &mut Vec<String>) {
     tracing::debug!(target: "session.delete", session_id = %request.session_id, stage = "agent_store_remove", "perform_deletion: stage");
     match crate::session::sandbox_store_reclaim::remove_stores_for(&request.instance) {
@@ -1235,12 +1115,8 @@ fn stage_remove_agent_stores(request: &DeletionRequest, messages: &mut Vec<Strin
     }
 }
 
-/// Map a container [`Teardown`](crate::containers::Teardown) outcome onto a
-/// deletion's user-facing messages and errors.
-///
-/// A `Failed` outcome is recorded as an error so the caller keeps the session
-/// record rather than dropping it and orphaning a live container; `AlreadyGone`
-/// is a silent no-op (there was nothing to remove).
+/// Map a container [`Teardown`](crate::containers::Teardown) outcome onto a deletion's user-facing
+/// messages and errors.
 fn deletion_messages_for(
     outcome: crate::containers::Teardown,
     messages: &mut Vec<String>,
@@ -1254,13 +1130,7 @@ fn deletion_messages_for(
     }
 }
 
-/// Run on_destroy hooks for an instance. Uses best-effort execution so all
-/// hooks are attempted even if some fail. Failures are logged as warnings
-/// and never prevent deletion.
-///
-/// Global/profile hooks are implicitly trusted. Repo-level hooks go through
-/// the same trust verification as on_launch: if the hooks hash has changed
-/// since the user last approved, repo hooks are silently skipped.
+/// Run on_destroy hooks for an instance.
 fn run_on_destroy_hooks(instance: &Instance, detach: bool) {
     let profile = crate::session::config::effective_profile(&instance.source_profile);
 
@@ -1299,9 +1169,8 @@ fn run_on_destroy_hooks(instance: &Instance, detach: bool) {
     let is_sandboxed = instance.sandbox_info.as_ref().is_some_and(|s| s.enabled);
     let hook_env = repo_config::lifecycle_env_vars(instance);
 
-    // The caller controls detachment: TUI/web pass detach=true to avoid
-    // corrupting the rendered UI (see issue #901); CLI passes detach=false
-    // so interactive prompts work.
+    // The caller controls detachment: TUI/web pass detach=true to avoid corrupting the rendered UI
+    // (see issue); CLI passes detach=false so interactive prompts work.
     let errors = if is_sandboxed {
         if let Some(ref sandbox) = instance.sandbox_info {
             let workdir = instance.container_workdir();
@@ -1574,8 +1443,6 @@ mod tests {
         }
     }
 
-    /// The layout `create_workspace` produces: every repo in a subdirectory of
-    /// the workspace dir. Only this shape is eligible for removal.
     #[test]
     fn workspace_dir_owned_when_repos_sit_underneath_it() {
         assert!(workspace_dir_is_aoe_owned(&workspace_info(
@@ -1584,11 +1451,9 @@ mod tests {
         )));
     }
 
-    /// The shape a synthesized `WorkspaceInfo` would have had for a session
-    /// whose `project_path` is the user's own checkout: `workspace_dir` IS the
-    /// repo worktree rather than a directory above it. Treating it as an
-    /// aoe-owned workspace would target the user's checkout, so the guard has
-    /// to refuse.
+    // The shape a synthesized `WorkspaceInfo` would have had for a session whose `project_path` is
+    // the user's own checkout: `workspace_dir` IS the repo worktree rather than a directory above
+    // it.
     #[test]
     fn workspace_dir_not_owned_when_it_is_itself_a_worktree() {
         assert!(!workspace_dir_is_aoe_owned(&workspace_info(
@@ -1597,15 +1462,12 @@ mod tests {
         )));
     }
 
-    /// A workspace dir that does not actually contain one of its repos was not
-    /// laid out by the builder, so its provenance is unknown.
     #[test]
     fn workspace_dir_not_owned_when_a_repo_lives_outside_it() {
         assert!(!workspace_dir_is_aoe_owned(&workspace_info(
             "/tmp/ws",
             &["/tmp/ws/backend", "/elsewhere/frontend"]
         )));
-        // No repos at all proves nothing about the directory.
         assert!(!workspace_dir_is_aoe_owned(&workspace_info("/tmp/ws", &[])));
     }
 
@@ -1683,9 +1545,6 @@ mod tests {
 
         #[test]
         fn call_site_surfaces_teardown_failure() {
-            // A failed container teardown must surface as an error so the
-            // caller keeps the session record, not silently succeed. Pins the
-            // `perform_deletion` call site, not just the mapping helper.
             let request = sandboxed_request();
             let result = perform_deletion_with(&request, |_id| {
                 Teardown::Failed(DockerError::RemoveFailed("daemon busy".into()))
@@ -1696,9 +1555,6 @@ mod tests {
 
         #[test]
         fn call_site_invokes_teardown_unconditionally() {
-            // Guards against re-introducing an existence-probe gate around the
-            // teardown: it must run whenever the session is sandboxed and
-            // delete_sandbox is set.
             use std::cell::Cell;
             let request = sandboxed_request();
             let called = Cell::new(false);
@@ -1713,9 +1569,6 @@ mod tests {
             assert!(result.success);
         }
 
-        /// The store holds the agent's credentials and is named by an id that
-        /// stops resolving with the purge, so nothing would ever open it
-        /// again and nothing else will find it.
         #[test]
         #[serial_test::serial]
         fn call_site_removes_the_session_agent_store() {
@@ -1737,8 +1590,6 @@ mod tests {
             assert!(result.messages.iter().any(|m| m.contains("Agent store")));
         }
 
-        /// A session still on the shared legacy store owns no per-instance
-        /// directory, and v027 may be publishing the one it will own.
         #[test]
         #[serial_test::serial]
         fn a_pre_transition_session_leaves_its_store_to_the_migration() {
@@ -1758,9 +1609,6 @@ mod tests {
             assert!(store.exists());
         }
 
-        /// A teardown that failed leaves the container, and the purge is
-        /// rolled back, so the session keeps running on the store it still
-        /// has mounted.
         #[test]
         #[serial_test::serial]
         fn a_failed_teardown_leaves_the_store_for_the_reclaim_pass() {
@@ -1783,10 +1631,6 @@ mod tests {
             assert!(!result.success);
         }
 
-        /// A purge that fails after the container came down is rolled back by
-        /// `PurgeTransaction::complete_inner`, so the session survives. Its
-        /// store must survive with it, or the session is left logged out with
-        /// its history gone.
         #[test]
         #[serial_test::serial]
         fn a_purge_that_fails_after_teardown_leaves_the_store() {
@@ -1852,8 +1696,6 @@ mod tests {
         use tracing_subscriber::registry::LookupSpan;
         use tracing_subscriber::Layer;
 
-        /// tracing Layer that captures the `stage` field value of every
-        /// `perform_deletion: stage` event in order of emission.
         struct StageRecorder {
             stages: Arc<Mutex<Vec<String>>>,
         }
@@ -1917,21 +1759,6 @@ mod tests {
             };
             let subscriber = tracing_subscriber::registry().with(layer);
             with_default(subscriber, || {
-                // Tracing's per-callsite `Interest` is cached globally on first
-                // hit. `rebuild_interest_cache()` only re-evaluates callsites
-                // that are *already* registered, so any stage callsite not yet
-                // hit at this point can still lose a registration race to a
-                // parallel test running `perform_deletion` without a subscriber
-                // (the sibling tests at lines 335/354/372 do exactly this).
-                // If they win, the callsite is cached as `Interest::never()`
-                // and our subscriber never sees that one event, while the
-                // other stages still come through. The fix is a two-pass run:
-                //   1. Warmup pass: invoke f() once while we're the default,
-                //      forcing the callsites to register under our subscriber
-                //      (or be re-evaluated to Always if already registered).
-                //   2. Clear captured stages, rebuild interest cache to fix up
-                //      anything that lost a race during warmup, then run f()
-                //      again as the measured pass.
                 f();
                 stages.lock().unwrap().clear();
                 tracing::callsite::rebuild_interest_cache();
@@ -1941,9 +1768,6 @@ mod tests {
             g.clone()
         }
 
-        /// Index of the first occurrence of `needle` in `stages`. Panics
-        /// with a descriptive message if absent so test failures point
-        /// at the missing stage instead of an inscrutable `unwrap`.
         fn idx(stages: &[String], needle: &str) -> usize {
             stages
                 .iter()
@@ -1951,19 +1775,11 @@ mod tests {
                 .unwrap_or_else(|| panic!("stage {:?} missing from {:?}", needle, stages))
         }
 
-        /// Regression: sandboxed + worktree deletion must drop the
-        /// container BEFORE touching the worktree directory. The old
-        /// order (worktree first) raced the still-running in-container
-        /// agent and produced flaky permission errors and dirty-tree
-        /// failures.
+        // Regression: sandboxed + worktree deletion must drop the container BEFORE touching the
+        // worktree directory.
         #[test]
         fn sandboxed_with_worktree_kills_tmux_and_container_before_worktree() {
             let _app_guard = crate::session::test_support::isolate_app_dir();
-            // Synthesize an instance with both worktree_info and an
-            // (enabled) sandbox_info pointing at a non-existent
-            // container. The container ops will no-op (container does
-            // not exist), but the *order* of stage events is still
-            // emitted, and that's what we're testing.
             let mut instance = Instance::new("Test", "/tmp/aoe-deletion-test-nonexistent");
             instance.sandbox_info = Some(SandboxInfo {
                 enabled: true,
@@ -1991,8 +1807,6 @@ mod tests {
                 let _ = perform_deletion(&request);
             });
 
-            // tmux_kill must precede container_remove must precede
-            // worktree_remove must precede branch_delete.
             let i_tmux = idx(&stages, "tmux_kill");
             let i_container = idx(&stages, "container_remove");
             let i_worktree = idx(&stages, "worktree_remove");
@@ -2014,9 +1828,6 @@ mod tests {
                 stages
             );
 
-            // Sandboxed + delete_worktree: we should also see the
-            // in-container preclean stage between tmux_kill and
-            // container_remove.
             let i_preclean = idx(&stages, "sandbox_worktree_preclean");
             assert!(
                 i_tmux < i_preclean && i_preclean < i_container,
@@ -2025,13 +1836,6 @@ mod tests {
             );
         }
 
-        /// End-to-end-on-disk: build a real git repo + worktree on the
-        /// filesystem (no docker, no tmux session), call
-        /// `perform_deletion(delete_worktree=true)`, and verify the
-        /// worktree directory and `.git/worktrees/<name>` admin entry
-        /// are gone afterwards. This is the closest we can get to an
-        /// e2e test for the worktree-delete path without a real
-        /// container runtime.
         #[test]
         fn e2e_real_worktree_is_removed_on_disk() {
             let _app_guard = crate::session::test_support::isolate_app_dir();
@@ -2040,7 +1844,6 @@ mod tests {
             let worktree_path = tmp.path().join("worktree");
             std::fs::create_dir(&main_repo).unwrap();
 
-            // init main repo with one commit so branches can be created
             let repo = git2::Repository::init(&main_repo).unwrap();
             let sig = git2::Signature::now("Test", "test@example.com").unwrap();
             let tree_id = {
@@ -2051,8 +1854,6 @@ mod tests {
             repo.commit(Some("HEAD"), &sig, &sig, "init", &tree, &[])
                 .unwrap();
 
-            // create the worktree on a new branch via real `git` so the
-            // admin files match what aoe creates in production
             let status = std::process::Command::new("git")
                 .args([
                     "worktree",
@@ -2075,7 +1876,6 @@ mod tests {
                 "worktree admin dir should exist before deletion"
             );
 
-            // construct an Instance matching what builder would produce
             let mut instance = Instance::new("Test", worktree_path.to_str().unwrap());
             instance.worktree_info = Some(crate::session::WorktreeInfo {
                 branch: "feature/delete-me".to_string(),
@@ -2103,7 +1903,6 @@ mod tests {
                 result.errors
             );
 
-            // worktree directory and its admin entry must be gone
             assert!(
                 !worktree_path.exists(),
                 "worktree dir should be removed after delete"
@@ -2113,7 +1912,6 @@ mod tests {
                 "worktree admin dir should be pruned after delete"
             );
 
-            // branch should be deleted
             let branches_out = std::process::Command::new("git")
                 .args(["branch", "--list", "feature/delete-me"])
                 .current_dir(&main_repo)
@@ -2128,14 +1926,9 @@ mod tests {
             );
         }
 
-        /// Regression for #3215, in the shape that loses the most: the
-        /// bare-repo layout, where the repo's default branch is checked out as
-        /// a linked worktree that sibling tooling expects to stay put. Deleting
-        /// the session used to remove that checkout and then delete the branch,
-        /// leaving the bare repo's HEAD pointing at a ref that no longer
-        /// existed. `force_delete` is set because that is what trash
-        /// auto-purge and `empty-trash` pass, and it used to bypass every
-        /// existing protection.
+        // Regression for, in the shape that loses the most: the bare-repo layout, where the repo's
+        // default branch is checked out as a linked worktree that sibling tooling expects to stay
+        // put.
         #[test]
         fn default_branch_worktree_survives_a_forced_delete() {
             let _app_guard = crate::session::test_support::isolate_app_dir();
@@ -2189,8 +1982,6 @@ mod tests {
                 keep_scratch: false,
             });
 
-            // Success matters as much as the preservation: a failure would keep
-            // the row, and auto-purge would retry the same refusal every hour.
             assert!(
                 result.success,
                 "deletion must still succeed: {:?}",
@@ -2231,7 +2022,6 @@ mod tests {
             );
         }
 
-        /// Init a repo with one commit so branches and worktrees can be made.
         fn init_repo(path: &std::path::Path) {
             std::fs::create_dir_all(path).unwrap();
             let repo = git2::Repository::init(path).unwrap();
@@ -2259,10 +2049,9 @@ mod tests {
             );
         }
 
-        /// Proves the ownership guard is actually consulted at the call site,
-        /// not merely written: a `workspace_dir` pointing at a real checkout
-        /// that is itself the repo worktree must survive, with the refusal
-        /// surfaced as an error rather than silently skipped.
+        // Proves the ownership guard is actually consulted at the call site, not merely written: a
+        // `workspace_dir` pointing at a real checkout that is itself the repo worktree must
+        // survive, with the refusal surfaced as an error rather than silently skipped.
         #[test]
         fn e2e_workspace_dir_that_is_not_aoe_owned_is_refused() {
             let _app_guard = crate::session::test_support::isolate_app_dir();
@@ -2275,9 +2064,6 @@ mod tests {
             let mut instance = Instance::new("Bad", user_checkout.to_str().unwrap());
             instance.workspace_info = Some(crate::session::WorkspaceInfo {
                 branch: "feature/abc".to_string(),
-                // The shape the guard exists to catch: the workspace dir IS the
-                // repo worktree, so treating it as aoe-owned would target the
-                // checkout.
                 workspace_dir: user_checkout.to_string_lossy().to_string(),
                 repos: vec![crate::session::WorkspaceRepo {
                     name: "backend".to_string(),
@@ -2285,8 +2071,6 @@ mod tests {
                     branch: "feature/abc".to_string(),
                     worktree_path: user_checkout.to_string_lossy().to_string(),
                     main_repo_path: user_checkout.to_string_lossy().to_string(),
-                    // Not aoe-managed, so the dirty check never fires and the
-                    // ownership guard is the only gate left.
                     managed_by_aoe: false,
                     branch_preexisting: false,
                     base_branch: None,
@@ -2326,10 +2110,6 @@ mod tests {
             );
         }
 
-        /// A strict-descendant layout alone does not prove ownership. A corrupt
-        /// record naming a populated ancestor must never be wiped: the removal
-        /// is non-recursive, so the ancestor is left in place and reported as a
-        /// message rather than a hard error, and the trash row still clears.
         #[test]
         fn e2e_workspace_ancestor_with_unrelated_content_is_not_recursively_removed() {
             let _app_guard = crate::session::test_support::isolate_app_dir();
@@ -2379,9 +2159,6 @@ mod tests {
                 tmp.path().exists(),
                 "the populated ancestor dir must be left in place, not wiped"
             );
-            // A non-empty dir aoe cannot own is a safe refusal reported as a
-            // message, not a hard error, so the purge still clears the row and
-            // does not retry the same non-convergent refusal forever (#3215).
             assert!(
                 result.success,
                 "safe refusal must not fail the purge: {:?}",
@@ -2397,10 +2174,6 @@ mod tests {
             );
         }
 
-        /// A repo attached onto a branch the user already had records
-        /// `branch_preexisting`. Its worktree is still aoe's to remove, but the
-        /// branch is not, and the two decisions are independent: getting them
-        /// tangled would either strand worktrees or delete someone's branch.
         #[test]
         fn e2e_workspace_repo_keeps_a_branch_aoe_did_not_create() {
             let _app_guard = crate::session::test_support::isolate_app_dir();
@@ -2465,11 +2238,6 @@ mod tests {
             );
         }
 
-        // #2541: `concurrent_purge_reacquires_own_claim` relies on
-        // `perform_deletion` being idempotent, because two purges of the same
-        // row both (re)acquire the Purge claim and each runs the teardown. This
-        // confirms the assumption rather than supposing it: a second
-        // `perform_deletion` over an already-torn-down worktree still succeeds.
         #[test]
         fn perform_deletion_is_idempotent_on_worktree() {
             let _app_guard = crate::session::test_support::isolate_app_dir();
@@ -2524,8 +2292,6 @@ mod tests {
             assert!(first.success, "first purge failed: {:?}", first.errors);
             assert!(!worktree_path.exists());
 
-            // Second purge over the already-gone artifacts must still succeed,
-            // so a re-entrant purge (reacquired Purge claim) is safe.
             let second = perform_deletion(&request);
             assert!(
                 second.success,
@@ -2534,12 +2300,6 @@ mod tests {
             );
         }
 
-        /// #2532 repro: requesting branch deletion while preserving the
-        /// worktree (`delete_worktree=false, delete_branch=true`) must NOT
-        /// attempt `git branch -d/-D` on the branch the preserved worktree
-        /// still has checked out. Pre-fix this pushed a `Branch:` error and
-        /// failed the deletion; post-fix the branch is kept with a message
-        /// and the worktree + branch survive intact.
         #[test]
         fn e2e_preserved_worktree_keeps_its_branch() {
             let _app_guard = crate::session::test_support::isolate_app_dir();
@@ -2609,7 +2369,6 @@ mod tests {
                 result.messages
             );
 
-            // Worktree directory and admin entry must survive.
             assert!(
                 worktree_path.exists(),
                 "preserved worktree dir must still exist"
@@ -2619,7 +2378,6 @@ mod tests {
                 "preserved worktree admin dir must still exist"
             );
 
-            // Branch must still be present.
             let branches_out = std::process::Command::new("git")
                 .args(["branch", "--list", "feature/keep-me"])
                 .current_dir(&main_repo)
@@ -2634,13 +2392,6 @@ mod tests {
             );
         }
 
-        /// Race-condition repro: the agent left untracked files in the
-        /// worktree (this is what triggered the original
-        /// "fatal: '<path>' contains modified or untracked files"
-        /// failures). With `force_delete=true` the worktree must be
-        /// removed cleanly even with untracked content, which is the
-        /// fallback path the TUI takes when the user picks "force
-        /// delete" after a normal delete failed.
         #[test]
         fn e2e_real_worktree_with_untracked_files_force_removed() {
             let _app_guard = crate::session::test_support::isolate_app_dir();
@@ -2669,10 +2420,6 @@ mod tests {
                 .unwrap();
             assert!(status.status.success());
 
-            // simulate what the in-container agent leaves behind: an
-            // untracked log file, plus a modified-but-not-committed
-            // file. Without force_delete, `git worktree remove` refuses
-            // to delete a dirty tree.
             std::fs::write(worktree_path.join("agent.log"), "scratch").unwrap();
             std::fs::write(worktree_path.join("debug.json"), "{\"k\":1}").unwrap();
 
@@ -2685,8 +2432,6 @@ mod tests {
                 base_branch: None,
             });
 
-            // First: without force, deletion must fail and leave the
-            // worktree intact so the user can decide.
             let req_no_force = DeletionRequest {
                 session_id: instance.id.clone(),
                 instance: instance.clone(),
@@ -2707,7 +2452,6 @@ mod tests {
                 "dirty worktree must still exist after failed delete"
             );
 
-            // Now retry with force: must succeed and clean everything.
             let req_force = DeletionRequest {
                 session_id: instance.id.clone(),
                 instance,
@@ -2728,12 +2472,6 @@ mod tests {
             assert!(!main_repo.join(".git/worktrees/worktree").exists());
         }
 
-        /// Builds a real on-disk worktree on a fresh branch, then
-        /// returns a tuple of `(_tmp, main_repo, worktree_path, instance)`
-        /// where the instance has `worktree_info` + `sandbox_info`
-        /// pointing at a non-existent container (so container ops are
-        /// no-ops in the test). The caller can drop untracked files
-        /// into `worktree_path` before invoking `perform_deletion`.
         fn build_sandboxed_worktree(
             branch: &str,
         ) -> (
@@ -2793,14 +2531,10 @@ mod tests {
             (tmp, main_repo, worktree_path, instance)
         }
 
-        /// Regression for the silent-data-destruction bug introduced by
-        /// the preclean stage (#1023): if the user has uncommitted
-        /// changes in a sandboxed worktree and asks for a normal (non-
-        /// force) delete, the in-container `find . -delete` would
-        /// previously wipe those changes before any dirty check ever
-        /// ran. With the host-side dirty check, preclean must be
-        /// skipped, the worktree must survive, and the error must
-        /// describe what's dirty so the user can choose to force.
+        // Regression for the silent-data-destruction bug introduced by the preclean stage: if the
+        // user has uncommitted changes in a sandboxed worktree and asks for a normal (non- force)
+        // delete, the in-container `find. -delete` would previously wipe those changes before any
+        // dirty check ever ran.
         #[test]
         fn sandboxed_with_dirty_worktree_skips_preclean_and_preserves_changes() {
             let _app_guard = crate::session::test_support::isolate_app_dir();
@@ -2820,7 +2554,6 @@ mod tests {
                 keep_scratch: false,
             };
 
-            // Stage assertions: preclean must not run when dirty.
             let stages = run_with_capture(|| {
                 let _ = perform_deletion(&request);
             });
@@ -2830,9 +2563,6 @@ mod tests {
                 stages
             );
 
-            // After run_with_capture, deletion must have left the
-            // worktree intact on both passes. Run once more to capture
-            // the result + error message.
             let result = perform_deletion(&request);
             assert!(
                 !result.success,
@@ -2867,12 +2597,6 @@ mod tests {
             );
         }
 
-        /// Counterpart: with `force_delete=true` the user has explicitly
-        /// opted into losing uncommitted changes, so preclean runs and
-        /// the worktree is removed. Preclean is a docker no-op in this
-        /// test (container does not exist), so the host-side path uses
-        /// `git worktree remove --force` which correctly handles the
-        /// untracked file.
         #[test]
         fn sandboxed_with_dirty_worktree_force_runs_preclean_and_removes() {
             let _app_guard = crate::session::test_support::isolate_app_dir();
@@ -2901,9 +2625,6 @@ mod tests {
                 stages
             );
 
-            // run_with_capture invokes perform_deletion twice; the
-            // first pass already removed the worktree, so the second
-            // pass is a no-op. Both succeed.
             assert!(
                 !worktree_path.exists(),
                 "force delete must remove the worktree dir"
@@ -2914,8 +2635,6 @@ mod tests {
             );
         }
 
-        /// Non-sandboxed deletion: no preclean stage is emitted, but
-        /// tmux still gets killed before worktree work.
         #[test]
         fn unsandboxed_kills_tmux_before_worktree() {
             let _app_guard = crate::session::test_support::isolate_app_dir();
@@ -2947,11 +2666,6 @@ mod tests {
             );
         }
 
-        /// A stray file under an otherwise aoe-owned workspace keeps the dir
-        /// non-empty after the managed worktree is gone. The non-recursive
-        /// removal must leave that file and report a kept-message rather than a
-        /// failure, so the purge still clears the row instead of looping on a
-        /// refusal that never converges (#3215).
         #[test]
         fn e2e_workspace_dir_with_stray_file_is_kept_not_failed() {
             let _app_guard = crate::session::test_support::isolate_app_dir();
@@ -3076,8 +2790,6 @@ mod tests {
         fn scratch_session_with_missing_dir_still_succeeds() {
             let _tmp = isolate_app_dir();
             let (instance, dir) = scratch_instance();
-            // Simulate the "directory already gone" race (user deleted
-            // manually, FS hiccup, etc.). Deletion must not fail.
             fs::remove_dir_all(&dir).unwrap();
 
             let request = DeletionRequest {
@@ -3101,9 +2813,6 @@ mod tests {
         #[test]
         #[serial]
         fn tampered_project_path_does_not_get_removed() {
-            // Defense against an edited or corrupted session JSON that
-            // sets `scratch: true` while pointing project_path at something
-            // the guard would reject. The directory must survive deletion.
             let _tmp = isolate_app_dir();
             let bystander =
                 std::env::temp_dir().join(format!("important-data-{}", uuid::Uuid::new_v4()));
@@ -3133,10 +2842,6 @@ mod tests {
                 bystander.join("file.txt").exists(),
                 "bystander contents must survive"
             );
-            // The guard refusal must also surface as an error on the
-            // deletion result, so callers can report the partial
-            // cleanup instead of silently treating it as a clean
-            // delete.
             assert!(
                 result.errors.iter().any(|e| e.contains("scratch guard")),
                 "guard refusal must be reported in result.errors, got: {:?}",
@@ -3148,9 +2853,6 @@ mod tests {
         #[test]
         #[serial]
         fn keep_scratch_leaves_dir_on_disk_and_reports_path() {
-            // The --keep-scratch escape hatch. Session record still gets
-            // removed (caller's responsibility), but the scratch directory
-            // stays put and the deletion result calls out the kept path.
             let _tmp = isolate_app_dir();
             let (instance, dir) = scratch_instance();
             let request = DeletionRequest {
@@ -3188,15 +2890,12 @@ mod tests {
                 "kept-path message must include the actual path; got: {}",
                 kept_msg.unwrap()
             );
-            // Clean up the leftover dir so the next test starts clean.
             let _ = fs::remove_dir_all(&dir);
         }
 
         #[test]
         #[serial]
         fn non_scratch_session_under_app_dir_is_untouched() {
-            // A regular session whose project_path happens to live under
-            // the app dir (e.g. a test fixture) must not be removed.
             let _tmp = isolate_app_dir();
             let dir = crate::session::get_app_dir()
                 .unwrap()
@@ -3204,7 +2903,6 @@ mod tests {
             fs::create_dir(&dir).expect("create non-scratch test dir");
 
             let instance = Instance::new("Regular", dir.to_str().unwrap());
-            // scratch is false by default.
 
             let request = DeletionRequest {
                 session_id: instance.id.clone(),

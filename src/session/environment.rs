@@ -1,7 +1,4 @@
 //! Environment variable helpers for session instances.
-//!
-//! Pure functions for building environment variable arguments used when
-//! launching tools inside Docker containers.
 
 use super::config::SandboxConfig;
 use super::instance::SandboxInfo;
@@ -11,15 +8,8 @@ use crate::containers::container_interface::EnvEntry;
 pub(crate) const DEFAULT_TERMINAL_ENV_VARS: &[&str] =
     &["TERM", "COLORTERM", "FORCE_COLOR", "NO_COLOR"];
 
-/// Vertex provider env vars auto-forwarded into sandbox containers when
-/// `CLAUDE_CODE_USE_VERTEX` is set on the host. The flag itself is included
-/// so the container sees a consistent state.
-///
-/// `ANTHROPIC_API_KEY` is intentionally not in this list: Vertex auth uses
-/// GCP credentials, and force-forwarding the Anthropic API key would change
-/// behavior for users who happen to have it on their shell for unrelated
-/// reasons. Users who want it forwarded can add it to `sandbox.environment`
-/// explicitly.
+/// Vertex provider env vars auto-forwarded into sandbox containers when `CLAUDE_CODE_USE_VERTEX` is
+/// set on the host.
 pub(crate) const AUTO_FORWARD_VERTEX_ENV_VARS: &[&str] = &[
     "ANTHROPIC_VERTEX_PROJECT_ID",
     "ANTHROPIC_VERTEX_REGION",
@@ -27,9 +17,7 @@ pub(crate) const AUTO_FORWARD_VERTEX_ENV_VARS: &[&str] = &[
     "CLOUD_ML_REGION",
 ];
 
-/// Returns true when `CLAUDE_CODE_USE_VERTEX` is set on the host to a
-/// non-empty value. An empty string is treated as unset to match how the
-/// flag is conventionally interpreted.
+/// Returns true when `CLAUDE_CODE_USE_VERTEX` is set on the host to a non-empty value.
 pub(crate) fn host_vertex_enabled() -> bool {
     std::env::var("CLAUDE_CODE_USE_VERTEX")
         .ok()
@@ -37,11 +25,6 @@ pub(crate) fn host_vertex_enabled() -> bool {
 }
 
 /// Returns the user's preferred shell from `$SHELL`, falling back to `bash`.
-///
-/// Used for host-side command wrappers (agent launch, local hook execution)
-/// so that the user's PATH and rc-file sourcing work correctly. Container
-/// contexts should keep using a fixed shell since the user shell may not be
-/// installed inside the image.
 pub(crate) fn user_shell() -> String {
     std::env::var("SHELL")
         .ok()
@@ -49,15 +32,8 @@ pub(crate) fn user_shell() -> String {
         .unwrap_or_else(|| "bash".to_string())
 }
 
-/// Desktop and session environment variables a user's graphical login sets but
-/// that tmux does not reliably carry into a `new-session`. tmux's
-/// `update-environment` only refreshes DISPLAY/SSH_*/XAUTHORITY/WINDOWID/
-/// KRB5CCNAME (and removes any not present in the creating process); everything
-/// else survives only if it was in the tmux server's frozen global environment.
-/// In structured view the sessions are created by the `aoe serve` daemon, so
-/// without explicit forwarding a browser launched from an agent (e.g. an OIDC
-/// login) has no DISPLAY/XDG_RUNTIME_DIR/DBUS to reach the user's desktop
-/// (#3075). Any `XDG_*` var is forwarded on top of this explicit list.
+/// Desktop and session environment variables a user's graphical login sets but that tmux does not
+/// reliably carry into a `new-session`.
 const FORWARDED_DESKTOP_VARS: &[&str] = &[
     "DISPLAY",
     "WAYLAND_DISPLAY",
@@ -66,23 +42,8 @@ const FORWARDED_DESKTOP_VARS: &[&str] = &[
     "SSH_AUTH_SOCK",
 ];
 
-/// Why the wholesale passthrough ([`inherited_host_env`] with
-/// `session.inherit_host_environment` on) refuses a key, or `None` when it may
-/// be forwarded.
-///
-/// `AOE_`-prefixed keys are aoe's own per-process wiring and credentials
-/// (`AOE_TOKEN`, `AOE_DAEMON_TOKEN`, `AOE_ACP_SOCKET`, the runner env carrier),
-/// so the whole prefix is refused: passing them to an agent would either leak
-/// aoe's own auth or point the agent at a socket that is not its own.
-/// `AGENT_OF_EMPIRES_` is the same story under aoe's older prefix, and it is not
-/// vestigial: `AGENT_OF_EMPIRES_DEBUG` still switches on debug logging, and the
-/// detached ACP runner is itself an `aoe` process, so forwarding it would have
-/// the runner start writing `debug.log` because of a var the operator exported
-/// for their own shell. `TERM` is refused because tmux owns the pane's terminal
-/// type (`default-terminal`) and a daemon's `TERM` is routinely absent or
-/// `dumb`; forwarding that would degrade a pane the operator never asked to
-/// degrade. The ACP paths forward `TERM` through their own allowlist, so nothing
-/// loses it.
+/// Why the wholesale passthrough ([`inherited_host_env`] with `session.inherit_host_environment`
+/// on) refuses a key, or `None` when it may be forwarded.
 fn passthrough_denyreason(key: &str) -> Option<&'static str> {
     if !is_valid_env_key(key) {
         return Some("not a valid environment variable name");
@@ -97,25 +58,6 @@ fn passthrough_denyreason(key: &str) -> Option<&'static str> {
 }
 
 /// The environment a host session inherits from aoe, as `(KEY, VALUE)` pairs.
-///
-/// This is the single source for every host spawn path: tmux agent sessions and
-/// host terminals set it via `new-session -e`, and the structured view applies
-/// it to the agent process after its `env_clear()`. Keeping one resolver is what
-/// stops the terminal and structured views drifting apart, which is the bug
-/// #3079 shipped: it fixed the tmux paths and left the structured view forwarding
-/// nothing, so a browser-view agent still had no `DISPLAY` (#3262).
-///
-/// Sourced from aoe's own process environment, so a session inherits whatever
-/// aoe itself holds and nothing more. A daemon launched without the operator's
-/// environment (a systemd unit with no `PassEnvironment` / `EnvironmentFile`,
-/// say) has nothing to forward, and fixing that belongs to whatever starts the
-/// daemon rather than to aoe: forwarding is a passthrough, not a store.
-///
-/// Which vars qualify depends on `session.inherit_host_environment`: off (the
-/// default) forwards only the desktop/session vars a graphical login sets, on
-/// forwards everything [`passthrough_denyreason`] permits.
-///
-/// `profile` selects the config layer, so a profile override wins over global.
 pub(crate) fn inherited_host_env(profile: &str) -> Vec<(String, String)> {
     let passthrough = super::config::profile_config::resolve_config_or_warn(
         &super::config::effective_profile(profile),
@@ -127,19 +69,8 @@ pub(crate) fn inherited_host_env(profile: &str) -> Vec<(String, String)> {
     inherited_host_env_from(vars, passthrough)
 }
 
-/// Pure core of [`inherited_host_env`], split out so the filtering is
-/// unit-tested without mutating the process environment.
-///
-/// Empty values are dropped on purpose. `new-session -e KEY=` overrides the
-/// tmux server's frozen base environment with an empty string, and that base
-/// env is frequently the *good* one (the server was first started from the
-/// user's graphical login while the current daemon is the impoverished side).
-/// Forwarding `DISPLAY=` there would blank out a working display, so we only
-/// add values aoe positively has and never clobber an inherited one with empty
-/// (an empty desktop var is useless to a browser anyway).
-///
-/// Sorted so the emitted `-e` args and the applied process env are
-/// deterministic.
+/// Pure core of [`inherited_host_env`], split out so the filtering is unit-tested without mutating
+/// the process environment.
 fn inherited_host_env_from<I>(vars: I, passthrough: bool) -> Vec<(String, String)>
 where
     I: IntoIterator<Item = (String, String)>,
@@ -162,9 +93,7 @@ where
 /// Shells whose quoting rules are incompatible with POSIX `'\''` escaping.
 const NON_POSIX_SHELLS: &[&str] = &["fish", "nu", "nushell", "pwsh", "powershell"];
 
-/// Shells we can safely launch with a `-l` login flag. Others (nushell,
-/// PowerShell) are launched plain; they still source their own interactive
-/// config, and `-l` would either error or mean something different there.
+/// Shells we can safely launch with a `-l` login flag.
 const LOGIN_FLAG_SHELLS: &[&str] = &[
     "bash", "zsh", "sh", "ash", "ksh", "mksh", "dash", "fish", "csh", "tcsh",
 ];
@@ -187,11 +116,9 @@ pub(crate) fn known_shell_case_pattern() -> String {
     names.join("|")
 }
 
-/// Build the tmux pane command that launches `shell` as a login+interactive
-/// shell, so it sources the user's profile and rc files (`~/.zprofile`,
-/// `~/.zshrc`, oh-my-zsh, Homebrew/nvm PATH setup) exactly as a native
-/// terminal would. Login-capable shells get `-l`; others launch plain. The
-/// path is shell-escaped for the tmux command parser.
+/// Build the tmux pane command that launches `shell` as a login+interactive shell, so it sources
+/// the user's profile and rc files (`~/.zprofile`, `~/.zshrc`, oh-my-zsh, Homebrew/nvm PATH setup)
+/// exactly as a native terminal would.
 pub(crate) fn login_shell_command(shell: &str) -> String {
     let basename = std::path::Path::new(shell)
         .file_name()
@@ -205,9 +132,8 @@ pub(crate) fn login_shell_command(shell: &str) -> String {
     }
 }
 
-/// Like [`user_shell`], but falls back to `bash` when the user's shell is
-/// non-POSIX (e.g. fish, nushell, pwsh). Use this for command wrappers that
-/// rely on POSIX single-quote escaping (`'\''`).
+/// Like [`user_shell`], but falls back to `bash` when the user's shell is non-POSIX (e.g. fish,
+/// nushell, pwsh).
 pub(crate) fn user_posix_shell() -> String {
     let shell = user_shell();
     let basename = std::path::Path::new(&shell)
@@ -222,17 +148,6 @@ pub(crate) fn user_posix_shell() -> String {
 }
 
 /// Shell-escape a value for safe interpolation into a shell command string.
-///
-/// Uses single-quote escaping: inside single quotes ALL characters are literal
-/// except `'` itself, which is escaped via the POSIX `'\''` technique. This is
-/// the most robust approach; it prevents expansion of `$`, `` ` ``, `\`, `!`,
-/// and every other shell metacharacter in one shot.
-///
-/// Newlines and carriage returns are replaced with the literal two-byte
-/// sequences `\n` / `\r` to keep the command on a single line (required for
-/// tmux session commands). This is a fail-closed sanitization of those two
-/// bytes, not a verbatim round-trip: a value carrying a real newline is
-/// altered rather than allowed to split the command.
 pub(crate) fn shell_escape(val: &str) -> String {
     let val = val.replace('\n', "\\n").replace('\r', "\\r");
     let escaped = val.replace('\'', "'\\''");
@@ -240,32 +155,13 @@ pub(crate) fn shell_escape(val: &str) -> String {
 }
 
 /// Quote one POSIX script word without changing its bytes.
-///
-/// Unlike [`shell_escape`], literal CR and LF bytes remain inside the quoted
-/// word. Use this only when writing a script, not a single-line command.
 pub(crate) fn shell_escape_script_word(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\\''"))
 }
 
-/// Resolve a session's sandbox environment entries to concrete `(KEY, VALUE)`
-/// pairs on the host, for feeding into a host-side hook's process environment
-/// (so a `before_start` hook can read a per-session `$TEST_VAR`).
-///
-/// Trust boundary: `before_start` hooks are profile/global only, so a repo's
-/// `.agent-of-empires/config.toml` `sandbox.environment` must never reach host
-/// execution (e.g. a repo setting `PATH`). Sources:
-/// - With a per-session `extra_env`: use it, but drop any entry the repo
-///   contributed. `extra_env` is seeded verbatim from the repo-aware config in
-///   the new-session dialog, so a submitted override can still carry repo
-///   entries; [`host_hook_entries`] filters those out. This is subtractive
-///   only and does not affect the container's env (which keeps `extra_env`
-///   verbatim via [`collect_environment`]).
-/// - Without one: the profile/global `sandbox.environment` baseline.
-///
-/// Each entry is resolved to a plain host value via the shared grammar:
-/// `KEY=value` is literal, `KEY=$VAR` reads the host env, `KEY=$$literal`
-/// escapes a `$`, and a bare `KEY` passes through from the host env. Unset host
-/// references and bare keys are skipped. Deduplicates by key (first wins).
+/// Resolve a session's sandbox environment entries to concrete `(KEY, VALUE)` pairs on the host,
+/// for feeding into a host-side hook's process environment (so a `before_start` hook can read a
+/// per-session `$TEST_VAR`).
 pub(crate) fn session_host_env_pairs(
     profile: &str,
     project_path: &std::path::Path,
@@ -290,12 +186,9 @@ pub(crate) fn session_host_env_pairs(
     resolve_hook_env_pairs(&entries)
 }
 
-/// Filter a session's `extra_env` down to the entries safe to expose to a host
-/// hook: everything except entries the repo contributed (present in the
-/// repo-aware config but not in the profile/global `trusted` baseline). Repo
-/// entries are dropped, never added, so an untrusted repo cannot reach host
-/// execution even when the user submits a per-session override seeded from the
-/// repo-aware dialog. Pure, so it is unit-tested without touching disk.
+/// Filter a session's `extra_env` down to the entries safe to expose to a host hook: everything
+/// except entries the repo contributed (present in the repo-aware config but not in the
+/// profile/global `trusted` baseline).
 fn host_hook_entries(extra: &[String], trusted: &[String], repo_aware: &[String]) -> Vec<String> {
     let trusted: std::collections::HashSet<&str> = trusted.iter().map(String::as_str).collect();
     let repo_contributed: std::collections::HashSet<&str> = repo_aware
@@ -310,13 +203,9 @@ fn host_hook_entries(extra: &[String], trusted: &[String], repo_aware: &[String]
         .collect()
 }
 
-/// Resolve `sandbox.environment` entries to concrete host `(KEY, VALUE)` pairs
-/// for a `before_start` host hook (the pure core of [`session_host_env_pairs`],
-/// split out so it can be tested without touching config on disk).
-///
-/// Duplicate keys resolve FIRST-wins here. The agent-side sibling,
-/// `resolve_host_environment_pairs`, is deliberately LAST-wins to match the
-/// host pane's sourced export order; keep the two distinct.
+/// Resolve `sandbox.environment` entries to concrete host `(KEY, VALUE)` pairs for a `before_start`
+/// host hook (the pure core of [`session_host_env_pairs`], split out so it can be tested without
+/// touching config on disk).
 fn resolve_hook_env_pairs(entries: &[String]) -> Vec<(String, String)> {
     let mut seen = std::collections::HashSet::new();
     let mut pairs = Vec::new();
@@ -340,12 +229,9 @@ fn resolve_hook_env_pairs(entries: &[String]) -> Vec<(String, String)> {
     pairs
 }
 
-/// Drop every static `environment` entry whose key was minted by
-/// `host_hooks.before_session`, so OMP pre-launch routing resolves the same
-/// minted-wins environment that the pane later loads from its protected file.
-///
-/// Entry keys are read with the same grammar the resolvers use: the part before
-/// the first `=`, or the whole entry for a bare passthrough key.
+/// Drop every static `environment` entry whose key was minted by `host_hooks.before_session`, so
+/// OMP pre-launch routing resolves the same minted-wins environment that the pane later loads from
+/// its protected file.
 pub(crate) fn drop_shadowed_host_entries(
     entries: Vec<String>,
     minted: &[(String, String)],
@@ -364,10 +250,8 @@ pub(crate) fn drop_shadowed_host_entries(
         .collect()
 }
 
-/// True when `key` is a valid environment variable name: an ASCII letter or `_`
-/// first, then ASCII alphanumerics or `_`. Shared by the host-env resolver and
-/// the `before_start` stdout parser so both reject the same malformed keys
-/// before they reach `Command::envs`.
+/// True when `key` is a valid environment variable name: an ASCII letter or `_` first, then ASCII
+/// alphanumerics or `_`.
 pub(crate) fn is_valid_env_key(key: &str) -> bool {
     let mut chars = key.chars();
     match chars.next() {
@@ -401,14 +285,7 @@ pub(crate) fn resolve_host_environment_value(
     resolved_value
 }
 
-/// Resolve trusted global/profile `environment` entries for a host-side agent
-/// process. Returns concrete pairs for non-argv environment transport. Later
-/// entries replace earlier entries, matching historical assignment behavior.
-///
-/// Repo configuration cannot contribute to `Config.environment`
-/// (`REPO_OVERRIDABLE_SECTIONS` in `repo_config` excludes it); callers must
-/// still keep these pairs out of sandboxed agents, whose environment is
-/// controlled by `sandbox.environment` instead.
+/// Resolve trusted global/profile `environment` entries for a host-side agent process.
 pub(crate) fn resolve_host_environment_pairs(entries: &[String]) -> Vec<(String, String)> {
     let mut pairs: Vec<(String, String)> = Vec::new();
     for entry in entries {
@@ -444,9 +321,7 @@ pub(crate) fn resolve_host_environment_pairs(entries: &[String]) -> Vec<(String,
     pairs
 }
 
-/// Resolve an environment value. If the value starts with `$`, read the
-/// named variable from the host environment (use `$$` to escape a literal `$`).
-/// Otherwise return the literal value.
+/// Resolve an environment value.
 pub(crate) fn resolve_env_value(val: &str) -> Option<String> {
     if let Some(rest) = val.strip_prefix("$$") {
         Some(format!("${}", rest))
@@ -467,16 +342,6 @@ pub(crate) fn resolve_env_value(val: &str) -> Option<String> {
 }
 
 /// Validate every entry in a list and return any warnings.
-///
-/// Mirrors what `collect_environment` will silently drop at container
-/// create or docker exec time, so callers can surface the same warnings
-/// to the user via toast or stderr before the failure becomes invisible.
-///
-/// `DEFAULT_TERMINAL_ENV_VARS` are pass-through-if-set toggles (FORCE_COLOR
-/// and NO_COLOR in particular are mutually exclusive and intentionally
-/// unset on most hosts), so we skip them. Without this skip, every new
-/// sandboxed session pops a warning dialog for env vars the user never
-/// set on purpose.
 pub fn validate_env_entries<I, S>(entries: I) -> Vec<String>
 where
     I: IntoIterator<Item = S>,
@@ -496,14 +361,8 @@ where
         .collect()
 }
 
-/// Validate an env entry string and return a warning message if it references
-/// a host variable that doesn't exist.
-///
-/// Entry formats:
-/// - `KEY` (bare): pass through from host
-/// - `KEY=$VAR`: resolve `$VAR` from host
-/// - `KEY=literal` (no `$`): always valid
-/// - `KEY=$$...`: escaped literal `$`, always valid
+/// Validate an env entry string and return a warning message if it references a host variable that
+/// doesn't exist.
 pub fn validate_env_entry(entry: &str) -> Option<String> {
     let key = entry.split_once('=').map(|(key, _)| key).unwrap_or(entry);
     if !is_valid_env_key(key) {
@@ -544,14 +403,7 @@ pub fn validate_env_entry(entry: &str) -> Option<String> {
     }
 }
 
-/// Collect all environment entries from defaults, global config, and
-/// per-session extras.
-///
-/// `EnvEntry` retains whether a value was inherited or configured literally
-/// for container-creation semantics. The tmux/docker-exec path treats both as
-/// potentially secret and transports every concrete value out of argv.
-///
-/// Deduplicates by key (first wins).
+/// Collect all environment entries from defaults, global config, and per-session extras.
 pub(crate) fn collect_environment(
     sandbox_config: &SandboxConfig,
     sandbox_info: &SandboxInfo,
@@ -559,10 +411,8 @@ pub(crate) fn collect_environment(
     let mut seen_keys = std::collections::HashSet::new();
     let mut result = Vec::new();
 
-    // When per-session extra_env is present, it is the authoritative env list
-    // (the TUI seeds it from config.sandbox.environment and the user may have
-    // added, edited, or removed entries). Fall back to config only when no
-    // per-session overrides exist.
+    // When per-session extra_env is present, it is the authoritative env list (the TUI seeds it
+    // from config.sandbox.environment and the user may have added, edited, or removed entries).
     let entries: &[String] = sandbox_info
         .extra_env
         .as_deref()
@@ -595,10 +445,8 @@ pub(crate) fn collect_environment(
         }
     }
 
-    // Host-minted `before_start` values are injected as inherited entries so the
-    // value is passed to docker via the process environment, never in argv.
-    // Placed before the configured entries so a freshly-minted secret wins over
-    // any same-keyed `sandbox.environment` / `extra_env` entry (first-wins).
+    // Host-minted `before_start` values are injected as inherited entries so the value is passed to
+    // docker via the process environment, never in argv.
     for (key, value) in &sandbox_info.before_start_env {
         if !is_valid_env_key(key) {
             tracing::warn!(target: "session.create", "invalid before_start environment key '{}'; skipping", key);
@@ -664,14 +512,8 @@ pub(crate) fn collect_environment(
         }
     }
 
-    // Git's safe-directory check fails when the container user (root) does not
-    // match the file owner (host UID 1000, shown as "ubuntu" inside the
-    // aoe-dev-sandbox image). Bind-mounted repos trigger:
-    //   fatal: detected dubious ownership in repository at '...'
-    // We inject safe.directory=* via Git's env-var config API (Git 2.31+),
-    // which overrides the check without modifying any files.
-    // Placed after the user entries loop so caller-provided GIT_CONFIG_*
-    // values take precedence (first-wins deduplication via seen_keys).
+    // Git's safe-directory check fails when the container user (root) does not match the file owner
+    // (host UID 1000, shown as "ubuntu" inside the aoe-dev-sandbox image).
     if seen_keys.insert("GIT_CONFIG_COUNT".to_string()) {
         result.push(EnvEntry::Literal {
             key: "GIT_CONFIG_COUNT".to_string(),
@@ -695,8 +537,6 @@ pub(crate) fn collect_environment(
 }
 
 /// Resolve the effective sandbox config by merging global + the given profile + repo.
-/// An empty `profile` falls back to the user's globally configured default profile
-/// via [`super::config::effective_profile`].
 pub(crate) fn resolved_sandbox_config(
     profile: &str,
     project_path: &std::path::Path,
@@ -706,10 +546,6 @@ pub(crate) fn resolved_sandbox_config(
 }
 
 /// Resolve the complete environment inherited by an in-container agent.
-///
-/// Capture resolution needs this transiently because Bun dotenv values may
-/// expand arbitrary launcher variables into one of OMP's routing keys. Callers
-/// must discard unrelated values after resolution.
 pub(crate) fn resolved_sandbox_environment(
     profile: &str,
     sandbox: &SandboxInfo,
@@ -723,11 +559,6 @@ pub(crate) fn resolved_sandbox_environment(
 }
 
 /// Environment transport for a sandboxed `docker exec` pane.
-///
-/// Target values are written to a protected env-file opened by the pane
-/// wrapper. They must never become environment variables of the host shell or
-/// container runtime process: repo configuration can set host-active keys such
-/// as `PATH`, `HOME`, or `DOCKER_HOST`.
 pub(crate) struct DockerExecEnv {
     /// Runtime arguments naming the inherited env-file descriptor.
     pub docker_args: String,
@@ -809,8 +640,6 @@ mod tests {
             .collect()
     }
 
-    /// Default posture (`inherit_host_environment` off): only the desktop and
-    /// session vars a graphical login sets, sorted, empty values dropped.
     #[test]
     fn test_inherited_host_env_desktop_only_by_default() {
         let result = inherited_host_env_from(
@@ -819,12 +648,7 @@ mod tests {
                 ("XDG_RUNTIME_DIR", "/run/user/1000"),
                 ("XDG_SESSION_TYPE", "wayland"),
                 ("DBUS_SESSION_BUS_ADDRESS", "unix:path=/run/user/1000/bus"),
-                // Empty desktop vars are dropped rather than forwarded as
-                // `KEY=`, which would blank out a working value inherited from
-                // the tmux server's frozen base env.
                 ("WAYLAND_DISPLAY", ""),
-                // Not desktop vars: unrelated to reaching the user's display,
-                // and forwarding them is what the opt-in passthrough is for.
                 ("PATH", "/usr/bin"),
                 ("HOME", "/home/me"),
                 ("GOPATH", "/home/me/go"),
@@ -848,9 +672,6 @@ mod tests {
         );
     }
 
-    /// With `inherit_host_environment` on, arbitrary operator vars ride along
-    /// (the `GOPATH` case in #3262) while aoe's own wiring and tmux-owned
-    /// `TERM` stay out.
     #[test]
     fn test_inherited_host_env_passthrough_keeps_custom_vars() {
         let result = inherited_host_env_from(
@@ -858,16 +679,10 @@ mod tests {
                 ("GOPATH", "/home/me/go"),
                 ("DISPLAY", ":0"),
                 ("PATH", "/usr/bin"),
-                // aoe's own auth and per-process wiring must never reach an
-                // agent, whatever the operator opted into.
                 ("AOE_TOKEN", "secret"),
                 ("AOE_DAEMON_TOKEN", "secret"),
                 ("AOE_ACP_SOCKET", "/tmp/sock"),
-                // Same, under aoe's older prefix: the detached ACP runner is an
-                // `aoe` process, so this would switch on its debug logging.
                 ("AGENT_OF_EMPIRES_DEBUG", "1"),
-                // tmux owns the pane's terminal type; a daemon's TERM is
-                // routinely absent or `dumb`.
                 ("TERM", "dumb"),
             ]),
             true,
@@ -907,12 +722,6 @@ mod tests {
         }
     }
 
-    /// The pure core above takes `passthrough` as a bool, so it cannot catch a
-    /// resolver that reads the wrong config key or the wrong scope. Drive the
-    /// real [`inherited_host_env`] against an on-disk `config.toml` so the
-    /// setting's name, its `[session]` section, and its effect are all pinned.
-    ///
-    /// `#[serial]` because it mutates the process-wide env and `HOME`.
     #[test]
     #[serial_test::serial]
     fn test_inherited_host_env_reads_the_setting_from_config() {
@@ -926,7 +735,6 @@ mod tests {
         let config_path = crate::session::config::config_path().expect("config path");
         std::fs::create_dir_all(config_path.parent().expect("app dir")).expect("app dir");
 
-        // Default: the file does not mention the key, so only desktop vars.
         std::fs::write(&config_path, "").expect("write config");
         let default = inherited_host_env("");
         assert!(
@@ -938,7 +746,6 @@ mod tests {
             "an ordinary var must stay out by default, got {default:?}"
         );
 
-        // Opted in: the same var now rides along.
         std::fs::write(&config_path, "[session]\ninherit_host_environment = true\n")
             .expect("write config");
         let opted_in = inherited_host_env("");
@@ -964,23 +771,19 @@ mod tests {
 
     #[test]
     fn test_login_shell_command_plain_for_non_login_shells() {
-        // nu / pwsh do not take a POSIX `-l`; launch them plain.
         assert_eq!(login_shell_command("/usr/bin/nu"), "'/usr/bin/nu'");
         assert_eq!(login_shell_command("/usr/bin/pwsh"), "'/usr/bin/pwsh'");
     }
 
-    /// Regression test: when an instance is created under a non-default profile and
-    /// has no per-session `extra_env` overrides, the docker env args must come from
-    /// THAT profile's `sandbox.environment`, not from the user's globally configured
-    /// default profile. Pre-fix, the web flow surfaced this as "personal profile's
-    /// GH_TOKEN was ignored when launching from the web app."
+    // Regression test: when an instance is created under a non-default profile and has no
+    // per-session `extra_env` overrides, the docker env args must come from THAT profile's
+    // `sandbox.environment`, not from the user's globally configured default profile.
     #[test]
     #[serial_test::serial]
     fn test_build_docker_env_args_uses_passed_profile_not_global_default() {
         let temp_home = tempfile::TempDir::new().unwrap();
         let _home_guard = crate::session::test_support::isolate_home(temp_home.path());
 
-        // Determine app dir layout (matches session::get_app_dir_path).
         #[cfg(any(target_os = "linux", target_os = "macos"))]
         let app_dir = temp_home
             .path()
@@ -993,15 +796,12 @@ mod tests {
         std::fs::create_dir_all(profiles_dir.join("default")).unwrap();
         std::fs::create_dir_all(profiles_dir.join("personal")).unwrap();
 
-        // Global config sets the "currently active" default profile.
         std::fs::write(
             app_dir.join("config.toml"),
             r#"default_profile = "default""#,
         )
         .unwrap();
 
-        // Two profiles with distinct env values; both use literal values so the
-        // test does not depend on inherited host env vars.
         std::fs::write(
             profiles_dir.join("default").join("config.toml"),
             r#"
@@ -1019,8 +819,6 @@ environment = ["GH_TOKEN=write_token"]
         )
         .unwrap();
 
-        // Sandbox info with no per-session overrides forces the fallback path
-        // through `sandbox_config.environment`, which is the buggy path pre-fix.
         let sandbox = SandboxInfo {
             enabled: true,
             container_id: None,
@@ -1056,8 +854,6 @@ environment = ["GH_TOKEN=write_token"]
             .env
             .contains(&("GH_TOKEN".to_string(), "read_only_token".to_string())));
 
-        // Empty profile must fall back to the user's globally configured default,
-        // preserving prior behavior for callers without a profile in hand.
         let result_empty = build_docker_env_args("", &sandbox, &project_path);
         assert_eq!(result_empty.docker_args, "--env-file /dev/fd/9");
         assert!(!result_empty.docker_args.contains("read_only_token"));
@@ -1066,8 +862,6 @@ environment = ["GH_TOKEN=write_token"]
             .contains(&("GH_TOKEN".to_string(), "read_only_token".to_string())));
     }
 
-    /// #3710: a repo's `sandbox.environment` cannot pull host variables into
-    /// the container; the profile's passthrough still resolves.
     #[test]
     #[serial_test::serial]
     fn test_build_docker_env_args_ignores_repo_host_passthrough() {
@@ -1117,23 +911,13 @@ environment = ["AOE_TEST_REPO_SECRET_3710", "LEAK=$AOE_TEST_REPO_SECRET_3710"]
 
     #[test]
     fn test_shell_escape_quotes_and_metacharacters() {
-        // Single-quoting makes every shell metacharacter literal, so the only
-        // input needing real work is an apostrophe (closed, escaped, reopened).
-        // Newlines and carriage returns become two-character escapes so the
-        // result is always safe to paste on one command line.
         let cases = [
             ("hello", "'hello'"),
-            // apostrophe: close, escape, reopen
             ("Don't do that", "'Don'\\''t do that'"),
-            // double quotes are literal inside single quotes
             ("say \"hello\"", "'say \"hello\"'"),
-            // backslashes are literal inside single quotes
             ("path\\to\\file", "'path\\to\\file'"),
-            // no parameter expansion
             ("$HOME/path", "'$HOME/path'"),
-            // no command substitution
             ("run `cmd`", "'run `cmd`'"),
-            // no history expansion
             ("hello!", "'hello!'"),
             ("line1\nline2", "'line1\\nline2'"),
             ("line1\rline2", "'line1\\rline2'"),
@@ -1146,7 +930,6 @@ environment = ["AOE_TEST_REPO_SECRET_3710", "LEAK=$AOE_TEST_REPO_SECRET_3710"]
                 "Say \"hello\"\nRun `echo $HOME`",
                 "'Say \"hello\"\\nRun `echo $HOME`'",
             ),
-            // both apostrophes and double quotes
             ("He said \"don't\"", "'He said \"don'\\''t\"'"),
         ];
         for (input, expected) in cases {
@@ -1190,8 +973,6 @@ environment = ["AOE_TEST_REPO_SECRET_3710", "LEAK=$AOE_TEST_REPO_SECRET_3710"]
         std::env::remove_var("AOE_TEST_CODEX_HOME_REF");
     }
 
-    /// The pair resolver must speak the same entry grammar as configured host
-    /// environment transport.
     #[test]
     #[serial_test::serial]
     fn test_resolve_host_environment_pairs_matches_prefix_grammar() {
@@ -1222,8 +1003,6 @@ environment = ["AOE_TEST_REPO_SECRET_3710", "LEAK=$AOE_TEST_REPO_SECRET_3710"]
         std::env::remove_var("AOE_TEST_HOST_PAIRS_BARE");
     }
 
-    /// Duplicate keys resolve LAST-wins. An entry whose host reference is unset
-    /// does not clobber an earlier resolved value.
     #[test]
     #[serial_test::serial]
     fn test_resolve_host_environment_pairs_last_entry_wins() {
@@ -1243,9 +1022,6 @@ environment = ["AOE_TEST_REPO_SECRET_3710", "LEAK=$AOE_TEST_REPO_SECRET_3710"]
         );
     }
 
-    /// An empty mint list is the overwhelmingly common case (no
-    /// `before_session` configured) and must leave the entry list untouched,
-    /// including its order.
     #[test]
     fn test_drop_shadowed_host_entries_no_mint_is_identity() {
         let entries = vec![
@@ -1260,9 +1036,6 @@ environment = ["AOE_TEST_REPO_SECRET_3710", "LEAK=$AOE_TEST_REPO_SECRET_3710"]
         );
     }
 
-    /// A minted key removes the static entry for that key regardless of which
-    /// entry form declared it: `KEY=literal`, `KEY=$REF`, or a bare passthrough
-    /// `KEY`. Unrelated entries keep their relative order.
     #[test]
     fn test_drop_shadowed_host_entries_removes_every_entry_form() {
         let entries = vec![
@@ -1283,8 +1056,6 @@ environment = ["AOE_TEST_REPO_SECRET_3710", "LEAK=$AOE_TEST_REPO_SECRET_3710"]
         );
     }
 
-    /// Only an exact key match shadows. A minted `FOO` must not remove `FOOBAR`
-    /// or `FOO_BAR`, which a prefix-based filter would get wrong.
     #[test]
     fn test_drop_shadowed_host_entries_matches_whole_key_only() {
         let entries = vec![
@@ -1299,7 +1070,6 @@ environment = ["AOE_TEST_REPO_SECRET_3710", "LEAK=$AOE_TEST_REPO_SECRET_3710"]
         );
     }
 
-    /// Helper to find an entry by key and check its value
     fn find_entry<'a>(entries: &'a [EnvEntry], key: &str) -> Option<&'a EnvEntry> {
         entries.iter().find(|e| e.key() == key)
     }
@@ -1363,8 +1133,6 @@ environment = ["AOE_TEST_REPO_SECRET_3710", "LEAK=$AOE_TEST_REPO_SECRET_3710"]
 
     #[test]
     fn test_resolve_hook_env_pairs_skips_invalid_keys() {
-        // Malformed keys (would fail at Command::envs) are dropped; valid ones
-        // pass through.
         let entries = vec![
             "GOOD=1".to_string(),
             "1BAD=x".to_string(),      // starts with a digit
@@ -1383,9 +1151,6 @@ environment = ["AOE_TEST_REPO_SECRET_3710", "LEAK=$AOE_TEST_REPO_SECRET_3710"]
 
     #[test]
     fn test_host_hook_entries_drops_repo_contributed() {
-        // extra_env carries one user entry and two that came from config; the
-        // repo-only one (in repo_aware but not trusted) is dropped, the one also
-        // in the profile/global baseline is kept.
         let extra = vec![
             "TEST_VAR=foo".to_string(),  // user-typed
             "NODE_ENV=test".to_string(), // repo-contributed
@@ -1402,8 +1167,6 @@ environment = ["AOE_TEST_REPO_SECRET_3710", "LEAK=$AOE_TEST_REPO_SECRET_3710"]
     #[test]
     fn test_session_host_env_pairs_uses_extra_env() {
         let _app_guard = crate::session::test_support::isolate_app_dir();
-        // With a per-session extra_env and no repo config at the path, every
-        // entry survives the repo filter and is resolved to a host pair.
         let tmp = tempfile::tempdir().unwrap();
         let info = SandboxInfo {
             enabled: true,
@@ -1427,9 +1190,6 @@ environment = ["AOE_TEST_REPO_SECRET_3710", "LEAK=$AOE_TEST_REPO_SECRET_3710"]
 
     #[test]
     fn test_collect_environment_before_start_is_inherited() {
-        // before_start-minted values are emitted as Inherit entries (so the
-        // value rides the process env, never argv) and win over a same-keyed
-        // sandbox.environment literal.
         let config = SandboxConfig {
             environment: vec!["GH_TOKEN=stale_literal".to_string()],
             ..Default::default()
@@ -1553,9 +1313,6 @@ environment = ["AOE_TEST_REPO_SECRET_3710", "LEAK=$AOE_TEST_REPO_SECRET_3710"]
 
     #[test]
     fn test_collect_environment_git_safe_directory_user_override() {
-        // If the user already provides GIT_CONFIG_* entries (e.g. via
-        // sandbox.environment or extra_env), their values must take
-        // precedence over the built-in safe.directory defaults.
         let config = SandboxConfig::default();
         let info = SandboxInfo {
             enabled: true,
@@ -1757,7 +1514,6 @@ environment = ["AOE_TEST_REPO_SECRET_3710", "LEAK=$AOE_TEST_REPO_SECRET_3710"]
     #[test]
     #[serial_test::serial]
     fn test_validate_env_entries_returns_one_warning_per_missing_var() {
-        // Use unique names to avoid collisions with other tests' env state.
         std::env::remove_var("AOE_TEST_BATCH_MISSING_A");
         std::env::remove_var("AOE_TEST_BATCH_MISSING_B");
         std::env::set_var("AOE_TEST_BATCH_PRESENT", "ok");

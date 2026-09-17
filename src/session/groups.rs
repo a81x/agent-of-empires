@@ -8,34 +8,18 @@ use std::collections::HashMap;
 use super::config::SortOrder;
 use super::Instance;
 
-/// Sentinel path used by the synthetic "Archived" sidebar section. Not a
-/// real GroupTree entry; lives only in the flattened `Item` list to give
-/// archived sessions a stable bottom-of-sidebar home across every sort
-/// mode. Code that walks `flat_items` and dispatches on `Item::Group.path`
-/// must skip this path before invoking GroupTree-mutating ops (rename,
-/// delete, archive, etc.) since no matching group exists.
+/// Sentinel path used by the synthetic "Archived" sidebar section.
 pub const ARCHIVED_SECTION_PATH: &str = "__aoe_archived_section__";
 pub const ARCHIVED_SECTION_NAME: &str = "Archived";
 
-/// Synthetic group path for the Trash shelf, sibling of the Archived
-/// section. Same caveat: code walking `flat_items` must skip this sentinel
-/// before invoking GroupTree-mutating ops, since no matching group exists.
+/// Synthetic group path for the Trash shelf, sibling of the Archived section.
 pub const TRASH_SECTION_PATH: &str = "__aoe_trash_section__";
 pub const TRASH_SECTION_NAME: &str = "Trash";
 
-/// Synthetic group identity for the scratch bucket in project mode. Unlike the
-/// Archived/Trash shelves this IS a real in-flow GroupTree node built from live
-/// scratch sessions, so it is keyed on a sentinel PATH whose `__aoe_*_group__`
-/// shape no plausible real repo basename equals (same accepted tradeoff as
-/// `ARCHIVED_/TRASH_SECTION_PATH`), while its display name is seeded separately
-/// (the way org host-scoped keys are). That keeps a user's own repo named
-/// `scratch` on a distinct identity instead of merging into the bucket (#3237).
+/// Synthetic group identity for the scratch bucket in project mode.
 pub const SCRATCH_GROUP_PATH: &str = "__aoe_scratch_group__";
-/// Capitalized so the bucket reads as a system group rather than a repo
-/// basename, matching the web sidebar's `Scratch` label. Only safe to differ
-/// from the basename because the identity above no longer rides on the label.
-/// Name sorts lowercase both here and in `sort_by_name`, so the header still
-/// lands at `s`.
+/// Capitalized so the bucket reads as a system group rather than a repo basename, matching the web
+/// sidebar's `Scratch` label.
 pub const SCRATCH_GROUP_NAME: &str = "Scratch";
 
 #[inline]
@@ -61,38 +45,28 @@ pub fn is_within_trash_section(path: &str) -> bool {
     path == TRASH_SECTION_PATH || path.starts_with(&format!("{}/", TRASH_SECTION_PATH))
 }
 
-/// True for both the top-level Archived section sentinel and any synthetic
-/// child header pushed under it (e.g. project sub-folders nested inside
-/// Archived in Project grouping mode). Use this in places that disarm
-/// keybinds or skip palette entries for anything that lives inside the
-/// shelf; reserve `is_archived_section_path` for the exact-match cases
-/// (collapse-toggle routing, count assertions in tests).
+/// True for both the top-level Archived section sentinel and any synthetic child header pushed
+/// under it (e.g. project sub-folders nested inside Archived in Project grouping mode).
 #[inline]
 pub fn is_within_archived_section(path: &str) -> bool {
     path == ARCHIVED_SECTION_PATH || path.starts_with(&format!("{}/", ARCHIVED_SECTION_PATH))
 }
 
-/// Build the synthetic sub-path for a per-project header rendered inside
-/// the Archived section. Kept in one place so the path format stays in
-/// sync between the appender (groups.rs) and the collapse-state map
-/// (HomeView::project_group_collapsed).
+/// Build the synthetic sub-path for a per-project header rendered inside the Archived section.
 #[inline]
 pub fn archived_project_sub_path(project_name: &str) -> String {
     format!("{}/{}", ARCHIVED_SECTION_PATH, project_name)
 }
 
-/// True for any project-mode header that is synthetic rather than a real,
-/// pinnable repo: the Archived/Trash shelves (and anything nested under them)
-/// and the scratch bucket. Keyed on the path (identity), never the display
-/// label, so a real repo named `scratch` is not caught.
+/// True for any project-mode header that is synthetic rather than a real, pinnable repo: the
+/// Archived/Trash shelves (and anything nested under them) and the scratch bucket.
 #[inline]
 pub fn is_synthetic_project_header(path: &str) -> bool {
     is_within_archived_section(path) || is_within_trash_section(path) || is_scratch_group_path(path)
 }
 
-/// Map a project-mode group identity key to its human display label, for the
-/// sites that render a raw `group_path` to the user. Only the scratch sentinel
-/// differs from its key; every real repo key already IS its label.
+/// Map a project-mode group identity key to its human display label, for the sites that render a
+/// raw `group_path` to the user.
 #[inline]
 pub fn project_group_display_name(key: &str) -> &str {
     if is_scratch_group_path(key) {
@@ -294,11 +268,7 @@ impl GroupTree {
         }
     }
 
-    /// Toggle the archived state on the group itself. Returns the new
-    /// archived state (true = now archived, false = now unarchived), or
-    /// None if the group does not exist. Note: this does NOT cascade to
-    /// child instances; cascading is the caller's responsibility (see
-    /// HomeView::toggle_archive_at_cursor in operations.rs).
+    /// Toggle the archived state on the group itself.
     pub fn toggle_archived(&mut self, path: &str) -> Option<bool> {
         let new_state = {
             let group = self.groups_by_path.get_mut(path)?;
@@ -401,9 +371,7 @@ pub enum Item {
         session_count: usize,
         /// Which profile this group belongs to (set in all-profiles mode)
         profile: Option<String>,
-        /// When the group was archived (None = active). Used by the row
-        /// renderer to apply italic+dim styling. Sort behavior is handled
-        /// upstream in `attention_group_key` based on member archive state.
+        /// When the group was archived (None = active).
         archived_at: Option<DateTime<Utc>>,
     },
     Session {
@@ -438,16 +406,8 @@ fn sort_sessions(sessions: &mut [&Instance], sort_order: SortOrder) {
     sort_sessions_inner(sessions, sort_order, crate::session::favorites_first());
 }
 
-/// Pure core of [`sort_sessions`]: takes the favorites-first flag explicitly so
-/// tests do not have to mutate the process-global atomic, which would race with
-/// tests running in parallel. Mirrors `attention_rank`'s shape.
-///
-/// Favorites are applied as a second stable pass rather than being folded into
-/// each mode's key tuple: `sort_by_key` is stable, so re-sorting by
-/// `!is_live_favorite` moves favorites to the front while preserving the mode's
-/// own ordering inside each partition. Attention opts out: favorite is already a
-/// within-tier tiebreak there, and promoting it would let a favorited Running
-/// row leap above a plain Waiting one.
+/// Pure core of [`sort_sessions`]: takes the favorites-first flag explicitly so tests do not have
+/// to mutate the process-global atomic, which would race with tests running in parallel.
 fn sort_sessions_inner(sessions: &mut [&Instance], sort_order: SortOrder, favorites_first: bool) {
     match sort_order {
         SortOrder::Oldest => sessions.sort_by_key(|i| i.created_at),
@@ -464,10 +424,8 @@ fn sort_sessions_inner(sessions: &mut [&Instance], sort_order: SortOrder, favori
     }
 }
 
-/// Sort a slice of group references by `sort_order`, using `instances` for
-/// timestamp-based orderings. The `archived` closure returns the group's
-/// own `archived_at` (only consulted by the Attention sort for empty
-/// archived groups).
+/// Sort a slice of group references by `sort_order`, using `instances` for timestamp-based
+/// orderings.
 fn sort_groups<T, N, P, A>(
     items: &mut [T],
     sort_order: SortOrder,
@@ -540,25 +498,14 @@ fn group_members<'a>(
     })
 }
 
-/// True for a favorited session that is actively pinnable: not archived, not
-/// trashed, and not snoozed.
-///
-/// `favorite()` and `archive()` are mutually exclusive today, so a favorited
-/// row is normally never archived. The archive/trash guards defend the direct
-/// callers (the sort pass and the row renderer's `ViewMode::Tool` arm, which
-/// does not pre-filter those states) against a legacy or hand-edited record
-/// that carries both. Snooze is different: `snooze()` deliberately leaves
-/// `favorited_at` intact, so "snoozed favorite" is a normal reachable state,
-/// and snooze outranks the pin, the Attention sort encodes the same precedence
-/// by sinking snoozed rows to tier 99 before favorite is ever consulted.
+/// True for a favorited session that is actively pinnable: not archived, not trashed, and not
+/// snoozed.
 pub(crate) fn is_live_favorite(inst: &Instance) -> bool {
     !inst.is_archived() && !inst.is_trashed() && !inst.is_snoozed() && inst.is_favorited()
 }
 
-/// True when the group at `path` (including nested sub-groups) has at least
-/// one live favorited member. `group_members` already filters archived and
-/// trashed rows; [`is_live_favorite`] re-checks them so it is also sound for
-/// its direct callers.
+/// True when the group at `path` (including nested sub-groups) has at least one live favorited
+/// member.
 fn has_live_favorite(path: &str, instances: &[Instance]) -> bool {
     group_members(path, instances).any(is_live_favorite)
 }
@@ -582,20 +529,14 @@ fn min_created_at_in_group(path: &str, instances: &[Instance]) -> DateTime<Utc> 
 }
 
 /// Get the most recent last_accessed_at among all sessions (direct and nested) in a group.
-/// Groups with no sessions (or whose sessions have never reported activity) sort to the bottom
-/// for descending order.
 fn max_last_accessed_in_group(path: &str, instances: &[Instance]) -> Option<DateTime<Utc>> {
     group_members(path, instances)
         .filter_map(|i| i.last_accessed_at)
         .max()
 }
 
-/// Key used to sort sessions by LastActivity in descending order, pushing
-/// sessions with no recorded activity to the bottom.
-///
-/// Rust's default ordering on `Option` places `None` BEFORE `Some(..)`; we
-/// invert by wrapping in `Reverse` AND bucketing `None` into the "has no
-/// activity" tier via the leading bool.
+/// Key used to sort sessions by LastActivity in descending order, pushing sessions with no recorded
+/// activity to the bottom.
 fn last_activity_session_key(inst: &Instance) -> (bool, Reverse<Option<DateTime<Utc>>>) {
     (
         inst.last_accessed_at.is_none(),
@@ -613,19 +554,12 @@ fn last_activity_group_key(
     (ts.is_none(), Reverse(ts))
 }
 
-/// Priority tier for the Attention sort. Lower = higher priority = closer to
-/// the top of the list. See `docs/plans/2026-04-21-aoe-attention-sort.md` for
-/// the full rationale on tier choices.
-///
-/// Archived sessions short-circuit to tier 99 so they always sink to the
-/// bottom regardless of their current status. They remain visible (rendered
-/// in italic+dim by the row formatter); only the sort order is suppressed.
+/// Priority tier for the Attention sort.
 fn attention_tier(inst: &Instance) -> u8 {
     use crate::session::Status::*;
     if inst.is_archived() || inst.is_snoozed() || inst.is_trashed() || inst.pane_dead_observed {
-        // Tier 99 sinks: archived and snoozed (snoozed = temporary archive,
-        // wakes automatically when timer expires). Both read as "do not
-        // bother me with this row" so they share the bottom tier.
+        // Tier 99 sinks: archived and snoozed (snoozed = temporary archive, wakes automatically
+        // when timer expires).
         return 99;
     }
     match inst.status {
@@ -639,14 +573,7 @@ fn attention_tier(inst: &Instance) -> u8 {
     }
 }
 
-/// Attention bucket rank with the unread promoter folded in. Pure (no global
-/// flag read) so it can be unit-tested directly. Waiting (tier 0) stays top;
-/// tier 99 stays sunk regardless of unread state. When `unread` and the
-/// feature is on, any other non-waiting row is promoted to rank 1, just below
-/// Waiting and above every other tier, with the remaining tiers shifted up by
-/// one (2..=7). When the feature is off it returns `tier` unchanged; the shift
-/// is monotonic so a feature-on run with no unread rows orders identically to
-/// before.
+/// Attention bucket rank with the unread promoter folded in.
 fn attention_rank(tier: u8, unread: bool, unread_enabled: bool) -> u8 {
     if tier == 99 {
         return 99;
@@ -664,21 +591,7 @@ fn attention_rank(tier: u8, unread: bool, unread_enabled: bool) -> u8 {
     }
 }
 
-/// Key used to sort sessions by Attention. Primary = urgent-bias (the agent
-/// has flagged the session via `attention-urgent`); secondary = priority tier
-/// ascending; tertiary = favorite within tier; rest = "longest aging first":
-/// within a tier, the session that has been ignored the longest bubbles to
-/// the top. A Waiting session that has been sitting untouched for 2 days
-/// should rank above one that was just bumped a minute ago, because the
-/// stale one is the one most likely to have been forgotten.
-///
-/// Sessions with no `last_accessed_at` (never polled / just created) bucket
-/// into the "no activity" slot AFTER the dated ones, so fresh-but-untouched
-/// rows don't falsely claim the top.
-///
-/// Within tier 99, preserve the reverse convention: most-recently sunk first,
-/// since the archive block is a recency view, not an attention view. Urgent is
-/// suppressed for tier 99 so a sunk row can't claw back to the top.
+/// Key used to sort sessions by Attention.
 #[allow(clippy::type_complexity)]
 fn attention_session_key(
     inst: &Instance,
@@ -691,27 +604,14 @@ fn attention_session_key(
     Option<DateTime<Utc>>,
 ) {
     let tier = attention_tier(inst);
-    // Urgent is the cross-tier promoter: an agent that has flagged itself
-    // urgent rises above all non-urgent rows regardless of status tier.
-    // Encoded `!urgent_bias` since `false` sorts before `true`. Tier 99
-    // suppresses urgent (is_urgent() already short-circuits on archived/
-    // snoozed; the redundant guard here mirrors favorite's pattern).
+    // Urgent is the cross-tier promoter: an agent that has flagged itself urgent rises above all
+    // non-urgent rows regardless of status tier.
     let urgent_bias = tier != 99 && inst.is_urgent();
-    // Favorite pins to the top of its category; tier stays primary so a
-    // fav'd Running never leaps above a plain Waiting. Within a tier,
-    // favorited rows bubble first (encoded `!favorite_bias` since `false`
-    // sorts before `true`). Tier 99 (archive/snooze) opts out: archive()
-    // clears favorited_at via mutex, and a snoozed favorite stays sunk per
-    // design; within the sunk block, recency ordering is the intent.
+    // Favorite pins to the top of its category; tier stays primary so a fav'd Running never leaps
+    // above a plain Waiting.
     let favorite_bias = tier != 99 && inst.is_favorited();
     if tier == 99 {
         // Tier 99 unifies archived, snoozed, and pane-dead rows.
-        // Secondary sort timestamp falls through: archived_at first, then
-        // snoozed_until, then last_accessed_at (the only signal pane-dead
-        // rows have, since they were never explicitly archived).
-        // Reverse() makes most-recent sink-time bubble to the top of the
-        // sunk block, matching "recency view" intent across all four
-        // sub-categories.
         let ts = inst
             .archived_at
             .or(inst.snoozed_until)
@@ -727,9 +627,6 @@ fn attention_session_key(
     }
     let rank = attention_rank(tier, inst.is_unread(), crate::session::unread_enabled());
     // Non-archived: "longest aging" = oldest last_accessed_at first (ASC).
-    // The `Reverse` slot is forced to `Reverse(None)` (= sorts after all
-    // Some() in the Reverse ordering) so it doesn't contribute; the real
-    // tiebreak is the trailing ASC field.
     (
         !urgent_bias,
         rank,
@@ -740,23 +637,7 @@ fn attention_session_key(
     )
 }
 
-/// Key used to sort groups by Attention. Uses the highest-priority (lowest
-/// tier) among the group's direct and nested sessions. Empty groups sink.
-///
-/// Within a tier, the group's aging signal = max(member.last_accessed_at),
-/// the MOST RECENT activity across any member. The group whose most-recent
-/// activity is itself oldest = the group nobody has touched in the longest
-/// time = the one most likely forgotten. So this sorts ASC (oldest-first),
-/// mirroring the within-tier rule in `attention_session_key`. Groups with
-/// no timestamped members sink after dated ones.
-///
-/// Archive handling: members already short-circuit to tier 99 if archived
-/// (see `attention_tier`). When all members are archived (or the group is
-/// empty AND the group itself is marked archived), the group sorts at
-/// tier 99 with the latest archived_at timestamp (group's own timestamp
-/// is the fallback for empty groups). The archived block stays a recency
-/// view via `Reverse(ts)`; intentional asymmetry with the non-archived
-/// aging rule, same as the session-level key.
+/// Key used to sort groups by Attention.
 #[allow(clippy::type_complexity)]
 fn attention_group_key(
     path: &str,
@@ -791,21 +672,16 @@ fn attention_group_key(
         .min()
         .unwrap_or(u8::MAX);
 
-    // Group-level urgent bias: any non-sunk member with the urgent flag
-    // promotes the entire group above non-urgent peers across all tiers.
-    // Mirrors the session-level cross-tier behavior so a buried group
-    // containing a live device-code prompt floats up.
+    // Group-level urgent bias: any non-sunk member with the urgent flag promotes the entire group
+    // above non-urgent peers across all tiers.
     let urgent_bias = min_tier != 99 && members.iter().any(|i| i.is_urgent());
 
-    // Group-level favorite bias: within its min_tier bucket, a group with
-    // any live favorited member pins above peers. Mirrors the session key's
-    // tier-primary shape so favorite never promotes a group across tiers.
+    // Group-level favorite bias: within its min_tier bucket, a group with any live favorited member
+    // pins above peers.
     let favorite_bias = min_tier != 99 && has_live_favorite(path, instances);
 
     if min_tier == 99 {
         // All members archived: sort archived block by latest archived_at.
-        // Falls back to the group's own archived_at if no member has one
-        // (shouldn't happen given is_archived, but defensive).
         let max_arch = members.iter().filter_map(|i| i.archived_at).max();
         let ts = max_arch.or(group_archived_at);
         return (
@@ -819,19 +695,10 @@ fn attention_group_key(
     }
 
     // Non-archived: "longest aging" = oldest max(last_accessed_at) first.
-    // The `Reverse` slot is forced to `Reverse(None)` so it doesn't
-    // contribute; the real tiebreak is the trailing ASC field. Shape
-    // mirrors `attention_session_key` so the intent is uniform.
     let max_last = members.iter().filter_map(|i| i.last_accessed_at).max();
-    // Fold the unread promoter in at the group level too, so a project
-    // containing an unread session floats up just like the flat Attention
-    // view does (a group with an unread Idle outranks a group whose best
-    // member is a read Error). Mirrors `attention_session_key`'s rank.
-    //
-    // Only non-sunk members count: archive/snooze don't clear `unread`, so an
-    // archived or snoozed (tier-99) member must not promote the group, or a
-    // dismissed session would drag its group back to the top. This matches the
-    // session key, which short-circuits tier-99 rows before the unread rank.
+    // Fold the unread promoter in at the group level too, so a project containing an unread session
+    // floats up just like the flat Attention view does (a group with an unread Idle outranks a
+    // group whose best member is a read Error).
     let unread = members
         .iter()
         .filter(|i| attention_tier(i) != 99)
@@ -848,8 +715,6 @@ fn attention_group_key(
 }
 
 /// Flatten instances from multiple profiles into a single flat list.
-/// Merges all profiles' sessions and groups at depth 0 (no profile headers).
-/// Uses per-profile GroupTrees so collapsed state is isolated per profile.
 pub fn flatten_tree_all_profiles(
     instances: &[Instance],
     group_trees: &std::collections::HashMap<String, GroupTree>,
@@ -857,9 +722,7 @@ pub fn flatten_tree_all_profiles(
 ) -> Vec<Item> {
     let mut items = Vec::new();
 
-    // Archived sessions are excluded from the natural flow. The caller
-    // appends them under the synthetic "Archived" section via
-    // `append_archived_section`.
+    // Archived sessions are excluded from the natural flow.
     let mut ungrouped: Vec<&Instance> = instances
         .iter()
         .filter(|i| i.group_path.is_empty() && !i.is_archived() && !i.is_trashed())
@@ -887,9 +750,9 @@ pub fn flatten_tree_all_profiles(
         }
     }
 
-    // Sort using the per-profile instances stored in each tuple (element 2),
-    // not the global instances slice, so groups from different profiles with
-    // the same name get sort keys scoped to their own profile's sessions.
+    // Sort using the per-profile instances stored in each tuple (element 2), not the global
+    // instances slice, so groups from different profiles with the same name get sort keys scoped to
+    // their own profile's sessions.
     match sort_order {
         SortOrder::Oldest => {
             all_roots.sort_by_key(|(_, g, insts)| min_created_at_in_group(&g.path, insts));
@@ -908,11 +771,7 @@ pub fn flatten_tree_all_profiles(
             sort_by_name(&mut all_roots, sort_order, |(_, g, _)| &*g.name)
         }
     }
-    // Favorites-first second pass, matching `sort_groups_inner`. This path
-    // cannot call that helper because each root carries its own per-profile
-    // instances rather than sharing one slice. Attention is excluded there and
-    // here alike: `attention_group_key` already folds the favorite bias in at
-    // its tier-local position.
+    // Favorites-first second pass, matching `sort_groups_inner`.
     if sort_order != SortOrder::Attention && crate::session::favorites_first() {
         all_roots.sort_by_key(|(_, g, insts)| !has_live_favorite(&g.path, insts));
     }
@@ -932,17 +791,9 @@ pub fn flatten_tree_all_profiles(
 }
 
 /// Flat session list for the Attention sort: skip group hierarchy entirely.
-/// Attention is a cross-cutting priority view, not a folder tree, so a
-/// Waiting session in group A should sort next to a Waiting session in
-/// group B without a header row breaking the tier ordering. Pre-filter
-/// `instances` by profile/storage at the call site; this function honors
-/// whatever slice it receives.
 pub fn flatten_sessions_by_attention(instances: &[Instance]) -> Vec<Item> {
-    // Archived rows are excluded from the natural attention flow; the
-    // caller appends them under the synthetic "Archived" section via
-    // `append_archived_section`. Snoozed and pane-dead rows still sink to
-    // tier 99 inline because they are transient attention sinks, not
-    // lifecycle terminals.
+    // Archived rows are excluded from the natural attention flow; the caller appends them under the
+    // synthetic "Archived" section via `append_archived_section`.
     let mut refs: Vec<&Instance> = instances
         .iter()
         .filter(|i| !i.is_archived() && !i.is_trashed())
@@ -963,9 +814,7 @@ pub fn flatten_tree(
 ) -> Vec<Item> {
     let mut items = Vec::new();
 
-    // Archived sessions are excluded from the natural flow. The caller
-    // appends them under the synthetic "Archived" section via
-    // `append_archived_section`.
+    // Archived sessions are excluded from the natural flow.
     let mut ungrouped: Vec<&Instance> = instances
         .iter()
         .filter(|i| i.group_path.is_empty() && !i.is_archived() && !i.is_trashed())
@@ -1023,9 +872,7 @@ fn flatten_group(
         return;
     }
 
-    // Archived sessions are pulled out of the natural flow regardless of
-    // their group_path. They reappear under the synthetic "Archived"
-    // section appended by the caller.
+    // Archived sessions are pulled out of the natural flow regardless of their group_path.
     let mut group_sessions: Vec<&Instance> = instances
         .iter()
         .filter(|i| i.group_path == group.path && !i.is_archived() && !i.is_trashed())
@@ -1056,22 +903,13 @@ fn flatten_group(
     }
 }
 
-/// Count of the sessions that render under a group header. Delegates to
-/// `group_members` so the header badge and the visible rows share one
-/// predicate (excluding archived and trashed sessions).
+/// Count of the sessions that render under a group header.
 fn count_sessions_in_group(path: &str, instances: &[Instance]) -> usize {
     group_members(path, instances).count()
 }
 
-/// Append the synthetic "Archived" section to `items`, pinned to the
-/// bottom of the sidebar across every sort mode. The section contains
-/// every session with `is_archived() == true`, ordered by most-recently
-/// archived first (the row a user just shelved is the one they're most
-/// likely to look for). When `collapsed` is true, only the header is
-/// pushed; the header still shows the total count.
-///
-/// No-op when there are no archived sessions, so users who never archive
-/// anything don't see a phantom "Archived (0)" header.
+/// Append the synthetic "Archived" section to `items`, pinned to the bottom of the sidebar across
+/// every sort mode.
 pub fn append_archived_section(items: &mut Vec<Item>, instances: &[Instance], collapsed: bool) {
     let mut archived: Vec<&Instance> = instances
         .iter()
@@ -1104,15 +942,9 @@ pub fn append_archived_section(items: &mut Vec<Item>, instances: &[Instance], co
     }
 }
 
-/// Append the synthetic Trash section to `items`: a depth-0 header followed
-/// by every `is_trashed()` session, most-recently-trashed first (the row a
-/// user just deleted is the one they are most likely to want back). When
-/// `collapsed` is true only the header is pushed; the header still shows the
-/// count. No-op when nothing is trashed, so users who never delete don't see
-/// a phantom "Trash (0)" header. Rendered as a sibling of the Archived
-/// section, pinned to the very bottom (see `HomeView::build_flat_items`).
-/// Flat in every grouping mode: trash is a recovery shelf, not a workspace,
-/// so it is not nested by project the way the Archived section is.
+/// Append the synthetic Trash section to `items`: a depth-0 header followed by every `is_trashed()`
+/// session, most-recently-trashed first (the row a user just deleted is the one they are most
+/// likely to want back).
 pub fn append_trash_section(items: &mut Vec<Item>, instances: &[Instance], collapsed: bool) {
     let mut trashed: Vec<&Instance> = instances.iter().filter(|i| i.is_trashed()).collect();
     if trashed.is_empty() {
@@ -1142,29 +974,8 @@ pub fn append_trash_section(items: &mut Vec<Item>, instances: &[Instance], colla
     }
 }
 
-/// Project-grouping variant of `append_archived_section`: nests archived
-/// sessions under a sub-header per project. Caller must have already
-/// rewritten `inst.group_path` to the project name (see
-/// `HomeView::build_flat_items_by_project`) so we can read it back here
-/// to bucket each archived row.
-///
-/// Layout:
-/// - Archived (depth 0)
-///   - `<project name>` (depth 1)
-///     - session row (depth 2)
-///
-/// `section_collapsed` hides everything below the top header; per-project
-/// `sub_collapsed` (read from `project_collapsed` keyed by the synthetic
-/// `archived_project_sub_path`) hides only that sub-folder's session rows.
-/// Sub-headers honor the user's `sort_order`, mirroring how
-/// `flatten_tree` orders active project headers; within a sub-folder,
-/// sessions still surface most-recently-archived first regardless of
-/// sort_order (archived rows are a "park this" affordance and the
-/// archive timestamp is the natural recency signal once the row is sunk).
-///
-/// Returns without pushing anything when no archived sessions exist, so
-/// users who never archive don't see a phantom "Archived" header in the
-/// project-mode view either.
+/// Project-grouping variant of `append_archived_section`: nests archived sessions under a
+/// sub-header per project.
 pub fn append_archived_section_by_project(
     items: &mut Vec<Item>,
     instances: &[Instance],
@@ -1230,18 +1041,7 @@ pub fn append_archived_section_by_project(
     }
 }
 
-/// Ordering helper for archived project sub-folders. Mirrors the spirit
-/// of `sort_groups` but operates on a `(project_name, sessions)` pair
-/// since the archive sub-folders are synthetic and not in any
-/// `GroupTree`. AZ/ZA sort by project name; recency sorts (Newest,
-/// LastActivity) use the max `archived_at` within the group; Oldest
-/// uses the min `archived_at` ascending. Attention falls back to
-/// most-recently-archived because archived rows are all tier 99 in the
-/// attention bucket and the tier offers no discriminator inside the shelf.
-///
-/// The bucket key is an identity, not always the label, so AZ/ZA sort on the
-/// display name: the scratch sentinel would otherwise sort under `_` and jump
-/// ahead of every real project instead of landing at `s` (#3237).
+/// Ordering helper for archived project sub-folders.
 fn sort_archived_project_buckets(buckets: &mut [(String, Vec<&Instance>)], sort_order: SortOrder) {
     match sort_order {
         SortOrder::AZ => {
@@ -1320,7 +1120,6 @@ mod tests {
 
         assert!(!items.is_empty());
 
-        // First item should be ungrouped session
         assert!(matches!(items[0], Item::Session { .. }));
     }
 
@@ -1486,8 +1285,6 @@ mod tests {
 
         assert_eq!(group_count(&instances), 2);
 
-        // Trashing a session drops it from both the visible rows and the
-        // header badge, matching the row filter in `flatten_group`.
         instances[0].trash();
         assert_eq!(group_count(&instances), 1);
 
@@ -1626,7 +1423,6 @@ mod tests {
 
     #[test]
     fn test_group_sort_order_in_flatten_tree() {
-        // Groups are created in order: zebra, apple, mango (by instance order)
         let mut inst1 = Instance::new("z-session", "/tmp/z");
         inst1.group_path = "zebra".to_string();
         let mut inst2 = Instance::new("a-session", "/tmp/a");
@@ -1636,7 +1432,6 @@ mod tests {
         let instances = vec![inst1, inst2, inst3];
         let tree = GroupTree::new_with_groups(&instances, &[]);
 
-        // SortOrder::Oldest: groups sorted by oldest session (zebra, apple, mango)
         let items_oldest = flatten_tree(&tree, &instances, SortOrder::Oldest);
         let group_names_none: Vec<_> = items_oldest
             .iter()
@@ -1647,7 +1442,6 @@ mod tests {
             .collect();
         assert_eq!(group_names_none, vec!["zebra", "apple", "mango"]);
 
-        // SortOrder::AZ: groups appear alphabetically
         let items_az = flatten_tree(&tree, &instances, SortOrder::AZ);
         let group_names_az: Vec<_> = items_az
             .iter()
@@ -1658,7 +1452,6 @@ mod tests {
             .collect();
         assert_eq!(group_names_az, vec!["apple", "mango", "zebra"]);
 
-        // SortOrder::ZA: groups appear reverse alphabetically
         let items_za = flatten_tree(&tree, &instances, SortOrder::ZA);
         let group_names_za: Vec<_> = items_za
             .iter()
@@ -2019,36 +1812,27 @@ mod tests {
         assert!(tree.group_exists("work"));
     }
 
-    // ─── Archive feature tests ───────────────────────────────────────────
-
     #[test]
     fn test_attention_tier_archived_returns_99() {
         let mut waiting = Instance::new("w", "/tmp/w");
         waiting.status = crate::session::Status::Waiting;
         assert_eq!(attention_tier(&waiting), 0);
 
-        // Archive a Waiting session; must short-circuit to 99
         waiting.archive();
         assert_eq!(attention_tier(&waiting), 99);
 
-        // Same for Error
         let mut errored = Instance::new("e", "/tmp/e");
         errored.status = crate::session::Status::Error;
         assert_eq!(attention_tier(&errored), 1);
         errored.archive();
         assert_eq!(attention_tier(&errored), 99);
 
-        // Unarchive restores the original tier
         errored.unarchive();
         assert_eq!(attention_tier(&errored), 1);
     }
 
     #[test]
     fn test_attention_sort_within_tier_aging_ascending() {
-        // Longest-aging-first rule: within a single priority tier, the session
-        // whose last_accessed_at is oldest bubbles to the top (the one most
-        // likely to have been forgotten). Untouched (None) rows bucket after
-        // dated ones so a brand-new session doesn't falsely claim top.
         use chrono::Duration;
         let now = chrono::Utc::now();
 
@@ -2081,9 +1865,6 @@ mod tests {
 
     #[test]
     fn test_attention_group_key_within_tier_aging_ascending() {
-        // Same rule at group level: the group whose most-recent member
-        // activity is oldest ranks first. Mirrors the session-level aging
-        // tiebreak so tree view and flat view stay consistent.
         use chrono::Duration;
         let now = chrono::Utc::now();
 
@@ -2111,7 +1892,6 @@ mod tests {
 
     #[test]
     fn test_attention_sort_archived_sinks_to_bottom() {
-        // Build: 1 Waiting, 1 Error, 1 archived (was Waiting), 1 Idle
         let mut waiting = Instance::new("w", "/tmp/w");
         waiting.status = crate::session::Status::Waiting;
         let mut errored = Instance::new("e", "/tmp/e");
@@ -2125,7 +1905,6 @@ mod tests {
         let mut sessions: Vec<&Instance> = vec![&waiting, &errored, &archived_waiting, &idle];
         sort_sessions(&mut sessions, SortOrder::Attention);
 
-        // Order should be: Waiting(0), Error(1), Idle(2), Archived(99)
         let titles: Vec<&str> = sessions.iter().map(|i| i.title.as_str()).collect();
         assert_eq!(titles, vec!["w", "e", "i", "aw"]);
     }
@@ -2137,20 +1916,16 @@ mod tests {
         let instances = vec![inst];
         let mut tree = GroupTree::new_with_groups(&instances, &[]);
 
-        // Initial: not archived
         assert!(tree.group_archived_at("work").is_none());
 
-        // Toggle on
         let result = tree.toggle_archived("work");
         assert_eq!(result, Some(true));
         assert!(tree.group_archived_at("work").is_some());
 
-        // Toggle off
         let result = tree.toggle_archived("work");
         assert_eq!(result, Some(false));
         assert!(tree.group_archived_at("work").is_none());
 
-        // Nonexistent group returns None
         assert_eq!(tree.toggle_archived("nope"), None);
     }
 
@@ -2172,11 +1947,6 @@ mod tests {
 
     #[test]
     fn test_attention_group_key_one_active_pulls_group_up() {
-        // Mixed group: 1 archived Waiting, 1 active Idle. The active member
-        // pulls the group out of the archive tier (99) into the Idle bucket.
-        // With the unread promoter enabled (default), a non-unread Idle group
-        // encodes to rank 3 (Waiting=0, unread=1, other tiers shifted +1, so
-        // Idle tier 2 -> 3); the point is it's well above the archive tier.
         let mut archived_waiting = Instance::new("aw", "/tmp/aw");
         archived_waiting.group_path = "work".to_string();
         archived_waiting.status = crate::session::Status::Waiting;
@@ -2195,10 +1965,6 @@ mod tests {
 
     #[test]
     fn test_attention_group_key_promotes_unread_below_waiting() {
-        // Group A holds a read Error (tier 1); Group B holds an unread Idle
-        // (tier 2). With the unread promoter on (default), B's unread member
-        // floats it to rank 1, above A's Error (rank 2), matching how the flat
-        // Attention view promotes unread just below Waiting.
         let mut err = Instance::new("err", "/tmp/err");
         err.group_path = "a".to_string();
         err.status = crate::session::Status::Error;
@@ -2218,11 +1984,6 @@ mod tests {
 
     #[test]
     fn test_attention_group_key_sunk_unread_member_does_not_promote() {
-        // A group with one active *read* Idle member and one *archived* member
-        // that still carries an unread marker (archive doesn't clear `unread`)
-        // must NOT be promoted: the dismissed member can't drag the group up.
-        // Rank should be the plain Idle bucket, identical to the same group
-        // without any unread anywhere.
         let mut active_read = Instance::new("ar", "/tmp/ar");
         active_read.group_path = "g".to_string();
         active_read.status = crate::session::Status::Idle;
@@ -2236,8 +1997,6 @@ mod tests {
         let members = vec![active_read.clone(), archived_unread];
         let key = attention_group_key("g", None, &members);
 
-        // Same group but with the second member simply read: ranks identical,
-        // proving the sunk unread member contributed nothing.
         let read_baseline = vec![active_read.clone(), {
             let mut other = Instance::new("o", "/tmp/o");
             other.group_path = "g".to_string();
@@ -2269,8 +2028,6 @@ mod tests {
 
     #[test]
     fn test_favorite_pins_waiting_above_non_favorited_waiting() {
-        // Two Waiting sessions. The favorited one must sort above the
-        // non-favorited one despite having no aging difference.
         let mut fav = Instance::new("fav", "/tmp/fav");
         fav.status = crate::session::Status::Waiting;
         fav.favorite();
@@ -2289,10 +2046,6 @@ mod tests {
 
     #[test]
     fn test_favorite_does_not_cross_tiers() {
-        // Revised spec (2026-04-23): "favorites should be top of their
-        // respective category." Tier stays primary; a favorited lower-
-        // priority row never leaps above a non-favorited higher-priority
-        // peer. Fav+Idle (tier 2) must sink below plain+Waiting (tier 0).
         let mut fav_idle = Instance::new("fav_idle", "/tmp/fi");
         fav_idle.status = crate::session::Status::Idle;
         fav_idle.favorite();
@@ -2308,31 +2061,25 @@ mod tests {
 
     #[test]
     fn test_has_live_favorite_matches_inline_predicate() {
-        // A live favorited member => true.
         let mut fav = Instance::new("fav", "/tmp/fav");
         fav.group_path = "work".to_string();
         fav.favorite();
         assert!(has_live_favorite("work", std::slice::from_ref(&fav)));
 
-        // Not favorited => false.
         let mut plain = Instance::new("plain", "/tmp/plain");
         plain.group_path = "work".to_string();
         assert!(!has_live_favorite("work", std::slice::from_ref(&plain)));
 
-        // A member of a nested sub-group counts for the parent group.
         let mut nested = Instance::new("nested", "/tmp/nested");
         nested.group_path = "work/frontend".to_string();
         nested.favorite();
         assert!(has_live_favorite("work", std::slice::from_ref(&nested)));
 
-        // A favorite in a different group has no effect here.
         assert!(!has_live_favorite(
             "personal",
             std::slice::from_ref(&nested)
         ));
 
-        // A snoozed favorite is not "live". `snooze` leaves `favorited_at`
-        // set, so the `!is_snoozed()` guard is what actually excludes it.
         let mut snoozed = Instance::new("snoozed", "/tmp/snoozed");
         snoozed.group_path = "work".to_string();
         snoozed.favorite();
@@ -2341,7 +2088,6 @@ mod tests {
         assert!(!has_live_favorite("work", std::slice::from_ref(&snoozed)));
     }
 
-    /// In the Newest sort, an old favorite outranks a newer non-favorite.
     #[test]
     fn test_favorites_first_pins_in_newest_sort() {
         let mut old_fav = Instance::new("old_fav", "/tmp/of");
@@ -2352,19 +2098,16 @@ mod tests {
 
         let instances = [old_fav, new_plain];
 
-        // Feature off: plain newest-first, unchanged behavior.
         let mut refs: Vec<&Instance> = instances.iter().collect();
         sort_sessions_inner(&mut refs, SortOrder::Newest, false);
         assert_eq!(refs[0].title, "new_plain");
 
-        // Feature on: the favorite floats to the top.
         let mut refs: Vec<&Instance> = instances.iter().collect();
         sort_sessions_inner(&mut refs, SortOrder::Newest, true);
         assert_eq!(refs[0].title, "old_fav");
         assert_eq!(refs[1].title, "new_plain");
     }
 
-    /// Favorites keep the mode's own ordering among themselves (stable sort).
     #[test]
     fn test_favorites_first_preserves_order_within_favorites() {
         let mut fav_old = Instance::new("fav_old", "/tmp/fo");
@@ -2384,7 +2127,6 @@ mod tests {
         assert_eq!(refs[2].title, "plain");
     }
 
-    /// The same holds for the AZ sort.
     #[test]
     fn test_favorites_first_pins_in_az_sort() {
         let mut z_fav = Instance::new("zebra", "/tmp/z");
@@ -2402,7 +2144,6 @@ mod tests {
         assert_eq!(refs[0].title, "apple");
     }
 
-    /// A snoozed favorite must not be pinned to the top.
     #[test]
     fn test_favorites_first_ignores_snoozed_favorite() {
         let mut snoozed_fav = Instance::new("snoozed_fav", "/tmp/sf");
@@ -2422,10 +2163,8 @@ mod tests {
         );
     }
 
-    /// A group holding a favorited member outranks its sibling groups.
     #[test]
     fn test_favorites_first_pins_groups() {
-        // "old" holds an old favorite; "new" holds a recent non-favorite.
         let mut old_fav = Instance::new("old_fav", "/tmp/of");
         old_fav.group_path = "old".to_string();
         old_fav.created_at = chrono::Utc::now() - chrono::Duration::days(10);
@@ -2438,7 +2177,6 @@ mod tests {
         let instances = vec![old_fav, new_plain];
         let groups = vec![Group::new("old", "old"), Group::new("new", "new")];
 
-        // Feature off: Newest ordering puts "new" on top.
         let mut items = groups.clone();
         sort_groups_inner(
             &mut items,
@@ -2451,7 +2189,6 @@ mod tests {
         );
         assert_eq!(items[0].path, "new");
 
-        // Feature on: "old" wins because it holds a favorite.
         let mut items = groups.clone();
         sort_groups_inner(
             &mut items,
@@ -2465,9 +2202,6 @@ mod tests {
         assert_eq!(items[0].path, "old");
     }
 
-    /// The all-profiles view orders its root groups with its own inline pass
-    /// (each root carries per-profile instances), so the favorites bias needs
-    /// coverage here too. Serial: this path reads the process-wide flag.
     #[test]
     #[serial_test::serial]
     fn test_favorites_first_pins_root_groups_across_profiles() {
@@ -2522,9 +2256,6 @@ mod tests {
         );
     }
 
-    /// A group whose only favorite is archived must not be promoted.
-    /// (`favorite()` clears `archived_at`, and `has_live_favorite` filters
-    /// archived rows, so neither path may pin the group.)
     #[test]
     fn test_favorites_first_ignores_archived_members() {
         let mut archived_fav = Instance::new("archived_fav", "/tmp/af");
@@ -2555,7 +2286,6 @@ mod tests {
         );
     }
 
-    /// The Attention sort produces the same order regardless of the flag.
     #[test]
     fn test_favorites_first_does_not_change_attention_sort() {
         let mut fav_idle = Instance::new("fav_idle", "/tmp/fi");
@@ -2574,7 +2304,6 @@ mod tests {
         let on_titles: Vec<&str> = on.iter().map(|i| i.title.as_str()).collect();
         let off_titles: Vec<&str> = off.iter().map(|i| i.title.as_str()).collect();
         assert_eq!(on_titles, off_titles, "Attention sort must ignore the flag");
-        // Tier stays primary, so Waiting is still on top.
         assert_eq!(on_titles[0], "plain_waiting");
     }
 
@@ -2588,10 +2317,6 @@ mod tests {
         assert!(!is_live_favorite(&fav), "snoozed favorite is not live");
     }
 
-    /// `favorite()` and `archive()` clear each other, so an archived-or-trashed
-    /// favorite is only reachable via a legacy or hand-edited record. Build
-    /// those states directly: the helper must still reject them, since its
-    /// direct callers (the sort pass, the Tool-view renderer) do not pre-filter.
     #[test]
     fn test_is_live_favorite_excludes_archived_and_trashed() {
         let now = chrono::Utc::now();
@@ -2617,9 +2342,6 @@ mod tests {
 
     #[test]
     fn test_attention_rank_unread_promoter() {
-        // Tiers: Waiting=0, Error=1, Idle=2, Unknown=3, Running=4.
-        // Feature ON: an unread row ranks just below Waiting (0) and above
-        // every other tier, so an unread Idle beats a read Error/Running.
         let waiting = attention_rank(0, false, true);
         let unread_idle = attention_rank(2, true, true);
         let read_error = attention_rank(1, false, true);
@@ -2634,8 +2356,6 @@ mod tests {
             "unread Idle must rank above a read Running"
         );
 
-        // Feature OFF: rank is the raw tier, so ordering is unchanged and an
-        // (impossible-when-off, but defensive) unread flag does not promote.
         assert_eq!(attention_rank(0, false, false), 0);
         assert_eq!(attention_rank(2, true, false), 2);
         assert_eq!(attention_rank(4, false, false), 4);
@@ -2651,16 +2371,12 @@ mod tests {
             "read sunk rows must keep rank 99"
         );
 
-        // OFF ordering matches the pre-feature tier order for read rows.
         assert!(attention_rank(0, false, false) < attention_rank(1, false, false));
         assert!(attention_rank(1, false, false) < attention_rank(2, false, false));
     }
 
     #[test]
     fn test_favorite_pins_within_running_tier() {
-        // User rule: "favorites should be top of their respective category."
-        // Running sessions (tier 4, the "processing" bucket) now pin fav
-        // above non-fav peers; previously fav was a no-op for Running.
         let mut fav_running = Instance::new("fav_r", "/tmp/fr");
         fav_running.status = crate::session::Status::Running;
         fav_running.favorite();
@@ -2676,9 +2392,6 @@ mod tests {
 
     #[test]
     fn test_favorite_pins_within_stopped_tier() {
-        // Same rule applied to Stopped (tier 5). "Respective category"
-        // means every non-sunk tier; favorite is a universal within-tier
-        // pin, not a needs-help-only pin.
         let mut fav_stopped = Instance::new("fav_s", "/tmp/fs");
         fav_stopped.status = crate::session::Status::Stopped;
         fav_stopped.favorite();
@@ -2694,11 +2407,6 @@ mod tests {
 
     #[test]
     fn test_archive_clears_favorite() {
-        // Mutual exclusion: archive() explicitly clears favorited_at. The
-        // user's rule is "archived removes fav"; pinning a sunk row is
-        // incoherent, so archive hard-wins. Previous behavior (both flags
-        // coexisting with archive-beats-favorite at sort time) produced
-        // confusing "favorite icon on an archived row" JSON output.
         let mut inst = Instance::new("t", "/tmp/t");
         inst.status = crate::session::Status::Waiting;
         inst.favorite();
@@ -2713,10 +2421,6 @@ mod tests {
 
     #[test]
     fn test_favorite_clears_archive() {
-        // User's rule: "marking as favorite unarchives." favorite()
-        // explicitly clears archived_at so pressing `f` on an archived
-        // row actually surfaces it. Without this, tier 99 suppresses the
-        // favorite bias and the row stays buried.
         let mut inst = Instance::new("t", "/tmp/t");
         inst.archive();
         assert!(inst.is_archived(), "pre-condition: archived");
@@ -2727,9 +2431,6 @@ mod tests {
 
     #[test]
     fn test_favorite_clears_snooze() {
-        // Snooze shares tier 99 with archive, so a snoozed session is
-        // equally buried and equally defeats the favorite bias. Favorite's
-        // clear-everything-that-hides-me rule extends to snooze.
         let mut inst = Instance::new("t", "/tmp/t");
         inst.snooze(30);
         assert!(inst.is_snoozed(), "pre-condition: snoozed");
@@ -2740,21 +2441,11 @@ mod tests {
 
     #[test]
     fn test_user_interaction_wakes_archive_and_snooze() {
-        // `touch_last_accessed` is called on every user-initiated
-        // interaction (send message, attach). User rule: "messaging should
-        // unarchive." A user talking to a session is explicit evidence they
-        // care about it; leaving it sunk at tier 99 is incoherent.
-        // Favorite stays (orthogonal signal).
         let mut inst = Instance::new("t", "/tmp/t");
         inst.favorite();
         inst.archive();
-        // archive cleared fav per mutex; resurrect fav for this test
         inst.favorite();
         inst.snooze(30);
-        // snooze preserves fav; archive was cleared by fav above. Re-archive
-        // to cover both flags simultaneously (even though the mutex prevents
-        // the CLI paths from producing this state, the test exercises the
-        // wake logic directly).
         inst.archived_at = Some(chrono::Utc::now());
         assert!(
             inst.is_archived() && inst.is_snoozed() && inst.is_favorited(),
@@ -2796,9 +2487,6 @@ mod tests {
 
     #[test]
     fn test_unarchived_session_skips_field_in_json() {
-        // skip_serializing_if = "Option::is_none" means archived_at is
-        // omitted entirely when None. Backward-compatible for existing
-        // sessions.json files.
         let inst = Instance::new("t", "/tmp/t");
         let json = serde_json::to_string(&inst).unwrap();
         assert!(
@@ -2819,8 +2507,6 @@ mod tests {
     #[test]
     fn test_expired_snooze_reports_not_snoozed() {
         let mut inst = Instance::new("s", "/tmp/s");
-        // Stale past timestamp; the lazy predicate should reject it so
-        // the row rejoins the active Attention sort on next render.
         inst.snoozed_until = Some(Utc::now() - chrono::Duration::minutes(5));
         assert!(
             !inst.is_snoozed(),
@@ -2892,10 +2578,6 @@ mod tests {
 
     #[test]
     fn test_archive_beats_snooze_on_prefix() {
-        // Precedence rule: archive wins over snooze. Both flags set
-        // together should still honor archive (tier 99 is shared; the
-        // prefix rule is tested in render, but here we just verify the
-        // predicates disagree cleanly).
         let mut inst = Instance::new("s", "/tmp/s");
         inst.archive();
         inst.snooze(30);
@@ -2906,8 +2588,6 @@ mod tests {
 
     #[test]
     fn test_legacy_json_without_archived_at_deserializes() {
-        // Existing sessions.json files predate this field. Verify they load
-        // cleanly with archived_at defaulting to None.
         let legacy = r#"{
             "id": "abc",
             "title": "old",
@@ -2919,9 +2599,6 @@ mod tests {
         assert!(inst.archived_at.is_none());
     }
 
-    /// #3237: the scratch bucket's key is a sentinel, so name-ordering the
-    /// archived sub-folders on the raw key would sort it under `_` and hoist
-    /// it above every real project. It must sort where its label reads.
     #[test]
     fn archived_project_buckets_name_sort_uses_display_label() {
         let myrepo = Instance::new("a", "/repos/myrepo");
