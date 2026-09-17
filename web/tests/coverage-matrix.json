@@ -1262,7 +1262,7 @@
       "id": "sidebar.group-reorder",
       "kind": "mocked-playwright",
       "risk": "medium",
-      "specs": ["tests/sidebar-group-reorder.spec.ts"],
+      "specs": ["tests/sidebar-reorder.spec.ts"],
       "components": ["web/src/components/WorkspaceSidebar.tsx", "web/src/hooks/useRepoGroups.ts"]
     },
     {
@@ -1311,63 +1311,63 @@
       "id": "sidebar.reorder-stationary-click",
       "kind": "mocked-playwright",
       "risk": "medium",
-      "specs": ["tests/sidebar-reorder-stationary-click-navigates.spec.ts"],
+      "specs": ["tests/sidebar-reorder.spec.ts"],
       "components": ["web/src/components/WorkspaceSidebar.tsx"]
     },
     {
       "id": "sidebar.reorder-tiny-drag-noop",
       "kind": "mocked-playwright",
       "risk": "low",
-      "specs": ["tests/sidebar-reorder-tiny-drag-noop.spec.ts"],
+      "specs": ["tests/sidebar-reorder.spec.ts"],
       "components": ["web/src/components/WorkspaceSidebar.tsx"]
     },
     {
       "id": "sidebar.reorder-click-after-drag-suppressed",
       "kind": "mocked-playwright",
       "risk": "high",
-      "specs": ["tests/sidebar-reorder-click-after-drag-suppressed.spec.ts"],
+      "specs": ["tests/sidebar-reorder.spec.ts"],
       "components": ["web/src/components/WorkspaceSidebar.tsx"]
     },
     {
       "id": "sidebar.reorder-cross-group-noop",
       "kind": "mocked-playwright",
       "risk": "medium",
-      "specs": ["tests/sidebar-reorder-cross-group-noop.spec.ts"],
+      "specs": ["tests/sidebar-reorder.spec.ts"],
       "components": ["web/src/components/WorkspaceSidebar.tsx"]
     },
     {
       "id": "sidebar.reorder-read-only",
       "kind": "mocked-playwright",
       "risk": "medium",
-      "specs": ["tests/sidebar-reorder-read-only.spec.ts"],
+      "specs": ["tests/sidebar-reorder.spec.ts"],
       "components": ["web/src/components/WorkspaceSidebar.tsx"]
     },
     {
       "id": "sidebar.reorder-mobile-tap-navigates",
       "kind": "mocked-playwright",
       "risk": "medium",
-      "specs": ["tests/sidebar-reorder-mobile-tap-navigates.spec.ts"],
+      "specs": ["tests/sidebar-reorder.spec.ts"],
       "components": ["web/src/components/WorkspaceSidebar.tsx"]
     },
     {
       "id": "sidebar.reorder-mobile-flick-scrolls",
       "kind": "mocked-playwright",
       "risk": "medium",
-      "specs": ["tests/sidebar-reorder-mobile-flick-scrolls.spec.ts"],
+      "specs": ["tests/sidebar-reorder.spec.ts"],
       "components": ["web/src/components/WorkspaceSidebar.tsx"]
     },
     {
       "id": "sidebar.reorder-mobile-press-hold",
       "kind": "mocked-playwright",
       "risk": "high",
-      "specs": ["tests/sidebar-reorder-mobile-press-hold-reorders.spec.ts"],
+      "specs": ["tests/sidebar-reorder.spec.ts"],
       "components": ["web/src/components/WorkspaceSidebar.tsx"]
     },
     {
       "id": "story.sidebar-reorder-reload-persists",
       "kind": "mocked-playwright",
       "risk": "medium",
-      "specs": ["tests/sidebar-reorder-reload-persists.spec.ts"],
+      "specs": ["tests/sidebar-reorder.spec.ts"],
       "components": ["web/src/components/WorkspaceSidebar.tsx"]
     },
     {
@@ -2785,7 +2785,7 @@
       "id": "story.sidebar-row-click-navigate",
       "kind": "mocked-playwright",
       "risk": "medium",
-      "specs": ["tests/sidebar-reorder-stationary-click-navigates.spec.ts"],
+      "specs": ["tests/sidebar-reorder.spec.ts"],
       "components": ["web/src/components/WorkspaceSidebar.tsx"]
     },
     {
