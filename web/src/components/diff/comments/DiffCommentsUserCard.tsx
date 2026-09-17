@@ -9,11 +9,7 @@ interface Props {
   payload: DiffCommentsCardPayload;
 }
 
-/** Rich rendering of a diff-comments prompt in the structured view user-message
- *  slot. Built from the typed `UserDiffCommentsPrompt` event (carried on
- *  the assistant-ui message metadata) or, for legacy prompts, from the
- *  decoded sentinel payload. Falls back to raw text rendering upstream
- *  when neither is present. */
+/** Diff-comments prompt card for the transcript, from the typed event or a legacy sentinel. */
 export function DiffCommentsUserCard({ payload }: Props) {
   const { intro, outro, isMultiRepo, comments } = payload;
   const sorted = [...comments].sort(compareComments);
@@ -50,9 +46,7 @@ export function DiffCommentsUserCard({ payload }: Props) {
   );
 }
 
-/** Shiki-backed snippet renderer matching the structured view Markdown code
- *  block style. Falls back to plain `<pre>` while loading or when the
- *  language can't be resolved. See `lib/snippetHighlighter.ts`. */
+/** Shiki-highlighted snippet, plain `<pre>` while loading or for unknown languages. */
 function HighlightedSnippet({ code, language, filePath }: { code: string; language?: string; filePath: string }) {
   const [html, setHtml] = useState<string | null>(null);
   const shiki = useShikiTheme();
@@ -66,7 +60,7 @@ function HighlightedSnippet({ code, language, filePath }: { code: string; langua
         if (cancelled) return;
         if (out) setHtml(out);
       } catch {
-        // Unknown lang → fall through to plain rendering.
+        // Unknown language: keep plain rendering.
       }
     })();
     return () => {
@@ -75,10 +69,7 @@ function HighlightedSnippet({ code, language, filePath }: { code: string; langua
   }, [code, language, filePath, shiki.theme, shiki.appearance]);
 
   if (html) {
-    // Shiki HTML-escapes the user-supplied `code` before tokenizing, so
-    // the only attacker-controlled values reach the DOM as text nodes
-    // inside `<span>` tags with locally-generated style attributes.
-    // Same trust boundary as the structured view Markdown renderer's code blocks.
+    // Shiki escapes `code`; the HTML carries only locally generated styles.
     return (
       <div
         className="overflow-x-auto border-b border-surface-700/40 bg-surface-950 px-3 py-2 text-[12px] [&_pre]:!bg-transparent [&_pre]:!m-0 [&_pre]:!p-0"

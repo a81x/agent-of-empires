@@ -7,9 +7,8 @@ import { MarkdownFileView } from "./MarkdownFileView";
 
 interface Props {
   sessionId: string;
-  /** Project-relative or absolute path; the server enforces provenance. */
+  /** The server confines which paths may be read. */
   filePath: string;
-  /** Called when the user wants to go back to the file list. */
   onBack?: () => void;
 }
 
@@ -19,18 +18,11 @@ interface Loaded {
   truncated: boolean;
 }
 
-/**
- * View a session file fetched from the provenance-confined `/file` endpoint
- * (#3088). Markdown renders via {@link MarkdownFileView} with a Rendered/Raw
- * toggle (sharing the `markdownPreview` setting with the diff viewer); other
- * files fall back to the shared shiki {@link FullFileViewer}.
- */
+/** A session file: Markdown with a Rendered/Raw toggle, otherwise highlighted source. */
 export function FileContentViewer({ sessionId, filePath, onBack }: Props) {
   const { settings, update } = useWebSettings();
   const containerRef = useRef<HTMLDivElement>(null);
-  // Result keyed by target: a stale response (from a rapid file switch) is
-  // dropped at render time by comparing keys, so no state is reset in render or
-  // synchronously in the effect. Mirrors FullFileViewer's async-only writes.
+  // Keyed by target so a stale response from a fast switch is ignored at render.
   const key = `${sessionId} ${filePath}`;
   const [loaded, setLoaded] = useState<{ key: string; data: Loaded | null; error: string | null }>({
     key,
@@ -61,9 +53,7 @@ export function FileContentViewer({ sessionId, filePath, onBack }: Props) {
   const isMarkdown = extensionToLanguage(filePath) === "markdown";
   const showRendered = isMarkdown && !data?.is_binary && settings.markdownPreview === "rendered";
 
-  // Move focus into the viewer when a file opens, so keyboard and screen-reader
-  // users land on the content instead of staying on the (now unmounted) file
-  // row. FilesPane restores focus to that row on close. See #3088 review.
+  // Move focus into the viewer; FilesPane restores it to the row on close.
   useEffect(() => {
     containerRef.current?.focus();
   }, [filePath]);
