@@ -28,8 +28,14 @@ screen always works. The entry stores a device-bound session instead of a
 token, so rotating the remote's token or changing its passphrase does not
 affect it, and it passes a passphrase wall. The view also lists paired
 devices; select one and press `x` twice to revoke it. A revoked or expired
-pairing shows as HTTP 401 on the remote's header; run `aoe remote add` again
-with a new code.
+pairing shows as "not authorized" on the remote's header, and the TUI stops
+asking that remote until its entry changes; run `aoe remote add` again with a
+new code. Re-adding an address under a new name replaces the old entry.
+
+Five wrong pairing codes or tokens from one IP within 15 minutes lock it out
+for 15 minutes. The TUI waits out a lockout instead of retrying and shows the
+time left on the remote's header. The exposed view on the remote lists locked
+out IPs; press `u` there to let them try again.
 
 Without `--name`, the entry is named after the remote's hostname (with a
 numeric suffix if another remote has that name); adding an address that is

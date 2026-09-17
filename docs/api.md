@@ -20,6 +20,11 @@ in the TUI's Remote Access view, `R`). Three transports are accepted:
 Read-only mode (`aoe serve --read-only`) blocks every write endpoint
 with `403 read_only`. Read endpoints work normally.
 
+Five wrong tokens from one IP within 15 minutes lock that IP out for 15
+minutes: every request then gets `429 rate_limited` with `Retry-After` in
+seconds. A request that presents no token does not count. Wrong pairing codes
+have their own lockout (see [POST /api/pair](#post-apipair)).
+
 A device-bound login session also authenticates, with no token: send
 `Cookie: aoe_session=<session_id>` plus `X-Aoe-Device-Binding: <secret>` (on
 a WebSocket upgrade the binding may instead ride as the subprotocol
@@ -64,8 +69,25 @@ survives passphrase changes; `GET /api/devices` lists it with its
 | Status | Meaning |
 | --- | --- |
 | `400 bad_request` | Malformed code, missing `device_name`, or a binding that is not 32 bytes |
-| `401 invalid_code` | Unknown, used or expired code. Counts toward the per-IP lockout; 20 wrong codes invalidate every live code |
-| `429 rate_limited` | The caller's IP is locked out (`Retry-After` gives seconds) |
+| `401 invalid_code` | Unknown, used or expired code. Five from one IP lock it out of pairing for 15 minutes; 20 in total invalidate every live code |
+| `429 rate_limited` | The caller's IP is locked out of pairing (`Retry-After` gives seconds) |
+
+Only wrong codes count toward the pairing lockout, so other failed requests
+from the same machine cannot block it. A successful pairing also lifts the
+IP's token lockout.
+
+### GET /api/pair/lockouts
+
+Lists IPs locked out by wrong tokens or pairing codes, longest remaining
+first. Unix socket owner only, like minting.
+
+```json
+[{"ip": "100.89.98.53", "remaining_secs": 725}]
+```
+
+### DELETE /api/pair/lockouts
+
+Lifts every lockout (`204`). Unix socket owner only.
 
 ## Skills
 

@@ -111,6 +111,17 @@ impl Registry {
         }
     }
 
+    /// Drop entries for `url` under any name but `name`, returning theirs. A
+    /// re-pair under a new name would otherwise leave the old credentials
+    /// polling, and failing, against the same daemon.
+    pub fn remove_other_names_for(&mut self, name: &str, url: &str) -> Vec<String> {
+        let (dropped, kept) = std::mem::take(&mut self.remotes)
+            .into_iter()
+            .partition(|r| r.url == url && r.name != name);
+        self.remotes = kept;
+        dropped.into_iter().map(|r: Remote| r.name).collect()
+    }
+
     pub fn remove(&mut self, name: &str) -> bool {
         let before = self.remotes.len();
         self.remotes.retain(|r| r.name != name);
@@ -433,6 +444,22 @@ mod tests {
             registry.get("mini").unwrap().url,
             "https://other.example.ts.net"
         );
+    }
+
+    #[test]
+    fn re_adding_a_url_under_a_new_name_drops_the_old_entry() {
+        let mut registry = Registry::default();
+        let mut old = remote("old");
+        old.url = remote("home").url;
+        registry.upsert(old);
+        registry.upsert(remote("home"));
+        registry.upsert(remote("elsewhere"));
+        assert_eq!(
+            registry.remove_other_names_for("home", &remote("home").url),
+            ["old"]
+        );
+        let names: Vec<_> = registry.remotes().iter().map(|r| r.name.as_str()).collect();
+        assert_eq!(names, ["home", "elsewhere"]);
     }
 
     #[test]

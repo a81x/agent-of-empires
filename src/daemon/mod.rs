@@ -115,6 +115,30 @@ impl fmt::Debug for DaemonClient {
     }
 }
 
+/// `Retry-After` in whole seconds, when the daemon sent one.
+pub(crate) fn retry_after_secs(headers: &reqwest::header::HeaderMap) -> Option<u64> {
+    headers
+        .get(reqwest::header::RETRY_AFTER)?
+        .to_str()
+        .ok()?
+        .trim()
+        .parse()
+        .ok()
+}
+
+/// How a lockout reads to the user, with where the failures usually come from.
+pub(crate) fn lockout_message(retry_after_secs: Option<u64>) -> String {
+    let wait = match retry_after_secs {
+        Some(secs) if secs >= 60 => format!(" for {}m", secs.div_ceil(60)),
+        Some(secs) => format!(" for {secs}s"),
+        None => String::new(),
+    };
+    format!(
+        "locked out{wait} by too many failed attempts; another aoe or browser on this machine \
+         may be retrying with old credentials, so run `aoe remote list` and remove stale entries"
+    )
+}
+
 /// Failure from constructing or calling a [`DaemonClient`].
 #[derive(Debug, Error)]
 pub enum DaemonClientError {
@@ -150,6 +174,9 @@ pub enum DaemonClientError {
         body: String,
         truncated: bool,
     },
+    /// The daemon locked this IP out after failed authentication attempts.
+    #[error("{}", lockout_message(*retry_after_secs))]
+    RateLimited { retry_after_secs: Option<u64> },
     /// A successful response exceeded the bounded sessions-envelope limit.
     #[error("daemon response exceeded the {limit}-byte limit")]
     ResponseTooLarge { limit: usize },
@@ -714,6 +741,11 @@ impl DaemonClient {
         let mut response =
             transport::execute(&self.http, self.unix_path.as_deref(), request).await?;
         let status = response.status();
+        if status == StatusCode::TOO_MANY_REQUESTS {
+            return Err(DaemonClientError::RateLimited {
+                retry_after_secs: retry_after_secs(response.headers()),
+            });
+        }
         if !status.is_success() {
             let code = ApiErrorCode::from_headers(status, response.headers(), false);
             // D1: 409 lifecycle_locked maps from status plus the single finite

@@ -159,6 +159,16 @@ fn error(status: StatusCode, code: &str, message: &str) -> Response {
         .into_response()
 }
 
+fn owner_only(local: Option<&LocalAuthorization>) -> Option<Response> {
+    (!matches!(local, Some(LocalAuthorization::UnixOwner(_)))).then(|| {
+        error(
+            StatusCode::FORBIDDEN,
+            "forbidden",
+            "Only the daemon's own machine can do this",
+        )
+    })
+}
+
 /// POST /api/pair/codes
 ///
 /// Local owner only: a LAN, tunnel or loopback TCP caller never mints, even
@@ -167,12 +177,8 @@ pub async fn mint_handler(
     State(state): State<Arc<AppState>>,
     local: Option<axum::Extension<LocalAuthorization>>,
 ) -> Response {
-    if !matches!(local.as_deref(), Some(LocalAuthorization::UnixOwner(_))) {
-        return error(
-            StatusCode::FORBIDDEN,
-            "forbidden",
-            "Pairing codes can only be created on the daemon's machine",
-        );
+    if let Some(refused) = owner_only(local.as_deref()) {
+        return refused;
     }
     let code = state.pairing.mint();
     tracing::info!(target: "auth.pairing", "pairing code minted");
@@ -181,6 +187,56 @@ pub async fn mint_handler(
         "expires_in_secs": CODE_TTL.as_secs(),
     }))
     .into_response()
+}
+
+/// GET /api/pair/lockouts
+///
+/// Local owner only: IPs locked out by failed authentication or pairing,
+/// longest remaining first, as `[{"ip", "remaining_secs"}]`.
+pub async fn lockouts_handler(
+    State(state): State<Arc<AppState>>,
+    local: Option<axum::Extension<LocalAuthorization>>,
+) -> Response {
+    if let Some(refused) = owner_only(local.as_deref()) {
+        return refused;
+    }
+    let mut merged = std::collections::HashMap::<IpAddr, u64>::new();
+    for (ip, secs) in state
+        .rate_limiter
+        .lockouts()
+        .await
+        .into_iter()
+        .chain(state.pairing_limiter.lockouts().await)
+    {
+        let entry = merged.entry(ip).or_default();
+        *entry = (*entry).max(secs);
+    }
+    let mut lockouts: Vec<_> = merged.into_iter().collect();
+    lockouts.sort_by_key(|(ip, secs)| (std::cmp::Reverse(*secs), *ip));
+    Json(
+        lockouts
+            .into_iter()
+            .map(|(ip, secs)| serde_json::json!({"ip": ip.to_string(), "remaining_secs": secs}))
+            .collect::<Vec<_>>(),
+    )
+    .into_response()
+}
+
+/// DELETE /api/pair/lockouts
+///
+/// Local owner only: lift every lockout, so the operator can let a device
+/// back in without restarting the daemon.
+pub async fn clear_lockouts_handler(
+    State(state): State<Arc<AppState>>,
+    local: Option<axum::Extension<LocalAuthorization>>,
+) -> Response {
+    if let Some(refused) = owner_only(local.as_deref()) {
+        return refused;
+    }
+    state.rate_limiter.clear().await;
+    state.pairing_limiter.clear().await;
+    tracing::info!(target: "auth.rate_limit", "lockouts cleared by the local owner");
+    StatusCode::NO_CONTENT.into_response()
 }
 
 #[derive(Deserialize)]
@@ -211,7 +267,7 @@ pub async fn pair_handler(
     };
     let client_ip: IpAddr = resolve_client_ip(addr, &headers, state.behind_tunnel);
 
-    if let Some(remaining) = state.rate_limiter.check_locked(client_ip).await {
+    if let Some(remaining) = state.pairing_limiter.check_locked(client_ip).await {
         return (
             StatusCode::TOO_MANY_REQUESTS,
             [("Retry-After", remaining.to_string())],
@@ -255,7 +311,7 @@ pub async fn pair_handler(
             );
         }
         outcome @ (Redemption::Rejected | Redemption::Burned) => {
-            let locked = state.rate_limiter.record_failure(client_ip).await;
+            let locked = state.pairing_limiter.record_failure(client_ip).await;
             tracing::warn!(
                 target: "auth.pairing",
                 ip = %client_ip,
@@ -271,6 +327,8 @@ pub async fn pair_handler(
         }
     }
 
+    // A fresh code from the owner outranks this IP's earlier failures.
+    state.pairing_limiter.record_success(client_ip).await;
     state.rate_limiter.record_success(client_ip).await;
     let user_agent = headers
         .get(axum::http::header::USER_AGENT)
@@ -590,6 +648,69 @@ mod tests {
                 .send(&app)
                 .await;
             assert_eq!(status, StatusCode::OK);
+        }
+
+        #[tokio::test]
+        async fn a_stale_client_on_the_same_ip_cannot_block_pairing() {
+            let state = state(None);
+            let app = test_support::build_router_for_test(state.clone());
+            let ip = "203.0.113.7".parse().unwrap();
+            for _ in 0..8 {
+                let (status, _) = call("GET", "/api/sessions")
+                    .session("revoked", &binding(4))
+                    .send(&app)
+                    .await;
+                assert_eq!(status, StatusCode::UNAUTHORIZED);
+            }
+            assert_eq!(
+                state.rate_limiter.check_locked(ip).await,
+                None,
+                "a request without a token is not a guess"
+            );
+
+            state.rate_limiter.lock_out(ip).await;
+            let (status, _) = call("GET", "/api/sessions").bearer().send(&app).await;
+            assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+            let code = mint(&app).await;
+            let secret = binding(5);
+            let (status, session) = pair(&app, &code, &secret).await;
+            assert_eq!(
+                status,
+                StatusCode::OK,
+                "generic lockouts do not gate pairing"
+            );
+            let (status, _) = call("GET", "/api/sessions")
+                .session(&session, &secret)
+                .send(&app)
+                .await;
+            assert_eq!(status, StatusCode::OK, "pairing lifts the IP's lockout");
+        }
+
+        #[tokio::test]
+        async fn only_the_unix_owner_lists_and_clears_lockouts() {
+            let state = state(None);
+            let app = test_support::build_router_for_test(state.clone());
+            let ip = "198.51.100.2".parse().unwrap();
+            state.pairing_limiter.lock_out(ip).await;
+            for method in ["GET", "DELETE"] {
+                let (status, _) = call(method, "/api/pair/lockouts").bearer().send(&app).await;
+                assert_eq!(status, StatusCode::FORBIDDEN, "{method} over TCP");
+            }
+            let owner = || ConnectionPeer::UnixOwner { uid: 0 };
+            let (status, listed) = call("GET", "/api/pair/lockouts")
+                .from(owner())
+                .send(&app)
+                .await;
+            assert_eq!(status, StatusCode::OK);
+            assert_eq!(listed[0]["ip"], "198.51.100.2");
+            assert!(listed[0]["remaining_secs"].as_u64().unwrap() > 0);
+
+            let (status, _) = call("DELETE", "/api/pair/lockouts")
+                .from(owner())
+                .send(&app)
+                .await;
+            assert_eq!(status, StatusCode::NO_CONTENT);
+            assert_eq!(state.pairing_limiter.check_locked(ip).await, None);
         }
 
         #[tokio::test]

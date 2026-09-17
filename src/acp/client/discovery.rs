@@ -46,6 +46,21 @@ impl DaemonEndpoint {
         }
     }
 
+    /// Changes whenever the address or any credential does, so a caller can
+    /// tell a re-paired entry from the one a daemon refused.
+    pub(crate) fn credential_fingerprint(&self) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        self.base_url.hash(&mut hasher);
+        self.token.hash(&mut hasher);
+        self.login
+            .as_ref()
+            .map(|login| (&login.session, &login.binding))
+            .hash(&mut hasher);
+        self.allow_plaintext.hash(&mut hasher);
+        hasher.finish()
+    }
+
     pub(crate) fn unix_path(&self) -> Option<&Path> {
         self.unix_path.as_deref()
     }

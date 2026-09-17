@@ -315,6 +315,7 @@ pub(crate) async fn start_server(
         login::LoginManager::new(passphrase)
     });
     let rate_limiter = Arc::new(RateLimiter::new());
+    let pairing_limiter = Arc::new(RateLimiter::new());
 
     // Fail closed before anything binds: check the gates that actually
     // came up against the mode that was asked for. See #3843.
@@ -752,6 +753,7 @@ pub(crate) async fn start_server(
         token_manager: Arc::clone(&token_manager),
         login_manager: Arc::clone(&login_manager),
         rate_limiter: Arc::clone(&rate_limiter),
+        pairing_limiter: Arc::clone(&pairing_limiter),
         pairing: Default::default(),
         behind_tunnel: remote || behind_proxy,
         auth_mode,
@@ -1036,6 +1038,7 @@ pub(crate) async fn start_server(
         });
 
     rate_limiter.spawn_cleanup_task(state.shutdown.clone());
+    pairing_limiter.spawn_cleanup_task(state.shutdown.clone());
     login_manager.spawn_cleanup_task(state.shutdown.clone());
 
     if remote {

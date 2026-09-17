@@ -1611,10 +1611,16 @@ fn render_pairing_column(
     } else {
         device_lines(height.saturating_sub(fixed))
     };
+    let lockouts = model
+        .pairing
+        .map(|panel| panel.lockout_lines(theme))
+        .unwrap_or_default();
     let mut lines = vec![Line::styled(
         "Pair another aoe",
         Style::default().fg(theme.accent).bold(),
     )];
+    // A locked-out IP cannot pair at all, so it outranks the code.
+    lines.extend(lockouts);
     lines.extend(code);
     if spaced {
         lines.push(Line::from(""));
@@ -1735,6 +1741,9 @@ fn render_active_footer(
         if !wide {
             keys.push(("w", if model.show_web { "pairing" } else { "web/QR" }));
         }
+        if model.pairing.is_some_and(|p| p.has_lockouts()) {
+            keys.push(("u", "unblock"));
+        }
         keys.extend([
             ("x", "revoke"),
             ("e", "exposure"),
@@ -1775,6 +1784,7 @@ fn help_shortcuts(is_tunnel: bool) -> Vec<(&'static str, &'static str)> {
         ("c", "Copy the command for the other machine"),
         ("w", "Show browser and phone access (narrow terminals)"),
         ("↑↓ / x", "Select a paired device / revoke it"),
+        ("u", "Let IPs locked out by failed attempts try again"),
         ("e", "Change exposure (back to localhost, LAN, tunnel)"),
         ("r", "Restart server (clears all client sessions)"),
     ];
@@ -1792,7 +1802,7 @@ fn help_shortcuts(is_tunnel: bool) -> Vec<(&'static str, &'static str)> {
 fn render_help_overlay(frame: &mut Frame, area: Rect, theme: &Theme, mode: Exposure) {
     let dialog_width: u16 = 72.min(area.width.saturating_sub(4));
     let is_tunnel = mode == Exposure::Tunnel;
-    let dialog_height: u16 = if is_tunnel { 21 } else { 15 };
+    let dialog_height: u16 = if is_tunnel { 22 } else { 16 };
     let dialog_height = dialog_height.min(area.height.saturating_sub(4));
     let x = area.x + (area.width.saturating_sub(dialog_width)) / 2;
     let y = area.y + (area.height.saturating_sub(dialog_height)) / 2;

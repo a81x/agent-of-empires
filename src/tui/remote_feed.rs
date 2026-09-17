@@ -5,9 +5,13 @@
 //! instance map, so no local lifecycle action, poller, or storage write can
 //! reach a session this machine does not own.
 
+use std::collections::HashMap;
 use std::sync::mpsc::TryRecvError;
+use std::time::{Duration, Instant};
 
-use crate::daemon::SessionResponse;
+use reqwest::StatusCode;
+
+use crate::daemon::{DaemonClientError, SessionResponse};
 use crate::session::{Instance, Item, RemoteShelf, SandboxInfo, Status, WorktreeInfo};
 use crate::tui::worker::Worker;
 
@@ -391,40 +395,110 @@ async fn fetch_meta(client: &crate::daemon::DaemonClient) -> Option<RemoteMeta> 
     })
 }
 
-async fn fetch_one(remote: RemoteEntry, cached: Option<RemoteMeta>) -> RemoteSnapshot {
+/// Lockout wait when the daemon names none: its own lockout length.
+const DEFAULT_LOCKOUT: Duration = Duration::from_secs(15 * 60);
+
+/// A remote the feed stopped asking after it refused this machine. Every
+/// refused request is another failed attempt against its lockout, so polling
+/// on would keep the IP locked and block pairing again from here.
+#[derive(Debug)]
+struct Hold {
+    credentials: u64,
+    /// When to ask again; `None` waits for the entry's credentials to change.
+    until: Option<Instant>,
+    /// Shown for a credential refusal; a lockout renders its time left.
+    refused: Option<String>,
+}
+
+impl Hold {
+    fn after(error: &DaemonClientError, url: &str, credentials: u64, now: Instant) -> Option<Self> {
+        match error {
+            DaemonClientError::RateLimited { retry_after_secs } => Some(Self {
+                credentials,
+                until: Some(now + retry_after_secs.map_or(DEFAULT_LOCKOUT, Duration::from_secs)),
+                refused: None,
+            }),
+            DaemonClientError::Status {
+                status: StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN,
+                code: None,
+                ..
+            } => Some(Self {
+                credentials,
+                until: None,
+                refused: Some(format!(
+                    "not authorized; pair again with `aoe remote add {url}`"
+                )),
+            }),
+            _ => None,
+        }
+    }
+
+    /// The header error while this still holds the remote, else `None`.
+    fn error(&self, credentials: u64, now: Instant) -> Option<String> {
+        if credentials != self.credentials {
+            return None;
+        }
+        match (self.until, &self.refused) {
+            (None, Some(refused)) => Some(refused.clone()),
+            (Some(until), _) if now < until => Some(crate::daemon::lockout_message(Some(
+                until.duration_since(now).as_secs().max(1),
+            ))),
+            _ => None,
+        }
+    }
+}
+
+type Holds = HashMap<String, Hold>;
+
+async fn fetch_one(
+    remote: RemoteEntry,
+    cached: Option<RemoteMeta>,
+) -> (RemoteSnapshot, Option<Hold>) {
     let name = remote.name;
+    let credentials = remote.endpoint.credential_fingerprint();
+    let refused = |e: &DaemonClientError| {
+        Hold::after(e, &remote.endpoint.base_url, credentials, Instant::now())
+    };
     let client = match remote.endpoint.daemon_client() {
         Ok(client) => client,
         Err(e) => {
-            return RemoteSnapshot {
+            let snapshot = RemoteSnapshot {
                 name,
                 sessions: Some(Err(e.summary())),
                 meta: cached,
-            }
+            };
+            return (snapshot, None);
         }
     };
-    let sessions = client
-        .list_sessions(None)
-        .await
-        .map(|envelope| {
+    let (sessions, hold) = match client.list_sessions(None).await {
+        Ok(envelope) => {
             let mut rows = envelope.sessions;
             rows.sort_by_key(|row| row.title.to_lowercase());
-            rows
-        })
-        .map_err(|e| e.summary());
+            (Ok(rows), None)
+        }
+        Err(e) => {
+            let hold = refused(&e);
+            let message = hold
+                .as_ref()
+                .and_then(|hold| hold.error(credentials, Instant::now()))
+                .unwrap_or_else(|| e.summary());
+            (Err(message), hold)
+        }
+    };
     let meta = match cached {
         Some(meta) => Some(meta),
         None if sessions.is_ok() => fetch_meta(&client).await,
         None => None,
     };
-    RemoteSnapshot {
+    let snapshot = RemoteSnapshot {
         name,
         sessions: Some(sessions),
         meta,
-    }
+    };
+    (snapshot, hold)
 }
 
-type MetaCache = std::collections::HashMap<String, (std::time::Instant, RemoteMeta)>;
+type MetaCache = HashMap<String, (Instant, RemoteMeta)>;
 
 /// One finished read of every enabled remote.
 #[derive(Debug)]
@@ -435,32 +509,60 @@ pub(crate) struct FeedRead {
 
 /// Every enabled remote, concurrently, so one dead daemon cannot stall the
 /// rest behind its request timeout.
-async fn fetch_all(cache: &mut MetaCache) -> FeedRead {
+async fn fetch_all(cache: &mut MetaCache, holds: &mut Holds) -> FeedRead {
     let remotes = enabled_remotes();
-    let fresh = |name: &str| {
+    let now = Instant::now();
+    let fresh = |cache: &MetaCache, name: &str| {
         cache
             .get(name)
             .filter(|(at, _)| at.elapsed() < META_TTL)
             .map(|(_, meta)| meta.clone())
     };
-    let requests: Vec<_> = remotes
-        .entries
-        .into_iter()
-        .map(|remote| {
-            let cached = fresh(&remote.name);
-            let refetch = cached.is_none();
-            (refetch, fetch_one(remote, cached))
-        })
-        .collect();
-    let refetched: Vec<bool> = requests.iter().map(|(refetch, _)| *refetch).collect();
-    let snapshots = futures_util::future::join_all(requests.into_iter().map(|(_, f)| f)).await;
-    for (snapshot, refetch) in snapshots.iter().zip(refetched) {
-        if let (true, Some(meta)) = (refetch, &snapshot.meta) {
-            cache.insert(
-                snapshot.name.clone(),
-                (std::time::Instant::now(), meta.clone()),
-            );
+    holds.retain(|name, _| remotes.get(name).is_some());
+    // `None` marks a remote being read; held ones answer without a request.
+    let mut slots = Vec::new();
+    let mut requests = Vec::new();
+    for remote in remotes.entries {
+        let credentials = remote.endpoint.credential_fingerprint();
+        if let Some(error) = holds
+            .get(&remote.name)
+            .and_then(|hold| hold.error(credentials, now))
+        {
+            slots.push(Some(RemoteSnapshot {
+                meta: fresh(cache, &remote.name),
+                name: remote.name,
+                sessions: Some(Err(error)),
+            }));
+            continue;
         }
+        holds.remove(&remote.name);
+        let cached = fresh(cache, &remote.name);
+        requests.push((cached.is_none(), fetch_one(remote, cached)));
+        slots.push(None);
+    }
+    let refetched: Vec<bool> = requests.iter().map(|(refetch, _)| *refetch).collect();
+    let mut fetched = futures_util::future::join_all(requests.into_iter().map(|(_, f)| f))
+        .await
+        .into_iter()
+        .zip(refetched);
+    let mut snapshots = Vec::with_capacity(slots.len());
+    for slot in slots {
+        let snapshot = match slot {
+            Some(held) => held,
+            None => {
+                let Some(((snapshot, hold), refetch)) = fetched.next() else {
+                    continue;
+                };
+                if let (true, Some(meta)) = (refetch, &snapshot.meta) {
+                    cache.insert(snapshot.name.clone(), (Instant::now(), meta.clone()));
+                }
+                if let Some(hold) = hold {
+                    holds.insert(snapshot.name.clone(), hold);
+                }
+                snapshot
+            }
+        };
+        snapshots.push(snapshot);
     }
     FeedRead {
         snapshots,
@@ -506,8 +608,9 @@ impl RemoteFeed {
         Self {
             worker: {
                 let mut cache = MetaCache::new();
+                let mut holds = Holds::new();
                 Worker::spawn("aoe-remote-feed", move |()| match runtime.as_ref() {
-                    Ok(rt) => rt.block_on(fetch_all(&mut cache)),
+                    Ok(rt) => rt.block_on(fetch_all(&mut cache, &mut holds)),
                     Err(e) => FeedRead {
                         snapshots: Vec::new(),
                         registry_error: Some(format!("no runtime: {e}")),
@@ -574,6 +677,50 @@ mod tests {
         assert_eq!(wt.main_repo_path, "/Users/me/scm/app");
         assert_eq!(wt.base_branch.as_deref(), Some("main"));
         assert!(inst.sandbox_info.is_some_and(|s| s.enabled));
+    }
+
+    #[test]
+    fn a_refusing_remote_is_left_alone_until_its_wait_or_its_credentials_change() {
+        let now = Instant::now();
+        let url = "http://100.89.98.53:63827";
+        let status = |status| DaemonClientError::Status {
+            status,
+            code: None,
+            body: String::new(),
+            truncated: false,
+        };
+
+        let refused = Hold::after(&status(StatusCode::UNAUTHORIZED), url, 1, now).unwrap();
+        let error = refused.error(1, now + Duration::from_secs(3600)).unwrap();
+        assert!(error.contains(&format!("aoe remote add {url}")), "{error}");
+        assert_eq!(refused.error(2, now), None, "re-paired: poll again");
+
+        let locked = DaemonClientError::RateLimited {
+            retry_after_secs: Some(725),
+        };
+        let locked = Hold::after(&locked, url, 1, now).unwrap();
+        let error = locked.error(1, now + Duration::from_secs(60)).unwrap();
+        assert!(error.contains("locked out for 12m"), "{error}");
+        assert_eq!(locked.error(1, now + Duration::from_secs(725)), None);
+
+        let unnamed = DaemonClientError::RateLimited {
+            retry_after_secs: None,
+        };
+        let unnamed = Hold::after(&unnamed, url, 1, now).unwrap();
+        assert!(unnamed.error(1, now + DEFAULT_LOCKOUT / 2).is_some());
+
+        for passing in [
+            DaemonClientError::Transport,
+            status(StatusCode::INTERNAL_SERVER_ERROR),
+            DaemonClientError::Status {
+                status: StatusCode::FORBIDDEN,
+                code: Some(crate::daemon::ApiErrorCode::ReadOnly),
+                body: String::new(),
+                truncated: false,
+            },
+        ] {
+            assert!(Hold::after(&passing, url, 1, now).is_none(), "{passing:?}");
+        }
     }
 
     #[test]

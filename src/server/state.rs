@@ -108,6 +108,9 @@ pub struct AppState {
     pub token_manager: Arc<TokenManager>,
     pub login_manager: Arc<login::LoginManager>,
     pub rate_limiter: Arc<RateLimiter>,
+    /// Wrong pairing codes only, so a stale client's 401s elsewhere cannot
+    /// lock a machine out of pairing again.
+    pub pairing_limiter: Arc<RateLimiter>,
     pub pairing: super::pairing::PairingCodes,
     pub behind_tunnel: bool,
     /// Coarse auth mode resolved once at launch (`"token"` / `"passphrase"` /

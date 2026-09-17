@@ -1905,7 +1905,7 @@ impl HomeView {
                 match error {
                     Some(error) => (
                         ICON_ERROR,
-                        Cow::Owned(format!("{name} (unreachable: {error})")),
+                        Cow::Owned(format!("{name}: {error}")),
                         Style::default().fg(theme.error).bold(),
                     ),
                     None if *connecting => (

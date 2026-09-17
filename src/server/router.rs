@@ -298,6 +298,10 @@ pub(super) fn build_router(state: Arc<AppState>) -> Router {
         .route("/api/devices", get(login::devices_handler))
         .route("/api/pair", post(pairing::pair_handler))
         .route("/api/pair/codes", post(pairing::mint_handler))
+        .route(
+            "/api/pair/lockouts",
+            get(pairing::lockouts_handler).delete(pairing::clear_lockouts_handler),
+        )
         // About (version, auth status, read-only state)
         .route("/api/about", get(api::get_about))
         // Update status (latest release, available flag)

@@ -1,6 +1,7 @@
 //! Pairing block of the exposed serve view: keeps a valid one-time code on
 //! screen, minted on the local daemon and replaced when it expires or a device
-//! redeems it, and lists paired devices with revoke.
+//! redeems it, lists paired devices with revoke, and lists IPs locked out by
+//! failed attempts with a key to let them back in.
 
 use std::collections::HashSet;
 use std::time::{Duration, Instant};
@@ -30,6 +31,12 @@ struct PairedDevice {
     last_seen: chrono::DateTime<chrono::Utc>,
 }
 
+#[derive(Clone, Deserialize)]
+struct Lockout {
+    ip: String,
+    remaining_secs: u64,
+}
+
 #[derive(Deserialize)]
 struct Minted {
     code: String,
@@ -40,6 +47,9 @@ enum Update {
     Minted(Result<Minted, String>),
     Devices(Result<Vec<PairedDevice>, String>),
     Revoked(Result<(), String>),
+    /// A daemon without the lockout routes answers with an error; it shows none.
+    Lockouts(Vec<Lockout>),
+    Unblocked,
 }
 
 pub(super) struct PairingPanel {
@@ -50,6 +60,8 @@ pub(super) struct PairingPanel {
     known_devices: Option<HashSet<String>>,
     selected: usize,
     confirm_revoke: Option<(String, Instant)>,
+    /// With when they were read, so the time left counts down between reads.
+    lockouts: (Vec<Lockout>, Instant),
     runtime: Option<tokio::runtime::Handle>,
     sender: mpsc::UnboundedSender<Update>,
     updates: mpsc::UnboundedReceiver<Update>,
@@ -81,6 +93,7 @@ impl PairingPanel {
             known_devices: None,
             selected: 0,
             confirm_revoke: None,
+            lockouts: (Vec::new(), Instant::now()),
             runtime,
             sender,
             updates,
@@ -138,6 +151,7 @@ impl PairingPanel {
 
     fn refresh_devices(&mut self, now: Instant) {
         self.next_refresh = now + DEVICE_REFRESH;
+        self.refresh_lockouts();
         self.spawn(async {
             let result = async {
                 local_client()
@@ -151,6 +165,28 @@ impl PairingPanel {
                     .filter(|d| d.device_name.is_some())
                     .collect()
             }))
+        });
+    }
+
+    fn refresh_lockouts(&self) {
+        self.spawn(async {
+            let result = async {
+                local_client()
+                    .await?
+                    .get_api::<Vec<Lockout>>(&["pair", "lockouts"], &[])
+                    .await
+                    .map_err(|e| e.summary())
+            };
+            Update::Lockouts(result.await.unwrap_or_default())
+        });
+    }
+
+    fn unblock(&self) {
+        self.spawn(async {
+            if let Ok(client) = local_client().await {
+                let _ = client.delete_api(&["pair", "lockouts"]).await;
+            }
+            Update::Unblocked
         });
     }
 
@@ -208,6 +244,8 @@ impl PairingPanel {
             }
             Update::Revoked(Ok(())) => self.refresh_devices(Instant::now()),
             Update::Revoked(Err(error)) => self.devices = Some(Err(error)),
+            Update::Lockouts(lockouts) => self.lockouts = (lockouts, Instant::now()),
+            Update::Unblocked => self.refresh_lockouts(),
         }
     }
 
@@ -224,6 +262,10 @@ impl PairingPanel {
                 let last = self.device_list().len().saturating_sub(1);
                 self.selected = (self.selected + 1).min(last);
             }
+            KeyCode::Char('u') if self.has_lockouts() => {
+                self.lockouts.0.clear();
+                self.unblock();
+            }
             KeyCode::Char('x') | KeyCode::Char('X') => {
                 if let Some(device) = self.device_list().get(self.selected) {
                     let id = device.session_id.clone();
@@ -237,6 +279,29 @@ impl PairingPanel {
             _ => return false,
         }
         true
+    }
+
+    pub(super) fn has_lockouts(&self) -> bool {
+        !self.lockouts.0.is_empty()
+    }
+
+    /// One line per locked-out IP with the time left, longest first.
+    pub(super) fn lockout_lines(&self, theme: &Theme) -> Vec<Line<'static>> {
+        let (lockouts, read_at) = &self.lockouts;
+        let elapsed = read_at.elapsed().as_secs();
+        lockouts
+            .iter()
+            .filter_map(|lockout| {
+                let left = lockout.remaining_secs.checked_sub(elapsed)?.max(1);
+                Some(Line::from(vec![
+                    Span::styled(lockout.ip.clone(), Style::default().fg(theme.waiting)),
+                    Span::styled(
+                        format!(" locked out · {} left", ago(left)),
+                        Style::default().fg(theme.dimmed),
+                    ),
+                ]))
+            })
+            .collect()
     }
 
     pub(super) fn confirming_revoke(&self) -> bool {
@@ -438,6 +503,23 @@ mod tests {
             "{list}"
         );
         assert_eq!(text(panel.device_lines(&theme, 1)), "Paired: 2");
+    }
+
+    #[test]
+    fn lockouts_count_down_and_u_lets_them_back_in() {
+        let mut panel = PairingPanel::ready("K7F-3QX", &[]);
+        assert!(!press(&mut panel, KeyCode::Char('u')), "nothing to unblock");
+        panel.apply(Update::Lockouts(vec![Lockout {
+            ip: "100.89.98.53".into(),
+            remaining_secs: 725,
+        }]));
+        let theme = Theme::default();
+        assert_eq!(
+            text(panel.lockout_lines(&theme)),
+            "100.89.98.53 locked out · 12m left"
+        );
+        assert!(press(&mut panel, KeyCode::Char('u')));
+        assert!(panel.lockout_lines(&theme).is_empty());
     }
 
     #[tokio::test]

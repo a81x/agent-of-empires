@@ -40,8 +40,8 @@ pub enum LoginError {
     NotEnabled,
     #[error("incorrect passphrase")]
     Unauthorized,
-    #[error("too many failed attempts; wait before retrying")]
-    RateLimited,
+    #[error("{}", crate::daemon::lockout_message(*.0))]
+    RateLimited(Option<u64>),
     #[error("daemon returned HTTP {0}")]
     Status(reqwest::StatusCode),
     #[error("login succeeded but the daemon set no session cookie")]
@@ -91,7 +91,9 @@ pub async fn login(
         return Err(match status {
             reqwest::StatusCode::NOT_FOUND => LoginError::NotEnabled,
             reqwest::StatusCode::UNAUTHORIZED => LoginError::Unauthorized,
-            reqwest::StatusCode::TOO_MANY_REQUESTS => LoginError::RateLimited,
+            reqwest::StatusCode::TOO_MANY_REQUESTS => {
+                LoginError::RateLimited(crate::daemon::retry_after_secs(response.headers()))
+            }
             other => LoginError::Status(other),
         });
     }
@@ -161,7 +163,9 @@ pub async fn pair(
         }
         reqwest::StatusCode::NOT_FOUND => Err(LoginError::PairingUnsupported),
         reqwest::StatusCode::UNAUTHORIZED => Err(LoginError::InvalidCode),
-        reqwest::StatusCode::TOO_MANY_REQUESTS => Err(LoginError::RateLimited),
+        reqwest::StatusCode::TOO_MANY_REQUESTS => Err(LoginError::RateLimited(
+            crate::daemon::retry_after_secs(response.headers()),
+        )),
         reqwest::StatusCode::BAD_REQUEST => {
             let message = response
                 .json::<Rejection>()
@@ -217,6 +221,42 @@ fn session_from_set_cookie(value: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn a_lockout_names_its_wait_and_where_the_failures_come_from() {
+        let app = axum::Router::new().fallback(|| async {
+            (
+                axum::http::StatusCode::TOO_MANY_REQUESTS,
+                [("Retry-After", "725")],
+                "{}",
+            )
+        });
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        tokio::spawn(async move { axum::serve(listener, app).await });
+
+        let error = pair(&url, "K7F-3QX", "laptop", "binding", false)
+            .await
+            .err()
+            .expect("locked out");
+        assert!(
+            matches!(error, LoginError::RateLimited(Some(725))),
+            "{error:?}"
+        );
+        let client =
+            crate::daemon::DaemonClient::with_login(&url, Some("tok"), None, false).unwrap();
+        let polled = client.list_sessions(None).await.expect_err("locked out");
+        assert!(matches!(
+            polled,
+            crate::daemon::DaemonClientError::RateLimited {
+                retry_after_secs: Some(725)
+            }
+        ));
+        for message in [error.to_string(), polled.summary()] {
+            assert!(message.contains("locked out for 13m"), "{message}");
+            assert!(message.contains("aoe remote list"), "{message}");
+        }
+    }
 
     #[test]
     fn binding_secret_decodes_to_the_expected_length() {

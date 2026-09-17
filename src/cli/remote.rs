@@ -199,8 +199,12 @@ async fn add(args: RemoteAddArgs) -> Result<()> {
         }
     };
     let name = entry.name.clone();
+    let superseded = registry.remove_other_names_for(&name, &url);
     let replaced = registry.upsert(entry);
     remotes::save(&registry)?;
+    for old in superseded {
+        println!("Removed remote {old:?}, which pointed at the same address");
+    }
 
     println!(
         "{} remote {:?} -> {}",

@@ -820,13 +820,13 @@ pub async fn auth_middleware(
         if !is_api_or_ws {
             return next.run(request).await;
         }
-        let locked = state.rate_limiter.record_failure(client_ip).await;
-        let reason =
-            if extract_tokens(&request).is_empty() && extract_ws_protocols(&request).is_empty() {
-                "missing"
-            } else {
-                "invalid"
-            };
+        let presented =
+            !extract_tokens(&request).is_empty() || !extract_ws_protocols(&request).is_empty();
+        // Only a wrong token is a guess. A request with none (a poller whose
+        // session was revoked, a tab whose cookie expired) reveals nothing,
+        // and counting it let one stale client lock its whole IP out.
+        let locked = presented && state.rate_limiter.record_failure(client_ip).await;
+        let reason = if presented { "invalid" } else { "missing" };
         tracing::warn!(
             target: "auth.middleware",
             ip = %client_ip,

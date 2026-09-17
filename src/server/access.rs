@@ -465,6 +465,7 @@ pub(super) const CITYHALL_MUTATION_DENY: &[(&str, &str)] = &[
     // Device pairing grants a new long-lived credential.
     ("POST", "/api/pair"),
     ("POST", "/api/pair/codes"),
+    ("DELETE", "/api/pair/lockouts"),
 ];
 
 /// Default-deny CityHall reachability boundary. A no-op outside CityHall mode
