@@ -215,16 +215,7 @@ mod tests {
             crate::session::storage::Storage::new_unwatched("reconcile-before-start").unwrap();
         let mut inst = Instance::new("title", "/tmp/x");
         inst.source_profile = "reconcile-before-start".to_string();
-        inst.sandbox_info = Some(crate::session::SandboxInfo {
-            enabled: true,
-            container_id: None,
-            image: "img".to_string(),
-            container_name: "ctr".to_string(),
-            extra_env: None,
-            custom_instruction: None,
-            before_start_env: Vec::new(),
-            container_workdir: None,
-        });
+        inst.sandbox_info = Some(test_sandbox("ctr", None));
         let on_disk = inst.clone();
         storage
             .update(|i, g| {

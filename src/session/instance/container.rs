@@ -502,6 +502,7 @@ impl Instance {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::session::instance::test_helpers::*;
 
     #[test]
     fn hook_mount_source_is_restored_for_agent_without_hooks() {
@@ -535,16 +536,7 @@ mod tests {
         .unwrap();
 
         let mut inst = Instance::new("contexec", worktree.to_str().unwrap());
-        inst.sandbox_info = Some(SandboxInfo {
-            enabled: true,
-            container_id: None,
-            image: "img".to_string(),
-            container_name: "aoe-sandbox-test".to_string(),
-            extra_env: None,
-            custom_instruction: None,
-            before_start_env: Vec::new(),
-            container_workdir: None,
-        });
+        inst.sandbox_info = Some(test_sandbox("aoe-sandbox-test", None));
 
         // Bug reproduction: with nothing pinned, the live recompute can't resolve the orphaned
         // worktree and falls back to the basename.
@@ -627,16 +619,7 @@ claude-personal = "~/.claude-global"
         let mut instance = Instance::new("diagnostic", home.path().to_str().unwrap());
         instance.tool = "claude-personal".to_string();
         instance.source_profile = profile.to_string();
-        instance.sandbox_info = Some(SandboxInfo {
-            enabled: true,
-            container_id: None,
-            image: "test:latest".to_string(),
-            container_name: "diagnostic".to_string(),
-            extra_env: None,
-            custom_instruction: None,
-            before_start_env: Vec::new(),
-            container_workdir: None,
-        });
+        instance.sandbox_info = Some(test_sandbox("diagnostic", None));
         for (case, declared_agent, entries, expected) in cases {
             fs::write(
                 &profile_path,
@@ -786,16 +769,7 @@ claude-personal = "~/.claude-global"
             instance.tool = tool.to_string();
             instance.detect_as = detect_as.to_string();
             instance.source_profile = profile.to_string();
-            instance.sandbox_info = Some(SandboxInfo {
-                enabled: true,
-                container_id: None,
-                image: "test:latest".to_string(),
-                container_name: "tool-label".to_string(),
-                extra_env: None,
-                custom_instruction: None,
-                before_start_env: Vec::new(),
-                container_workdir: None,
-            });
+            instance.sandbox_info = Some(test_sandbox("tool-label", None));
             let _ = std::fs::remove_file(storage.sessions_path());
             let _ = std::fs::remove_file(&profile_config);
             storage
@@ -862,16 +836,7 @@ claude-personal = "~/.claude-global"
             instance.tool = tool.to_string();
             instance.detect_as = detect_as.to_string();
             instance.source_profile = profile.to_string();
-            instance.sandbox_info = Some(SandboxInfo {
-                enabled: true,
-                container_id: None,
-                image: "test:latest".to_string(),
-                container_name: "tool-label".to_string(),
-                extra_env: None,
-                custom_instruction: None,
-                before_start_env: Vec::new(),
-                container_workdir: None,
-            });
+            instance.sandbox_info = Some(test_sandbox("tool-label", None));
             assert_eq!(
                 instance.build_container_config().unwrap().agent_tool,
                 instance.container_agent_identity().unwrap(),

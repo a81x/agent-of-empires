@@ -609,7 +609,8 @@ impl Instance {
 #[cfg(test)]
 mod tests {
     use super::PollerStart;
-    use crate::session::{Instance, SandboxInfo, Status};
+    use crate::session::instance::test_helpers::*;
+    use crate::session::{Instance, Status};
 
     /// The 2026-09-04 fleet shape.
     #[test]
@@ -730,16 +731,10 @@ mod tests {
         let budget = crate::session::poller::test_support::IsolatedBudget::exhausted();
         let mut inst = Instance::new("prime-repair", "/tmp/prime-repair");
         inst.tool = "prime-agent".to_string();
-        inst.sandbox_info = Some(SandboxInfo {
-            enabled: true,
-            container_id: None,
-            image: "test-image".to_string(),
-            container_name: "prime-repair".to_string(),
-            extra_env: None,
-            custom_instruction: None,
-            before_start_env: Vec::new(),
-            container_workdir: Some("/workspace/prime-repair".to_string()),
-        });
+        inst.sandbox_info = Some(test_sandbox(
+            "prime-repair",
+            Some("/workspace/prime-repair"),
+        ));
         let store = inst.sandbox_capture_store_dir().unwrap();
         std::fs::create_dir_all(&store).unwrap();
         let live = crate::tmux::LiveSessionSnapshot::from_parts(
@@ -850,16 +845,7 @@ mod tests {
 
         let mut sandboxed = Instance::new("pisandboxpoll001", "/tmp/pi-poll");
         sandboxed.tool = "pi".to_string();
-        sandboxed.sandbox_info = Some(crate::session::SandboxInfo {
-            enabled: true,
-            container_id: None,
-            image: "test:latest".to_string(),
-            container_name: "aoe-pi-poll".to_string(),
-            extra_env: None,
-            custom_instruction: None,
-            container_workdir: None,
-            before_start_env: Vec::new(),
-        });
+        sandboxed.sandbox_info = Some(test_sandbox("aoe-pi-poll", None));
         let dir = sandboxed
             .pi_sidecar_source()
             .and_then(|s| match s {
@@ -909,18 +895,8 @@ mod tests {
     fn managed_capture_repair_honors_contention_backoff() {
         let app = tempfile::tempdir().unwrap();
         let _app_guard = crate::session::test_support::isolate_app_dir_at(app.path());
-        let mut inst = Instance::new("gemini", "/tmp/gemini-backoff");
-        inst.tool = "gemini".to_string();
-        inst.sandbox_info = Some(SandboxInfo {
-            enabled: true,
-            container_id: None,
-            image: "test-image".to_string(),
-            container_name: "test".to_string(),
-            extra_env: None,
-            custom_instruction: None,
-            before_start_env: Vec::new(),
-            container_workdir: Some("/workspace/gemini-backoff".to_string()),
-        });
+        let mut inst = tool_instance("gemini", "/tmp/gemini-backoff");
+        inst.sandbox_info = Some(test_sandbox("test", Some("/workspace/gemini-backoff")));
         let name = inst.tmux_session().unwrap().name().to_string();
         let live = crate::tmux::LiveSessionSnapshot::from_parts(Some(vec![name]), None);
         inst.session_id_poller_retry_after =
@@ -940,16 +916,7 @@ mod tests {
         let mut inst = Instance::new(title, project_path);
         inst.tool = "gemini".to_string();
         inst.status = Status::Running;
-        inst.sandbox_info = Some(SandboxInfo {
-            enabled: true,
-            container_id: None,
-            image: "test-image".to_string(),
-            container_name: format!("test-{}", inst.id),
-            extra_env: None,
-            custom_instruction: None,
-            before_start_env: Vec::new(),
-            container_workdir: Some(workdir.to_string()),
-        });
+        inst.sandbox_info = Some(test_sandbox(&format!("test-{}", inst.id), Some(workdir)));
         inst
     }
 

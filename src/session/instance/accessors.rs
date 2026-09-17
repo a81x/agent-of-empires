@@ -536,16 +536,7 @@ mod tests {
     #[test]
     fn test_is_sandboxed_with_enabled_sandbox() {
         let mut inst = Instance::new("test", "/tmp/test");
-        inst.sandbox_info = Some(SandboxInfo {
-            enabled: true,
-            container_id: None,
-            image: "test-image".to_string(),
-            container_name: "test".to_string(),
-            extra_env: None,
-            custom_instruction: None,
-            before_start_env: Vec::new(),
-            container_workdir: None,
-        });
+        inst.sandbox_info = Some(test_sandbox("test", None));
         assert!(inst.is_sandboxed());
     }
 
@@ -864,8 +855,7 @@ mod tests {
             ("--setting-sources", false),
         ];
         for (args, expected) in cases {
-            let mut inst = Instance::new("claude", "/tmp/x");
-            inst.tool = "claude".to_string();
+            let mut inst = tool_instance("claude", "/tmp/x");
             inst.extra_args = args.to_string();
             assert_eq!(
                 inst.hook_session_publisher_allowed_by_argv(),

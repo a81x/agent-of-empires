@@ -514,11 +514,11 @@ impl Instance {
 mod tests {
     use super::*;
     use crate::session::instance::launch_command::wrap_command_ignore_suspend;
+    use crate::session::instance::test_helpers::*;
 
     #[test]
     fn omp_capture_accepts_benign_args_and_rejects_opaque_launches() {
-        let mut inst = Instance::new("test", "/tmp/test");
-        inst.tool = "omp".to_string();
+        let mut inst = tool_instance("omp", "/tmp/test");
         inst.extra_args =
             "--model sonnet --profile first --profile=work --session-dir '/tmp/omp sessions'"
                 .to_string();
@@ -604,8 +604,7 @@ mod tests {
 
     #[test]
     fn omp_launch_rejects_api_keys_in_extra_args() {
-        let mut instance = Instance::new("test", "/tmp/test");
-        instance.tool = "omp".to_string();
+        let mut instance = tool_instance("omp", "/tmp/test");
         for extra_args in [
             "--api-key secret",
             "--api-key=secret",

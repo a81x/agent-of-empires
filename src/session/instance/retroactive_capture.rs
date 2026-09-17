@@ -102,6 +102,7 @@ impl Instance {
 
 #[cfg(test)]
 mod tests {
+    use crate::session::instance::test_helpers::*;
     use crate::session::test_support::EnvGuard;
     #[test]
     #[serial_test::serial]
@@ -136,16 +137,7 @@ mod tests {
         inst.agent_session_id = Some("aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa".to_string());
         assert_eq!(inst.try_retroactive_capture(), None);
 
-        inst.sandbox_info = Some(crate::session::SandboxInfo {
-            enabled: true,
-            container_id: None,
-            image: "test-image".to_string(),
-            container_name: "aoe-pi-retro".to_string(),
-            extra_env: None,
-            custom_instruction: None,
-            container_workdir: Some("/workspace".to_string()),
-            before_start_env: Vec::new(),
-        });
+        inst.sandbox_info = Some(test_sandbox("aoe-pi-retro", Some("/workspace")));
         assert_eq!(
             inst.container_workdir(),
             "/workspace",
