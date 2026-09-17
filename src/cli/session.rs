@@ -2990,7 +2990,13 @@ async fn add_project(profile: &str, args: AddProjectArgs) -> Result<()> {
         crate::session::attach_project::Quiesced::default()
     };
 
-    let outcome = match crate::session::attach_project::attach_planned(&storage, &id, inst, plan) {
+    let outcome = match crate::session::attach_project::attach_planned(
+        &storage,
+        &id,
+        inst,
+        plan,
+        quiesced.lifecycle_generation,
+    ) {
         Ok(outcome) => outcome,
         Err(e) => {
             // The rollback already undid the filesystem half; bringing the

@@ -829,17 +829,20 @@ pub fn attach(
         .with_context(|| format!("session not found: {session_id}"))?;
 
     let plan = plan(instance, profile, repo_path, on_existing)?;
-    attach_planned(storage, session_id, instance, plan)
+    attach_planned(storage, session_id, instance, plan, None)
 }
 
 /// Revalidate and persist an attachment under identity then lifecycle exclusion.
-/// Caller must quiesce any runtime whose worktree or mount set changes.
-/// A rejected commit rolls back the filesystem changes.
+/// Caller must quiesce any runtime whose worktree or mount set changes and pass
+/// `quiesced.lifecycle_generation` here: that Stop was committed by this
+/// conversion, so `fresh` is allowed to carry it, and nothing else. A rejected
+/// commit rolls back the filesystem changes.
 pub fn attach_planned(
     storage: &Storage,
     session_id: &str,
     instance: &super::Instance,
     plan: AttachPlan,
+    owned_generation: Option<u64>,
 ) -> Result<AttachOutcome> {
     let _identity = super::storage::acquire_session_identity_lock()?;
     let _lifecycle = storage.acquire_instance_lifecycle_lock(session_id)?;
@@ -850,8 +853,9 @@ pub fn attach_planned(
         .with_context(|| format!("session not found: {session_id}"))?;
     anyhow::ensure!(
         fresh.lifecycle_reservation.is_none()
-            && fresh.lifecycle_generation == instance.lifecycle_generation
-            && fresh.project_path == instance.project_path,
+            && fresh.project_path == instance.project_path
+            && fresh.lifecycle_generation
+                == owned_generation.unwrap_or(instance.lifecycle_generation),
         "session changed while preparing project attachment"
     );
     let refreshed = self::plan(
@@ -930,6 +934,9 @@ pub struct Quiesced {
     /// rather than left alone because the pane's shell (and the agent in it) was
     /// launched in the directory the conversion moves.
     pub pane_was_live: bool,
+    /// Lifecycle generation committed by this conversion's own pane stop.
+    /// `None` when no pane was stopped; never inferred from a later reload.
+    pub lifecycle_generation: Option<u64>,
 }
 
 /// Stop everything holding the session's current working directory.
@@ -959,12 +966,13 @@ pub fn quiesce_for_conversion(storage: &Storage, instance: &super::Instance) -> 
     }
 
     if instance.tmux_session().is_ok_and(|s| s.exists()) {
-        instance.kill_clean().with_context(|| {
+        let generation = instance.kill_clean().with_context(|| {
             format!(
                 "could not stop '{}' before moving it into a workspace",
                 instance.title
             )
         })?;
+        quiesced.lifecycle_generation = Some(generation);
         quiesced.pane_was_live = true;
     }
 
@@ -1114,7 +1122,13 @@ fn attach_and_restart(request: AttachProjectRequest) -> Result<String, String> {
         Quiesced::default()
     };
 
-    let outcome = match attach_planned(&storage, &request.session_id, instance, plan) {
+    let outcome = match attach_planned(
+        &storage,
+        &request.session_id,
+        instance,
+        plan,
+        quiesced.lifecycle_generation,
+    ) {
         Ok(outcome) => outcome,
         Err(e) => {
             // The session was stopped for an attach that then failed. Put it
@@ -1227,7 +1241,7 @@ pub fn reset_sandbox_container(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::session::{Instance, WorkspaceInfo, WorkspaceRepo, WorktreeInfo};
+    use crate::session::{Instance, Status, WorkspaceInfo, WorkspaceRepo, WorktreeInfo};
     #[test]
     #[serial_test::serial]
     fn quiescence_ignores_unreadable_worker_ownership() {
@@ -1462,7 +1476,7 @@ mod tests {
         let (done_tx, done_rx) = std::sync::mpsc::channel();
         let worker = std::thread::spawn(move || {
             ready_tx.send(()).unwrap();
-            let outcome = attach_planned(&storage, &inst.id, &inst, plan);
+            let outcome = attach_planned(&storage, &inst.id, &inst, plan, None);
             done_tx.send(()).unwrap();
             outcome
         });
@@ -1507,12 +1521,76 @@ mod tests {
                 Ok(())
             })
             .unwrap();
-        let rejected = attach_planned(&storage, &current.id, &current, pending);
+        let rejected = attach_planned(&storage, &current.id, &current, pending, None);
         assert!(
             rejected.is_err(),
             "a plan cannot attach after the durable row is trashed"
         );
         assert!(!workspace.join("third").exists());
+    }
+
+    /// Only the conversion's committed stop may supersede its original baseline.
+    #[test]
+    #[serial_test::serial]
+    fn attaching_adopts_only_the_quiesce_it_committed() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let _guard = isolated_profile(temp.path(), "attach-generation");
+        let backend = temp.path().join("src/backend");
+        let frontend = temp.path().join("src/frontend");
+        init_repo(&backend);
+        init_repo(&frontend);
+
+        let inst = Instance::new("Moving", backend.to_str().unwrap());
+        let plan = plan(
+            &inst,
+            "attach-generation",
+            &frontend,
+            ExistingBranch::Refuse,
+        )
+        .expect("the plan must be accepted");
+        assert!(plan.moves_session, "this shape stops the session");
+
+        let storage = Storage::open_unwatched("attach-generation").unwrap();
+        storage
+            .update(|rows, _| {
+                rows.push(inst.clone());
+                Ok(())
+            })
+            .unwrap();
+
+        // Model a stop after a foreign lifecycle transition.
+        let generation = storage
+            .update(|rows, _| {
+                let row = rows
+                    .iter_mut()
+                    .find(|row| row.id == inst.id)
+                    .expect("the session row exists");
+                row.lifecycle_generation += 2;
+                row.status = Status::Stopped;
+                row.lifecycle_reservation = None;
+                Ok(row.lifecycle_generation)
+            })
+            .unwrap();
+        let foreign_plan = self::plan(
+            &inst,
+            "attach-generation",
+            &frontend,
+            ExistingBranch::Refuse,
+        )
+        .unwrap();
+        let rejected = attach_planned(
+            &storage,
+            &inst.id,
+            &inst,
+            foreign_plan,
+            Some(generation - 1),
+        );
+        assert!(rejected.is_err(), "a foreign generation must be refused");
+        assert!(!plan.workspace_dir().exists());
+
+        let outcome = attach_planned(&storage, &inst.id, &inst, plan, Some(generation))
+            .expect("the conversion's own stop must not reject its attach");
+        assert!(Path::new(&outcome.repo.worktree_path).exists());
     }
 
     /// The in-place shape moves the session's working directory into a new

@@ -125,7 +125,7 @@ impl Instance {
         Ok(())
     }
 
-    pub(crate) fn kill_clean(&self) -> Result<()> {
+    pub(crate) fn kill_clean(&self) -> Result<u64> {
         let profile = self.effective_profile();
         let storage = crate::session::storage::Storage::new(&profile, self.resolve_file_watch())
             .context("failed to open lifecycle lock storage")?;
@@ -136,12 +136,15 @@ impl Instance {
         let generation =
             lifecycle.acquire_lifecycle_reservation(&storage, LifecycleOperation::Stop, None)?;
         match self.kill_clean_locked() {
-            Ok(()) => lifecycle.commit_lifecycle_status(
-                &storage,
-                LifecycleOperation::Stop,
-                generation,
-                Status::Stopped,
-            ),
+            Ok(()) => {
+                lifecycle.commit_lifecycle_status(
+                    &storage,
+                    LifecycleOperation::Stop,
+                    generation,
+                    Status::Stopped,
+                )?;
+                Ok(generation)
+            }
             Err(error) => {
                 let _ = lifecycle.commit_lifecycle_status(
                     &storage,
