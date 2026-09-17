@@ -13,7 +13,6 @@ vi.mock("../../../lib/api", () => ({
   setTelemetryConsent: (enabled: boolean) => setTelemetryConsent(enabled),
 }));
 
-// Imported after the mock is registered.
 import { TelemetrySettings } from "../TelemetrySettings";
 
 function status(overrides: Partial<TelemetryStatus> = {}): TelemetryStatus {
@@ -27,29 +26,13 @@ beforeEach(() => {
 });
 
 describe("TelemetrySettings contract", () => {
-  it("toggling on calls setTelemetryConsent(true)", async () => {
-    fetchTelemetryStatus.mockResolvedValue(status({ enabled: false }));
+  it.each([false, true])("toggling from enabled=%s sends the opposite consent", async (enabled) => {
+    fetchTelemetryStatus.mockResolvedValue(status({ enabled }));
     const { container } = render(<TelemetrySettings />);
-    await waitFor(() => {
-      expect(fetchTelemetryStatus).toHaveBeenCalled();
-    });
-
-    const toggle = container.querySelector("button[role=switch]") as HTMLButtonElement;
-    fireEvent.click(toggle);
-    expect(setTelemetryConsent).toHaveBeenCalledWith(true);
-  });
-
-  it("toggling off calls setTelemetryConsent(false)", async () => {
-    fetchTelemetryStatus.mockResolvedValue(status({ enabled: true }));
-    const { container } = render(<TelemetrySettings />);
-    await waitFor(() => {
-      const t = container.querySelector("button[role=switch]") as HTMLButtonElement | null;
-      expect(t?.getAttribute("aria-checked")).toBe("true");
-    });
-
-    const toggle = container.querySelector("button[role=switch]") as HTMLButtonElement;
-    fireEvent.click(toggle);
-    expect(setTelemetryConsent).toHaveBeenCalledWith(false);
+    const toggle = () => container.querySelector("button[role=switch]") as HTMLButtonElement;
+    await waitFor(() => expect(toggle()?.getAttribute("aria-checked")).toBe(String(enabled)));
+    fireEvent.click(toggle());
+    expect(setTelemetryConsent).toHaveBeenCalledWith(!enabled);
   });
 
   it("DO_NOT_TRACK forces the toggle off and shows a note; clicking is a no-op", async () => {
@@ -58,7 +41,6 @@ describe("TelemetrySettings contract", () => {
     await findByText(/DO_NOT_TRACK is set/i);
 
     const toggle = container.querySelector("button[role=switch]") as HTMLButtonElement;
-    // Forced off despite enabled=true in config.
     expect(toggle.getAttribute("aria-checked")).toBe("false");
     fireEvent.click(toggle);
     expect(setTelemetryConsent).not.toHaveBeenCalled();

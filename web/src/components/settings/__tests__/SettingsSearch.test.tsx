@@ -34,8 +34,6 @@ const SCHEMA: SettingsFieldDescriptor[] = [
 ];
 
 describe("SettingsSearch", () => {
-  // This repo's component tests do not load jest-dom, so assertions use plain
-  // DOM presence (queryBy -> null) instead of toBeInTheDocument.
   it("shows no result list until the user types", () => {
     render(<SettingsSearch schema={SCHEMA} loading={false} onJump={vi.fn()} />);
     expect(screen.queryByText("Theme")).toBeNull();
@@ -49,7 +47,6 @@ describe("SettingsSearch", () => {
     const input = screen.getByPlaceholderText("Search settings...");
     fireEvent.change(input, { target: { value: "tool" } });
 
-    // The matching hit shows; the unrelated one is filtered out.
     const hit = screen.getByTestId("settings-search-hit-acp-show_tool_durations");
     expect(hit).toBeTruthy();
     expect(screen.queryByTestId("settings-search-hit-theme-name")).toBeNull();

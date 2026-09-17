@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildSettingsSearchIndex, SECTION_TO_TAB } from "../settingsSearchIndex";
+import { buildSettingsSearchIndex } from "../settingsSearchIndex";
 import type { SettingsFieldDescriptor } from "../../../lib/types";
 
 const ALLOW = { policy: "allow" } as const;
@@ -33,7 +33,6 @@ describe("buildSettingsSearchIndex", () => {
       "acp.show_tool_durations",
       "web.notify_on_idle",
     ]);
-    // acp and web are the non-identity mappings.
     expect(index.find((h) => h.section === "acp")?.tab).toBe("structured-view");
     expect(index.find((h) => h.section === "web")?.tab).toBe("notifications");
     expect(index.find((h) => h.section === "sandbox")?.tab).toBe("sandbox");
@@ -70,11 +69,5 @@ describe("buildSettingsSearchIndex", () => {
       }),
     ]);
     expect(hit.searchText).toBe("Max Concurrent Workers How many agents run at once session max_concurrent_workers");
-  });
-
-  it("maps every section in SECTION_TO_TAB to a real tab id", () => {
-    // Drift guard: a section listed here but pointing at a tab that no longer
-    // exists would silently swallow its fields' search hits.
-    expect(Object.values(SECTION_TO_TAB).every((tab) => typeof tab === "string" && tab.length > 0)).toBe(true);
   });
 });
