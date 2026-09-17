@@ -1,21 +1,13 @@
-// Regression for #1452: on mobile the right panel used to be an 85vw
-// slide-in overlay pinned to bottom-0. When the soft keyboard opened
-// against the paired terminal inside it, the live keyboardHeight padding
-// collapsed the terminal to near-zero height. The fix replaces the overlay
-// with a picker that promotes the chosen view into the single full-viewport
-// main pane, so the paired terminal owns the viewport and stays tall under
-// the keyboard (the same posture the agent terminal already uses).
+// #1452: on mobile a picker promotes right-panel views into the single full-viewport pane, so the paired terminal
+// stays tall under the keyboard.
 
 import { test, expect } from "./helpers/mockedTest";
 import { devices, type Page } from "@playwright/test";
 import { clickSidebarSession, openMobileSidebar } from "./helpers/sidebar";
 import { mockTerminalApis, seedSettings } from "./helpers/terminal-mocks";
 
-// iPhone 13: width 390 (< md), pointer:coarse, hasTouch, WebKit UA.
 test.use({ ...devices["iPhone 13"] });
 
-// Override visualViewport to model the iOS soft keyboard occluding the
-// bottom of the layout viewport.
 async function simulateKeyboardOpen(page: Page, keyboardPx: number) {
   await page.evaluate((keyboardPx) => {
     const vv = window.visualViewport;
@@ -57,27 +49,17 @@ test.describe("Mobile right panel picker (#1452)", () => {
     await openPicker(page);
 
     await page.getByTestId("mobile-right-panel-pick-paired").click();
-    // Picker closes; the paired shell mounts at full viewport.
     await expect(page.getByTestId("mobile-right-panel-picker")).toHaveCount(0);
     const paired = page.locator('[data-term="paired"]');
     await paired.waitFor({ state: "visible", timeout: 10_000 });
 
-    // The paired shell must carry the bottom home-indicator inset that the App
-    // root no longer reserves (it moved per-surface; see index.css
-    // .safe-area-inset). This layer was missed in that move, so the last
-    // terminal row and toolbar sat under the home indicator. The agent
-    // terminal and diff panes already reserve it; the paired shell is the same
-    // LiveTerminalView and must match.
+    // The paired shell reserves the home-indicator inset like the other panes.
     const pairedInset = await page
       .getByTestId("mobile-paired-layer")
       .evaluate((el) => (el as HTMLElement).style.paddingBottom);
     expect(pairedInset).toContain("safe-area-inset-bottom");
 
-    // The bug: keyboard padding collapsed the paired terminal to ~0px.
-    // Now it owns the viewport, so it stays comfortably tall.
     await simulateKeyboardOpen(page, 300);
-    // Poll the height rather than sleeping a fixed time: the layout settles
-    // a frame or two after the visualViewport resize.
     await expect
       .poll(async () => (await paired.boundingBox())?.height ?? 0, {
         message: "paired terminal collapsed under the keyboard",
@@ -87,8 +69,6 @@ test.describe("Mobile right panel picker (#1452)", () => {
 
   test("picker promotes the diff view, opens a file, and the back chip returns to the agent", async ({ page }) => {
     await mockTerminalApis(page);
-    // Seed one changed file so the diff list has a row to tap; tapping it
-    // promotes the full-screen file viewer into the same pane.
     await page.route("**/api/sessions/*/diff/files", (r) =>
       r.fulfill({
         json: {
@@ -114,12 +94,9 @@ test.describe("Mobile right panel picker (#1452)", () => {
     await openPicker(page);
     await page.getByTestId("mobile-right-panel-pick-diff").click();
     await expect(page.getByTestId("mobile-right-panel-picker")).toHaveCount(0);
-    // The non-structured views carry a persistent back affordance.
     const back = page.getByTestId("mobile-back-to-agent");
     await expect(back).toBeVisible();
 
-    // Tap the file row to promote the diff viewer in place; the viewer
-    // replaces the file list in the same pane, so the row disappears.
     const row = page.locator('button[data-index="0"]').first();
     await row.hover();
     await row.click();
@@ -141,8 +118,7 @@ test.describe("Mobile right panel picker (#1452)", () => {
       timeout: 10_000,
     });
 
-    // Back to the agent: the paired shell is kept alive (hidden), not
-    // unmounted, so its PTY and scrollback survive the switch.
+    // The paired shell stays mounted, keeping its PTY and scrollback.
     await page.getByTestId("mobile-back-to-agent").click();
     await expect(page.locator('[data-term="paired"]')).toHaveCount(1);
     await expect(page.locator("[data-live-terminal]").first()).toBeVisible();
@@ -158,8 +134,6 @@ test.describe("Desktop right panel split is unchanged (#1452)", () => {
     await clickSidebarSession(page, "pinch-test");
     await page.locator("[data-live-terminal]").first().waitFor({ state: "visible", timeout: 10_000 });
 
-    // The desktop split renders the resize handle and the activity bar, never
-    // the mobile picker or its trigger ("Toggle panels" is md:hidden).
     await expect(page.getByTestId("content-split-resize-handle")).toBeVisible();
     await expect(page.getByTestId("activity-bar")).toBeVisible();
     await expect(page.getByRole("button", { name: "Toggle panels" })).toHaveCount(0);
@@ -169,9 +143,6 @@ test.describe("Desktop right panel split is unchanged (#1452)", () => {
 
 async function setupAcpSession(page: Page) {
   await mockTerminalApis(page);
-  // Override the session as a running structured view session and stub the structured view
-  // panel endpoints; the paired shell still uses the terminal WS, which
-  // mockTerminalApis already routes.
   await page.route("**/api/sessions", (r) => {
     if (r.request().method() === "POST") return r.fulfill({ status: 400 });
     return r.fulfill({
@@ -206,8 +177,6 @@ async function setupAcpSession(page: Page) {
   await page.goto("/");
   await openMobileSidebar(page);
   await clickSidebarSession(page, "acp-mobile");
-  // Structured view sessions render no xterm in the structured view; wait for the
-  // right-panel toggle, which only appears once a session is active.
   await page.getByRole("button", { name: "Toggle panels" }).waitFor({ state: "visible", timeout: 10_000 });
 }
 
@@ -221,8 +190,6 @@ test.describe("Mobile picker on a structured view session (#1452)", () => {
     const paired = page.locator('[data-term="paired"]');
     await paired.waitFor({ state: "visible", timeout: 10_000 });
 
-    // The root is pinned for the paired view even on a structured view session, so
-    // the terminal stays tall under the keyboard rather than collapsing.
     await simulateKeyboardOpen(page, 300);
     await expect
       .poll(async () => (await paired.boundingBox())?.height ?? 0, {
@@ -230,7 +197,6 @@ test.describe("Mobile picker on a structured view session (#1452)", () => {
       })
       .toBeGreaterThan(150);
 
-    // Back to the structured view.
     await page.getByTestId("mobile-back-to-agent").click();
     await expect(page.getByTestId("mobile-back-to-agent")).toHaveCount(0);
   });

@@ -1,14 +1,9 @@
 import { expect, type Page } from "@playwright/test";
 
-// Shared REST and WebSocket mocks for terminal browser tests.
-
 export interface MockHandle {
-  /** Raw bytes received from the page via WebSocket (PTY data + JSON messages). */
   wsMessages: Buffer[];
-  /** Messages the page sent on the capture-snapshot live-ws route
-   *  (mobile live view): binary input bytes + JSON control messages. */
+  /** Everything sent on the live-ws route, input bytes and JSON control. */
   liveMessages: Buffer[];
-  /** Binary input only, excluding JSON control traffic. */
   liveInput: Buffer[];
   waitForLiveReady: () => Promise<void>;
   /** Switch to explicit frames and await the real reducer's debug frame counter. */
@@ -21,12 +16,10 @@ export interface MockHandle {
     mouse?: boolean;
     mouseSgr?: boolean;
   }) => Promise<void>;
-  /** Push an OSC 52 clipboard event to every connected live-ws client. */
   pushLiveClipboard: (text: string) => void;
 }
 
-/** Build a deterministic live frame: `history` numbered scrollback lines
- *  followed by a `rows`-tall screen with a prompt on its first line. */
+/** `history` numbered scrollback lines, then a `rows`-tall screen with a prompt on its first line. */
 export function makeLiveFrame(opts: { rows?: number; history?: number; window?: number } = {}) {
   const rows = opts.rows ?? 24;
   const history = opts.history ?? 0;
@@ -52,9 +45,7 @@ export async function mockTerminalApis(
     liveHistory?: number;
     delayLiveWindowShrinkMs?: number;
     tool?: string;
-    /** Extra sessions beyond pinch-test, for tests that switch between them. */
     extraSessions?: Array<{ id: string; title: string }>;
-    /** Hold image uploads until the page calls releasePasteImage. */
     pendingPaste?: boolean;
     onLiveMessage?: (url: string, message: Buffer) => void;
   } = {},
@@ -157,7 +148,6 @@ export async function mockTerminalApis(
   });
   await page.route("**/api/sessions/*/ensure", (r) => r.fulfill({ json: { ok: true } }));
   if (opts.pendingPaste) {
-    // Keep uploads pending while the test edits or switches surfaces.
     let release: (() => void) | null = null;
     const gate = new Promise<void>((resolve) => {
       release = resolve;
@@ -168,8 +158,6 @@ export async function mockTerminalApis(
       await r.fulfill({ json: { path: "/tmp/paste/shot.png" } });
     });
   }
-  // Matches the bare path plus the `?index=N` query (#2437) for POST ensure and
-  // DELETE kill, and the container-terminal variant.
   await page.route("**/api/sessions/*/terminal*", (r) => r.fulfill({ status: 200, body: "" }));
   await page.route("**/api/sessions/*/container-terminal*", (r) => r.fulfill({ status: 200, body: "" }));
   await page.route("**/api/sessions/*/diff/files", (r) =>
@@ -191,9 +179,7 @@ export async function mockTerminalApis(
       }
     }, 50);
   });
-  // Capture-snapshot live view (mobile). Replies to resize/window control
-  // messages with a frame sized accordingly so the component always has
-  // content to render, mirroring src/server/live_ws.rs.
+  // Replies to resize and window messages with a sized frame, like src/server/live_ws.rs.
   await page.routeWebSocket(/\/sessions\/.*\/live-ws(\?.*)?$/, (ws) => {
     const socket = { send: (data: string) => ws.send(data), frames: 0 };
     liveSockets.push(socket);
@@ -248,16 +234,12 @@ export async function mockTerminalApis(
   return handle;
 }
 
-// Install a WebSocket constructor spy and a localStorage.setItem spy on
-// window. Both run before any frontend script, so the React app sees the
-// patched globals. The counts let tests prove that a setting change does
-// NOT reopen the PTY, and that a gesture that should be a no-op did not
-// write to localStorage.
+// Spy on WebSocket construction and localStorage writes before app scripts run, so tests can prove a change did
+// not reopen the PTY or write storage.
 export async function installTerminalSpies(page: Page) {
   await page.addInitScript(() => {
     const Orig = window.WebSocket;
     (window as unknown as { __WS_COUNT__: number }).__WS_COUNT__ = 0;
-    // Preserve name + prototype by extending
     window.WebSocket = class extends Orig {
       constructor(url: string | URL, protocols?: string | string[]) {
         super(url, protocols);
@@ -305,9 +287,7 @@ export async function seedSettings(
   }, settings);
 }
 
-// Synthesize a multi-touch TouchEvent on the .xterm element.
-// Playwright's page.touchscreen is single-finger only; building raw Touch
-// objects is the only cross-browser way to dispatch two-finger gestures.
+// page.touchscreen is single-finger, so build raw Touch objects for two-finger gestures.
 export async function fireTouches(
   page: Page,
   type: "touchstart" | "touchmove" | "touchend" | "touchcancel",

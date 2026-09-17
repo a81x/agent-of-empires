@@ -1,16 +1,8 @@
 import { test, expect } from "./helpers/mockedTest";
 import { Page } from "@playwright/test";
 
-// User story (#3167): the web Trash section gains a section-level "Empty Trash"
-// action mirroring the TUI. It carries the trashed-session count in a
-// destructive confirm and purges every trashed workspace by reusing the atomic
-// DELETE /api/workspaces endpoint once per workspace. This mocked spec covers
-// the two cases named by the issue: (a) Empty Trash purges every trashed
-// workspace; (b) with an empty trash it is a no-op (the control is absent).
+// #3167: Empty Trash confirms with the count and purges each trashed workspace with one atomic DELETE.
 
-/** The DELETE /api/workspaces body the web sends: session_ids plus the
- *  DeleteSessionOptions flags. Optional so an assertion can key on the ones a
- *  given test cares about (force_delete, the cleanup flags). */
 interface DeleteBody {
   session_ids?: string[];
   force_delete?: boolean;
@@ -20,16 +12,11 @@ interface DeleteBody {
 }
 
 interface Handle {
-  /** Session ids the workspace DELETE actually removed, across all calls. */
   deletedIds: string[];
-  /** Full body of each DELETE /api/workspaces request, in call order. */
   deleteBodies: DeleteBody[];
 }
 
-/** Cleanup opt-in for a trashed session's fixture. `workspaceCleanupDefaults`
- *  gates worktree/branch on `has_cleanable_worktree` and sandbox on
- *  `is_sandboxed`, so both the flag and the matching `cleanup_defaults` entry
- *  must be set for a flag to survive into the DELETE body. */
+/** A cleanup flag reaches the DELETE only when both the session flag and its cleanup_defaults entry are set. */
 interface Cleanup {
   cleanableWorktree?: boolean;
   sandboxed?: boolean;
@@ -89,13 +76,7 @@ async function mockApis(
     const body = JSON.parse(r.request().postData() || "{}") as DeleteBody;
     const ids = body.session_ids ?? [];
     handle.deleteBodies.push(body);
-    // Partition the workspace's ids: a failed id is reported in a 2xx partial
-    // response (populated failed[]) and never added to deletedIds, so the
-    // /api/sessions poll keeps returning it and the workspace stays in Trash.
-    // A 2xx partial deliberately isolates this feature's summary toast: an
-    // all-failed workspace would be a server 500, which additionally trips the
-    // pre-existing global fetch-error toast (out of scope here). failDeleteIds
-    // defaults empty, so the success-path tests are unchanged.
+    // Failed ids come back in a 2xx partial response and stay listed; a 500 would add the global fetch-error toast.
     const deleted: string[] = [];
     const failed: Array<{ id: string; error: string }> = [];
     for (const id of ids) {
@@ -135,18 +116,13 @@ test.describe("Empty Trash", () => {
     await page.locator('[data-testid="sidebar-trash-empty"]').click();
     const dialog = page.locator('[data-testid="empty-trash-dialog"]');
     await expect(dialog).toBeVisible({ timeout: 5_000 });
-    // The confirm carries the trashed-session count, mirroring the TUI wording.
     await expect(dialog).toContainText("Permanently delete 2 trashed sessions? This cannot be undone.");
 
     await dialog.locator('[data-testid="empty-trash-confirm"]').click();
 
-    // Every trashed workspace is purged: one atomic DELETE per workspace.
     await expect.poll(() => [...handle.deletedIds].sort(), { timeout: 10_000 }).toEqual(["sess-a", "sess-b"]);
 
-    // Each DELETE forces removal (force_delete mirrors the TUI, so a dirty
-    // worktree cannot block the purge) and carries the workspace's cleanup
-    // flags derived by workspaceCleanupDefaults: sess-a opted into worktree and
-    // sandbox cleanup, sess-b into neither.
+    // Forced like the TUI, with each workspace's cleanup flags.
     const byId = new Map(handle.deleteBodies.map((b) => [(b.session_ids ?? [])[0], b]));
     expect(byId.get("sess-a")).toMatchObject({
       session_ids: ["sess-a"],
@@ -162,15 +138,11 @@ test.describe("Empty Trash", () => {
       delete_branch: false,
       delete_sandbox: false,
     });
-    // The Trash control disappears once the trash is empty.
     await expect(page.locator('[data-testid="sidebar-trash-toggle"]')).toHaveCount(0, { timeout: 10_000 });
   });
 
   test("a partial failure keeps the failed workspace in Trash and toasts one summary (#3167)", async ({ page }) => {
-    // sess-b's DELETE reports a partial failure, so deleteWorkspaceSessions
-    // calls notify.error, which sets anyFailed and drives the single summary
-    // error toast. The loop still attempts every workspace (no break on
-    // failure), sess-a is purged, and sess-b survives in Trash.
+    // A partial failure yields one summary error toast; every workspace is still attempted.
     const handle = await mockApis(
       page,
       [
@@ -190,15 +162,9 @@ test.describe("Empty Trash", () => {
     await expect(dialog).toBeVisible({ timeout: 5_000 });
     await dialog.locator('[data-testid="empty-trash-confirm"]').click();
 
-    // The single summary error toast surfaces (Toasts renders role="alert" for
-    // errors); the per-workspace toasts are suppressed by handleEmptyTrash.
     await expect(page.getByRole("alert")).toContainText("Some trashed sessions could not be deleted", {
       timeout: 10_000,
     });
-    // Both workspaces were attempted (the loop does not break on failure), only
-    // sess-a was removed, and sess-b stays in Trash: the Trash control persists
-    // (it only renders while something is trashed), unlike the full-purge case
-    // where it disappears.
     await expect.poll(() => [...handle.deletedIds], { timeout: 10_000 }).toEqual(["sess-a"]);
     expect(handle.deleteBodies.length).toBe(2);
     await expect(page.locator('[data-testid="sidebar-trash-toggle"]')).toHaveCount(1, { timeout: 10_000 });
@@ -209,8 +175,6 @@ test.describe("Empty Trash", () => {
     await page.setViewportSize({ width: 1280, height: 720 });
 
     await page.goto("/");
-    // The app is loaded (a live row shows) but with nothing trashed there is no
-    // Trash footer control, so Empty Trash is unreachable and no delete fires.
     await expect(page.locator('[data-testid="sidebar-session-row"]').first()).toBeVisible({ timeout: 10_000 });
     await expect(page.locator('[data-testid="sidebar-trash-toggle"]')).toHaveCount(0, { timeout: 5_000 });
     await expect(page.locator('[data-testid="sidebar-trash-empty"]')).toHaveCount(0, { timeout: 5_000 });
