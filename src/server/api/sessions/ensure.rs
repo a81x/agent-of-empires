@@ -44,15 +44,9 @@ pub async fn ensure_session(
     let inst_lock = state.instance_lock(&id).await;
     let _guard = inst_lock.lock().await;
 
-    let instances = state.instances.read().await;
-    let Some(instance) = instances.iter().find(|i| i.id == id).cloned() else {
-        return (
-            StatusCode::NOT_FOUND,
-            Json(serde_json::json!({"error": "not_found"})),
-        )
-            .into_response();
+    let Some(instance) = find_instance(&state, &id).await else {
+        return bare_not_found();
     };
-    drop(instances);
 
     // Inspect tmux + make the restart decision on a blocking thread. Refresh
     // the cache first so rapid re-calls see the true current state (the
@@ -252,18 +246,9 @@ pub async fn ensure_terminal(
     let inst_lock = state.instance_lock(&id).await;
     let _guard = inst_lock.lock().await;
 
-    let instances = state.instances.read().await;
-    let inst = match instances.iter().find(|i| i.id == id) {
-        Some(i) => i.clone(),
-        None => {
-            return (
-                StatusCode::NOT_FOUND,
-                Json(serde_json::json!({"error": "not_found"})),
-            )
-                .into_response();
-        }
+    let Some(inst) = find_instance(&state, &id).await else {
+        return bare_not_found();
     };
-    drop(instances);
 
     // Index 0 has the in-memory `terminal_info.created` fast path; additional
     // terminals (index >= 1) are queried straight from tmux. Either way the
@@ -362,18 +347,9 @@ pub async fn ensure_container_terminal(
     let inst_lock = state.instance_lock(&id).await;
     let _guard = inst_lock.lock().await;
 
-    let instances = state.instances.read().await;
-    let inst = match instances.iter().find(|i| i.id == id) {
-        Some(i) => i.clone(),
-        None => {
-            return (
-                StatusCode::NOT_FOUND,
-                Json(serde_json::json!({"error": "not_found"})),
-            )
-                .into_response();
-        }
+    let Some(inst) = find_instance(&state, &id).await else {
+        return bare_not_found();
     };
-    drop(instances);
 
     // Same dead-pane rescue as `ensure_terminal`: an existing-but-dead
     // pane would otherwise silently swallow every keystroke from the
@@ -461,18 +437,9 @@ pub async fn kill_terminal(
     let inst_lock = state.instance_lock(&id).await;
     let _guard = inst_lock.lock().await;
 
-    let instances = state.instances.read().await;
-    let inst = match instances.iter().find(|i| i.id == id) {
-        Some(i) => i.clone(),
-        None => {
-            return (
-                StatusCode::NOT_FOUND,
-                Json(serde_json::json!({"error": "not_found"})),
-            )
-                .into_response();
-        }
+    let Some(inst) = find_instance(&state, &id).await else {
+        return bare_not_found();
     };
-    drop(instances);
 
     let result = tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
         // A missing session is success (the `kill_*` helpers no-op when the

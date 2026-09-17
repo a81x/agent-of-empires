@@ -474,19 +474,16 @@ pub async fn delete_session(
         .prompt_submission_for_session(&id)
         .await
     else {
-        return crate::server::api::session_not_found();
+        return session_not_found();
     };
     let lock = state.instance_lock(&id).await;
     let guard = lock.lock_owned().await;
 
     // Find and clone the instance (need the full Instance for deletion)
-    let instance = {
-        let instances = state.instances.read().await;
-        instances.iter().find(|i| i.id == id).cloned()
-    };
+    let instance = find_instance(&state, &id).await;
 
     let Some(instance) = instance else {
-        return crate::server::api::session_not_found();
+        return session_not_found();
     };
 
     // Captured before `instance` moves into the deletion task; recorded into
@@ -740,10 +737,7 @@ pub(super) async fn purge_workspace_artifacts(
             ))
         };
 
-        let instance = {
-            let instances = state.instances.read().await;
-            instances.iter().find(|i| i.id == id).cloned()
-        };
+        let instance = find_instance(&state, &id).await;
         let Some(instance) = instance else {
             // Already deleted (a concurrent retention auto-purge won the race).
             // The row we were asked to delete is gone, so this is a no-op, not

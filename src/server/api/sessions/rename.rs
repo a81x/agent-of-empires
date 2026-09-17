@@ -240,7 +240,7 @@ pub async fn rename_session(
         .prompt_submission_for_session(&id)
         .await
     else {
-        return crate::server::api::session_not_found();
+        return session_not_found();
     };
     let lock = state.instance_lock(&id).await;
     let _guard = lock.lock().await;
@@ -248,7 +248,7 @@ pub async fn rename_session(
     let live = {
         let instances = state.instances.read().await;
         let Some(inst) = instances.iter().find(|i| i.id == id) else {
-            return crate::server::api::session_not_found();
+            return session_not_found();
         };
         inst.clone()
     };
@@ -313,7 +313,7 @@ pub async fn rename_session(
         .find(|instance| instance.id == id)
         .cloned()
     else {
-        return crate::server::api::session_not_found();
+        return session_not_found();
     };
     fresh.source_profile.clone_from(&profile);
     fresh.merge_runtime_from_reload(&live);
@@ -505,7 +505,7 @@ pub async fn rename_session(
                     "authoritative row vanished after the worktree move; the moved directory is unreferenced"
                 );
             }
-            return crate::server::api::session_not_found();
+            return session_not_found();
         }
         Err(error) => {
             tracing::error!(target: "http.api.sessions", session = %id, "Failed to save after rename: {error}");
@@ -541,7 +541,7 @@ pub async fn rename_session(
     let mut response = {
         let mut instances = state.instances.write().await;
         let Some(inst) = instances.iter_mut().find(|i| i.id == id) else {
-            return crate::server::api::session_not_found();
+            return session_not_found();
         };
         apply_session_rename_cache_patch(
             inst,
@@ -705,7 +705,7 @@ pub async fn set_worktree_name(
         .prompt_submission_for_session(&id)
         .await
     else {
-        return crate::server::api::session_not_found();
+        return session_not_found();
     };
     let lock = state.instance_lock(&id).await;
     let _guard = lock.lock().await;
@@ -713,7 +713,7 @@ pub async fn set_worktree_name(
     let live = {
         let instances = state.instances.read().await;
         let Some(inst) = instances.iter().find(|i| i.id == id) else {
-            return crate::server::api::session_not_found();
+            return session_not_found();
         };
         inst.clone()
     };
@@ -761,7 +761,7 @@ pub async fn set_worktree_name(
         .find(|instance| instance.id == id)
         .cloned()
     else {
-        return crate::server::api::session_not_found();
+        return session_not_found();
     };
     fresh.source_profile.clone_from(&profile);
     fresh.merge_runtime_from_reload(&live);
@@ -948,7 +948,7 @@ pub async fn set_worktree_name(
                 new_path = %new_path,
                 "authoritative row vanished after the worktree move; the moved directory is unreferenced"
             );
-            return crate::server::api::session_not_found();
+            return session_not_found();
         }
         Ok(Err(e)) => {
             tracing::error!(target: "http.api.sessions", "Failed to save after worktree edit: {e}");
@@ -963,7 +963,7 @@ pub async fn set_worktree_name(
     let response = {
         let mut instances = state.instances.write().await;
         let Some(inst) = instances.iter_mut().find(|i| i.id == id) else {
-            return crate::server::api::session_not_found();
+            return session_not_found();
         };
         apply_worktree_name_edit(inst, &new_path, new_branch.as_deref());
         SessionResponse::from_instance(&*inst, crate::claude_settings::read_tui_fullscreen())
@@ -1031,7 +1031,7 @@ pub async fn attach_session_project(
         let instances = state.instances.read().await;
         match instances.iter().find(|i| i.id == id) {
             Some(inst) => inst.source_profile.clone(),
-            None => return crate::server::api::session_not_found(),
+            None => return session_not_found(),
         }
     };
 

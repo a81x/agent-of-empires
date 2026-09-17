@@ -66,7 +66,7 @@ pub async fn update_session_group(
     let profile = {
         let instances = state.instances.read().await;
         let Some(inst) = instances.iter().find(|i| i.id == id) else {
-            return crate::server::api::session_not_found();
+            return session_not_found();
         };
         inst.source_profile.clone()
     };
@@ -253,7 +253,7 @@ pub async fn update_session_notifications(
     let profile = {
         let instances = state.instances.read().await;
         let Some(inst) = instances.iter().find(|i| i.id == id) else {
-            return crate::server::api::session_not_found();
+            return session_not_found();
         };
         inst.source_profile.clone()
     };
@@ -371,7 +371,7 @@ pub async fn update_session_diff_base(
     let profile = {
         let instances = state.instances.read().await;
         let Some(inst) = instances.iter().find(|i| i.id == id) else {
-            return crate::server::api::session_not_found();
+            return session_not_found();
         };
         // Reject a target that names no entry, so a stale client cannot
         // silently write an override the diff never reads.

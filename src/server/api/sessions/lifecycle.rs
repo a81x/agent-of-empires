@@ -97,7 +97,7 @@ pub async fn update_session_pin(
     let profile = {
         let instances = state.instances.read().await;
         let Some(inst) = instances.iter().find(|i| i.id == id) else {
-            return crate::server::api::session_not_found();
+            return session_not_found();
         };
         inst.source_profile.clone()
     };
@@ -186,7 +186,7 @@ pub async fn update_session_color(
     let profile = {
         let instances = state.instances.read().await;
         let Some(inst) = instances.iter().find(|i| i.id == id) else {
-            return crate::server::api::session_not_found();
+            return session_not_found();
         };
         inst.source_profile.clone()
     };
@@ -253,7 +253,7 @@ pub async fn update_session_archive(
         .prompt_submission_for_session(&id)
         .await
     else {
-        return crate::server::api::session_not_found();
+        return session_not_found();
     };
     let lock = state.instance_lock(&id).await;
     let _guard = lock.lock().await;
@@ -265,7 +265,7 @@ pub async fn update_session_archive(
     let profile = {
         let instances = state.instances.read().await;
         let Some(inst) = instances.iter().find(|i| i.id == id) else {
-            return crate::server::api::session_not_found();
+            return session_not_found();
         };
         inst.source_profile.clone()
     };
@@ -373,7 +373,7 @@ pub async fn update_session_archive(
             SessionResponse::from_instance(inst, crate::claude_settings::read_tui_fullscreen())
         }
         None => {
-            return crate::server::api::session_not_found();
+            return session_not_found();
         }
     };
     (StatusCode::OK, Json(serde_json::json!(response))).into_response()
@@ -401,14 +401,14 @@ pub async fn trash_session(
         .prompt_submission_for_session(&id)
         .await
     else {
-        return crate::server::api::session_not_found();
+        return session_not_found();
     };
     let lock = state.instance_lock(&id).await;
     let _guard = lock.lock().await;
     let (profile, snapshot) = {
         let instances = state.instances.read().await;
         let Some(instance) = instances.iter().find(|instance| instance.id == id) else {
-            return crate::server::api::session_not_found();
+            return session_not_found();
         };
         (instance.source_profile.clone(), instance.clone())
     };
@@ -550,7 +550,7 @@ pub async fn trash_session(
     }
 
     let Some(durable) = durable else {
-        return crate::server::api::session_not_found();
+        return session_not_found();
     };
     let response = {
         let mut instances = state.instances.write().await;
@@ -584,7 +584,7 @@ pub async fn restore_session(
     let profile = {
         let instances = state.instances.read().await;
         let Some(instance) = instances.iter().find(|instance| instance.id == id) else {
-            return crate::server::api::session_not_found();
+            return session_not_found();
         };
         instance.source_profile.clone()
     };
@@ -686,7 +686,7 @@ pub async fn restore_session(
     let restored = match restored {
         Ok(Ok(instance)) => instance,
         Ok(Err(RestoreTransitionError::NotFound)) => {
-            return crate::server::api::session_not_found()
+            return session_not_found()
         }
         Ok(Err(RestoreTransitionError::Busy(holder))) => {
             return (
@@ -753,7 +753,7 @@ pub async fn force_smart_rename(
     if let Some(resp) = cityhall_block_non_structured(&state, &id).await {
         return resp;
     }
-    if let Some(resp) = crate::server::api::acp::read_only_block(&state) {
+    if let Some(resp) = crate::server::api::read_only_block(&state) {
         return resp;
     }
 
@@ -771,7 +771,7 @@ pub async fn force_smart_rename(
             )
         })
     }) else {
-        return crate::server::api::session_not_found();
+        return session_not_found();
     };
 
     // Preflight the SAME gate the spawned try_smart_rename re-applies, so the
@@ -911,7 +911,7 @@ pub async fn summarize_session(
     if let Some(resp) = cityhall_block_non_structured(&state, &id).await {
         return resp;
     }
-    if let Some(resp) = crate::server::api::acp::read_only_block(&state) {
+    if let Some(resp) = crate::server::api::read_only_block(&state) {
         return resp;
     }
 
@@ -1007,7 +1007,7 @@ pub async fn stop_session(
         .prompt_submission_for_session(&id)
         .await
     else {
-        return crate::server::api::session_not_found();
+        return session_not_found();
     };
     let lock = state.instance_lock(&id).await;
     let _guard = lock.lock().await;
@@ -1018,7 +1018,7 @@ pub async fn stop_session(
     let (profile, is_structured, already_stopped) = {
         let instances = state.instances.read().await;
         let Some(inst) = instances.iter().find(|i| i.id == id) else {
-            return crate::server::api::session_not_found();
+            return session_not_found();
         };
 
         let structured = inst.is_structured();
@@ -1038,7 +1038,7 @@ pub async fn stop_session(
                 SessionResponse::from_instance(inst, crate::claude_settings::read_tui_fullscreen())
             }
             None => {
-                return crate::server::api::session_not_found();
+                return session_not_found();
             }
         };
         return (StatusCode::OK, Json(serde_json::json!(response))).into_response();
@@ -1150,7 +1150,7 @@ pub async fn stop_session(
             SessionResponse::from_instance(inst, crate::claude_settings::read_tui_fullscreen())
         }
         None => {
-            return crate::server::api::session_not_found();
+            return session_not_found();
         }
     };
     (StatusCode::OK, Json(serde_json::json!(response))).into_response()
@@ -1181,7 +1181,7 @@ pub async fn start_session(
     let (profile, is_structured, is_stopped, instance) = {
         let instances = state.instances.read().await;
         let Some(inst) = instances.iter().find(|i| i.id == id) else {
-            return crate::server::api::session_not_found();
+            return session_not_found();
         };
 
         let structured = inst.is_structured();
@@ -1201,7 +1201,7 @@ pub async fn start_session(
                 SessionResponse::from_instance(inst, crate::claude_settings::read_tui_fullscreen())
             }
             None => {
-                return crate::server::api::session_not_found();
+                return session_not_found();
             }
         };
         return (StatusCode::OK, Json(serde_json::json!(response))).into_response();
@@ -1243,7 +1243,7 @@ pub async fn start_session(
                 SessionResponse::from_instance(inst, crate::claude_settings::read_tui_fullscreen())
             }
             None => {
-                return crate::server::api::session_not_found();
+                return session_not_found();
             }
         };
         return (StatusCode::OK, Json(serde_json::json!(response))).into_response();
@@ -1296,7 +1296,7 @@ pub async fn start_session(
                     )
                 }
                 None => {
-                    return crate::server::api::session_not_found();
+                    return session_not_found();
                 }
             };
             if let Some(sid) = resume_failed_sid {
@@ -1382,7 +1382,7 @@ pub async fn update_session_snooze(
         .prompt_submission_for_session(&id)
         .await
     else {
-        return crate::server::api::session_not_found();
+        return session_not_found();
     };
     let lock = state.instance_lock(&id).await;
     let _guard = lock.lock().await;
@@ -1390,7 +1390,7 @@ pub async fn update_session_snooze(
     let (was_structured_view, profile) = {
         let instances = state.instances.read().await;
         let Some(inst) = instances.iter().find(|i| i.id == id) else {
-            return crate::server::api::session_not_found();
+            return session_not_found();
         };
 
         let structured_view = inst.is_structured();
@@ -1465,7 +1465,7 @@ pub async fn update_session_snooze(
             SessionResponse::from_instance(inst, crate::claude_settings::read_tui_fullscreen())
         }
         None => {
-            return crate::server::api::session_not_found();
+            return session_not_found();
         }
     };
     (StatusCode::OK, Json(serde_json::json!(response))).into_response()
@@ -1503,7 +1503,7 @@ pub async fn update_session_unread(
     let profile = {
         let instances = state.instances.read().await;
         let Some(inst) = instances.iter().find(|i| i.id == id) else {
-            return crate::server::api::session_not_found();
+            return session_not_found();
         };
         inst.source_profile.clone()
     };
@@ -1554,7 +1554,7 @@ pub async fn update_session_unread(
             SessionResponse::from_instance(inst, crate::claude_settings::read_tui_fullscreen())
         }
         None => {
-            return crate::server::api::session_not_found();
+            return session_not_found();
         }
     };
     (StatusCode::OK, Json(serde_json::json!(response))).into_response()

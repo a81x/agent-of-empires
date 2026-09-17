@@ -70,15 +70,9 @@ pub async fn send_message(
     let inst_lock = state.instance_lock(&id).await;
     let _guard = inst_lock.lock().await;
 
-    let instances = state.instances.read().await;
-    let Some(instance) = instances.iter().find(|i| i.id == id).cloned() else {
-        return (
-            StatusCode::NOT_FOUND,
-            Json(serde_json::json!({"error": "not_found"})),
-        )
-            .into_response();
+    let Some(instance) = find_instance(&state, &id).await else {
+        return bare_not_found();
     };
-    drop(instances);
 
     let sync_base = instance.clone();
     let tool = instance.tool.clone();
@@ -396,15 +390,9 @@ pub async fn paste_image(
         Err(rej) => return rej.into_response(),
     };
 
-    let instances = state.instances.read().await;
-    let Some(instance) = instances.iter().find(|i| i.id == id).cloned() else {
-        return (
-            StatusCode::NOT_FOUND,
-            Json(serde_json::json!({"error": "not_found"})),
-        )
-            .into_response();
+    let Some(instance) = find_instance(&state, &id).await else {
+        return bare_not_found();
     };
-    drop(instances);
 
     let bytes = match base64::engine::general_purpose::STANDARD.decode(req.data.as_bytes()) {
         Ok(b) => b,
@@ -528,15 +516,9 @@ pub async fn read_output(
         }
     };
 
-    let instances = state.instances.read().await;
-    let Some(instance) = instances.iter().find(|i| i.id == id).cloned() else {
-        return (
-            StatusCode::NOT_FOUND,
-            Json(serde_json::json!({"error": "not_found"})),
-        )
-            .into_response();
+    let Some(instance) = find_instance(&state, &id).await else {
+        return bare_not_found();
     };
-    drop(instances);
 
     let capture_result = tokio::task::spawn_blocking(move || -> Result<String, CaptureError> {
         let tmux_session = instance.tmux_session().map_err(CaptureError::Tmux)?;
