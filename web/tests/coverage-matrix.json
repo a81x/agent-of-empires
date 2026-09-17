@@ -2065,7 +2065,7 @@
       "specs": [
         "src/lib/acpTypes.reducer.test.ts",
         "src/hooks/__tests__/useAcpResolveApproval.test.ts",
-        "src/components/acp/ElicitationAnswerCard.test.tsx"
+        "src/components/acp/AskUserQuestionCard.test.tsx"
       ],
       "components": [
         "web/src/lib/acpTypes.ts",
