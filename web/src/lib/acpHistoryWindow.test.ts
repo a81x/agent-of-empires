@@ -50,71 +50,27 @@ function subagentTranscript(lead: number, children: number, parentChain: string[
 }
 
 describe("historyWindowStart", () => {
-  it("returns 0 when everything fits", () => {
-    const rows = transcript(2, 3); // 8 rows
-    expect(historyWindowStart(rows, DEFAULT_HISTORY_WINDOW)).toBe(0);
-    expect(historyWindowStart(rows, 8)).toBe(0);
-  });
-
-  it("snaps the cap cut forward to the nearest user turn boundary", () => {
-    const rows = transcript(10, 10);
-    const start = historyWindowStart(rows, 30);
-    expect(rows[start]!.kind).toBe("user_prompt");
-    expect(start).toBe(88);
-    expect(rows.length - start).toBeLessThanOrEqual(30);
-  });
-
-  it("hard-cuts at the cap when one huge turn has no boundary after it", () => {
-    const rows: ActivityRow[] = [row("user_prompt", 0)];
-    for (let i = 0; i < 500; i += 1) rows.push(row("tool_complete", i));
-    const start = historyWindowStart(rows, 150);
-    expect(start).toBe(rows.length - 150); // 351
-    expect(rows.length - start).toBe(150);
-  });
-
-  it("counts user_diff_comments as a turn boundary", () => {
-    const rows: ActivityRow[] = [];
-    for (let i = 0; i < 40; i += 1) rows.push(row("message", i));
+  const hugeTurn = () => [row("user_prompt", 0), ...Array.from({ length: 500 }, (_, i) => row("tool_complete", i))];
+  const diffTurn = () => {
+    const rows = Array.from({ length: 40 }, (_, i) => row("message", i));
     rows[35] = row("user_diff_comments", 35);
-    expect(historyWindowStart(rows, 10)).toBe(35);
-  });
+    return rows;
+  };
 
-  it("walks down to 0 as the window grows past the transcript", () => {
-    const rows = transcript(5, 5); // 30 rows
-    expect(historyWindowStart(rows, 30)).toBe(0);
-    expect(historyWindowStart(rows, 1000)).toBe(0);
-  });
-
-  it("treats a non-positive window as show-all", () => {
-    const rows = transcript(10, 10);
-    expect(historyWindowStart(rows, 0)).toBe(0);
-    expect(historyWindowStart(rows, -5)).toBe(0);
-  });
-
-  it("pulls the cut back to the Task parent when it lands among sub-agent children (#2313)", () => {
-    const rows = subagentTranscript(100, 50);
-    const parentIdx = rows.findIndex((r) => r.kind === "tool_start" && r.tool?.id === "task1");
-    expect(parentIdx).toBe(101);
-    const start = historyWindowStart(rows, 40);
-    expect(start).toBe(parentIdx);
-    expect(rows[start]!.tool?.parent_tool_call_id).toBeUndefined();
-  });
-
-  it("leaves the cut alone when it lands exactly on the Task parent", () => {
-    const rows = subagentTranscript(100, 50); // 152 rows, parent at 101.
-    expect(historyWindowStart(rows, 51)).toBe(101);
-  });
-
-  it("walks the whole parent chain back for nested sub-agents", () => {
-    const rows = subagentTranscript(100, 49, ["task1", "task2"]);
-    expect(historyWindowStart(rows, 40)).toBe(101);
-  });
-
-  it("does not pull back a clean user-boundary start", () => {
-    const rows = transcript(10, 10);
-    const start = historyWindowStart(rows, 30);
-    expect(rows[start]!.kind).toBe("user_prompt");
-    expect(start).toBe(88);
+  it.each<[string, () => ActivityRow[], number, number]>([
+    ["everything fits", () => transcript(2, 3), DEFAULT_HISTORY_WINDOW, 0],
+    ["exactly fits", () => transcript(2, 3), 8, 0],
+    ["the window exceeds the transcript", () => transcript(5, 5), 1000, 0],
+    ["a zero window", () => transcript(10, 10), 0, 0],
+    ["a negative window", () => transcript(10, 10), -5, 0],
+    ["snaps forward to a user turn", () => transcript(10, 10), 30, 88],
+    ["hard-cuts one huge turn", hugeTurn, 150, 351],
+    ["treats diff comments as a boundary", diffTurn, 10, 35],
+    ["pulls back to a Task parent (#2313)", () => subagentTranscript(100, 50), 40, 101],
+    ["keeps a cut on the Task parent", () => subagentTranscript(100, 50), 51, 101],
+    ["walks a nested parent chain", () => subagentTranscript(100, 49, ["task1", "task2"]), 40, 101],
+  ])("%s", (_name, rows, visible, expected) => {
+    expect(historyWindowStart(rows(), visible)).toBe(expected);
   });
 });
 
