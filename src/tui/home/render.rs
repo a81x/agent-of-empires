@@ -4196,18 +4196,10 @@ impl HomeView {
         // but aren't clickable.
         let mut groups: Vec<(u8, Option<KeyEvent>, Vec<Span<'static>>)> = Vec::new();
 
-        // A lost daemon leaves the list stale and refuses every action, and
-        // reconnects never start a daemon, so this is the only lasting sign.
-        if self.sidebar_source == crate::tui::session_feed::SidebarSource::Disconnected {
-            groups.push((
-                0,
-                None,
-                vec![Span::styled(
-                    " \u{25CF} Runtime disconnected ",
-                    Style::default().fg(theme.error).bold(),
-                )],
-            ));
-        }
+        // A lost runtime is not announced here: it takes the whole screen
+        // over (see the early return at the top of `render`), so this toolbar
+        // only ever draws while the daemon is answering.
+        //
         // Localhost is the baseline, so only wider exposure is announced.
         use crate::cli::serve::Exposure;
         let serving = match self.serve_exposure {

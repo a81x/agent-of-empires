@@ -191,34 +191,23 @@ fn no_buttons_during_live_send() {
     assert_eq!(env.view.footer_button_at(0, 11), None);
 }
 
-/// The footer stays quiet at the localhost baseline and on a healthy
-/// runtime; it speaks up only for exposure beyond localhost or a lost daemon.
+/// The footer stays quiet at the localhost baseline and speaks up only for
+/// exposure beyond localhost. A runtime this TUI cannot reach never reaches
+/// the footer at all: it takes the whole screen over instead.
 #[test]
 #[serial]
-fn status_indicator_shows_only_exposure_or_disconnect() {
+fn status_indicator_shows_only_wider_exposure() {
     use crate::cli::serve::Exposure;
     use crate::tui::session_feed::SidebarSource;
 
     let mut env = create_test_env_with_sessions(1);
-    for (exposure, source, expected) in [
-        (None, SidebarSource::Connecting, None),
-        (Some(Exposure::Localhost), SidebarSource::Daemon, None),
-        (
-            Some(Exposure::Network),
-            SidebarSource::Daemon,
-            Some("Serving LAN"),
-        ),
-        (
-            Some(Exposure::Tunnel),
-            SidebarSource::Daemon,
-            Some("Serving tunnel"),
-        ),
-        (
-            Some(Exposure::Localhost),
-            SidebarSource::Disconnected,
-            Some("Runtime disconnected"),
-        ),
+    for (exposure, expected) in [
+        (Some(Exposure::Localhost), None),
+        (Some(Exposure::Network), Some("Serving LAN")),
+        (Some(Exposure::Tunnel), Some("Serving tunnel")),
+        (None, None),
     ] {
+        let source = SidebarSource::Daemon;
         env.view.serve_exposure = exposure;
         env.view.sidebar_source = source;
         let theme = crate::tui::styles::load_theme("empire");
@@ -243,5 +232,38 @@ fn status_indicator_shows_only_exposure_or_disconnect() {
         if let Some(expected) = expected {
             assert!(footer.contains(expected), "{footer}");
         }
+    }
+}
+
+/// A runtime this TUI cannot reach replaces the whole view, footer included,
+/// so the state is unmissable and every stale row is off screen.
+#[test]
+#[serial]
+fn a_runtime_that_is_not_answering_takes_the_screen_over() {
+    use crate::tui::session_feed::SidebarSource;
+
+    let mut env = create_test_env_with_sessions(1);
+    for (source, expected) in [
+        (SidebarSource::Connecting, "Connecting to runtime"),
+        (SidebarSource::Disconnected, "Runtime unavailable"),
+    ] {
+        env.view.sidebar_source = source;
+        let theme = crate::tui::styles::load_theme("empire");
+        let mut terminal = Terminal::new(TestBackend::new(160, 12)).unwrap();
+        terminal
+            .draw(|f| {
+                let area = f.area();
+                env.view.render(f, area, &theme, None, None, None);
+            })
+            .unwrap();
+        let screen: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+        assert!(screen.contains(expected), "{source:?}: {screen}");
+        assert!(!screen.contains("Serving"), "{source:?} kept the footer");
     }
 }
