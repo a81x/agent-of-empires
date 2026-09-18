@@ -181,8 +181,11 @@
       "id": "terminal.live-alt-screen-scroll",
       "kind": "vitest",
       "risk": "high",
-      "specs": ["src/components/__tests__/MobileLiveTerminal.altScreen.test.tsx"],
-      "components": ["web/src/components/MobileLiveTerminal.tsx"]
+      "specs": [
+        "src/components/__tests__/MobileLiveTerminal.altScreen.test.tsx",
+        "src/hooks/useLiveTerminal.forward.test.ts"
+      ],
+      "components": ["web/src/components/MobileLiveTerminal.tsx", "web/src/hooks/useLiveTerminal.ts"]
     },
     {
       "id": "terminal.live-line-wrap-units",

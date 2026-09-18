@@ -10,11 +10,11 @@ use std::collections::VecDeque;
 use std::sync::mpsc as std_mpsc;
 use std::sync::{Arc, Mutex};
 
-use serde_json::json;
 use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::Message;
 
 use crate::acp::client::discovery::DaemonEndpoint;
+use crate::daemon::LiveClientMessage;
 use crate::tui::live_socket::{self, LiveMessage};
 
 /// `(remote name, session id)`.
@@ -397,19 +397,27 @@ struct Connection {
 }
 
 impl Connection {
-    async fn control(&self, value: serde_json::Value) {
-        let _ = self.tx.send(Message::Text(value.to_string().into())).await;
+    async fn control(&self, message: LiveClientMessage) {
+        let Ok(text) = serde_json::to_string(&message) else {
+            return;
+        };
+        let _ = self.tx.send(Message::Text(text.into())).await;
     }
 
     async fn size(&self, cols: u16, rows: u16) {
-        self.control(json!({"type": "resize", "cols": cols.max(1), "rows": rows.max(1)}))
-            .await;
+        self.control(LiveClientMessage::Resize {
+            cols: cols.max(1),
+            rows: rows.max(1),
+        })
+        .await;
     }
 
     async fn window(&self, lines: usize, fast: bool) {
-        self.control(json!({"type": "window", "lines": lines.max(1)}))
-            .await;
-        self.control(json!({"type": "cadence", "fast": fast})).await;
+        self.control(LiveClientMessage::Window {
+            lines: lines.max(1),
+        })
+        .await;
+        self.control(LiveClientMessage::Cadence { fast }).await;
     }
 
     fn close(self) {
@@ -493,12 +501,11 @@ async fn run(
                             gate: InputGate::Viewer,
                             base: PatchBase::default(),
                         };
-                        next.control(json!({
-                            "type": "caps",
-                            "patch": true,
-                            "deflate": true,
-                            "label": crate::tui::view_lock::viewer_label(),
-                        }))
+                        next.control(LiveClientMessage::Caps {
+                            deflate: true,
+                            patch: true,
+                            label: Some(crate::tui::view_lock::viewer_label()),
+                        })
                         .await;
                         next.window(lines, true).await;
                         rx = Some(socket.rx);
@@ -528,7 +535,7 @@ async fn run(
             PreviewCommand::TakeOver { cols, rows } => {
                 if let Some(c) = &mut conn {
                     c.gate.claim();
-                    c.control(json!({"type": "claim"})).await;
+                    c.control(LiveClientMessage::Claim).await;
                     c.size(cols, rows).await;
                 }
             }
@@ -540,13 +547,12 @@ async fn run(
             PreviewCommand::Wheel => {
                 if let (Some(c), Some(pending)) = (&conn, slots.take_wheel()) {
                     if let Some((up, count)) = pending.burst() {
-                        c.control(json!({
-                            "type": "wheel",
-                            "up": up,
-                            "col": pending.col,
-                            "row": pending.row,
-                            "count": count,
-                        }))
+                        c.control(LiveClientMessage::Wheel {
+                            up,
+                            col: pending.col,
+                            row: pending.row,
+                            count,
+                        })
                         .await;
                     }
                 }
@@ -598,7 +604,7 @@ async fn on_message(
                     content,
                     cursor,
                 }),
-                Patched::Resync => c.control(json!({"type": "resync"})).await,
+                Patched::Resync => c.control(LiveClientMessage::Resync).await,
                 Patched::Skip => {}
             }
             None

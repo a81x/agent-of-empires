@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useEffectEvent, useRef, useSyncExternalStore } from "react";
 import { getOrCreateDeviceBindingSecret } from "../lib/deviceBinding";
 import { getToken } from "../lib/token";
-import { buttonMouseBytes, wheelMouseBytes } from "../lib/liveMouse";
+import { buttonMouseBytes } from "../lib/liveMouse";
 import { createFrameInflater, supportsFrameDeflate, type FrameInflater } from "../lib/frameStream";
 import { MAX_RETRIES, retryDelayMs } from "../lib/wsBackoff";
 import { reportTelemetrySeen } from "../lib/api";
@@ -22,6 +22,10 @@ const CLOSE_CODE_PTY_DEAD = 4001;
 /** Keep a short burst typed while a newly selected session's socket opens.
  * The cap prevents an offline tab from retaining unbounded paste data. */
 const MAX_PENDING_INPUT_BYTES = 64 * 1024;
+/** Used until the daemon announces its own ceiling on the `transport`
+ * message. Only a floor for the first window request, since the daemon
+ * clamps whatever it is asked for. */
+const DEFAULT_MAX_WINDOW = 4000;
 
 export interface LiveCursor {
   x: number;
@@ -76,9 +80,12 @@ export interface LiveFrame {
   /** App has some mouse tracking mode on (it will consume forwarded wheel
    *  events). Forwarding only happens when this AND altScreen are set. */
   mouse: boolean;
-  /** App is in SGR (1006) mouse encoding; picks the forwarded wire format
-   *  (SGR vs legacy X10). */
+  /** App is in SGR (1006) mouse encoding. The daemon encodes forwarded
+   *  wheel notches with it; the button path still encodes here. */
   mouseSgr: boolean;
+  /** App is in any-event tracking (1003), so it wants bare motion reports
+   *  and a client can forward hover. */
+  mouseAll: boolean;
   /** Pane 0's rectangle within the composited window grid (a split
    *  window). */
   pane0?: LivePaneRect | null;
@@ -102,6 +109,9 @@ export interface LiveTerminalState {
    *  (web PTY attach, mobile live view, native TUI); a non-owner renders
    *  best-effort at the owner's grid and shows a "take over" banner. */
   isOwner: boolean;
+  /** Who holds the size lock instead of this client, when the daemon named
+   *  them. Null while this client owns it, or when the lock is simply free. */
+  holder: string | null;
   /** The server has answered this connection's initial size-owner request.
    * Until then input is buffered and the UI must not present a takeover
    * banner as though another viewer had been confirmed. */
@@ -110,6 +120,10 @@ export interface LiveTerminalState {
    *  capture fallback cannot suppress a half-drawn repaint, so a torn screen
    *  means something different on each, and only the server knows which. */
   transport: "grid" | "snapshot" | null;
+  /** The capture window ceiling the daemon clamps to, once it has said.
+   *  Asking for more is harmless (the daemon clamps anyway); this just keeps
+   *  the client from duplicating the constant. */
+  maxWindow: number;
   stats: LiveStats;
 }
 
@@ -121,8 +135,10 @@ const INITIAL_STATE: LiveTerminalState = {
   frame: null,
   reading: false,
   isOwner: false,
+  holder: null,
   ownerKnown: false,
   transport: null,
+  maxWindow: DEFAULT_MAX_WINDOW,
   stats: { frames: 0, patches: 0, wireBytes: 0, resyncs: 0 },
 };
 
@@ -293,9 +309,14 @@ export function useLiveTerminal(
       let resyncPending = false;
       const handleMessageText = (text: string) => {
         if (wsRef.current !== ws) return;
+        // Mirrors `LiveServerMessage` in src/daemon/live.rs, which is the
+        // contract's one authority. Nothing here can be a compile error, so a
+        // field added there has to be added here by hand; its
+        // `the_wire_is_what_both_clients_parse` test pins the names.
         let msg: {
           type?: string;
           grid?: boolean;
+          maxWindow?: number;
           content?: string;
           seq?: number;
           base?: number;
@@ -306,9 +327,11 @@ export function useLiveTerminal(
           history?: number;
           cursor?: LiveCursor | null;
           is_owner?: boolean;
+          holder?: string | null;
           altScreen?: boolean;
           mouse?: boolean;
           mouseSgr?: boolean;
+          mouseAll?: boolean;
           pane0?: LivePaneRect | null;
         };
         try {
@@ -318,16 +341,22 @@ export function useLiveTerminal(
         }
         if (msg.type === "size_owner") {
           const owner = msg.is_owner ?? true;
+          const holder = owner ? null : (msg.holder ?? null);
           ownerKnownRef.current = true;
           setState((prev) =>
-            prev.isOwner === owner && prev.ownerKnown ? prev : { ...prev, isOwner: owner, ownerKnown: true },
+            prev.isOwner === owner && prev.ownerKnown && prev.holder === holder
+              ? prev
+              : { ...prev, isOwner: owner, holder, ownerKnown: true },
           );
           if (owner) flushPendingInput();
           return;
         }
         if (msg.type === "transport") {
           const transport = msg.grid ? "grid" : "snapshot";
-          setState((prev) => (prev.transport === transport ? prev : { ...prev, transport }));
+          const maxWindow = msg.maxWindow ?? DEFAULT_MAX_WINDOW;
+          setState((prev) =>
+            prev.transport === transport && prev.maxWindow === maxWindow ? prev : { ...prev, transport, maxWindow },
+          );
           return;
         }
         if (msg.type === "clipboard") {
@@ -377,6 +406,7 @@ export function useLiveTerminal(
           altScreen: msg.altScreen ?? false,
           mouse: msg.mouse ?? false,
           mouseSgr: msg.mouseSgr ?? false,
+          mouseAll: msg.mouseAll ?? false,
           pane0: msg.pane0 ?? null,
         };
         // While reading, keep the capture window covering the FULL
@@ -385,7 +415,7 @@ export function useLiveTerminal(
         // re-render as blank spacer under the reader. Deduped, so it is
         // one control message per growth step at idle cadence.
         if (readingRef.current) {
-          const full = Math.min(4000, incoming.rows + incoming.history);
+          const full = Math.min(storeRef.current!.snapshot.maxWindow, incoming.rows + incoming.history);
           if (full > (desiredRef.current.window ?? 0)) setWindowInternal(full);
         }
         // Always render the freshest frame. While reading scrollback the
@@ -535,14 +565,27 @@ export function useLiveTerminal(
     }
   }, []);
 
-  /** Forward a wheel notch to a full-screen mouse app (alternate screen),
-   *  encoded as the app expects. Sent as raw input bytes, NOT as a window
-   *  request: the alternate screen has no capturable scrollback, so the
-   *  app scrolls its own content and the next frame reflects it. */
-  const forwardWheel = useCallback((up: boolean, sgr: boolean, col: number, row: number) => {
+  /** Forward wheel notches to a full-screen mouse app (alternate screen).
+   *  NOT a window request: the alternate screen has no capturable scrollback,
+   *  so the app scrolls its own content and the next frame reflects it.
+   *
+   *  Sent as a control message rather than raw input bytes, so the daemon
+   *  encodes it against the pane's live modes. Raw input is dropped for a
+   *  client that does not hold the size lock, which left a watcher unable to
+   *  scroll at all; the daemon takes this from any viewer that is not
+   *  read-only. `count` coalesces a gesture's notches into one message. */
+  const forwardWheel = useCallback((up: boolean, col: number, row: number, count = 1) => {
     const ws = wsRef.current;
-    if (ws?.readyState === WebSocket.OPEN) {
-      ws.send(wheelMouseBytes(up, sgr, col, row));
+    if (ws?.readyState === WebSocket.OPEN && count > 0) {
+      ws.send(
+        JSON.stringify({
+          type: "wheel",
+          up,
+          col: Math.max(1, Math.floor(col)),
+          row: Math.max(1, Math.floor(row)),
+          count,
+        }),
+      );
     }
   }, []);
 
@@ -594,7 +637,8 @@ export function useLiveTerminal(
       if (readingRef.current) return;
       readingRef.current = true;
       const latest = storeRef.current!.snapshot.frame;
-      const full = Math.min(4000, Math.max(rows, latest ? latest.rows + latest.history : rows));
+      const snapshot = storeRef.current!.snapshot;
+      const full = Math.min(snapshot.maxWindow, Math.max(rows, latest ? latest.rows + latest.history : rows));
       setWindowInternal(full);
       setState((prev) => ({ ...prev, reading: true }));
     },

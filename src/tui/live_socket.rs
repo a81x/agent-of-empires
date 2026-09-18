@@ -9,7 +9,6 @@
 
 use anyhow::Result;
 use futures_util::{SinkExt, StreamExt};
-use serde::Deserialize;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio_tungstenite::tungstenite::Message;
@@ -18,60 +17,6 @@ use tokio_tungstenite::WebSocketStream;
 use crate::acp::client::discovery::DaemonEndpoint;
 use crate::daemon::websocket::{self, NativeSocket};
 use crate::tmux::PaneCursor;
-
-#[derive(Debug, Deserialize)]
-struct WireCursor {
-    x: u16,
-    y: u16,
-}
-
-/// Pane 0's size inside a composited window, which is what pins forwarded
-/// pointer cells to pane 0. The origin the daemon also sends is deliberately
-/// dropped: it has already been applied to the cursor below, and the cursor
-/// painter would add it a second time.
-#[derive(Debug, Deserialize)]
-struct WirePane0 {
-    cols: u16,
-    rows: u16,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct WireMessage {
-    #[serde(rename = "type")]
-    kind: String,
-    #[serde(default)]
-    content: Option<String>,
-    #[serde(default)]
-    seq: Option<u64>,
-    #[serde(default)]
-    base: Option<u64>,
-    #[serde(default)]
-    shift: usize,
-    #[serde(default)]
-    lines: Vec<(usize, String)>,
-    #[serde(default)]
-    cursor: Option<WireCursor>,
-    #[serde(default)]
-    rows: u16,
-    #[serde(default)]
-    history: u32,
-    #[serde(default)]
-    alt_screen: bool,
-    #[serde(default)]
-    mouse: bool,
-    #[serde(default)]
-    mouse_sgr: bool,
-    #[serde(default)]
-    mouse_all: bool,
-    #[serde(default)]
-    pane0: Option<WirePane0>,
-    #[serde(default, rename = "is_owner")]
-    is_owner: Option<bool>,
-    /// Who holds the size lock instead of us.
-    #[serde(default)]
-    holder: Option<String>,
-}
 
 /// What the reader task hands its owner.
 #[derive(Debug)]
@@ -97,52 +42,66 @@ pub(crate) enum LiveMessage {
     Closed(String),
 }
 
-impl WireMessage {
-    /// The daemon already moved the cursor onto the window grid, so no
-    /// composite origin is applied again here.
-    fn pane_cursor(&self) -> PaneCursor {
-        PaneCursor {
-            x: self.cursor.as_ref().map_or(0, |c| c.x),
-            y: self.cursor.as_ref().map_or(0, |c| c.y),
-            visible: self.cursor.is_some(),
-            pane_height: self.rows,
-            history_size: self.history,
-            pane_width: 0,
-            alternate_on: self.alt_screen,
-            mouse_tracking: self.mouse,
-            mouse_sgr: self.mouse_sgr,
-            mouse_all: self.mouse_all,
-            position_reliable: true,
-            composite_pane0: self.pane0.as_ref().map(|p| crate::tmux::PaneGeom {
-                left: 0,
-                top: 0,
-                width: p.cols,
-                height: p.rows,
-            }),
-        }
+/// The pane the frame describes, as this machine's own capture would report
+/// it.
+///
+/// Two fields deliberately do not mean what their local namesakes do. The
+/// daemon has already moved the cursor onto the window grid, so pane 0's
+/// origin is dropped rather than carried: the cursor painter adds
+/// `composite_pane0`'s origin itself, and carrying it would place the cursor
+/// twice as far in. `pane_width` has no wire field at all.
+fn pane_cursor(meta: &crate::daemon::LivePaneMeta) -> PaneCursor {
+    PaneCursor {
+        x: meta.cursor.map_or(0, |c| c.x),
+        y: meta.cursor.map_or(0, |c| c.y),
+        visible: meta.cursor.is_some(),
+        pane_height: meta.rows,
+        history_size: meta.history,
+        pane_width: 0,
+        alternate_on: meta.alt_screen,
+        mouse_tracking: meta.mouse,
+        mouse_sgr: meta.mouse_sgr,
+        mouse_all: meta.mouse_all,
+        position_reliable: true,
+        composite_pane0: meta.pane0.map(|p| crate::tmux::PaneGeom {
+            left: 0,
+            top: 0,
+            width: p.cols,
+            height: p.rows,
+        }),
     }
 }
 
 fn parse_text(text: &str) -> Option<LiveMessage> {
-    let msg: WireMessage = serde_json::from_str(text).ok()?;
-    match msg.kind.as_str() {
-        "frame" => Some(LiveMessage::Frame {
-            seq: msg.seq,
-            cursor: msg.pane_cursor(),
-            content: msg.content.unwrap_or_default(),
+    // A message this build does not know, or one that cannot be applied (a
+    // patch with no base), is dropped rather than guessed at.
+    match serde_json::from_str::<crate::daemon::LiveServerMessage>(text).ok()? {
+        crate::daemon::LiveServerMessage::Frame { seq, content, meta } => {
+            Some(LiveMessage::Frame {
+                seq,
+                cursor: pane_cursor(&meta),
+                content,
+            })
+        }
+        crate::daemon::LiveServerMessage::Patch {
+            seq,
+            base,
+            shift,
+            lines,
+            meta,
+        } => Some(LiveMessage::Patch {
+            seq,
+            base,
+            shift,
+            cursor: pane_cursor(&meta),
+            lines,
         }),
-        "patch" => Some(LiveMessage::Patch {
-            seq: msg.seq?,
-            base: msg.base?,
-            shift: msg.shift,
-            cursor: msg.pane_cursor(),
-            lines: msg.lines,
-        }),
-        "size_owner" => Some(LiveMessage::SizeOwner {
-            is_owner: msg.is_owner.unwrap_or(true),
-            holder: msg.holder,
-        }),
-        _ => None,
+        crate::daemon::LiveServerMessage::SizeOwner { is_owner, holder } => {
+            Some(LiveMessage::SizeOwner { is_owner, holder })
+        }
+        // The TUI drives its own clipboard and does not choose a transport.
+        crate::daemon::LiveServerMessage::Clipboard { .. }
+        | crate::daemon::LiveServerMessage::Transport { .. } => None,
     }
 }
 

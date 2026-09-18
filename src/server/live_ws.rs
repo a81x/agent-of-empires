@@ -50,7 +50,8 @@
 //!     non-owner at fast cadence auto-reclaims the lock (claim, never
 //!     steal) once the holder releases it, so ownership returns without
 //!     another "take over" tap.
-//!   `{"type":"transport","grid":bool}`: which transport is producing frames,
+//!   `{"type":"transport","grid":bool,"maxWindow":N}`: which transport is
+//!   producing frames, and the ceiling `window.lines` is clamped to,
 //!     sent on the first frame and whenever it flips. `false` means the
 //!     capture fallback, which cannot suppress a half-drawn repaint.
 //!   `{"type":"clipboard","text":"..."}`: an OSC 52 clipboard write emitted
@@ -68,6 +69,10 @@
 //!     `window-size latest` restored) when the owner disconnects.
 //!   `{"type":"claim"}`: explicit take-over from a non-owner; steals the
 //!     lock even from a live holder and sizes the window to this client.
+//!   `{"type":"claim_if_vacant"}`: take the lock only when it is free,
+//!     without resizing or displacing a live owner. Mobile startup sends
+//!     this first, while the soft keyboard prevents a safe grid
+//!     measurement.
 //!   `{"type":"window","lines":N}`: total capture window (history +
 //!     screen). Clamped to [screen rows, MAX_WINDOW_LINES].
 //!   `{"type":"cadence","fast":bool}`: capture cadence. Fast while the
@@ -119,6 +124,7 @@ use super::pane::{
     CLOSE_CODE_TRY_AGAIN_LATER,
 };
 use super::AppState;
+use crate::daemon::{LiveClientMessage, LiveCursor, LivePane0, LivePaneMeta, LiveServerMessage};
 use crate::tmux::{SIZE_OWNER_HEARTBEAT, SIZE_OWNER_TTL};
 
 /// Capture cadence while the client is at the live edge. Matches the
@@ -228,57 +234,6 @@ impl ReassertGuard {
     }
 }
 
-#[derive(Deserialize)]
-#[serde(tag = "type")]
-enum LiveControlMessage {
-    #[serde(rename = "resize")]
-    Resize { cols: u16, rows: u16 },
-    #[serde(rename = "window")]
-    Window { lines: usize },
-    #[serde(rename = "cadence")]
-    Cadence { fast: bool },
-    /// Request the lock when it is vacant, without resizing or displacing a
-    /// live owner. Mobile startup uses this while the soft keyboard prevents a
-    /// safe grid measurement.
-    #[serde(rename = "claim_if_vacant")]
-    ClaimIfVacant,
-    /// Explicit "take over" from a non-owner client: steal the size-owner
-    /// lock even from a live holder (a user tap is intentional, unlike the
-    /// passive flap the heartbeat guards against).
-    #[serde(rename = "claim")]
-    Claim,
-    /// Capability advertisement; see the module doc. `deflate:true` switches
-    /// frame delivery to the compressed binary stream; `patch:true` enables
-    /// row patches.
-    #[serde(rename = "caps")]
-    Caps {
-        #[serde(default)]
-        deflate: bool,
-        #[serde(default)]
-        patch: bool,
-        /// What to call this client in another client's "took over" message.
-        #[serde(default)]
-        label: Option<String>,
-    },
-    /// The client lost patch continuity and needs a full frame.
-    #[serde(rename = "resync")]
-    Resync,
-    #[serde(rename = "wheel")]
-    Wheel {
-        up: bool,
-        col: u16,
-        row: u16,
-        /// Notches this message stands for. Absent means one, which is what a
-        /// client predating coalescing sends.
-        #[serde(default = "one_notch")]
-        count: u16,
-    },
-}
-
-fn one_notch() -> u16 {
-    1
-}
-
 /// Which transport renders a live surface. The agent pane takes the shared VT
 /// grid when one can be armed; the paired shells stay on snapshots, whose
 /// seed-free capture avoids the doubled-prompt repaint a shell can show while
@@ -323,6 +278,9 @@ struct LiveSettings {
     /// `capture-pane` snapshot. Read by the input path through
     /// [`Self::grid_wakes_capture`].
     grid_transport: AtomicBool,
+    /// Pane modes from the latest sample, for the wheel path to encode
+    /// against without forking tmux. See [`Self::sampled_pane_modes`].
+    pane_modes: std::sync::Mutex<Option<crate::tmux::PaneCursor>>,
 }
 
 impl LiveSettings {
@@ -344,7 +302,28 @@ impl LiveSettings {
             label: std::sync::Mutex::new(DEFAULT_CLIENT_LABEL.to_string()),
             resize_settle_until_ms: AtomicU64::new(0),
             grid_transport: AtomicBool::new(false),
+            pane_modes: std::sync::Mutex::new(None),
         }
+    }
+
+    fn publish_pane_modes(&self, cursor: Option<crate::tmux::PaneCursor>) {
+        *self.pane_modes.lock().unwrap_or_else(|e| e.into_inner()) = cursor;
+    }
+
+    /// The latest sample's pane modes, when they are current enough to encode
+    /// a wheel report against.
+    ///
+    /// Only on the grid transport: there the VT parser reads DEC mode changes
+    /// out of the pane's own byte stream, so this is fresher than a
+    /// `display-message` issued after the fact. The snapshot fallback samples
+    /// on a cadence that can be 250ms behind, and a stale alternate-screen
+    /// flag would type a mouse report into a shell, so that path still asks
+    /// tmux.
+    fn sampled_pane_modes(&self) -> Option<crate::tmux::PaneCursor> {
+        if !self.grid_transport.load(Ordering::Relaxed) {
+            return None;
+        }
+        *self.pane_modes.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     /// Whether the VT grid's change signal is what wakes the capture loop, the
@@ -547,12 +526,10 @@ fn plan_patch<'a>(
 /// JSON control frame telling the client whether it currently owns the
 /// session's size (and may resize/type) or is a read-only viewer.
 fn size_owner_json(is_owner: bool, holder: Option<&str>) -> String {
-    serde_json::json!({
-        "type": "size_owner",
-        "is_owner": is_owner,
-        "holder": holder,
+    encode(&LiveServerMessage::SizeOwner {
+        is_owner,
+        holder: holder.map(str::to_string),
     })
-    .to_string()
 }
 
 /// Label of whoever holds this session's size now, for a client being told it
@@ -566,7 +543,9 @@ fn current_holder_label(tmux_name: &str) -> Option<String> {
 }
 
 fn clipboard_json(text: &str) -> String {
-    serde_json::json!({ "type": "clipboard", "text": text }).to_string()
+    encode(&LiveServerMessage::Clipboard {
+        text: text.to_string(),
+    })
 }
 
 /// Which transport is producing frames. The grid can be unavailable for
@@ -574,7 +553,10 @@ fn clipboard_json(text: &str) -> String {
 /// window), and the fallback tears where the grid does not, so a viewer
 /// debugging "it still tears" needs to know which one it has.
 fn transport_json(grid: bool) -> String {
-    serde_json::json!({ "type": "transport", "grid": grid }).to_string()
+    encode(&LiveServerMessage::Transport {
+        grid,
+        max_window: MAX_WINDOW_LINES,
+    })
 }
 
 /// Whether this connection may push the pane's OSC 52 copies into the
@@ -1610,6 +1592,9 @@ async fn handle_live_ws_inner(
                             break;
                         }
                     }
+                    // Published before the dedup below: an app can turn mouse
+                    // tracking on without changing a visible cell.
+                    capture_settings.publish_pane_modes(cursor);
                     let frame = (content, cursor);
                     // A resync republishes even when the frame is unchanged:
                     // the client dropped a patch and is showing a stale window
@@ -1754,11 +1739,11 @@ async fn handle_live_ws_inner(
                             .await;
                     }
                     Some(Ok(Message::Text(text))) => {
-                        let Ok(control) = serde_json::from_str::<LiveControlMessage>(&text) else {
+                        let Ok(control) = serde_json::from_str::<LiveClientMessage>(&text) else {
                             continue;
                         };
                         match control {
-                            LiveControlMessage::Resize { cols, rows } => {
+                            LiveClientMessage::Resize { cols, rows } => {
                                 if cols == 0 || rows == 0 {
                                     continue;
                                 }
@@ -1812,20 +1797,20 @@ async fn handle_live_ws_inner(
                                     .await;
                                 nudge.notify_one();
                             }
-                            LiveControlMessage::Window { lines } => {
+                            LiveClientMessage::Window { lines } => {
                                 let floor = (settings.screen_rows.load(Ordering::Relaxed) as usize)
                                     .max(DEFAULT_WINDOW_LINES);
                                 let clamped = lines.clamp(floor, MAX_WINDOW_LINES);
                                 settings.window_lines.store(clamped, Ordering::Relaxed);
                                 nudge.notify_one();
                             }
-                            LiveControlMessage::Cadence { fast } => {
+                            LiveClientMessage::Cadence { fast } => {
                                 settings.fast.store(fast, Ordering::Relaxed);
                                 if fast {
                                     nudge.notify_one();
                                 }
                             }
-                            LiveControlMessage::ClaimIfVacant => {
+                            LiveClientMessage::ClaimIfVacant => {
                                 // A keyboard-open mobile pane intentionally
                                 // postpones its first resize so it never sends
                                 // keyboard-shrunk rows to tmux. It still needs
@@ -1848,7 +1833,7 @@ async fn handle_live_ws_inner(
                                     .await;
                                 nudge.notify_one();
                             }
-                            LiveControlMessage::Claim => {
+                            LiveClientMessage::Claim => {
                                 // Explicit take-over: steal the lock even from
                                 // a live holder, then size the window to our
                                 // grid so this client renders correctly.
@@ -1896,7 +1881,7 @@ async fn handle_live_ws_inner(
                                     .await;
                                 nudge.notify_one();
                             }
-                            LiveControlMessage::Caps {
+                            LiveClientMessage::Caps {
                                 deflate,
                                 patch,
                                 label,
@@ -1930,23 +1915,27 @@ async fn handle_live_ws_inner(
                                     settings.patch.store(true, Ordering::Relaxed);
                                 }
                             }
-                            LiveControlMessage::Resync => {
+                            LiveClientMessage::Resync => {
                                 settings.force_full.store(true, Ordering::Relaxed);
                                 nudge.notify_one();
                             }
-                            LiveControlMessage::Wheel {
+                            LiveClientMessage::Wheel {
                                 up,
                                 col,
                                 row,
                                 count,
                             } => {
-                                // tmux, not the grid, is the authority here: a
-                                // stale alternate-screen flag would type the
-                                // report into a shell.
-                                let name = tmux_name.clone();
+                                // A stale alternate-screen flag would type the
+                                // report into a shell, so the modes have to be
+                                // current. On the grid the latest sample is
+                                // exactly that and costs nothing; otherwise ask
+                                // tmux, once per message.
                                 let modes = if read_only {
                                     None
+                                } else if let Some(modes) = settings.sampled_pane_modes() {
+                                    Some(modes)
                                 } else {
+                                    let name = tmux_name.clone();
                                     tokio::task::spawn_blocking(move || {
                                         crate::tmux::Session::from_name(&name).pane_cursor()
                                     })
@@ -2179,9 +2168,7 @@ async fn wait_for_next(
 }
 
 /// The geometry, cursor and mode fields every frame and patch carries.
-fn frame_meta(
-    cursor: Option<&crate::tmux::PaneCursor>,
-) -> serde_json::Map<String, serde_json::Value> {
+fn frame_meta(cursor: Option<&crate::tmux::PaneCursor>) -> LivePaneMeta {
     // The cursor is pane relative while composited content uses the window
     // grid. Emit window-relative coordinates and carry the same origin for
     // the client's inverse pointer mapping. Translating before emission also
@@ -2189,56 +2176,29 @@ fn frame_meta(
     // only their pointer mapping degrades. No pane rectangle means identity.
     let pane0 = cursor.and_then(|c| c.composite_pane0);
     let (origin_x, origin_y) = pane0.map_or((0, 0), |p| (p.left, p.top));
-    let cursor_value = match cursor {
-        Some(c) if c.visible => serde_json::json!({
-            "x": c.x.saturating_add(origin_x),
-            "y": c.y.saturating_add(origin_y),
+    LivePaneMeta {
+        rows: cursor.map_or(0, |c| c.pane_height),
+        history: cursor.map_or(0, |c| c.history_size),
+        cursor: cursor.filter(|c| c.visible).map(|c| LiveCursor {
+            x: c.x.saturating_add(origin_x),
+            y: c.y.saturating_add(origin_y),
         }),
-        _ => serde_json::Value::Null,
-    };
-    let mut map = serde_json::Map::new();
-    map.insert(
-        "rows".into(),
-        cursor.map(|c| c.pane_height).unwrap_or(0).into(),
-    );
-    map.insert(
-        "history".into(),
-        cursor.map(|c| c.history_size).unwrap_or(0).into(),
-    );
-    map.insert("cursor".into(), cursor_value);
-    // Full-screen (alternate-screen) mouse apps have no capturable
-    // scrollback; the client forwards the wheel to the app instead of
-    // widening the capture window. `mouseSgr` picks the wire encoding.
-    map.insert(
-        "altScreen".into(),
-        cursor.map(|c| c.alternate_on).unwrap_or(false).into(),
-    );
-    map.insert(
-        "mouse".into(),
-        cursor.map(|c| c.mouse_tracking).unwrap_or(false).into(),
-    );
-    map.insert(
-        "mouseSgr".into(),
-        cursor.map(|c| c.mouse_sgr).unwrap_or(false).into(),
-    );
-    // Any-event tracking (DEC 1003): the app wants bare motion reports, so a
-    // viewer can forward hover the way a direct attach does.
-    map.insert(
-        "mouseAll".into(),
-        cursor.map(|c| c.mouse_all).unwrap_or(false).into(),
-    );
-    map.insert(
-        "pane0".into(),
-        pane0.map_or(serde_json::Value::Null, |p| {
-            serde_json::json!({
-                "cols": p.width,
-                "rows": p.height,
-                "left": p.left,
-                "top": p.top,
-            })
+        // Full-screen (alternate-screen) mouse apps have no capturable
+        // scrollback; the client forwards the wheel to the app instead of
+        // widening the capture window. `mouse_sgr` picks the wire encoding,
+        // and `mouse_all` says the app also wants bare motion, so a viewer
+        // can forward hover.
+        alt_screen: cursor.is_some_and(|c| c.alternate_on),
+        mouse: cursor.is_some_and(|c| c.mouse_tracking),
+        mouse_sgr: cursor.is_some_and(|c| c.mouse_sgr),
+        mouse_all: cursor.is_some_and(|c| c.mouse_all),
+        pane0: pane0.map(|p| LivePane0 {
+            cols: p.width,
+            rows: p.height,
+            left: p.left,
+            top: p.top,
         }),
-    );
-    map
+    }
 }
 
 /// Serialize a row patch (see the module doc).
@@ -2248,28 +2208,30 @@ fn patch_json(
     seq: u64,
     cursor: Option<&crate::tmux::PaneCursor>,
 ) -> String {
-    let mut map = frame_meta(cursor);
-    map.insert("type".into(), "patch".into());
-    map.insert("seq".into(), seq.into());
-    map.insert("base".into(), (seq - 1).into());
-    map.insert("shift".into(), shift.into());
-    map.insert(
-        "lines".into(),
-        changed
+    encode(&LiveServerMessage::Patch {
+        seq,
+        base: seq - 1,
+        shift,
+        lines: changed
             .iter()
-            .map(|(i, row)| serde_json::json!([i, row]))
-            .collect::<Vec<_>>()
-            .into(),
-    );
-    serde_json::Value::Object(map).to_string()
+            .map(|(i, row)| (*i, (*row).to_string()))
+            .collect(),
+        meta: frame_meta(cursor),
+    })
 }
 
 fn frame_json(content: &str, cursor: Option<&crate::tmux::PaneCursor>, seq: u64) -> String {
-    let mut map = frame_meta(cursor);
-    map.insert("type".into(), "frame".into());
-    map.insert("seq".into(), seq.into());
-    map.insert("content".into(), content.into());
-    serde_json::Value::Object(map).to_string()
+    encode(&LiveServerMessage::Frame {
+        seq: Some(seq),
+        content: content.to_string(),
+        meta: frame_meta(cursor),
+    })
+}
+
+/// Every message the daemon sends. Serialization cannot fail for these types,
+/// and a viewer is better served by a dropped message than a killed task.
+fn encode(message: &LiveServerMessage) -> String {
+    serde_json::to_string(message).unwrap_or_default()
 }
 
 #[cfg(test)]
@@ -2479,60 +2441,13 @@ mod tests {
     }
 
     #[test]
-    fn control_messages_parse() {
-        let m: LiveControlMessage =
-            serde_json::from_str(r#"{"type":"resize","cols":74,"rows":46}"#).unwrap();
-        assert!(matches!(
-            m,
-            LiveControlMessage::Resize { cols: 74, rows: 46 }
-        ));
-        let m: LiveControlMessage =
-            serde_json::from_str(r#"{"type":"window","lines":800}"#).unwrap();
-        assert!(matches!(m, LiveControlMessage::Window { lines: 800 }));
-        let m: LiveControlMessage =
-            serde_json::from_str(r#"{"type":"cadence","fast":false}"#).unwrap();
-        assert!(matches!(m, LiveControlMessage::Cadence { fast: false }));
-        let m: LiveControlMessage = serde_json::from_str(r#"{"type":"claim"}"#).unwrap();
-        assert!(matches!(m, LiveControlMessage::Claim));
-        let m: LiveControlMessage = serde_json::from_str(r#"{"type":"claim_if_vacant"}"#).unwrap();
-        assert!(matches!(m, LiveControlMessage::ClaimIfVacant));
-        let m: LiveControlMessage =
-            serde_json::from_str(r#"{"type":"caps","deflate":true}"#).unwrap();
-        assert!(matches!(
-            m,
-            LiveControlMessage::Caps {
-                deflate: true,
-                patch: false,
-                label: None
-            }
-        ));
-        let m: LiveControlMessage = serde_json::from_str(
-            r#"{"type":"caps","deflate":true,"patch":true,"label":"mac-mini (aoe)"}"#,
-        )
-        .unwrap();
-        match m {
-            LiveControlMessage::Caps {
-                deflate,
-                patch,
-                label,
-            } => assert_eq!(
-                (deflate, patch, label.as_deref()),
-                (true, true, Some("mac-mini (aoe)"))
-            ),
-            _ => panic!("expected caps"),
-        }
-        let m: LiveControlMessage = serde_json::from_str(r#"{"type":"resync"}"#).unwrap();
-        assert!(matches!(m, LiveControlMessage::Resync));
-    }
-
-    #[test]
     fn a_viewer_wheel_scrolls_only_a_full_screen_pane_and_never_for_read_only() {
-        let m: LiveControlMessage =
+        let m: LiveClientMessage =
             serde_json::from_str(r#"{"type":"wheel","up":true,"col":4,"row":9}"#).unwrap();
         assert!(
             matches!(
                 m,
-                LiveControlMessage::Wheel {
+                LiveClientMessage::Wheel {
                     up: true,
                     col: 4,
                     row: 9,
@@ -2541,10 +2456,10 @@ mod tests {
             ),
             "a client predating coalescing means one notch"
         );
-        let m: LiveControlMessage =
+        let m: LiveClientMessage =
             serde_json::from_str(r#"{"type":"wheel","up":true,"col":4,"row":9,"count":7}"#)
                 .unwrap();
-        assert!(matches!(m, LiveControlMessage::Wheel { count: 7, .. }));
+        assert!(matches!(m, LiveClientMessage::Wheel { count: 7, .. }));
         let modes = |alternate_on, mouse_tracking| crate::tmux::PaneCursor {
             x: 0,
             y: 0,

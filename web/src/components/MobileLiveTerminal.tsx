@@ -166,7 +166,7 @@ export interface MobileLiveTerminalProps {
   /** Forward a wheel notch to a full-screen mouse app (alternate screen).
    *  Used instead of capture-window scrolling when the frame reports the
    *  pane is such an app. */
-  forwardWheel: (up: boolean, sgr: boolean, col: number, row: number) => void;
+  forwardWheel: (up: boolean, col: number, row: number, count?: number) => void;
   /** Forward a mouse button press/drag/release to a full-screen mouse app.
    *  Used only when the frame reports the pane is such an app (altScreen &&
    *  mouse), so a click drives the app instead of selecting page text. */
@@ -1210,9 +1210,9 @@ export function MobileLiveTerminal({
       const { col, row } = pointerCell(clientX, clientY);
       const wheelRow = touchCell ? inputPaneMiddleRow() : row;
       const up = notches < 0;
-      for (let i = 0; i < Math.abs(notches); i++) forwardWheel(up, mouseSgrRef.current, col, wheelRow);
+      forwardWheel(up, col, wheelRow, Math.abs(notches));
     },
-    [lineH, pointerCell, forwardWheel, mouseSgrRef, inputPaneMiddleRow],
+    [lineH, pointerCell, forwardWheel, inputPaneMiddleRow],
   );
 
   const cancelTouchWheelQueue = useCallback(() => notchPacer.cancel(), [notchPacer]);
@@ -1226,10 +1226,10 @@ export function MobileLiveTerminal({
         if (!forwardModeRef.current) return;
         const { col } = pointerCell(clientX, clientY);
         const row = inputPaneMiddleRow();
-        for (let i = 0; i < count; i++) forwardWheel(up, mouseSgrRef.current, col, row);
+        forwardWheel(up, col, row, count);
       });
     },
-    [lineH, notchPacer, pointerCell, forwardWheel, forwardModeRef, mouseSgrRef, inputPaneMiddleRow],
+    [lineH, notchPacer, pointerCell, forwardWheel, forwardModeRef, inputPaneMiddleRow],
   );
   useEffect(() => cancelTouchWheelQueue, [cancelTouchWheelQueue]);
   // A frame after a forwarded notch is the app's acknowledgement: release the

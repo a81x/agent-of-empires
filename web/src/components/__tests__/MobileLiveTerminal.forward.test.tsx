@@ -78,9 +78,9 @@ describe("MobileLiveTerminal wheel forwarding", () => {
     expect(scroller.className).toContain("overflow-hidden");
     fireEvent.wheel(scroller, { deltaY: 120 });
     expect(forwardWheel).toHaveBeenCalled();
-    // deltaY > 0 = scroll down = wheel down (up === false), SGR encoding.
+    // deltaY > 0 = scroll down = wheel down (up === false). The daemon picks
+    // the encoding from the pane's own modes, so none is passed here.
     expect(forwardWheel.mock.calls[0][0]).toBe(false);
-    expect(forwardWheel.mock.calls[0][1]).toBe(true);
     fireEvent.wheel(scroller, { deltaY: -120 });
     const lastUp = forwardWheel.mock.calls[forwardWheel.mock.calls.length - 1][0];
     expect(lastUp).toBe(true);
@@ -251,10 +251,10 @@ describe("MobileLiveTerminal wheel forwarding", () => {
     const { scroller, forwardWheel } = renderTerm(frame({ altScreen: true, mouse: true, mouseSgr: true }));
     fireEvent.touchStart(scroller, { touches: [{ clientX: 100, clientY: 300 } as Touch] });
     fireEvent.touchMove(scroller, { touches: [{ clientX: 100, clientY: 266 } as Touch] });
-    expect(forwardWheel.mock.calls[0]![3]).toBe(2);
+    expect(forwardWheel.mock.calls[0]![2]).toBe(2);
     forwardWheel.mockClear();
     fireEvent.wheel(scroller, { deltaY: 120, clientX: 100, clientY: 266 });
-    expect(forwardWheel.mock.calls[0]![3]).toBe(3);
+    expect(forwardWheel.mock.calls[0]![2]).toBe(3);
 
     // A top/bottom split retains the composite's full row count in `rows`,
     // but touch input stays in pane 0 and must use that pane's smaller extent.
@@ -263,7 +263,7 @@ describe("MobileLiveTerminal wheel forwarding", () => {
     );
     fireEvent.touchStart(split.scroller, { touches: [{ clientX: 100, clientY: 300 } as Touch] });
     fireEvent.touchMove(split.scroller, { touches: [{ clientX: 100, clientY: 266 } as Touch] });
-    expect(split.forwardWheel.mock.calls[0]![3]).toBe(1);
+    expect(split.forwardWheel.mock.calls[0]![2]).toBe(1);
   });
 
   it("does not enter reading mode on scroll while forwarding", () => {

@@ -23,6 +23,12 @@ beforeAll(() => {
   } as unknown as typeof ResizeObserver;
 });
 
+/// Notches the gesture actually delivered. One message stands for a whole
+/// release, so a call count would say how often the pacer fired, not how far
+/// the pane was scrolled.
+const notchesSent = (forwardWheel: ReturnType<typeof vi.fn>) =>
+  forwardWheel.mock.calls.reduce((total: number, call) => total + ((call[3] as number) ?? 1), 0);
+
 function frame(over: Partial<LiveFrame>): LiveFrame {
   return {
     content: "a\nb\nc\n\n\n",
@@ -108,24 +114,24 @@ describe("MobileLiveTerminal on the alternate screen", () => {
       fireEvent.touchStart(scroller, { touches: touch(200) });
       fireEvent.touchMove(scroller, { touches: touch(400) });
       // Dragging down reveals older content, so the wheel goes up.
-      expect(forwardWheel).toHaveBeenCalledTimes(4);
+      expect(notchesSent(forwardWheel)).toBe(4);
       expect(forwardWheel.mock.calls.every((call) => call[0] === true)).toBe(true);
 
       // A frame is the app's acknowledgement and releases the next step
       // without waiting out the fallback gap.
       showFrame({ ...f, lines: ["A", "b", "c", "", ""], content: "A\nb\nc\n\n\n" });
-      expect(forwardWheel).toHaveBeenCalledTimes(7);
+      expect(notchesSent(forwardWheel)).toBe(7);
 
       // The rest drains on the fallback gap, in steps that shrink with the
       // backlog, and the whole gesture lands: 14 lines asked for, 14 sent.
       act(() => {
         vi.advanceTimersByTime(200);
       });
-      expect(forwardWheel).toHaveBeenCalledTimes(14);
+      expect(notchesSent(forwardWheel)).toBe(14);
       act(() => {
         vi.advanceTimersByTime(500);
       });
-      expect(forwardWheel).toHaveBeenCalledTimes(14);
+      expect(notchesSent(forwardWheel)).toBe(14);
     });
   });
 });
