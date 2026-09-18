@@ -11,10 +11,13 @@ import {
 } from "./helpers/terminal-mocks";
 
 // A full-screen (alternate-screen) mouse agent has no capturable
-// scrollback, so the mobile live view forwards the wheel to the app as
-// input bytes instead of widening the capture window. This drives the
-// real bundle (useLiveTerminal -> wheelMouseBytes -> WebSocket) so the
-// forwarded bytes are asserted on the wire, per encoding.
+// scrollback, so the mobile live view forwards the wheel to the app instead
+// of widening the capture window. This drives the real bundle
+// (useLiveTerminal -> WebSocket) so the forwarded message is asserted on the
+// wire. The client no longer picks the encoding: it sends a `wheel` control
+// message and the daemon encodes it for the pane's modes, which is also the
+// only form a viewer without the size lock may send. The encodings
+// themselves are covered by `tmux::mouse`.
 test.use({ ...devices["iPhone 13"] });
 
 async function openSession(page: Page, handle: MockHandle) {
@@ -33,8 +36,21 @@ async function pushFrame(handle: MockHandle, flags: { altScreen: boolean; mouse:
 
 const scroller = (page: Page) => page.locator("[data-live-terminal] > div").first();
 const texts = (h: MockHandle) => h.liveMessages.map((b) => b.toString("latin1"));
-const hasLegacyDown = (h: MockHandle) =>
-  h.liveMessages.some((b) => b.length >= 4 && b[0] === 0x1b && b[1] === 0x5b && b[2] === 0x4d && b[3] === 0x61);
+const wheels = (h: MockHandle) =>
+  texts(h)
+    .filter((s) => s.startsWith("{"))
+    .map((s) => {
+      try {
+        return JSON.parse(s) as { type?: string; up?: boolean; count?: number };
+      } catch {
+        return {};
+      }
+    })
+    .filter((m) => m.type === "wheel");
+/// Any raw mouse report, SGR or legacy X10. None may be sent for a wheel.
+const hasMouseBytes = (h: MockHandle) =>
+  texts(h).some((s) => s.includes("\x1b[<")) ||
+  h.liveMessages.some((b) => b.length >= 3 && b[0] === 0x1b && b[1] === 0x5b && b[2] === 0x4d);
 
 async function setup(page: Page) {
   await installTerminalSpies(page);
@@ -52,7 +68,7 @@ async function swipeUp(page: Page) {
   await fireTouches(page, "touchend", [{ x: 100, y: 220 }]);
 }
 
-test("swipe over a full-screen SGR-mouse app forwards SGR wheel bytes", async ({ page }) => {
+test("swipe over a full-screen mouse app forwards the wheel to the daemon", async ({ page }) => {
   const handle = await setup(page);
   await pushFrame(handle, { altScreen: true, mouse: true, mouseSgr: true });
   await expect.poll(() => scroller(page).getAttribute("class")).toContain("overflow-hidden");
@@ -71,13 +87,15 @@ test("swipe over a full-screen SGR-mouse app forwards SGR wheel bytes", async ({
     )
     .toBe(false);
   await swipeUp(page);
-  await expect.poll(() => texts(handle).some((s) => s.includes("\x1b[<65;"))).toBe(true);
+  await expect.poll(() => wheels(handle).some((m) => m.up === false)).toBe(true);
 
-  // Downward swipe forwards wheel UP (button 64).
+  // Downward swipe forwards wheel UP.
   await fireTouches(page, "touchstart", [{ x: 100, y: 120 }]);
   await fireTouches(page, "touchmove", [{ x: 100, y: 300 }]);
   await fireTouches(page, "touchend", [{ x: 100, y: 300 }]);
-  await expect.poll(() => texts(handle).some((s) => s.includes("\x1b[<64;"))).toBe(true);
+  await expect.poll(() => wheels(handle).some((m) => m.up === true)).toBe(true);
+  // Never as raw input, which the daemon drops for a non-owner viewer.
+  expect(hasMouseBytes(handle)).toBe(false);
 
   // Wheel events in all three deltaModes (px / line / page) + a sub-notch
   // delta (no-op) + a scroll (which must NOT enter reading in forward mode).
@@ -90,7 +108,7 @@ test("swipe over a full-screen SGR-mouse app forwards SGR wheel bytes", async ({
   await expect(page.getByRole("button", { name: "Back to live" })).toHaveCount(0);
 });
 
-test("a flick coasts: wheel bytes keep arriving after the finger lifts, and a touch stops it", async ({ page }) => {
+test("a flick coasts: wheel messages keep arriving after the finger lifts, and a touch stops it", async ({ page }) => {
   const handle = await setup(page);
   await pushFrame(handle, { altScreen: true, mouse: true, mouseSgr: true });
   await expect.poll(() => scroller(page).getAttribute("class")).toContain("overflow-hidden");
@@ -103,12 +121,12 @@ test("a flick coasts: wheel bytes keep arriving after the finger lifts, and a to
     await fireTouches(page, "touchmove", [{ x: 100, y }]);
   }
   await fireTouches(page, "touchend", [{ x: 100, y: 220 }]);
-  // Let the drag's own bytes drain, then require NEW bytes with no input at
+  // Let the drag's own messages drain, then require NEW ones with no input at
   // all: only the momentum loop can be producing them.
   await page.waitForTimeout(150);
   const atLift = handle.liveMessages.length;
   await expect.poll(() => handle.liveMessages.length, { timeout: 3_000 }).toBeGreaterThan(atLift);
-  // A touch lands mid-coast: the coast must stop (a tap emits no wheel bytes).
+  // A touch lands mid-coast: the coast must stop (a tap forwards no wheel).
   await fireTouches(page, "touchstart", [{ x: 100, y: 200 }]);
   await fireTouches(page, "touchend", [{ x: 100, y: 200 }]);
   await page.waitForTimeout(150);
@@ -117,21 +135,12 @@ test("a flick coasts: wheel bytes keep arriving after the finger lifts, and a to
   expect(handle.liveMessages.length).toBe(afterStop);
 });
 
-test("swipe over a full-screen LEGACY-mouse app forwards X10 wheel bytes", async ({ page }) => {
-  const handle = await setup(page);
-  await pushFrame(handle, { altScreen: true, mouse: true, mouseSgr: false });
-  await expect.poll(() => scroller(page).getAttribute("class")).toContain("overflow-hidden");
-  await swipeUp(page);
-  await expect.poll(() => hasLegacyDown(handle)).toBe(true);
-  expect(texts(handle).some((s) => s.includes("\x1b[<"))).toBe(false);
-});
-
-test("normal-screen agent does NOT forward mouse bytes", async ({ page }) => {
+test("normal-screen agent does NOT forward the wheel", async ({ page }) => {
   const handle = await setup(page);
   await pushFrame(handle, { altScreen: false, mouse: true, mouseSgr: true });
   await expect.poll(() => scroller(page).getAttribute("class")).toContain("overflow-y-auto");
   await swipeUp(page);
   await page.waitForTimeout(300);
-  expect(texts(handle).some((s) => s.includes("\x1b[<") || s.includes("\x1b[M"))).toBe(false);
-  expect(hasLegacyDown(handle)).toBe(false);
+  expect(wheels(handle)).toEqual([]);
+  expect(hasMouseBytes(handle)).toBe(false);
 });

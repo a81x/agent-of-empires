@@ -44,8 +44,9 @@ struct PooledClient {
     used: std::time::Instant,
 }
 
-/// Clients by base URL. Keyed by URL rather than by remote name so the same
-/// daemon reached under two names shares one pool.
+/// Clients by base URL, or by socket path for a unix endpoint. Keyed by
+/// address rather than by remote name so the same daemon reached under two
+/// names shares one pool.
 fn client_pool() -> &'static std::sync::Mutex<std::collections::HashMap<String, PooledClient>> {
     static POOL: std::sync::OnceLock<
         std::sync::Mutex<std::collections::HashMap<String, PooledClient>>,
@@ -127,28 +128,32 @@ impl DaemonEndpoint {
     /// polls. The entry is rebuilt when the endpoint's credentials change, so
     /// a re-paired remote never keeps talking with the old ones.
     pub fn daemon_client(&self) -> Result<DaemonClient, DaemonClientError> {
-        // A unix client owns no pool and no TLS, so it is built per call and
-        // the cache stays keyed by URL alone.
-        if let Some(path) = &self.unix_path {
-            return DaemonClient::new_unix(path);
-        }
-        let fingerprint = self.credential_fingerprint();
+        // A unix endpoint has no credentials to rotate, so its entry is keyed
+        // by the socket path and never invalidated. Its requests dial the
+        // socket fresh each time, so a cached client holds nothing stale.
+        let (key, fingerprint) = match &self.unix_path {
+            Some(path) => (path.display().to_string(), 0),
+            None => (self.base_url.clone(), self.credential_fingerprint()),
+        };
         let mut pool = client_pool().lock().unwrap_or_else(|e| e.into_inner());
         pool.retain(|_, entry| entry.used.elapsed() < POOL_IDLE);
-        if let Some(entry) = pool.get_mut(&self.base_url) {
+        if let Some(entry) = pool.get_mut(&key) {
             if entry.fingerprint == fingerprint {
                 entry.used = std::time::Instant::now();
                 return Ok(entry.client.clone());
             }
         }
-        let client = DaemonClient::with_login(
-            &self.base_url,
-            self.bearer_token(),
-            self.login.as_ref(),
-            self.allow_plaintext,
-        )?;
+        let client = match &self.unix_path {
+            Some(path) => DaemonClient::new_unix(path)?,
+            None => DaemonClient::with_login(
+                &self.base_url,
+                self.bearer_token(),
+                self.login.as_ref(),
+                self.allow_plaintext,
+            )?,
+        };
         pool.insert(
-            self.base_url.clone(),
+            key,
             PooledClient {
                 fingerprint,
                 client: client.clone(),
