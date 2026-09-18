@@ -18,14 +18,16 @@
 //! Server -> client, JSON text frames:
 //!   `{"type":"frame","content":"<ANSI text>","rows":..,"history":..,
 //!     "cursor":{"x":..,"y":..}|null,
-//!     "altScreen":bool,"mouse":bool,"mouseSgr":bool}`
+//!     "altScreen":bool,"mouse":bool,"mouseSgr":bool,"mouseAll":bool}`
 //!   `content` is verbatim `capture-pane -e` output for the requested
 //!   window: history lines first, the live screen as the last `rows`
 //!   lines (trailing blank screen rows preserved). `altScreen` /`mouse` /
-//!   `mouseSgr` mirror tmux's `#{alternate_on}` / `#{mouse_any_flag}` /
-//!   `#{mouse_sgr_flag}`: when the pane is a full-screen mouse app the
-//!   client forwards the wheel to it (as input bytes) instead of widening
-//!   the capture window, since the alternate screen has no scrollback.
+//!   `mouseSgr` / `mouseAll` mirror tmux's `#{alternate_on}` /
+//!   `#{mouse_any_flag}` / `#{mouse_sgr_flag}` / `#{mouse_all_flag}`: when
+//!   the pane is a full-screen mouse app the client forwards the wheel to it
+//!   (as input bytes) instead of widening the capture window, since the
+//!   alternate screen has no scrollback, and `mouseAll` additionally says the
+//!   app wants bare motion, so the viewer can forward hover.
 //!   A composited frame also carries `"pane0"` as
 //!   `{"cols":..,"rows":..,"left":..,"top":..}`. Cursor coordinates are
 //!   translated onto the window grid before emission; clients subtract the
@@ -2218,6 +2220,12 @@ fn frame_meta(
     map.insert(
         "mouseSgr".into(),
         cursor.map(|c| c.mouse_sgr).unwrap_or(false).into(),
+    );
+    // Any-event tracking (DEC 1003): the app wants bare motion reports, so a
+    // viewer can forward hover the way a direct attach does.
+    map.insert(
+        "mouseAll".into(),
+        cursor.map(|c| c.mouse_all).unwrap_or(false).into(),
     );
     map.insert(
         "pane0".into(),

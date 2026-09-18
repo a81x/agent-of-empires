@@ -25,6 +25,16 @@ struct WireCursor {
     y: u16,
 }
 
+/// Pane 0's size inside a composited window, which is what pins forwarded
+/// pointer cells to pane 0. The origin the daemon also sends is deliberately
+/// dropped: it has already been applied to the cursor below, and the cursor
+/// painter would add it a second time.
+#[derive(Debug, Deserialize)]
+struct WirePane0 {
+    cols: u16,
+    rows: u16,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct WireMessage {
@@ -52,6 +62,10 @@ struct WireMessage {
     mouse: bool,
     #[serde(default)]
     mouse_sgr: bool,
+    #[serde(default)]
+    mouse_all: bool,
+    #[serde(default)]
+    pane0: Option<WirePane0>,
     #[serde(default, rename = "is_owner")]
     is_owner: Option<bool>,
     /// Who holds the size lock instead of us.
@@ -97,9 +111,14 @@ impl WireMessage {
             alternate_on: self.alt_screen,
             mouse_tracking: self.mouse,
             mouse_sgr: self.mouse_sgr,
-            mouse_all: false,
+            mouse_all: self.mouse_all,
             position_reliable: true,
-            composite_pane0: None,
+            composite_pane0: self.pane0.as_ref().map(|p| crate::tmux::PaneGeom {
+                left: 0,
+                top: 0,
+                width: p.cols,
+                height: p.rows,
+            }),
         }
     }
 }
@@ -402,6 +421,39 @@ mod tests {
                 ),
                 other => panic!("expected a frame, got {other:?}"),
             }
+        }
+    }
+
+    /// Hover forwarding and pointer mapping read these two fields, so a frame
+    /// that drops them leaves a remote pane feeling unlike a local one.
+    #[test]
+    fn a_frame_carries_what_the_pointer_paths_read() {
+        let with = r#"{"type":"frame","content":"x\n","rows":5,"cursor":null,"altScreen":true,"mouse":true,"mouseSgr":true,"mouseAll":true,"pane0":{"cols":40,"rows":10,"left":41,"top":0}}"#;
+        match parse_text(with).expect("frame parses") {
+            LiveMessage::Frame { cursor, .. } => {
+                assert!(cursor.mouse_all, "bare motion is forwarded");
+                assert_eq!(
+                    cursor.composite_pane0.map(|p| (p.width, p.height)),
+                    Some((40, 10)),
+                    "input is pinned to pane 0 of a split window"
+                );
+                assert_eq!(
+                    cursor.composite_pane0.map(|p| (p.left, p.top)),
+                    Some((0, 0)),
+                    "the origin is already in the cursor; adding it twice moves it"
+                );
+            }
+            other => panic!("expected a frame, got {other:?}"),
+        }
+        // A server that predates the fields: button tracking still works, and
+        // an unsplit frame reports no pane rectangle at all.
+        let without = r#"{"type":"frame","content":"x\n","rows":5,"cursor":null,"altScreen":true,"mouse":true,"mouseSgr":true}"#;
+        match parse_text(without).expect("frame parses") {
+            LiveMessage::Frame { cursor, .. } => {
+                assert!(!cursor.mouse_all);
+                assert!(cursor.composite_pane0.is_none());
+            }
+            other => panic!("expected a frame, got {other:?}"),
         }
     }
 
