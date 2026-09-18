@@ -198,6 +198,93 @@ impl HomeView {
         ));
     }
 
+    /// Which machine the cursor's row belongs to: a remote's name for its
+    /// header or one of its sessions, `None` for this machine's own rows.
+    /// Aims the actions a remote row shares with a local one (New Session at
+    /// the machine that will run it) without each one re-matching the item.
+    pub(in crate::tui) fn remote_at_cursor(&self) -> Option<String> {
+        match self.flat_items.get(self.cursor)? {
+            Item::RemoteGroup { name, .. } => Some(name.clone()),
+            Item::RemoteSession { remote, .. } => Some(remote.clone()),
+            _ => None,
+        }
+    }
+
+    /// Open the new-session dialog already aimed at `remote`, for the New
+    /// Session action on that machine's header or one of its rows. A session
+    /// row also lends its directory, which is a path on that machine.
+    pub(super) fn open_new_on_remote(&mut self, remote: &str) {
+        let profile = self.config_profile();
+        let mut dialog = self.new_session_dialog(&profile).targeting_remote(remote);
+        // `selected_remote` is set only on a session row, and the cursor put
+        // both it and `remote` on the same machine.
+        if let Some(path) = self
+            .selected_remote
+            .clone()
+            .and_then(|(machine, id)| self.remote_row(&machine, &id))
+            .map(|row| row.project_path.clone())
+            .filter(|path| !path.is_empty())
+        {
+            dialog.set_path(path);
+            dialog.focus_title();
+        }
+        self.new_dialog = Some(dialog);
+    }
+
+    /// Rename the selected remote row. Only the title is offered: the daemon
+    /// that owns the row decides whether its worktree follows.
+    pub(super) fn open_remote_rename_for_selected(&mut self) {
+        let Some((remote, id)) = self.selected_remote.clone() else {
+            return;
+        };
+        let Some(row) = self.remote_row(&remote, &id) else {
+            return;
+        };
+        if !crate::tui::remote_rename::can_rename(row) {
+            return;
+        }
+        self.rename_dialog = Some(crate::tui::dialogs::RenameDialog::for_remote_session(
+            &row.title, &remote,
+        ));
+    }
+
+    /// Hand a remote rename to its worker.
+    pub(super) fn start_remote_rename(&mut self, title: String) {
+        let Some((remote, session_id)) = self.selected_remote.clone() else {
+            return;
+        };
+        let Some(client) = self.remote_client_or_flash(&remote) else {
+            return;
+        };
+        self.remote_rename
+            .request(crate::tui::remote_rename::RenameRequest {
+                remote: remote.clone(),
+                client,
+                session_id,
+                title,
+            });
+        self.flash_status(format!("Renaming on {remote}…"));
+    }
+
+    /// Land finished remote renames. Returns whether anything changed.
+    pub fn apply_remote_rename(&mut self) -> bool {
+        use crate::tui::remote_rename::RenameResult;
+        let mut changed = false;
+        while let Ok(result) = self.remote_rename.try_recv() {
+            match result {
+                RenameResult::Done(message) => {
+                    self.flash_status(message);
+                    // The row's title moved; re-read rather than leaving the
+                    // old one on screen until the next poll.
+                    self.request_remote_feed_refresh();
+                }
+                RenameResult::Failed(message) => self.flash_status(message),
+            }
+            changed = true;
+        }
+        changed
+    }
+
     /// Delete the selected remote row, mirroring the local gating in
     /// [`Self::open_delete_for_selected`]: mid-create rows are inert, a row the
     /// remote would trash first is confirmed and trashed, and anything else

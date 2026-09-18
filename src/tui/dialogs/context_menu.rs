@@ -53,8 +53,9 @@ pub enum ContextMenuAction {
     /// Pull every session in the section back out: restore all from Trash, or
     /// unarchive all under the Archived section. Reversible, so no confirm.
     RestoreAll,
-    /// Collapse or expand the synthetic section the menu was opened on. The
-    /// label flips to "Expand" when the section is already collapsed.
+    /// Collapse or expand the header the menu was opened on: a synthetic Trash
+    /// or Archived section, or a machine header. The label flips to "Expand"
+    /// when it is already collapsed.
     ToggleSectionCollapse,
 }
 
@@ -221,6 +222,33 @@ impl ContextMenuDialog {
             anchor,
             vec![
                 (ContextMenuAction::RestoreAll, "Restore All"),
+                (ContextMenuAction::ToggleSectionCollapse, collapse_label),
+            ],
+        )
+    }
+
+    /// Menu for a session owned by a remote daemon. The rows are the actions
+    /// this machine can actually carry out over the wire: everything else the
+    /// session menu offers reads or writes local state. `can_rename` is false
+    /// for a row mid-create or mid-delete, which has no title to edit.
+    pub fn for_remote_session(anchor: (u16, u16), can_rename: bool) -> Self {
+        let mut items = vec![(ContextMenuAction::NewFromSelection, "New Session")];
+        if can_rename {
+            items.push((ContextMenuAction::Rename, "Rename"));
+        }
+        items.push((ContextMenuAction::Delete, "Delete"));
+        Self::new(anchor, items)
+    }
+
+    /// Menu for a machine header, this one's or a remote's. It gathers rows
+    /// rather than owning them, so its actions are "launch here" and the
+    /// collapse toggle. `collapsed` flips the toggle's label.
+    pub fn for_machine_header(anchor: (u16, u16), collapsed: bool) -> Self {
+        let collapse_label = if collapsed { "Expand" } else { "Collapse" };
+        Self::new(
+            anchor,
+            vec![
+                (ContextMenuAction::NewFromSelection, "New Session"),
                 (ContextMenuAction::ToggleSectionCollapse, collapse_label),
             ],
         )

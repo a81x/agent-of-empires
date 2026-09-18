@@ -2215,6 +2215,11 @@ impl HomeView {
                 DialogResult::Submit(data) => {
                     self.rename_dialog = None;
                     match mode {
+                        // Same split as the delete path: a remote row is
+                        // renamed by the daemon that owns it.
+                        RenameMode::Session if self.selected_remote.is_some() => {
+                            self.start_remote_rename(data.title);
+                        }
                         RenameMode::Session => {
                             if let Err(e) = self.rename_selected(
                                 &data.title,
@@ -2908,6 +2913,13 @@ impl HomeView {
             ));
             return;
         }
+        // Ahead of the local agent gate: the session lands on the remote, so
+        // that machine's agents are the ones that have to exist, and the
+        // dialog says so itself when the remote cannot take one.
+        if let Some(remote) = self.remote_at_cursor() {
+            self.open_new_on_remote(&remote);
+            return;
+        }
         // Same gate as `open_new_session_dialog`: with no agent available the
         // dialog has nothing to create, so point the user at setup instead of
         // opening an unusable form. Keeps `'N'` and the group menu's New
@@ -2950,19 +2962,10 @@ impl HomeView {
             });
 
         if prefill_path.is_some() || prefill_group.is_some() {
-            let existing_groups: Vec<String> =
-                self.all_groups().iter().map(|g| g.path.clone()).collect();
             let current_profile = self
                 .profile_for_cursor(self.cursor)
                 .unwrap_or_else(|| self.config_profile());
-            let profiles =
-                list_profiles_for_display().unwrap_or_else(|_| vec![current_profile.clone()]);
-            let mut dialog = NewSessionDialog::new(
-                self.available_tools.clone(),
-                existing_groups,
-                &current_profile,
-                profiles,
-            );
+            let mut dialog = self.new_session_dialog(&current_profile);
             let has_prefilled_path = prefill_path.is_some();
             if let Some(path) = prefill_path {
                 dialog.set_path(path);
@@ -4754,14 +4757,25 @@ impl HomeView {
                     return true;
                 }
             }
-            // Every context-menu entry is a local action; a remote row has none.
-            if matches!(
-                self.flat_items[idx],
-                super::Item::LocalGroup { .. }
-                    | super::Item::RemoteGroup { .. }
-                    | super::Item::RemoteSession { .. }
-            ) {
-                return true;
+            // Remote rows get the subset of the session menu this machine can
+            // carry out over the wire; the machine headers get "launch here"
+            // plus their own collapse toggle.
+            match &self.flat_items[idx] {
+                super::Item::LocalGroup { collapsed, .. }
+                | super::Item::RemoteGroup { collapsed, .. } => {
+                    self.context_menu =
+                        Some(ContextMenuDialog::for_machine_header(anchor, *collapsed));
+                    return true;
+                }
+                super::Item::RemoteSession { remote, id, .. } => {
+                    let can_rename = self
+                        .remote_row(remote, id)
+                        .is_some_and(crate::tui::remote_rename::can_rename);
+                    self.context_menu =
+                        Some(ContextMenuDialog::for_remote_session(anchor, can_rename));
+                    return true;
+                }
+                _ => {}
             }
             let is_group = matches!(self.flat_items[idx], super::Item::Group { .. });
             // A real project header in project view gets the pin menu; the
@@ -4923,11 +4937,17 @@ impl HomeView {
                 Some(SidebarSection::Archived) => self.unarchive_all(),
                 None => {}
             },
-            ContextMenuAction::ToggleSectionCollapse => match self.section_at_cursor() {
-                Some(SidebarSection::Trash) => self.toggle_trashed_section(),
-                Some(SidebarSection::Archived) => self.toggle_archived_section(),
-                None => {}
-            },
+            // A machine header folds through its own collapsed set, not a
+            // section's, and reports whether the cursor was on one.
+            ContextMenuAction::ToggleSectionCollapse => {
+                if !self.toggle_machine_header_at_cursor() {
+                    match self.section_at_cursor() {
+                        Some(SidebarSection::Trash) => self.toggle_trashed_section(),
+                        Some(SidebarSection::Archived) => self.toggle_archived_section(),
+                        None => {}
+                    }
+                }
+            }
         }
     }
 
@@ -4947,6 +4967,23 @@ impl HomeView {
             }
             _ => None,
         }
+    }
+
+    /// The new-session dialog every entry point starts from: this machine's
+    /// agents and group tree, `profile` selected, and the Remote picker over
+    /// every enabled remote. Built in one place so `n`, "new from selection"
+    /// and the remote menus cannot drift into offering different machines.
+    pub(super) fn new_session_dialog(&self, profile: &str) -> NewSessionDialog {
+        let existing_groups: Vec<String> =
+            self.all_groups().iter().map(|g| g.path.clone()).collect();
+        let profiles = list_profiles_for_display().unwrap_or_else(|_| vec![profile.to_string()]);
+        NewSessionDialog::new(
+            self.available_tools.clone(),
+            existing_groups,
+            profile,
+            profiles,
+        )
+        .with_remotes(self.remote_dialog_targets())
     }
 
     /// Open the new-session dialog, with the same gating the `'n'` key
@@ -4973,20 +5010,8 @@ impl HomeView {
         if self.selected_session.is_some() || self.selected_group.is_some() {
             self.record_new_session_with_selection();
         }
-        let existing_groups: Vec<String> =
-            self.all_groups().iter().map(|g| g.path.clone()).collect();
-        let current_profile = self.config_profile();
-        let profiles =
-            list_profiles_for_display().unwrap_or_else(|_| vec![current_profile.clone()]);
-        self.new_dialog = Some(
-            NewSessionDialog::new(
-                self.available_tools.clone(),
-                existing_groups,
-                &current_profile,
-                profiles,
-            )
-            .with_remotes(self.remote_dialog_targets()),
-        );
+        let profile = self.config_profile();
+        self.new_dialog = Some(self.new_session_dialog(&profile));
     }
 
     /// Open the tips overlay (the browsable list from `crate::tips`). Shared by
@@ -5169,6 +5194,10 @@ impl HomeView {
     /// Shared by the `'r'` / `'R'` key handlers and the right-click
     /// context menu so all three entry points stay byte-identical.
     pub(super) fn open_rename_for_selected(&mut self) {
+        if self.selected_remote.is_some() {
+            self.open_remote_rename_for_selected();
+            return;
+        }
         if let Some(id) = self.selected_session.clone() {
             let Some(inst) = self.get_instance(&id) else {
                 return;
@@ -5329,8 +5358,8 @@ impl HomeView {
     /// Open the delete dialog (or a force-remove confirm, or a group
     /// delete-options dialog) for the sidebar's current selection. Mirrors
     /// the gating of the historical `'d'` / `'D'` key handlers:
-    ///   - Terminal view rejects deletion with an info dialog,
     ///   - remote rows go to [`Self::open_remote_delete_for_selected`],
+    ///   - Terminal view rejects deletion with an info dialog,
     ///   - Creating sessions are inert,
     ///   - Stuck-Deleting sessions get a force-remove confirm,
     ///   - Project and organization-mode groups can't be deleted (info dialog).
@@ -5338,6 +5367,12 @@ impl HomeView {
     /// Shared by the `'d'` / `'D'` key handlers and the right-click
     /// context menu.
     pub(super) fn open_delete_for_selected(&mut self) {
+        // Ahead of the view-mode gate below, which is about this machine's
+        // terminal preview: a remote row is a session either way.
+        if self.selected_remote.is_some() {
+            self.open_remote_delete_for_selected();
+            return;
+        }
         // Deletion only allowed in Structured View.
         if self.view_mode == ViewMode::Terminal {
             let hint = if self.strict_hotkeys {
@@ -5346,10 +5381,6 @@ impl HomeView {
                 "Terminals cannot be deleted directly. Switch to Structured View (press 't') and delete the agent session instead."
             };
             self.info_dialog = Some(InfoDialog::new("Cannot Delete Terminal", hint));
-            return;
-        }
-        if self.selected_remote.is_some() {
-            self.open_remote_delete_for_selected();
             return;
         }
         if let Some(session_id) = &self.selected_session {

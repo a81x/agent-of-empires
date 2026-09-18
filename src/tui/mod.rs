@@ -23,6 +23,7 @@ pub(crate) mod remote_create;
 pub(crate) mod remote_delete;
 pub(crate) mod remote_feed;
 pub(crate) mod remote_preview;
+pub(crate) mod remote_rename;
 pub(crate) mod responsive;
 mod session_feed;
 pub mod settings;

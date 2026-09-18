@@ -35,10 +35,10 @@ pub use wire::{
     DeleteGroupMode, DeleteGroupOutcome, DeleteProfileQuery, DeleteSessionBody, EnsureToolBody,
     GroupLocation, GroupSessionOutcome, ListSessionsQuery, MoveGroupBody, PendingApproval,
     PlanSummary, PromptAttachmentKind, PromptAttachmentRef, PurgeOutcome, QueuedPromptEntry,
-    RenameProfileBody, RepoBaseInput, RestartOutcome, RestartSessionBody, SessionResponse,
-    SessionsEnvelope, StartSessionBody, TerminalSize, TerminalTarget, TerminalTargetStatus,
-    TrashOutcome, TrashRelocationOutcome, TrashSessionBody, Tristate, UpdateArchiveBody,
-    UpdateColorBody, UpdateDiffBaseBody, UpdateFavoriteBody, UpdateGroupBody,
+    RenameProfileBody, RenameSessionBody, RepoBaseInput, RestartOutcome, RestartSessionBody,
+    SessionResponse, SessionsEnvelope, StartSessionBody, TerminalSize, TerminalTarget,
+    TerminalTargetStatus, TrashOutcome, TrashRelocationOutcome, TrashSessionBody, Tristate,
+    UpdateArchiveBody, UpdateColorBody, UpdateDiffBaseBody, UpdateFavoriteBody, UpdateGroupBody,
     UpdateNotificationsBody, UpdatePinBody, UpdateSnoozeBody, UpdateUnreadBody,
     WorkspaceRepoSummary,
 };
@@ -552,6 +552,21 @@ impl DaemonClient {
         );
         let response: TrashResponse = self.request_json(self.http.post(url).json(body)).await?;
         Ok(response.outcome)
+    }
+
+    /// Rename a row on a daemon whose runtime this client does not track, so
+    /// no epoch is pinned.
+    pub async fn rename_session_unpinned(
+        &self,
+        session_id: &str,
+        body: &RenameSessionBody,
+    ) -> Result<SessionResponse, DaemonClientError> {
+        let url = format!(
+            "{}/{}",
+            self.sessions_url,
+            transport::path_segment(session_id)?
+        );
+        self.request_json(self.http.patch(url).json(body)).await
     }
 
     pub async fn purge_session(

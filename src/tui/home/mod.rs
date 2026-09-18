@@ -603,6 +603,7 @@ pub struct HomeView {
     pub(super) remote_live_size: (u16, u16),
     pub(super) remote_create: super::remote_create::RemoteCreate,
     pub(super) remote_delete: super::remote_delete::RemoteDelete,
+    pub(super) remote_rename: super::remote_rename::RemoteRename,
     /// A session just created on a remote, selected once the feed lists it.
     pub(super) pending_remote_select: Option<(String, String)>,
     pub(super) sidebar_source: super::session_feed::SidebarSource,

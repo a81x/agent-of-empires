@@ -1954,6 +1954,9 @@ impl App {
             if self.home.apply_remote_delete() {
                 refresh_needed = true;
             }
+            if self.home.apply_remote_rename() {
+                refresh_needed = true;
+            }
             if self.home.apply_structured_approval_results() {
                 refresh_needed = true;
                 needs_full_refresh = true;

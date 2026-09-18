@@ -108,6 +108,14 @@ header with the reason.
   `Enter`; `Ctrl+Q` returns to the home view.
 * **Archived or trashed rows** have to be restored on their own machine.
 
+Right-clicking a remote row opens the same context menu a local row does,
+carrying the actions that work over the wire: New Session on that machine,
+Rename, and Delete. `r` and `d` do the same from the keyboard. A rename edits
+the title alone, since the machine that owns the row decides whether its
+worktree directory follows. Delete reads the remote's own cleanup defaults to
+decide whether it trashes first or deletes outright. Right-clicking a machine
+header offers New Session there and the collapse toggle.
+
 ## Creating a session on a remote
 
 When a remote is configured, the new-session dialog (`n`) shows a Remote

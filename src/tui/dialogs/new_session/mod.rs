@@ -808,6 +808,16 @@ impl NewSessionDialog {
         self
     }
 
+    /// Open already aimed at `name`, for a New Session action taken on that
+    /// remote's rows. Call after [`Self::with_remotes`]; a name that is not
+    /// among the targets leaves the dialog on this machine.
+    pub fn targeting_remote(mut self, name: &str) -> Self {
+        if let Some(index) = self.remote_targets.iter().position(|t| t.name == name) {
+            self.select_remote(index + 1);
+        }
+        self
+    }
+
     pub(super) fn has_remote_selection(&self) -> bool {
         !self.remote_targets.is_empty()
     }

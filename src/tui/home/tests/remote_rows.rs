@@ -616,3 +616,93 @@ fn a_scrolled_back_remote_preview_holds_frames_until_it_returns_to_the_live_edge
     render_home_to_string(&mut env.view, 120, 40);
     assert!(env.view.remote_preview_cache.content.starts_with("new 0"));
 }
+
+/// The mouse reaches remote rows through the same context menu local rows
+/// use; the entries are the subset this machine can carry out over the wire.
+#[test]
+#[serial]
+fn right_clicking_a_remote_row_offers_what_the_wire_can_do() {
+    use crate::tui::dialogs::ContextMenuAction;
+
+    let mut env = create_test_env_with_sessions(0);
+    env.view.group_by = GroupByMode::Remote;
+    env.view.group_by_is_default = false;
+    with_remote(
+        &mut env,
+        vec![
+            wire("r1", "remote one"),
+            serde_json::from_value(serde_json::json!({
+                "id": "r2", "title": "still starting", "status": "Creating",
+            }))
+            .unwrap(),
+        ],
+    );
+    env.view.list_inner_area = ratatui::layout::Rect::new(1, 1, 28, 10);
+    env.view.list_area = ratatui::layout::Rect::new(0, 0, 30, 12);
+
+    let row_of = |env: &TestEnv, want: &dyn Fn(&Item) -> bool| {
+        env.view.list_inner_area.y + env.view.flat_items.iter().position(want).expect("row") as u16
+    };
+
+    // The machine header launches on that machine and folds away.
+    let header = row_of(&env, &|item| matches!(item, Item::RemoteGroup { .. }));
+    assert!(env.view.handle_right_click(5, header));
+    let labels: Vec<&str> = env
+        .view
+        .context_menu
+        .as_ref()
+        .expect("menu")
+        .items_for_test()
+        .iter()
+        .map(|(_, label)| *label)
+        .collect();
+    assert_eq!(labels, ["New Session", "Collapse"]);
+
+    // Collapse routes through the machine's own collapsed set. Picking an
+    // entry closes the menu, as `handle_context_menu_click` does.
+    env.view.context_menu = None;
+    env.view
+        .dispatch_context_menu_action(ContextMenuAction::ToggleSectionCollapse);
+    assert!(!env
+        .view
+        .flat_items
+        .iter()
+        .any(|item| matches!(item, Item::RemoteSession { .. })));
+    env.view
+        .dispatch_context_menu_action(ContextMenuAction::ToggleSectionCollapse);
+
+    // A live row renames and deletes; the mid-create one has no title yet.
+    for (id, expected) in [
+        ("r1", vec!["New Session", "Rename", "Delete"]),
+        ("r2", vec!["New Session", "Delete"]),
+    ] {
+        env.view.context_menu = None;
+        let row = row_of(
+            &env,
+            &|item| matches!(item, Item::RemoteSession { id: i, .. } if i == id),
+        );
+        assert!(env.view.handle_right_click(5, row));
+        let labels: Vec<&str> = env
+            .view
+            .context_menu
+            .as_ref()
+            .expect("menu")
+            .items_for_test()
+            .iter()
+            .map(|(_, label)| *label)
+            .collect();
+        assert_eq!(labels, expected, "{id}");
+    }
+
+    // Rename opens the remote dialog, which offers the title alone.
+    env.view.context_menu = None;
+    let live = row_of(
+        &env,
+        &|item| matches!(item, Item::RemoteSession { id, .. } if id == "r1"),
+    );
+    assert!(env.view.handle_right_click(5, live));
+    env.view.context_menu = None;
+    env.view
+        .dispatch_context_menu_action(ContextMenuAction::Rename);
+    assert!(env.view.rename_dialog.is_some());
+}
