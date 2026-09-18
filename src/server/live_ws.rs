@@ -529,7 +529,7 @@ fn current_holder_label(tmux_name: &str) -> Option<String> {
     crate::tmux::Session::from_name(tmux_name)
         .size_state()
         .active(crate::util::now_ms(), SIZE_OWNER_TTL)
-        .map(|lock| lock.label.clone())
+        .map(|lock| lock.describe())
 }
 
 fn clipboard_json(text: &str) -> String {

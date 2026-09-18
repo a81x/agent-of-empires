@@ -128,7 +128,7 @@ fn run(watched: &Mutex<Watched>, stop: &AtomicBool) {
                 session
                     .size_state()
                     .active(crate::util::now_ms(), SIZE_OWNER_TTL)
-                    .map(|lock| lock.label.clone())
+                    .map(|lock| lock.describe())
             };
             let mut watched = watched.lock().unwrap_or_else(|e| e.into_inner());
             if watched.name.as_deref() == Some(name.as_str()) {

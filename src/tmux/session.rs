@@ -65,6 +65,29 @@ const LIVE_SIZED_OPT: &str = "@aoe_live_sized";
 /// and no watcher may resize under it, but it writes no lock of its own.
 pub const TERMINAL_ATTACH_LABEL: &str = "terminal attach";
 
+/// Bind a label to the id that wrote it. Two options cannot be set as one
+/// tmux write, so a label alone would outlive its holder and name the next
+/// one (a client that claims the lock without labelling itself inherits it).
+///
+/// The id goes first and a space separates them: ids are minted without one
+/// (`live-7`, `tui-7`), so the split is unambiguous however the label reads.
+/// tmux rewrites a non-printable byte as `_` when it expands the format, so
+/// no control character can serve here. `|` is dropped from both because the
+/// size read parses its fields on it.
+fn stamp_label(who: &str, label: &str) -> String {
+    format!(
+        "{} {}",
+        who.replace([' ', '|'], "-"),
+        label.replace('|', " ")
+    )
+}
+
+/// The label `stored` carries, when it was written for `owner`.
+fn label_for_owner(stored: &str, owner: &str) -> Option<String> {
+    let (wrote, label) = stored.split_once(' ')?;
+    (wrote == owner && !label.is_empty()).then(|| label.to_string())
+}
+
 /// tmux user options holding the cross-process VT-pipe owner lock. `tmux
 /// pipe-pane` is exclusive per pane: a second process arming it silently
 /// kills the first process's forwarder, so two aoe processes previewing the
@@ -2173,12 +2196,8 @@ impl Session {
         let attached = attached.trim().parse::<u32>().unwrap_or(0) > 0;
         let lock = match Self::parse_owner_snapshot(owner, heartbeat) {
             Ok(Some((holder, heartbeat_ms))) => Some(SizeLock {
+                label: label_for_owner(label, &holder),
                 holder,
-                label: if label.is_empty() {
-                    owner.to_string()
-                } else {
-                    label.to_string()
-                },
                 mode: SizeMode::parse(mode),
                 heartbeat_ms,
             }),
@@ -2190,9 +2209,7 @@ impl Session {
         let lock = if attached {
             Some(SizeLock {
                 holder: TERMINAL_ATTACH_LABEL.to_string(),
-                label: lock
-                    .map(|lock| lock.label)
-                    .unwrap_or_else(|| TERMINAL_ATTACH_LABEL.to_string()),
+                label: lock.and_then(|lock| lock.label),
                 mode: SizeMode::Live,
                 heartbeat_ms: now_ms(),
             })
@@ -2229,7 +2246,7 @@ impl Session {
             SizeMode::View => self.claim_size_owner(who, SIZE_OWNER_TTL),
         };
         if held {
-            self.describe_size_lock(label, mode, &crate::tmux::TmuxCommandDeadline::new());
+            self.describe_size_lock(who, label, mode, &crate::tmux::TmuxCommandDeadline::new());
         }
         held
     }
@@ -2241,6 +2258,7 @@ impl Session {
         let held = self.claim_size_owner(who, SIZE_OWNER_TTL);
         if held {
             self.describe_size_lock(
+                who,
                 label,
                 SizeMode::Live,
                 &crate::tmux::TmuxCommandDeadline::new(),
@@ -2251,12 +2269,13 @@ impl Session {
 
     fn describe_size_lock(
         &self,
+        who: &str,
         label: &str,
         mode: SizeMode,
         deadline: &crate::tmux::TmuxCommandDeadline,
     ) {
         self.set_user_option_with_deadline(SIZE_MODE_OPT, mode.wire(), deadline);
-        self.set_user_option_with_deadline(SIZE_LABEL_OPT, label, deadline);
+        self.set_user_option_with_deadline(SIZE_LABEL_OPT, &stamp_label(who, label), deadline);
     }
 
     /// Record that a live client has sized this pane, so watchers leave its
@@ -2824,6 +2843,33 @@ mod tests {
         only_pane_id, pane_field, wait_for_pane_command, wait_for_pane_dead, TmuxTestSession,
     };
     use super::*;
+
+    /// The label rides with the id that wrote it, so the next holder cannot
+    /// inherit it, and neither field can carry a separator that would corrupt
+    /// the single format read the size state comes back on.
+    #[test]
+    fn a_stored_label_belongs_only_to_the_id_that_wrote_it() {
+        let stored = stamp_label("tui-1", "mac-mini (aoe)");
+        assert_eq!(
+            label_for_owner(&stored, "tui-1").as_deref(),
+            Some("mac-mini (aoe)")
+        );
+        assert_eq!(label_for_owner(&stored, "live-2"), None);
+        assert_eq!(label_for_owner("", "tui-1"), None);
+        assert_eq!(label_for_owner("mac-mini (aoe)", "tui-1"), None);
+        assert_eq!(label_for_owner(&stamp_label("tui-1", ""), "tui-1"), None);
+
+        // A label arrives from the client over the live socket, so it must
+        // not be able to bind itself to another id, nor smuggle in the
+        // separator the size read splits its fields on.
+        let forged = stamp_label("tui-1", "tui-2 x|y");
+        assert_eq!(
+            label_for_owner(&forged, "tui-1").as_deref(),
+            Some("tui-2 x y")
+        );
+        assert_eq!(label_for_owner(&forged, "tui-2"), None);
+    }
+
     struct ReadyCaptureProbe {
         captured: std::sync::mpsc::Sender<String>,
         resume: std::sync::mpsc::Receiver<()>,
@@ -3780,7 +3826,7 @@ mod tests {
         let state = session.size_state();
         let lock = state.lock.as_ref().expect("a viewer holds the lock");
         assert_eq!(
-            (lock.holder.as_str(), lock.label.as_str(), lock.mode),
+            (lock.holder.as_str(), lock.describe().as_str(), lock.mode),
             ("viewer", "laptop (aoe)", SizeMode::View)
         );
         assert!(!state.live_sized);
@@ -3800,7 +3846,7 @@ mod tests {
         let state = session.size_state();
         let lock = state.lock.as_ref().expect("the live client holds the lock");
         assert_eq!(
-            (lock.holder.as_str(), lock.label.as_str(), lock.mode),
+            (lock.holder.as_str(), lock.describe().as_str(), lock.mode),
             ("live", "mac-mini (aoe)", SizeMode::Live)
         );
         assert!(state.live_sized);

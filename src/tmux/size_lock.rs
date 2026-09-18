@@ -47,10 +47,31 @@ impl SizeMode {
 pub struct SizeLock {
     /// Stable per client, and the identity every write is fenced against.
     pub holder: String,
-    /// What the user is told the holder is, e.g. `mac-mini (aoe)`.
-    pub label: String,
+    /// What this holder called itself, e.g. `mac-mini (aoe)`. `None` when it
+    /// wrote no label: one left behind by a previous holder is dropped rather
+    /// than read as this one's, since naming the wrong device is worse than
+    /// naming none.
+    pub label: Option<String>,
     pub mode: SizeMode,
     pub heartbeat_ms: u64,
+}
+
+impl SizeLock {
+    /// What to call this holder to a user. Ids are minted per surface, so an
+    /// unlabelled holder is still placed: the web dashboard's live viewers
+    /// are `live-*` (`crate::server::live_ws`), other aoe TUIs `tui-*`.
+    pub fn describe(&self) -> String {
+        if let Some(label) = &self.label {
+            return label.clone();
+        }
+        if self.holder.starts_with("live-") {
+            "the web dashboard".to_string()
+        } else if self.holder.starts_with("tui-") {
+            "another aoe TUI".to_string()
+        } else {
+            self.holder.clone()
+        }
+    }
 }
 
 /// One session's size state: the lock, and whether a live client has sized
@@ -95,7 +116,7 @@ mod tests {
     fn lock(holder: &str, mode: SizeMode, heartbeat_ms: u64) -> Option<SizeLock> {
         Some(SizeLock {
             holder: holder.to_string(),
-            label: format!("{holder} (aoe)"),
+            label: Some(format!("{holder} (aoe)")),
             mode,
             heartbeat_ms,
         })
@@ -178,5 +199,25 @@ mod tests {
         assert_eq!(SizeMode::parse(""), SizeMode::Live);
         assert_eq!(SizeMode::parse("view"), SizeMode::View);
         assert_eq!(SizeMode::Live.wire(), "live");
+    }
+
+    /// An unlabelled holder is still named, and from its own id: the label is
+    /// a separate tmux option, so the one a previous holder left behind must
+    /// never be read as this holder's name.
+    #[test]
+    fn a_holder_without_its_own_label_is_named_from_its_id() {
+        let named = |holder: &str, label: Option<&str>| {
+            SizeLock {
+                holder: holder.to_string(),
+                label: label.map(str::to_string),
+                mode: SizeMode::Live,
+                heartbeat_ms: 0,
+            }
+            .describe()
+        };
+        assert_eq!(named("live-7", None), "the web dashboard");
+        assert_eq!(named("tui-7", None), "another aoe TUI");
+        assert_eq!(named("live-7", Some("phone (web)")), "phone (web)");
+        assert_eq!(named("terminal attach", None), "terminal attach");
     }
 }

@@ -6466,9 +6466,11 @@ impl HomeView {
         let holder = crate::tmux::Session::from_name(&state.tmux_name)
             .size_state()
             .active(crate::util::now_ms(), crate::tmux::SIZE_OWNER_TTL)
-            .map(|lock| lock.label.clone());
+            .map(|lock| lock.describe());
+        // "X took over" rather than "taken over by X": the notice is 48
+        // columns wide, and the shorter phrasing keeps the name off a wrap.
         let message = match holder {
-            Some(label) => format!("Live mode ended: taken over by {label}."),
+            Some(name) => format!("Live mode ended: {name} took over."),
             None => "Another surface took over this session's live view.".to_string(),
         };
         self.teardown_live_send();

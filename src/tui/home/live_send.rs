@@ -4210,7 +4210,7 @@ mod tests {
             session
                 .size_state()
                 .active(crate::util::now_ms(), crate::tmux::SIZE_OWNER_TTL)
-                .map(|lock| lock.label.clone()),
+                .map(|lock| lock.describe()),
             Some("phone (web)".to_string()),
             "the taker's label is what the displaced client names"
         );
