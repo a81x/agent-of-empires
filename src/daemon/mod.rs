@@ -4,6 +4,8 @@ mod error;
 pub use error::{ApiErrorCode, ERROR_CODE_HEADER};
 
 pub(crate) mod lifecycle;
+mod live;
+pub use live::{LiveClientMessage, LiveCursor, LivePane0, LivePaneMeta, LiveServerMessage};
 pub mod login;
 pub mod remotes;
 mod runtime;
@@ -288,6 +290,17 @@ impl DaemonClient {
             .map(drop)
     }
 
+    /// A route under one session, such as `restart` or the row itself
+    /// (`suffix` empty). The id is escaped here so no caller can forget and
+    /// let an id change the route.
+    fn session_route(&self, session_id: &str, suffix: &str) -> Result<String, DaemonClientError> {
+        let id = transport::path_segment(session_id)?;
+        Ok(match suffix {
+            "" => format!("{}/{id}", self.sessions_url),
+            suffix => format!("{}/{id}/{suffix}", self.sessions_url),
+        })
+    }
+
     /// Each segment is escaped, so an id can never change the route.
     fn api_url(&self, path: &[&str]) -> Result<Url, DaemonClientError> {
         let mut relative = String::new();
@@ -400,11 +413,7 @@ impl DaemonClient {
         session_id: &str,
         epoch: &str,
     ) -> Result<RuntimeCursor, DaemonClientError> {
-        let url = format!(
-            "{}/{}/creation/cancel",
-            self.sessions_url,
-            transport::path_segment(session_id)?
-        );
+        let url = self.session_route(session_id, "creation/cancel")?;
         self.request_mutation(self.http.post(url), epoch).await
     }
 
@@ -415,11 +424,7 @@ impl DaemonClient {
         body: &StartSessionBody,
         epoch: &str,
     ) -> Result<MutationReceipt<TerminalTarget>, DaemonClientError> {
-        let url = format!(
-            "{}/{}/ensure",
-            self.sessions_url,
-            transport::path_segment(session_id)?
-        );
+        let url = self.session_route(session_id, "ensure")?;
         self.request_mutation_with_outcome(self.http.post(url).json(body), epoch)
             .await
     }
@@ -431,11 +436,7 @@ impl DaemonClient {
         body: &StartSessionBody,
         epoch: &str,
     ) -> Result<MutationReceipt<TerminalTarget>, DaemonClientError> {
-        let url = format!(
-            "{}/{}/terminal",
-            self.sessions_url,
-            transport::path_segment(session_id)?
-        );
+        let url = self.session_route(session_id, "terminal")?;
         self.request_mutation_with_outcome(
             self.http.post(url).query(&[("index", index)]).json(body),
             epoch,
@@ -450,11 +451,7 @@ impl DaemonClient {
         body: &StartSessionBody,
         epoch: &str,
     ) -> Result<MutationReceipt<TerminalTarget>, DaemonClientError> {
-        let url = format!(
-            "{}/{}/container-terminal",
-            self.sessions_url,
-            transport::path_segment(session_id)?
-        );
+        let url = self.session_route(session_id, "container-terminal")?;
         self.request_mutation_with_outcome(
             self.http.post(url).query(&[("index", index)]).json(body),
             epoch,
@@ -470,11 +467,7 @@ impl DaemonClient {
         body: &EnsureToolBody,
         epoch: &str,
     ) -> Result<MutationReceipt<TerminalTarget>, DaemonClientError> {
-        let url = format!(
-            "{}/{}/tools/ensure",
-            self.sessions_url,
-            transport::path_segment(session_id)?
-        );
+        let url = self.session_route(session_id, "tools/ensure")?;
         self.request_mutation_with_outcome(self.http.post(url).json(body), epoch)
             .await
     }
@@ -485,11 +478,7 @@ impl DaemonClient {
         body: &RestartSessionBody,
         epoch: &str,
     ) -> Result<MutationReceipt<RestartOutcome>, DaemonClientError> {
-        let url = format!(
-            "{}/{}/restart",
-            self.sessions_url.as_str().trim_end_matches('/'),
-            session_id
-        );
+        let url = self.session_route(session_id, "restart")?;
         self.request_mutation_with_outcome(self.http.post(url).json(body), epoch)
             .await
     }
@@ -501,12 +490,7 @@ impl DaemonClient {
         mutation: &SessionMutation,
         epoch: &str,
     ) -> Result<RuntimeCursor, DaemonClientError> {
-        let url = format!(
-            "{}/{}/{}",
-            self.sessions_url,
-            transport::path_segment(session_id)?,
-            mutation.route(),
-        );
+        let url = self.session_route(session_id, mutation.route())?;
         let request = match mutation {
             SessionMutation::Start(body) => self.http.post(url).json(body),
             SessionMutation::Restart(body) => self.http.post(url).json(body),
@@ -524,11 +508,7 @@ impl DaemonClient {
         body: &TrashSessionBody,
         epoch: &str,
     ) -> Result<MutationReceipt<TrashOutcome>, DaemonClientError> {
-        let url = format!(
-            "{}/{}/trash",
-            self.sessions_url,
-            transport::path_segment(session_id)?
-        );
+        let url = self.session_route(session_id, "trash")?;
         let receipt: MutationReceipt<TrashResponse> = self
             .request_mutation_with_outcome(self.http.post(url).json(body), epoch)
             .await?;
@@ -545,11 +525,7 @@ impl DaemonClient {
         session_id: &str,
         body: &TrashSessionBody,
     ) -> Result<TrashOutcome, DaemonClientError> {
-        let url = format!(
-            "{}/{}/trash",
-            self.sessions_url,
-            transport::path_segment(session_id)?
-        );
+        let url = self.session_route(session_id, "trash")?;
         let response: TrashResponse = self.request_json(self.http.post(url).json(body)).await?;
         Ok(response.outcome)
     }
@@ -561,11 +537,7 @@ impl DaemonClient {
         session_id: &str,
         body: &RenameSessionBody,
     ) -> Result<SessionResponse, DaemonClientError> {
-        let url = format!(
-            "{}/{}",
-            self.sessions_url,
-            transport::path_segment(session_id)?
-        );
+        let url = self.session_route(session_id, "")?;
         self.request_json(self.http.patch(url).json(body)).await
     }
 
@@ -575,11 +547,7 @@ impl DaemonClient {
         body: &DeleteSessionBody,
         epoch: &str,
     ) -> Result<MutationReceipt<PurgeOutcome>, DaemonClientError> {
-        let url = format!(
-            "{}/{}",
-            self.sessions_url,
-            transport::path_segment(session_id)?
-        );
+        let url = self.session_route(session_id, "")?;
         self.request_mutation_with_outcome(self.http.delete(url).json(body), epoch)
             .await
     }
@@ -591,11 +559,7 @@ impl DaemonClient {
         session_id: &str,
         body: &DeleteSessionBody,
     ) -> Result<PurgeOutcome, DaemonClientError> {
-        let url = format!(
-            "{}/{}",
-            self.sessions_url,
-            transport::path_segment(session_id)?
-        );
+        let url = self.session_route(session_id, "")?;
         self.request_json(self.http.delete(url).json(body)).await
     }
 
@@ -1102,6 +1066,35 @@ fn truncate_utf8(value: &mut String, max_bytes: usize) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An id reaches the daemon as one path segment whatever it contains, so
+    /// no session route can be redirected by the id it names.
+    #[test]
+    fn a_session_id_can_never_change_the_route_it_is_named_in() {
+        let client = DaemonClient::new("https://mini.example.com", None).unwrap();
+        let base = "https://mini.example.com/api/sessions";
+        for (id, suffix, expected) in [
+            ("abc", "", format!("{base}/abc")),
+            ("abc", "restart", format!("{base}/abc/restart")),
+            ("abc", "tools/ensure", format!("{base}/abc/tools/ensure")),
+            // Traversal, a query and a fragment all stay inside the segment.
+            (
+                "../../admin",
+                "trash",
+                format!("{base}/..%2F..%2Fadmin/trash"),
+            ),
+            ("a/b", "", format!("{base}/a%2Fb")),
+            ("a?b=1", "", format!("{base}/a%3Fb=1")),
+            ("a#b", "", format!("{base}/a%23b")),
+            ("a b", "", format!("{base}/a%20b")),
+        ] {
+            assert_eq!(
+                client.session_route(id, suffix).unwrap(),
+                expected,
+                "{id:?} + {suffix:?}"
+            );
+        }
+    }
 
     #[test]
     fn mutation_receipt_requires_an_unambiguous_current_cursor() {
