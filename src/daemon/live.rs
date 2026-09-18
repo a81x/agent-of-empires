@@ -10,6 +10,9 @@
 //! nothing can make that one a compile error. `the_wire_is_what_both_clients_
 //! parse` in this module pins the encoding so a rename at least fails a test.
 //!
+//! `docs/development/internals/client-transports.md` is the canonical
+//! description of this transport and the two beside it.
+//!
 //! Field names are the wire's, not Rust's: `altScreen` and `mouseSgr` are
 //! camelCase because the dashboard read them first, while `size_owner` and
 //! `is_owner` are snake_case for the same reason. Neither can be tidied

@@ -1,0 +1,68 @@
+# Daemon-to-client transports
+
+Contributor reference for the three ways a client reads and drives a daemon.
+Users want [Remote machines](../../guides/remotes.md) and
+[Live mode](../../guides/live-mode.md) instead.
+
+Every client (native TUI, web dashboard, external orchestrator) talks to a
+daemon (`aoe serve`) over one or more of these. They are not
+interchangeable, and which one a surface uses is a deliberate choice.
+
+| Transport | Route | Carries | Shape |
+| --- | --- | --- | --- |
+| REST | `/api/*` | Session rows, profiles, projects, mutations | Request / response |
+| Runtime stream | `/api/runtime/ws` | The whole canonical snapshot, per revision | Push |
+| Live pane stream | `/sessions/{id}/live-ws` | One pane's bytes | Push, per pane |
+
+## Wire types live in `src/daemon/`
+
+`wire.rs` holds the REST bodies and responses, `runtime.rs` the runtime
+frames, `live.rs` the live pane messages. The daemon and the native client
+build the *same* types, so a field added to one reaches the other or fails to
+compile.
+
+The dashboard declares these shapes a third time, in TypeScript, and nothing
+can make that a compile error. Each Rust wire module therefore carries a
+contract test pinning the encoding; a rename breaks the test before it can
+silently stop reaching the dashboard. A new field on a live frame has to land
+in three places: the type here, the daemon that fills it, and
+`web/src/hooks/useLiveTerminal.ts`.
+
+## Which transport a surface uses
+
+The **runtime stream** is the canonical read path: the daemon serializes each
+revision once and fans it out, so subscribers share one encoding, and every
+frame carries an `epoch` and `revision`. A mutation sent with that epoch in
+`aoe-runtime-epoch` is refused after a daemon restart rather than landing
+against a runtime the client no longer knows. Today only the TUI's connection
+to its *own* daemon uses it.
+
+**REST** is what everything else reads: the dashboard polls `/api/sessions`,
+and so does the TUI's remote sidebar. `/api/runtime/snapshot` returns the same
+body the stream's first frame does, for a client that wants the snapshot
+without holding a socket.
+
+The **live pane stream** is separate on purpose. It is a per-pane byte stream
+with its own cadence, size-ownership lock and backpressure model, and folding
+it into the runtime stream would put one pane's output on the path that
+carries every session's state.
+
+## Why the remote sidebar polls
+
+The obvious cleanup is to point remote daemons at the runtime stream too, and
+delete the `*_unpinned` client calls that exist only because a polled remote
+has no epoch to pin. One thing blocks it: `RUNTIME_PROTOCOL_VERSION` is
+enforced by exact equality during the stream's handshake, while the REST
+endpoints are version tolerant and degrade field by field through serde
+defaults.
+
+A local daemon always matches the binary that connects to it, so the strict
+handshake costs nothing there. A *remote* daemon is another machine, which is
+the whole point of the feature, and it is routinely a different build. Moving
+the remote read path onto the stream as it stands would make a version skew
+fatal where it is currently invisible.
+
+So the change is worth making, but it has to arrive with a fallback: use the
+stream when the handshake succeeds, keep polling when it does not, and keep
+the unpinned calls for the polled case. Anything less trades a real
+cross-version guarantee for an internal tidiness.

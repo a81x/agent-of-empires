@@ -89,6 +89,7 @@ export const docsNav: NavSection[] = [
     items: [
       { title: "Structured View Internals", href: "/docs/development/internals/structured-view/" },
       { title: "Plugin System Internals", href: "/docs/development/internals/plugin-system/" },
+      { title: "Daemon-to-Client Transports", href: "/docs/development/internals/client-transports/" },
     ],
   },
 ];

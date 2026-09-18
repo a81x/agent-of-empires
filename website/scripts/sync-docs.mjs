@@ -231,6 +231,13 @@ const PAGES = [
       "Code-level design for the plugin system: subprocess JSON-RPC runtime, event bus, contribution registries, and capability model.",
   },
   {
+    source: "docs/development/internals/client-transports.md",
+    dest: "docs/development/internals/client-transports.md",
+    title: "Daemon-to-Client Transports",
+    description:
+      "How a client reads and drives a daemon: the REST API, the runtime stream, and the live pane stream, where their wire types live, and which surface uses which.",
+  },
+  {
     source: "docs/development/writing-plugins.md",
     dest: "docs/development/writing-plugins.md",
     title: "Writing Plugins",
@@ -351,6 +358,7 @@ const URL_MAP = {
   "docs/development/adding-settings.md": "/docs/development/adding-settings/",
   "docs/development/releases.md": "/docs/development/releases/",
   "docs/development/internals/structured-view.md": "/docs/development/internals/structured-view/",
+  "docs/development/internals/client-transports.md": "/docs/development/internals/client-transports/",
   "docs/development/internals/plugin-system.md": "/docs/development/internals/plugin-system/",
   "docs/development/writing-plugins.md": "/docs/development/writing-plugins/",
   "docs/guides/configuration.md": "/docs/guides/configuration/",

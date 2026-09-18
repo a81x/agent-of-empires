@@ -4,6 +4,9 @@
 agents, MCP tools, CI scripts) can drive sessions without attaching to
 a terminal. This page documents the orchestration endpoints. The web
 dashboard uses the same API surface plus additional internal routes.
+Contributors wanting the shape of the whole client surface, including the
+two WebSocket streams beside this one, want
+[Daemon-to-client transports](development/internals/client-transports.md).
 
 ## Authentication
 
