@@ -6,6 +6,7 @@ use crate::session::{
 };
 use crate::tui::deletion_poller::DeletionRequest;
 use crate::tui::dialogs::{DeleteOptions, GroupDeleteOptions, InfoDialog};
+use crate::tui::remote_delete;
 
 use super::{HomeView, PendingArchiveCursor};
 
@@ -381,6 +382,13 @@ impl HomeView {
     }
 
     pub(super) fn delete_selected(&mut self, options: &DeleteOptions) -> anyhow::Result<()> {
+        // A remote row is never in `selected_session`, so the dialog's submit
+        // has to reach that daemon's delete route instead of the local poller.
+        if let Some((remote, id)) = self.selected_remote.clone() {
+            let kind = remote_delete::DeleteKind::Purge(remote_delete::purge_body(options));
+            self.start_remote_delete(remote, id, kind);
+            return Ok(());
+        }
         if let Some(id) = &self.selected_session {
             let id = id.clone();
 

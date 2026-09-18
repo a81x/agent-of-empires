@@ -528,6 +528,8 @@ pub struct HomeView {
     pub(super) pending_force_remove_session: Option<String>,
     /// Session to trash after the `session.confirm_delete` dialog is accepted
     pub(super) pending_trash_session: Option<String>,
+    /// `(remote, session id)` awaiting the confirm that trashes it there.
+    pub(super) pending_remote_trash: Option<(String, String)>,
     /// Action emitted by a mouse-click on a modal dialog (e.g. clicking
     /// `[Yes]` on a stop-session confirm). The keyboard path returns
     /// these via `handle_key -> Option<Action>`, but the mouse path
@@ -600,6 +602,7 @@ pub struct HomeView {
     /// Pane size last sent to the remote while live-sending.
     pub(super) remote_live_size: (u16, u16),
     pub(super) remote_create: super::remote_create::RemoteCreate,
+    pub(super) remote_delete: super::remote_delete::RemoteDelete,
     /// A session just created on a remote, selected once the feed lists it.
     pub(super) pending_remote_select: Option<(String, String)>,
     pub(super) sidebar_source: super::session_feed::SidebarSource,

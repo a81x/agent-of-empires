@@ -5,6 +5,7 @@ use std::sync::mpsc::TryRecvError;
 use super::HomeView;
 use crate::session::config::GroupByMode;
 use crate::session::Item;
+use crate::tui::remote_delete;
 use crate::tui::remote_feed::{self, RemoteFeed};
 
 impl HomeView {
@@ -108,6 +109,21 @@ impl HomeView {
             .collect()
     }
 
+    /// A client for this remote, flashing why not when it cannot be built.
+    fn remote_client_or_flash(&mut self, remote: &str) -> Option<crate::daemon::DaemonClient> {
+        match remote_feed::remote_endpoint(remote).map(|e| e.daemon_client()) {
+            Some(Ok(client)) => Some(client),
+            Some(Err(error)) => {
+                self.flash_status(format!("{remote}: {}", error.summary()));
+                None
+            }
+            None => {
+                self.flash_status(format!("{remote} is no longer configured"));
+                None
+            }
+        }
+    }
+
     /// Hand a remote-targeted dialog submit to the create worker.
     /// `acknowledge_agent_hooks` records the remote's one-time hook approval
     /// first, and is set only after the user accepted its disclosure.
@@ -117,16 +133,8 @@ impl HomeView {
         data: &crate::tui::dialogs::NewSessionData,
         acknowledge_agent_hooks: bool,
     ) {
-        let client = match remote_feed::remote_endpoint(&remote).map(|e| e.daemon_client()) {
-            Some(Ok(client)) => client,
-            Some(Err(error)) => {
-                self.flash_status(format!("{remote}: {}", error.summary()));
-                return;
-            }
-            None => {
-                self.flash_status(format!("{remote} is no longer configured"));
-                return;
-            }
+        let Some(client) = self.remote_client_or_flash(&remote) else {
+            return;
         };
         // Kept so an answer of `NeedsHookAcknowledgement` can resume this exact
         // create once the user approves that machine's disclosure.
@@ -190,6 +198,79 @@ impl HomeView {
         ));
     }
 
+    /// Delete the selected remote row, mirroring the local gating in
+    /// [`Self::open_delete_for_selected`]: mid-create rows are inert, a row the
+    /// remote would trash first is confirmed and trashed, and anything else
+    /// opens the permanent-delete dialog. The confirm is never skipped: this
+    /// machine cannot read that daemon's `session.confirm_delete`, and the row
+    /// lives elsewhere.
+    pub(super) fn open_remote_delete_for_selected(&mut self) {
+        use crate::tui::remote_delete::DeletePlan;
+        let Some((remote, id)) = self.selected_remote.clone() else {
+            return;
+        };
+        let Some(row) = self.remote_row(&remote, &id) else {
+            return;
+        };
+        match remote_delete::plan_for(row) {
+            DeletePlan::Inert => {}
+            DeletePlan::Trash => {
+                let prompt = format!("Move '{}' on {remote} to the trash?", row.title);
+                let dialog = self.delete_confirm_dialog(&prompt, "trash_remote_session");
+                self.pending_remote_trash = Some((remote, id));
+                self.confirm_dialog = Some(dialog);
+            }
+            DeletePlan::Permanent => {
+                let dialog = remote_delete::delete_dialog(&remote, row);
+                self.unified_delete_dialog = Some(dialog);
+            }
+        }
+    }
+
+    /// Hand a remote delete to its worker.
+    pub(super) fn start_remote_delete(
+        &mut self,
+        remote: String,
+        session_id: String,
+        kind: crate::tui::remote_delete::DeleteKind,
+    ) {
+        use crate::tui::remote_delete::DeleteKind;
+        let Some(client) = self.remote_client_or_flash(&remote) else {
+            return;
+        };
+        let message = match &kind {
+            DeleteKind::Trash => format!("Moving to {remote}'s trash…"),
+            DeleteKind::Purge(_) => format!("Deleting on {remote}…"),
+        };
+        self.remote_delete
+            .request(crate::tui::remote_delete::DeleteRequest {
+                remote,
+                client,
+                session_id,
+                kind,
+            });
+        self.flash_status(message);
+    }
+
+    /// Land finished remote deletes. Returns whether anything changed.
+    pub fn apply_remote_delete(&mut self) -> bool {
+        use crate::tui::remote_delete::DeleteResult;
+        let mut changed = false;
+        while let Ok(result) = self.remote_delete.try_recv() {
+            match result {
+                DeleteResult::Done(message) => {
+                    self.flash_status(message);
+                    // The row moved or is gone; re-read rather than leaving it
+                    // on screen until the next poll.
+                    self.request_remote_feed_refresh();
+                }
+                DeleteResult::Failed(message) => self.flash_status(message),
+            }
+            changed = true;
+        }
+        changed
+    }
+
     fn select_pending_remote_row(&mut self) {
         let Some((remote, id)) = self.pending_remote_select.clone() else {
             return;
@@ -221,6 +302,24 @@ impl HomeView {
             (None, Some((remote, id))) => self.remote_instance(remote, id),
             _ => None,
         }
+    }
+
+    /// The wire row behind a remote session, for the fields its display
+    /// instance drops (cleanup defaults, scratch and worktree flags).
+    pub(in crate::tui) fn remote_row(
+        &self,
+        remote: &str,
+        id: &str,
+    ) -> Option<&crate::daemon::SessionResponse> {
+        self.remote_snapshots
+            .iter()
+            .find(|snapshot| snapshot.name == remote)?
+            .sessions
+            .as_ref()?
+            .as_ref()
+            .ok()?
+            .iter()
+            .find(|row| row.id == id)
     }
 
     pub(in crate::tui) fn remote_instance(

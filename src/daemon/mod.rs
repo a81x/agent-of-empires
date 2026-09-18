@@ -89,6 +89,12 @@ const CREATE_TIMEOUT: Duration = Duration::from_secs(180);
 const MAX_ERROR_BODY_BYTES: usize = 8 * 1024;
 const MAX_SUCCESS_BODY_BYTES: usize = 16 * 1024 * 1024;
 
+/// The trash route nests its outcome one level deep.
+#[derive(serde::Deserialize)]
+struct TrashResponse {
+    outcome: TrashOutcome,
+}
+
 /// Client for the daemon's session REST API.
 ///
 /// Clones share the underlying reqwest connection pool.
@@ -523,17 +529,29 @@ impl DaemonClient {
             self.sessions_url,
             transport::path_segment(session_id)?
         );
-        #[derive(serde::Deserialize)]
-        struct Body {
-            outcome: TrashOutcome,
-        }
-        let receipt: MutationReceipt<Body> = self
+        let receipt: MutationReceipt<TrashResponse> = self
             .request_mutation_with_outcome(self.http.post(url).json(body), epoch)
             .await?;
         Ok(MutationReceipt {
             cursor: receipt.cursor,
             outcome: receipt.outcome.outcome,
         })
+    }
+
+    /// Trash a row on a daemon whose runtime this client does not track, so
+    /// no epoch is pinned.
+    pub async fn trash_session_unpinned(
+        &self,
+        session_id: &str,
+        body: &TrashSessionBody,
+    ) -> Result<TrashOutcome, DaemonClientError> {
+        let url = format!(
+            "{}/{}/trash",
+            self.sessions_url,
+            transport::path_segment(session_id)?
+        );
+        let response: TrashResponse = self.request_json(self.http.post(url).json(body)).await?;
+        Ok(response.outcome)
     }
 
     pub async fn purge_session(
@@ -549,6 +567,21 @@ impl DaemonClient {
         );
         self.request_mutation_with_outcome(self.http.delete(url).json(body), epoch)
             .await
+    }
+
+    /// Permanently delete a row on a daemon whose runtime this client does not
+    /// track, so no epoch is pinned.
+    pub async fn purge_session_unpinned(
+        &self,
+        session_id: &str,
+        body: &DeleteSessionBody,
+    ) -> Result<PurgeOutcome, DaemonClientError> {
+        let url = format!(
+            "{}/{}",
+            self.sessions_url,
+            transport::path_segment(session_id)?
+        );
+        self.request_json(self.http.delete(url).json(body)).await
     }
 
     pub async fn mutate_project(

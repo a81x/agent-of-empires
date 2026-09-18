@@ -26,6 +26,7 @@ use crate::tui::dialogs::{
     WorktreeNameDialog,
 };
 use crate::tui::diff::{DiffAction, DiffView};
+use crate::tui::remote_delete;
 use crate::tui::responsive;
 use crate::tui::settings::{SettingsAction, SettingsView};
 
@@ -1104,6 +1105,12 @@ impl HomeView {
                 }
                 None
             }
+            "trash_remote_session" => {
+                if let Some((remote, id)) = self.pending_remote_trash.take() {
+                    self.start_remote_delete(remote, id, remote_delete::DeleteKind::Trash);
+                }
+                None
+            }
             "empty_trash" => {
                 self.empty_trash_all();
                 None
@@ -1321,6 +1328,7 @@ impl HomeView {
                         self.pending_stop_auxiliary = None;
                         self.pending_force_remove_session = None;
                         self.pending_trash_session = None;
+                        self.pending_remote_trash = None;
                         self.pending_image_pull = None;
                         // The settings close path mirrors the keyboard
                         // route: Cancel here means "don't discard," so
@@ -2142,6 +2150,7 @@ impl HomeView {
                     self.pending_stop_auxiliary = None;
                     self.pending_force_remove_session = None;
                     self.pending_trash_session = None;
+                    self.pending_remote_trash = None;
                     self.pending_image_pull = None;
                 }
                 DialogResult::Submit(_) => {
@@ -5292,10 +5301,36 @@ impl HomeView {
         self.worktree_name_dialog = Some(WorktreeNameDialog::new(&current_dir, &wt.branch));
     }
 
+    /// A "Confirm Delete" prompt the delete key itself accepts, so the
+    /// deliberate gesture stays two taps of one key while a single stray
+    /// keystroke is harmless. The key is read off the binding table so
+    /// relocating Delete cannot drift the hint from the key that opened the
+    /// dialog; a chord that is not a bare character (a hypothetical Ctrl+D)
+    /// cannot be a confirm char, so it falls back to the dialog's y/Enter.
+    pub(super) fn delete_confirm_dialog(&self, prompt: &str, action: &str) -> ConfirmDialog {
+        let delete_key = bindings::label(ActionId::Delete, self.strict_hotkeys);
+        let mut key_chars = delete_key.chars();
+        let accept_char = match (key_chars.next(), key_chars.next()) {
+            (Some(c), None) => Some(c),
+            _ => None,
+        };
+        let hint = match accept_char {
+            Some(_) => format!("Press {delete_key} again to confirm, Esc to cancel."),
+            None => "Press y to confirm, Esc to cancel.".to_string(),
+        };
+        let dialog = ConfirmDialog::new("Confirm Delete", &format!("{prompt}\n{hint}"), action)
+            .buttons("Delete", "Cancel");
+        match accept_char {
+            Some(c) => dialog.confirmed_by(c),
+            None => dialog,
+        }
+    }
+
     /// Open the delete dialog (or a force-remove confirm, or a group
     /// delete-options dialog) for the sidebar's current selection. Mirrors
     /// the gating of the historical `'d'` / `'D'` key handlers:
     ///   - Terminal view rejects deletion with an info dialog,
+    ///   - remote rows go to [`Self::open_remote_delete_for_selected`],
     ///   - Creating sessions are inert,
     ///   - Stuck-Deleting sessions get a force-remove confirm,
     ///   - Project and organization-mode groups can't be deleted (info dialog).
@@ -5311,6 +5346,10 @@ impl HomeView {
                 "Terminals cannot be deleted directly. Switch to Structured View (press 't') and delete the agent session instead."
             };
             self.info_dialog = Some(InfoDialog::new("Cannot Delete Terminal", hint));
+            return;
+        }
+        if self.selected_remote.is_some() {
+            self.open_remote_delete_for_selected();
             return;
         }
         if let Some(session_id) = &self.selected_session {
@@ -5357,37 +5396,17 @@ impl HomeView {
                     // (dispatch_confirm_submit "trash_session") runs the same
                     // trash_session_by_id as the instant path.
                     if session_cfg.confirm_delete {
-                        // Read the accept key off the binding table instead of
-                        // spelling it out here, so relocating Delete can't drift
-                        // the hint (or the key that accepts) from the key that
-                        // opened the dialog. A chord that isn't a bare character
-                        // (a hypothetical Ctrl+D) can't be an opt-in confirm
-                        // char, so it falls back to the dialog's own y/Enter.
-                        let delete_key = bindings::label(ActionId::Delete, self.strict_hotkeys);
-                        let mut key_chars = delete_key.chars();
-                        let accept_char = match (key_chars.next(), key_chars.next()) {
-                            (Some(c), None) => Some(c),
-                            _ => None,
-                        };
-                        let hint = match accept_char {
-                            Some(_) => {
-                                format!("Press {delete_key} again to confirm, Esc to cancel.")
-                            }
-                            None => "Press y to confirm, Esc to cancel.".to_string(),
-                        };
-                        let message = format!("Move '{}' to the trash?\n{hint}", inst.title);
-                        self.pending_trash_session = Some(sid);
                         // Offer the same in-dialog opt-out the quit confirm has:
                         // this guard is on by default, so a user who wants the
                         // one-keystroke trash back shouldn't have to go find the
                         // setting. Ticking it persists confirm_delete = false.
-                        let mut dialog =
-                            ConfirmDialog::new("Confirm Delete", &message, "trash_session")
-                                .buttons("Delete", "Cancel")
-                                .offering_dont_ask_again();
-                        if let Some(c) = accept_char {
-                            dialog = dialog.confirmed_by(c);
-                        }
+                        let dialog = self
+                            .delete_confirm_dialog(
+                                &format!("Move '{}' to the trash?", inst.title),
+                                "trash_session",
+                            )
+                            .offering_dont_ask_again();
+                        self.pending_trash_session = Some(sid);
                         self.confirm_dialog = Some(dialog);
                         return;
                     }

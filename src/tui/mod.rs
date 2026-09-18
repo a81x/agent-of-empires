@@ -20,6 +20,7 @@ pub(crate) mod open_url;
 pub(crate) mod plugin_ui;
 mod reconcile_poller;
 pub(crate) mod remote_create;
+pub(crate) mod remote_delete;
 pub(crate) mod remote_feed;
 pub(crate) mod remote_preview;
 pub(crate) mod responsive;

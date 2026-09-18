@@ -231,6 +231,7 @@ impl HomeView {
             remote_live_granted: false,
             remote_live_size: (0, 0),
             remote_create: crate::tui::remote_create::RemoteCreate::new(),
+            remote_delete: crate::tui::remote_delete::RemoteDelete::new(),
             pending_remote_select: None,
             row_tag_mode: resolved.session.row_tag,
             agent_clipboard_forward: resolved.tmux.clipboard
@@ -345,6 +346,7 @@ impl HomeView {
             structured_preview_pending: false,
             pending_force_remove_session: None,
             pending_trash_session: None,
+            pending_remote_trash: None,
             pending_dialog_click_action: None,
             search_active: false,
             search_query: Input::default(),
