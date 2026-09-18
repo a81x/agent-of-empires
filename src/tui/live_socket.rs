@@ -1,6 +1,11 @@
 //! Client for a daemon's `/sessions/{id}/live-ws` capture stream, the same
 //! stream the web dashboard renders. Frames arrive as ANSI text and keystrokes
 //! go back as raw pane bytes, so no tmux client runs on this machine.
+//!
+//! Frames ride the compressed binary stream (`caps.deflate`): consecutive
+//! screens are near-identical, so one connection-lifetime dictionary turns each
+//! into back-references. That matters most for an alternate-screen app, whose
+//! every scroll rewrites all its rows and so always ships as a full frame.
 
 use anyhow::Result;
 use futures_util::{SinkExt, StreamExt};
@@ -122,6 +127,69 @@ fn parse_text(text: &str) -> Option<LiveMessage> {
     }
 }
 
+/// Inflates the daemon's `caps.deflate` stream: one raw-deflate stream for the
+/// whole connection, sync-flushed per frame, whose plaintext is a run of
+/// `u32-LE length || frame JSON` records. The inflater chunks independently of
+/// those records, so a partial one is carried to the next binary message.
+#[derive(Default)]
+struct FrameInflater {
+    stream: Option<flate2::Decompress>,
+    plain: Vec<u8>,
+}
+
+impl FrameInflater {
+    /// Frame JSON records completed by one binary message, or `None` once the
+    /// stream is corrupt, which no later message can recover from.
+    fn push(&mut self, bytes: &[u8]) -> Option<Vec<String>> {
+        let stream = self
+            .stream
+            .get_or_insert_with(|| flate2::Decompress::new(false));
+        let mut consumed = 0usize;
+        loop {
+            self.plain.reserve(4096);
+            let before_in = stream.total_in();
+            let before_out = self.plain.len();
+            stream
+                .decompress_vec(
+                    &bytes[consumed..],
+                    &mut self.plain,
+                    flate2::FlushDecompress::Sync,
+                )
+                .ok()?;
+            consumed += (stream.total_in() - before_in) as usize;
+            // All input taken and the inflater left spare room, so nothing is
+            // still pending inside it.
+            if consumed == bytes.len() && self.plain.len() < self.plain.capacity() {
+                break;
+            }
+            // Neither side moved: the stream cannot make progress, so treat it
+            // as corrupt rather than spinning.
+            if stream.total_in() == before_in && self.plain.len() == before_out {
+                return None;
+            }
+        }
+        Some(self.take_records())
+    }
+
+    fn take_records(&mut self) -> Vec<String> {
+        let mut records = Vec::new();
+        let mut pos = 0usize;
+        while self.plain.len() - pos >= 4 {
+            let len = u32::from_le_bytes(self.plain[pos..pos + 4].try_into().unwrap_or_default());
+            let len = len as usize;
+            if self.plain.len() - pos - 4 < len {
+                break;
+            }
+            if let Ok(text) = std::str::from_utf8(&self.plain[pos + 4..pos + 4 + len]) {
+                records.push(text.to_string());
+            }
+            pos += 4 + len;
+        }
+        self.plain.drain(..pos);
+        records
+    }
+}
+
 pub(crate) struct LiveSocket {
     pub(crate) rx: mpsc::Receiver<LiveMessage>,
     pub(crate) tx: mpsc::Sender<Message>,
@@ -153,6 +221,7 @@ async fn pump<S>(
 ) where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {
+    let mut inflater = FrameInflater::default();
     loop {
         tokio::select! {
             outbound = out_rx.recv() => {
@@ -168,6 +237,28 @@ async fn pump<S>(
                             if tx.send(msg).await.is_err() {
                                 break;
                             }
+                        }
+                    }
+                    Some(Ok(Message::Binary(bytes))) => {
+                        let Some(records) = inflater.push(&bytes) else {
+                            let _ = tx
+                                .send(LiveMessage::Closed(
+                                    "the live frame stream could not be decompressed".to_string(),
+                                ))
+                                .await;
+                            break;
+                        };
+                        let mut closed = false;
+                        for record in records {
+                            if let Some(msg) = parse_text(&record) {
+                                if tx.send(msg).await.is_err() {
+                                    closed = true;
+                                    break;
+                                }
+                            }
+                        }
+                        if closed {
+                            break;
                         }
                     }
                     Some(Ok(Message::Close(_))) | None => {
@@ -193,6 +284,93 @@ async fn pump<S>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The daemon's `caps.deflate` encoder: one raw-deflate stream, sync
+    /// flushed per frame, each record prefixed with its `u32-LE` length.
+    fn deflate_records(records: &[&str]) -> Vec<Vec<u8>> {
+        let mut stream = flate2::Compress::new(flate2::Compression::fast(), false);
+        records
+            .iter()
+            .map(|json| {
+                let mut input = (json.len() as u32).to_le_bytes().to_vec();
+                input.extend_from_slice(json.as_bytes());
+                let mut out = Vec::new();
+                let mut consumed = 0usize;
+                loop {
+                    out.reserve(1024);
+                    let before = stream.total_in();
+                    stream
+                        .compress_vec(&input[consumed..], &mut out, flate2::FlushCompress::Sync)
+                        .unwrap();
+                    consumed += (stream.total_in() - before) as usize;
+                    if consumed == input.len() && out.len() < out.capacity() {
+                        return out;
+                    }
+                }
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_inflater_rebuilds_frames_however_the_binary_messages_are_split() {
+        let frames: Vec<String> = (1..=3)
+            .map(|seq| {
+                format!(
+                    r#"{{"type":"frame","seq":{seq},"content":"row {seq}\nrow {seq}\n","rows":2,"cursor":null}}"#
+                )
+            })
+            .collect();
+        let borrowed: Vec<&str> = frames.iter().map(String::as_str).collect();
+        let wire = deflate_records(&borrowed);
+
+        let mut whole = FrameInflater::default();
+        let got: Vec<String> = wire
+            .iter()
+            .flat_map(|m| whole.push(m).expect("stream stays valid"))
+            .collect();
+        assert_eq!(got, frames, "one binary message per frame");
+
+        // The inflater must not assume message boundaries land on records: a
+        // split mid-record has to carry the remainder to the next message.
+        let mut split = FrameInflater::default();
+        let mut got = Vec::new();
+        for message in &wire {
+            let (head, tail) = message.split_at(message.len() / 2);
+            got.extend(split.push(head).expect("stream stays valid"));
+            got.extend(split.push(tail).expect("stream stays valid"));
+        }
+        assert_eq!(got, frames, "records split across binary messages");
+
+        assert!(
+            FrameInflater::default()
+                .push(b"not deflate at all")
+                .is_none(),
+            "a corrupt stream is reported, not silently dropped"
+        );
+    }
+
+    #[test]
+    fn an_inflated_frame_parses_like_a_text_one() {
+        let json = r#"{"type":"frame","seq":4,"content":"hi\n","rows":1,"history":7,"cursor":{"x":2,"y":0},"altScreen":true,"mouse":true,"mouseSgr":true}"#;
+        let wire = deflate_records(&[json]);
+        let mut inflater = FrameInflater::default();
+        let records = inflater.push(&wire[0]).expect("stream stays valid");
+        let [record] = records.as_slice() else {
+            panic!("expected one record, got {records:?}");
+        };
+        match parse_text(record).expect("frame parses") {
+            LiveMessage::Frame {
+                seq,
+                content,
+                cursor,
+            } => {
+                assert_eq!((seq, content.as_str()), (Some(4), "hi\n"));
+                assert!(cursor.alternate_on && cursor.mouse_sgr);
+                assert_eq!((cursor.x, cursor.y, cursor.history_size), (2, 0, 7));
+            }
+            other => panic!("expected a frame, got {other:?}"),
+        }
+    }
 
     #[test]
     fn a_frame_carries_the_cursor_and_the_panes_scroll_modes() {

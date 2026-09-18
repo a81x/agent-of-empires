@@ -496,6 +496,7 @@ async fn run(
                         next.control(json!({
                             "type": "caps",
                             "patch": true,
+                            "deflate": true,
                             "label": crate::tui::view_lock::viewer_label(),
                         }))
                         .await;
@@ -825,8 +826,8 @@ mod tests {
         }
         let caps = client_text(&mut server).await;
         assert_eq!(
-            (&caps["type"], &caps["patch"]),
-            (&"caps".into(), &true.into())
+            (&caps["type"], &caps["patch"], &caps["deflate"]),
+            (&"caps".into(), &true.into(), &true.into()),
         );
 
         let cursor = |history_size: u32, y: u16| crate::tmux::PaneCursor {
@@ -915,6 +916,39 @@ mod tests {
                 .expect("the resync frame lands");
         };
         assert_eq!(frame.content, recovered);
+
+        // The client advertised `deflate`, so the daemon may switch frames to
+        // the compressed binary stream at any point. Both sides have to stay in
+        // step across the switch and across the shared dictionary.
+        let deflate = std::sync::atomic::AtomicBool::new(true);
+        let compressed = ["c1\nc2\nc3\n$ \n", "c2\nc3\nc4\n$ \n"];
+        for (step, content) in compressed.iter().enumerate() {
+            let message = encoder.encode(
+                PendingFrame {
+                    content: (*content).to_string(),
+                    cursor: Some(cursor(4 + step as u32, 3)),
+                    full: false,
+                },
+                true,
+                &deflate,
+            );
+            let axum::extract::ws::Message::Binary(bytes) = message else {
+                panic!("an advertised deflate stream sends binary frames");
+            };
+            server
+                .send(Message::Binary(bytes.to_vec().into()))
+                .await
+                .unwrap();
+            let frame = loop {
+                if let Some(frame) = preview.take_frame() {
+                    break frame;
+                }
+                tokio::time::timeout(Duration::from_secs(5), wake.notified())
+                    .await
+                    .expect("the compressed frame lands");
+            };
+            assert_eq!(frame.content, *content, "step {step}");
+        }
 
         worker.abort();
     }
