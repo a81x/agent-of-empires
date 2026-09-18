@@ -48,6 +48,7 @@ const NON_SUFFIX_HOST_STATE: Record<string, string> = {
   AOE_OMP_CAPTURE_READY: "1",
   AOE_OMP_LAUNCH_ID: "host-launch",
   AOE_OPEN_URL_TO: `${HOST}/opened-urls.txt`,
+  AOE_REMOTE_PASSPHRASE: "host-remote-secret",
   AOE_SERVE_INSTANCE_ID: "host-daemon",
   AOE_SERVE_PASSPHRASE: "host-secret",
   AOE_TELEMETRY_ENDPOINT: "https://host.invalid/v1/telemetry",
