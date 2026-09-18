@@ -227,8 +227,7 @@ impl HomeView {
     /// Scroll a watched remote pane this viewer is not driving. `col`/`row` are
     /// 0-based pane cells; the daemon encodes the notch for the pane's modes.
     pub(super) fn send_remote_wheel(&self, up: bool, col: u16, row: u16) {
-        self.remote_preview
-            .send(PreviewCommand::Wheel { up, col, row });
+        self.remote_preview.wheel(up, col, row);
     }
 
     /// Render the selected remote row into the preview pane.
@@ -258,10 +257,7 @@ impl HomeView {
             let size = (layout.output.width.max(1), layout.output.height.max(1));
             if size != self.remote_live_size {
                 self.remote_live_size = size;
-                self.remote_preview.send(PreviewCommand::Resize {
-                    cols: size.0,
-                    rows: size.1,
-                });
+                self.remote_preview.resize(size.0, size.1);
             }
         }
 

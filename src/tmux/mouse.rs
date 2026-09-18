@@ -38,13 +38,27 @@ pub fn wheel_notch_bytes(cursor: &PaneCursor, up: bool, cx: u16, cy: u16) -> Opt
     })
 }
 
+/// Most notches one coalesced wheel message may carry. A burst beyond this is
+/// a fling no viewer is tracking, and the cap is what stops a malformed client
+/// from making the daemon inject input by the megabyte.
+pub const MAX_WHEEL_NOTCHES: u16 = 128;
+
+/// `count` notches at 1-based pane cell `(cx, cy)`, clamped to
+/// [`MAX_WHEEL_NOTCHES`]; see [`wheel_notch_bytes`] for what one notch sends.
+pub fn wheel_bytes(cursor: &PaneCursor, up: bool, cx: u16, cy: u16, count: u16) -> Option<Vec<u8>> {
+    let count = count.min(MAX_WHEEL_NOTCHES);
+    if count == 0 {
+        return None;
+    }
+    Some(wheel_notch_bytes(cursor, up, cx, cy)?.repeat(count as usize))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[test]
-    fn a_wheel_notch_follows_the_panes_screen_and_mouse_modes() {
-        let cursor = |alternate_on, mouse_tracking, mouse_sgr| PaneCursor {
+    fn cursor(alternate_on: bool, mouse_tracking: bool, mouse_sgr: bool) -> PaneCursor {
+        PaneCursor {
             x: 0,
             y: 0,
             visible: true,
@@ -57,7 +71,11 @@ mod tests {
             mouse_all: false,
             position_reliable: true,
             composite_pane0: None,
-        };
+        }
+    }
+
+    #[test]
+    fn a_wheel_notch_follows_the_panes_screen_and_mouse_modes() {
         let cases: [(PaneCursor, bool, Option<&[u8]>); 5] = [
             (cursor(false, true, true), true, None),
             (cursor(true, false, false), true, Some(b"\x1b[5~")),
@@ -80,6 +98,26 @@ mod tests {
         assert_eq!(
             mouse_report_bytes(64, false, false, 300, 300),
             [0x1b, b'[', b'M', 64 + 32, 223 + 32, 223 + 32]
+        );
+    }
+
+    #[test]
+    fn a_coalesced_wheel_repeats_one_notch_up_to_the_cap() {
+        let pane = cursor(true, true, true);
+        assert_eq!(
+            wheel_bytes(&pane, true, 3, 4, 3).as_deref(),
+            Some(&b"\x1b[<64;3;4M\x1b[<64;3;4M\x1b[<64;3;4M"[..])
+        );
+        assert_eq!(wheel_bytes(&pane, true, 3, 4, 0), None, "nothing to send");
+        assert_eq!(
+            wheel_bytes(&pane, true, 3, 4, u16::MAX).map(|b| b.len()),
+            Some(MAX_WHEEL_NOTCHES as usize * b"\x1b[<64;3;4M".len()),
+            "a hostile count clamps"
+        );
+        assert_eq!(
+            wheel_bytes(&cursor(false, true, true), true, 3, 4, 5),
+            None,
+            "the normal screen still scrolls itself"
         );
     }
 }

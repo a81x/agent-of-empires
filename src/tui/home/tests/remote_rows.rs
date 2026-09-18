@@ -523,7 +523,7 @@ fn a_remote_preview_scrolls_like_a_local_one_in_preview_and_live_send() {
 #[test]
 #[serial]
 fn a_wheel_over_a_full_screen_remote_pane_asks_the_daemon_unless_live_send_drives_it() {
-    use crate::tui::remote_preview::{PreviewCommand, RemotePreview};
+    use crate::tui::remote_preview::{PendingWheel, PreviewCommand, RemotePreview};
     let mut env = remote_preview_env();
     let (preview, mut sent) = RemotePreview::recording();
     env.view.remote_preview = preview;
@@ -536,15 +536,18 @@ fn a_wheel_over_a_full_screen_remote_pane_asks_the_daemon_unless_live_send_drive
     env.view.remote_preview_cache.cursor = Some(cursor);
 
     assert!(env.view.handle_scroll_up(50, 10));
+    assert!(env.view.handle_scroll_up(50, 10));
     assert_eq!(env.view.preview_scroll_offset, 0);
-    assert!(matches!(
-        sent.try_recv(),
-        Ok(PreviewCommand::Wheel {
-            up: true,
+    assert!(matches!(sent.try_recv(), Ok(PreviewCommand::Wheel)));
+    assert!(sent.try_recv().is_err(), "a burst wakes the worker once");
+    assert_eq!(
+        env.view.remote_preview.slots.take_wheel(),
+        Some(PendingWheel {
             col: 20,
-            row: 10
+            row: 10,
+            notches: 2
         })
-    ));
+    );
 
     assert!(env.view.activate_selected_session().is_none());
     while sent.try_recv().is_ok() {}

@@ -74,11 +74,14 @@
 //!     keeps capturing while the user reads (the agent runs on); a
 //!     scrolled-up client just asks for a bigger window and renders it
 //!     against a stable position via its spacer model.
-//!   `{"type":"wheel","up":bool,"col":N,"row":N}`: one wheel notch at a
-//!     0-based pane cell, accepted from any viewer that is not read-only so
-//!     a watcher can scroll without taking the pane. The server encodes it
-//!     from the pane's current modes (a wheel mouse report, or
-//!     PageUp/PageDown without mouse tracking) and drops it unless the pane
+//!   `{"type":"wheel","up":bool,"col":N,"row":N,"count":N}`: `count` wheel
+//!     notches in one direction at a 0-based pane cell, accepted from any
+//!     viewer that is not read-only so a watcher can scroll without taking the
+//!     pane. A client coalesces a burst into one message rather than sending a
+//!     message per notch; `count` is optional (an older client omits it, which
+//!     means one) and clamps to `mouse::MAX_WHEEL_NOTCHES`. The server encodes
+//!     the notches from the pane's current modes (a wheel mouse report, or
+//!     PageUp/PageDown without mouse tracking) and drops them unless the pane
 //!     is on the alternate screen, whose history only the app can scroll.
 //!     Servers without it ignore the message.
 //!   `{"type":"resync"}`: the client lost patch continuity; the next publish
@@ -259,7 +262,19 @@ enum LiveControlMessage {
     #[serde(rename = "resync")]
     Resync,
     #[serde(rename = "wheel")]
-    Wheel { up: bool, col: u16, row: u16 },
+    Wheel {
+        up: bool,
+        col: u16,
+        row: u16,
+        /// Notches this message stands for. Absent means one, which is what a
+        /// client predating coalescing sends.
+        #[serde(default = "one_notch")]
+        count: u16,
+    },
+}
+
+fn one_notch() -> u16 {
+    1
 }
 
 /// Which transport renders a live surface. The agent pane takes the shared VT
@@ -1894,7 +1909,12 @@ async fn handle_live_ws_inner(
                                 settings.force_full.store(true, Ordering::Relaxed);
                                 nudge.notify_one();
                             }
-                            LiveControlMessage::Wheel { up, col, row } => {
+                            LiveControlMessage::Wheel {
+                                up,
+                                col,
+                                row,
+                                count,
+                            } => {
                                 // tmux, not the grid, is the authority here: a
                                 // stale alternate-screen flag would type the
                                 // report into a shell.
@@ -1909,9 +1929,14 @@ async fn handle_live_ws_inner(
                                     .ok()
                                     .flatten()
                                 };
-                                if let Some(bytes) =
-                                    viewer_wheel_bytes(read_only, modes.as_ref(), up, col, row)
-                                {
+                                if let Some(bytes) = viewer_wheel_bytes(
+                                    read_only,
+                                    modes.as_ref(),
+                                    up,
+                                    col,
+                                    row,
+                                    count,
+                                ) {
                                     write_pane_input(&tmux_name, bytes, &nudge).await;
                                 }
                             }
@@ -1973,21 +1998,24 @@ async fn write_pane_input(tmux_name: &str, bytes: Vec<u8>, nudge: &tokio::sync::
 }
 
 /// The bytes a `wheel` message sends, or `None` when the viewer may not
-/// scroll or the pane is not full-screen. The cell clamps into the pane.
+/// scroll or the pane is not full-screen. The cell clamps into the pane and
+/// `count` clamps to [`crate::tmux::mouse::MAX_WHEEL_NOTCHES`].
 fn viewer_wheel_bytes(
     read_only: bool,
     modes: Option<&crate::tmux::PaneCursor>,
     up: bool,
     col: u16,
     row: u16,
+    count: u16,
 ) -> Option<Vec<u8>> {
     let modes = modes.filter(|_| !read_only)?;
     let cell = |v: u16, extent: u16| v.min(extent.saturating_sub(1)) + 1;
-    crate::tmux::mouse::wheel_notch_bytes(
+    crate::tmux::mouse::wheel_bytes(
         modes,
         up,
         cell(col, modes.pane_width),
         cell(row, modes.pane_height),
+        count,
     )
 }
 
@@ -2433,14 +2461,22 @@ mod tests {
     fn a_viewer_wheel_scrolls_only_a_full_screen_pane_and_never_for_read_only() {
         let m: LiveControlMessage =
             serde_json::from_str(r#"{"type":"wheel","up":true,"col":4,"row":9}"#).unwrap();
-        assert!(matches!(
-            m,
-            LiveControlMessage::Wheel {
-                up: true,
-                col: 4,
-                row: 9
-            }
-        ));
+        assert!(
+            matches!(
+                m,
+                LiveControlMessage::Wheel {
+                    up: true,
+                    col: 4,
+                    row: 9,
+                    count: 1
+                }
+            ),
+            "a client predating coalescing means one notch"
+        );
+        let m: LiveControlMessage =
+            serde_json::from_str(r#"{"type":"wheel","up":true,"col":4,"row":9,"count":7}"#)
+                .unwrap();
+        assert!(matches!(m, LiveControlMessage::Wheel { count: 7, .. }));
         let modes = |alternate_on, mouse_tracking| crate::tmux::PaneCursor {
             x: 0,
             y: 0,
@@ -2457,21 +2493,21 @@ mod tests {
         };
         let mouse = modes(true, true);
         assert_eq!(
-            viewer_wheel_bytes(false, Some(&mouse), true, 4, 9).as_deref(),
+            viewer_wheel_bytes(false, Some(&mouse), true, 4, 9, 1).as_deref(),
             Some(b"\x1b[<64;5;10M".as_slice())
         );
         assert_eq!(
-            viewer_wheel_bytes(false, Some(&mouse), false, 500, 500).as_deref(),
+            viewer_wheel_bytes(false, Some(&mouse), false, 500, 500, 1).as_deref(),
             Some(b"\x1b[<65;80;24M".as_slice()),
             "the cell clamps into the pane"
         );
-        assert_eq!(viewer_wheel_bytes(true, Some(&mouse), true, 4, 9), None);
+        assert_eq!(viewer_wheel_bytes(true, Some(&mouse), true, 4, 9, 1), None);
         assert_eq!(
-            viewer_wheel_bytes(false, Some(&modes(false, true)), true, 4, 9),
+            viewer_wheel_bytes(false, Some(&modes(false, true)), true, 4, 9, 1),
             None,
             "a normal-screen pane gets nothing"
         );
-        assert_eq!(viewer_wheel_bytes(false, None, true, 4, 9), None);
+        assert_eq!(viewer_wheel_bytes(false, None, true, 4, 9, 1), None);
     }
 
     /// Feed the deflater's binary payloads through one raw-inflate stream

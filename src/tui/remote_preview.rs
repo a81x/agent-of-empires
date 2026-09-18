@@ -33,22 +33,93 @@ pub(crate) enum PreviewCommand {
         cols: u16,
         rows: u16,
     },
-    Resize {
-        cols: u16,
-        rows: u16,
-    },
-    /// One wheel notch at a 0-based pane cell, for a pane this viewer only
-    /// watches; the daemon ignores it unless the pane is full-screen.
-    Wheel {
-        up: bool,
-        col: u16,
-        row: u16,
-    },
+    /// A size waits in [`PendingSlots`]; only the newest one is worth sending.
+    Resize,
+    /// Wheel notches wait in [`PendingSlots`], for a pane this viewer only
+    /// watches; the daemon ignores them unless the pane is full-screen.
+    Wheel,
     /// Capture `lines` of history plus screen; `fast` while at the live edge.
     Window {
         lines: usize,
         fast: bool,
     },
+}
+
+/// Net wheel scroll waiting to go out, at the 0-based pane cell it applies to.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct PendingWheel {
+    pub(crate) col: u16,
+    pub(crate) row: u16,
+    /// Signed notch count; positive scrolls up.
+    pub(crate) notches: i32,
+}
+
+impl PendingWheel {
+    /// Direction and wire count, or `None` once a burst has cancelled itself
+    /// out. The count clamps to what one message may carry.
+    fn burst(&self) -> Option<(bool, u16)> {
+        let capped = crate::tmux::mouse::MAX_WHEEL_NOTCHES;
+        let count = self.notches.unsigned_abs().min(u32::from(capped)) as u16;
+        (count > 0).then_some((self.notches > 0, count))
+    }
+}
+
+/// Latest-value slots for the commands a render or a wheel burst can fire
+/// faster than the link drains them, the input-side twin of [`FrameSlot`].
+/// Their [`PreviewCommand`] carries no payload and is only sent on the
+/// transition out of empty, so a burst wakes the worker at most once instead
+/// of growing the command queue.
+#[derive(Default)]
+pub(crate) struct PendingSlots {
+    wheel: Mutex<Option<PendingWheel>>,
+    resize: Mutex<Option<(u16, u16)>>,
+}
+
+impl PendingSlots {
+    /// Fold one notch in; `true` when the worker needs a wake. Notches at one
+    /// cell accumulate and opposing ones cancel, while a notch at another cell
+    /// replaces the slot, since the cell decides which pane cell it targets.
+    fn wheel(&self, up: bool, col: u16, row: u16) -> bool {
+        let step = if up { 1 } else { -1 };
+        let mut slot = self.wheel.lock().unwrap_or_else(|e| e.into_inner());
+        match slot.as_mut() {
+            Some(pending) if (pending.col, pending.row) == (col, row) => {
+                pending.notches = pending.notches.saturating_add(step);
+                false
+            }
+            Some(pending) => {
+                pending.col = col;
+                pending.row = row;
+                pending.notches = step;
+                false
+            }
+            None => {
+                *slot = Some(PendingWheel {
+                    col,
+                    row,
+                    notches: step,
+                });
+                true
+            }
+        }
+    }
+
+    pub(crate) fn take_wheel(&self) -> Option<PendingWheel> {
+        self.wheel.lock().unwrap_or_else(|e| e.into_inner()).take()
+    }
+
+    /// Replace the pending size; `true` when the worker needs a wake.
+    fn resize(&self, cols: u16, rows: u16) -> bool {
+        self.resize
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .replace((cols, rows))
+            .is_none()
+    }
+
+    fn take_resize(&self) -> Option<(u16, u16)> {
+        self.resize.lock().unwrap_or_else(|e| e.into_inner()).take()
+    }
 }
 
 /// The newest content of the watched pane.
@@ -102,6 +173,7 @@ pub struct RemotePreview {
     commands: mpsc::UnboundedSender<PreviewCommand>,
     events: std_mpsc::Receiver<PreviewEvent>,
     frame: FrameSlot,
+    pub(crate) slots: Arc<PendingSlots>,
     /// Kept only by [`RemotePreview::recording`], so a test can deliver an
     /// event the way the worker does.
     #[cfg(test)]
@@ -114,6 +186,7 @@ impl RemotePreview {
     pub fn new(wake: Arc<tokio::sync::Notify>) -> Self {
         let (commands, command_rx) = mpsc::unbounded_channel();
         let (preview, sink) = Self::with_sink(commands, wake);
+        let slots = Arc::clone(&preview.slots);
         let spawned = std::thread::Builder::new()
             .name("aoe-remote-preview".into())
             .spawn(move || {
@@ -121,7 +194,7 @@ impl RemotePreview {
                     .enable_all()
                     .build()
                 {
-                    Ok(rt) => rt.block_on(run(command_rx, sink)),
+                    Ok(rt) => rt.block_on(run(command_rx, sink, slots)),
                     Err(e) => {
                         tracing::warn!(target: "tui.remote_preview", "runtime build failed: {e}")
                     }
@@ -149,6 +222,7 @@ impl RemotePreview {
                 commands,
                 events,
                 frame,
+                slots: Arc::default(),
                 #[cfg(test)]
                 sink: None,
             },
@@ -176,6 +250,21 @@ impl RemotePreview {
 
     pub(crate) fn send(&self, command: PreviewCommand) {
         let _ = self.commands.send(command);
+    }
+
+    /// Accumulate one wheel notch for the watched pane. Only the net scroll
+    /// goes out, so a burst the link cannot keep up with never replays.
+    pub(crate) fn wheel(&self, up: bool, col: u16, row: u16) {
+        if self.slots.wheel(up, col, row) {
+            self.send(PreviewCommand::Wheel);
+        }
+    }
+
+    /// Offer the preview's grid to the pane; only the newest one is sent.
+    pub(crate) fn resize(&self, cols: u16, rows: u16) {
+        if self.slots.resize(cols, rows) {
+            self.send(PreviewCommand::Resize);
+        }
     }
 
     pub(crate) fn try_recv(&self) -> Option<PreviewEvent> {
@@ -357,7 +446,11 @@ fn latest_target(
     latest
 }
 
-async fn run(mut commands: mpsc::UnboundedReceiver<PreviewCommand>, events: EventSink) {
+async fn run(
+    mut commands: mpsc::UnboundedReceiver<PreviewCommand>,
+    events: EventSink,
+    slots: Arc<PendingSlots>,
+) {
     let mut conn: Option<Connection> = None;
     let mut rx: Option<mpsc::Receiver<LiveMessage>> = None;
     let mut backlog = VecDeque::new();
@@ -438,15 +531,23 @@ async fn run(mut commands: mpsc::UnboundedReceiver<PreviewCommand>, events: Even
                     c.size(cols, rows).await;
                 }
             }
-            PreviewCommand::Resize { cols, rows } => {
-                if let Some(c) = &conn {
+            PreviewCommand::Resize => {
+                if let (Some(c), Some((cols, rows))) = (&conn, slots.take_resize()) {
                     c.size(cols, rows).await;
                 }
             }
-            PreviewCommand::Wheel { up, col, row } => {
-                if let Some(c) = &conn {
-                    c.control(json!({"type": "wheel", "up": up, "col": col, "row": row}))
+            PreviewCommand::Wheel => {
+                if let (Some(c), Some(pending)) = (&conn, slots.take_wheel()) {
+                    if let Some((up, count)) = pending.burst() {
+                        c.control(json!({
+                            "type": "wheel",
+                            "up": up,
+                            "col": pending.col,
+                            "row": pending.row,
+                            "count": count,
+                        }))
                         .await;
+                    }
                 }
             }
             PreviewCommand::Window { lines, fast } => {
@@ -700,7 +801,7 @@ mod tests {
         let wake = Arc::new(tokio::sync::Notify::new());
         let (commands, command_rx) = mpsc::unbounded_channel();
         let (preview, sink) = RemotePreview::with_sink(commands, Arc::clone(&wake));
-        let worker = tokio::spawn(run(command_rx, sink));
+        let worker = tokio::spawn(run(command_rx, sink, Arc::clone(&preview.slots)));
         let key: RemoteKey = ("mini".into(), "s1".into());
         preview.send(PreviewCommand::Watch {
             key: key.clone(),
@@ -816,6 +917,83 @@ mod tests {
         assert_eq!(frame.content, recovered);
 
         worker.abort();
+    }
+
+    #[test]
+    fn a_wheel_burst_collapses_to_its_net_scroll_and_wakes_the_worker_once() {
+        let (preview, mut commands) = RemotePreview::recording();
+        for _ in 0..10 {
+            preview.wheel(true, 4, 9);
+        }
+        for _ in 0..3 {
+            preview.wheel(false, 4, 9);
+        }
+        assert!(matches!(commands.try_recv(), Ok(PreviewCommand::Wheel)));
+        assert!(
+            commands.try_recv().is_err(),
+            "13 notches ride one bounded wake"
+        );
+        let pending = preview.slots.take_wheel().expect("a pending burst");
+        assert_eq!(
+            pending,
+            PendingWheel {
+                col: 4,
+                row: 9,
+                notches: 7
+            },
+            "opposing notches cancel"
+        );
+        assert_eq!(pending.burst(), Some((true, 7)));
+        assert!(preview.slots.take_wheel().is_none(), "the slot is drained");
+
+        // A drained slot wakes the worker again.
+        preview.wheel(false, 4, 9);
+        assert!(matches!(commands.try_recv(), Ok(PreviewCommand::Wheel)));
+
+        // Moving to another cell restarts the count there.
+        preview.wheel(false, 5, 9);
+        preview.wheel(false, 5, 9);
+        assert_eq!(
+            preview.slots.take_wheel(),
+            Some(PendingWheel {
+                col: 5,
+                row: 9,
+                notches: -2
+            }),
+            "a new cell replaces rather than merges"
+        );
+    }
+
+    #[test]
+    fn a_settled_wheel_sends_nothing_and_a_fling_clamps_to_the_wire_cap() {
+        let cap = crate::tmux::mouse::MAX_WHEEL_NOTCHES;
+        let cases = [
+            (0, None),
+            (1, Some((true, 1))),
+            (-1, Some((false, 1))),
+            (i32::from(cap) + 5, Some((true, cap))),
+            (i32::MIN, Some((false, cap))),
+        ];
+        for (notches, want) in cases {
+            let pending = PendingWheel {
+                col: 0,
+                row: 0,
+                notches,
+            };
+            assert_eq!(pending.burst(), want, "{notches}");
+        }
+    }
+
+    #[test]
+    fn only_the_newest_preview_size_is_kept() {
+        let (preview, mut commands) = RemotePreview::recording();
+        preview.resize(80, 24);
+        preview.resize(100, 30);
+        preview.resize(120, 40);
+        assert!(matches!(commands.try_recv(), Ok(PreviewCommand::Resize)));
+        assert!(commands.try_recv().is_err(), "one wake for the whole drag");
+        assert_eq!(preview.slots.take_resize(), Some((120, 40)));
+        assert!(preview.slots.take_resize().is_none());
     }
 
     #[test]
