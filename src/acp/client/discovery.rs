@@ -32,6 +32,27 @@ impl std::fmt::Debug for DaemonEndpoint {
     }
 }
 
+/// How long an unused client is kept. Long enough to span the sidebar's poll
+/// and a user pausing on a session, short enough that disabling a remote
+/// eventually releases its connection.
+const POOL_IDLE: std::time::Duration = std::time::Duration::from_secs(600);
+
+struct PooledClient {
+    /// Rebuild rather than reuse once the endpoint's credentials change.
+    fingerprint: u64,
+    client: DaemonClient,
+    used: std::time::Instant,
+}
+
+/// Clients by base URL. Keyed by URL rather than by remote name so the same
+/// daemon reached under two names shares one pool.
+fn client_pool() -> &'static std::sync::Mutex<std::collections::HashMap<String, PooledClient>> {
+    static POOL: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::HashMap<String, PooledClient>>,
+    > = std::sync::OnceLock::new();
+    POOL.get_or_init(Default::default)
+}
+
 impl DaemonEndpoint {
     /// Endpoint for a daemon reachable over its local unix socket. The peer
     /// owner authorizes it, so it carries no bearer token.
@@ -96,17 +117,45 @@ impl DaemonEndpoint {
         self.allow_plaintext
     }
 
+    /// A client for this endpoint, reused across calls.
+    ///
+    /// Building one is not cheap: `reqwest` loads and parses the system CA
+    /// store on every `build()` (~15ms here), and the fresh client also
+    /// arrives with an empty connection pool, so a caller that builds one per
+    /// request pays a full TLS handshake every time. Clones share the pool, so
+    /// a cached client keeps the connection to a remote daemon warm between
+    /// polls. The entry is rebuilt when the endpoint's credentials change, so
+    /// a re-paired remote never keeps talking with the old ones.
     pub fn daemon_client(&self) -> Result<DaemonClient, DaemonClientError> {
+        // A unix client owns no pool and no TLS, so it is built per call and
+        // the cache stays keyed by URL alone.
         if let Some(path) = &self.unix_path {
-            DaemonClient::new_unix(path)
-        } else {
-            DaemonClient::with_login(
-                &self.base_url,
-                self.bearer_token(),
-                self.login.as_ref(),
-                self.allow_plaintext,
-            )
+            return DaemonClient::new_unix(path);
         }
+        let fingerprint = self.credential_fingerprint();
+        let mut pool = client_pool().lock().unwrap_or_else(|e| e.into_inner());
+        pool.retain(|_, entry| entry.used.elapsed() < POOL_IDLE);
+        if let Some(entry) = pool.get_mut(&self.base_url) {
+            if entry.fingerprint == fingerprint {
+                entry.used = std::time::Instant::now();
+                return Ok(entry.client.clone());
+            }
+        }
+        let client = DaemonClient::with_login(
+            &self.base_url,
+            self.bearer_token(),
+            self.login.as_ref(),
+            self.allow_plaintext,
+        )?;
+        pool.insert(
+            self.base_url.clone(),
+            PooledClient {
+                fingerprint,
+                client: client.clone(),
+                used: std::time::Instant::now(),
+            },
+        );
+        Ok(client)
     }
 
     pub(crate) fn bearer_token(&self) -> Option<&str> {

@@ -5,7 +5,9 @@
 //! instance map, so no local lifecycle action, poller, or storage write can
 //! reach a session this machine does not own.
 
+use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
+use std::hash::{Hash, Hasher};
 use std::sync::mpsc::TryRecvError;
 use std::time::{Duration, Instant};
 
@@ -53,15 +55,50 @@ pub(crate) struct RemoteMeta {
 const META_TTL: std::time::Duration = std::time::Duration::from_secs(300);
 
 impl RemoteSnapshot {
-    /// Change detector: the rows as read. The sidebar rebuilds only when this
-    /// moves, so an idle remote costs no redraws.
-    fn fingerprint(&self) -> SnapshotPrint {
-        (self.name.clone(), self.sessions.clone())
+    /// Change detector: a hash over the rows as read. The sidebar rebuilds
+    /// only when this moves, so an idle remote costs no redraws.
+    ///
+    /// Hashed rather than kept, because the answer is held until the next poll
+    /// and a copy of the rows would be a second full set of every remote row
+    /// the TUI is showing. The rows stream through the hasher as they
+    /// serialize, so no row is ever built twice.
+    fn fingerprint(&self, hasher: &mut DefaultHasher) {
+        self.name.hash(hasher);
+        match &self.sessions {
+            None => 0u8.hash(hasher),
+            Some(Err(error)) => {
+                1u8.hash(hasher);
+                error.hash(hasher);
+            }
+            Some(Ok(rows)) => {
+                2u8.hash(hasher);
+                rows.len().hash(hasher);
+                for row in rows {
+                    // A row that cannot serialize hashes as nothing, which at
+                    // worst holds a redraw until the next change.
+                    let _ = serde_json::to_writer(HashWriter(hasher), row);
+                }
+            }
+        }
     }
 }
 
-type SnapshotPrint = (String, Option<Result<Vec<SessionResponse>, String>>);
-pub(crate) type RemoteFingerprint = Vec<SnapshotPrint>;
+/// Feeds serialized bytes straight into a hasher, so a row is never
+/// materialized as a string only to be hashed and dropped.
+struct HashWriter<'a>(&'a mut DefaultHasher);
+
+impl std::io::Write for HashWriter<'_> {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0.write(buf);
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+pub(crate) type RemoteFingerprint = u64;
 
 /// A render-only `Instance` for the info panel. Never enters the instance map:
 /// it exists so the remote row reuses the local preview renderer verbatim.
@@ -163,7 +200,12 @@ pub(crate) fn shelf_of(inst: &Instance) -> RemoteShelf {
 pub(crate) type CollapsedRemotes = std::collections::HashSet<(String, RemoteShelf)>;
 
 pub(crate) fn fingerprint(snapshots: &[RemoteSnapshot]) -> RemoteFingerprint {
-    snapshots.iter().map(RemoteSnapshot::fingerprint).collect()
+    let mut hasher = DefaultHasher::new();
+    snapshots.len().hash(&mut hasher);
+    for snapshot in snapshots {
+        snapshot.fingerprint(&mut hasher);
+    }
+    hasher.finish()
 }
 
 /// Live sidebar rows for the snapshots: a header per remote, then its live

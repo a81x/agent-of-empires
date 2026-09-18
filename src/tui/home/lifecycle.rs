@@ -376,7 +376,7 @@ impl HomeView {
             remote_feed: crate::tui::remote_feed::RemoteFeed::new(),
             pending_remote_feed: false,
             remote_snapshots: Vec::new(),
-            remote_fingerprint: Vec::new(),
+            remote_fingerprint: 0,
             selected_remote: None,
             remote_instances: Default::default(),
             sidebar_source: crate::tui::session_feed::SidebarSource::Disconnected,
