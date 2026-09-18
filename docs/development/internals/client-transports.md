@@ -22,10 +22,11 @@ build the *same* types, so a field added to one reaches the other or fails to
 compile.
 
 The dashboard declares these shapes a third time, in TypeScript, and nothing
-can make that a compile error. Each Rust wire module therefore carries a
-contract test pinning the encoding; a rename breaks the test before it can
-silently stop reaching the dashboard. A new field on a live frame has to land
-in three places: the type here, the daemon that fills it, and
+can make that a compile error. `live.rs` therefore carries a test pinning its
+encoding, so a rename breaks a test before it can silently stop reaching the
+dashboard; `wire.rs` and `runtime.rs` test that they decode tolerantly but do
+not yet pin what they emit, and should. A new field on a live frame has to
+land in three places either way: the type here, the daemon that fills it, and
 `web/src/hooks/useLiveTerminal.ts`.
 
 ## Which transport a surface uses
