@@ -317,6 +317,10 @@ struct LiveSettings {
     /// [`live_now_ms`] until which frames at a pane geometry other than the
     /// requested grid are withheld after an owner resize; 0 when none.
     resize_settle_until_ms: AtomicU64,
+    /// Whether the last sample came from the VT grid rather than a
+    /// `capture-pane` snapshot. Read by the input path through
+    /// [`Self::grid_wakes_capture`].
+    grid_transport: AtomicBool,
 }
 
 impl LiveSettings {
@@ -337,7 +341,19 @@ impl LiveSettings {
             holds_view: AtomicBool::new(false),
             label: std::sync::Mutex::new(DEFAULT_CLIENT_LABEL.to_string()),
             resize_settle_until_ms: AtomicU64::new(0),
+            grid_transport: AtomicBool::new(false),
         }
+    }
+
+    /// Whether the VT grid's change signal is what wakes the capture loop, the
+    /// condition [`wait_for_next`] arms `vt_rx` under.
+    fn grid_wakes_capture(&self) -> bool {
+        grid_wakes_capture(
+            self.grid_transport.load(Ordering::Relaxed),
+            self.window_lines.load(Ordering::Relaxed),
+            self.screen_rows.load(Ordering::Relaxed) as usize,
+            self.fast.load(Ordering::Relaxed),
+        )
     }
 
     /// Withhold frames still at the old geometry after a resize this connection
@@ -716,7 +732,9 @@ impl FrameEncoder {
         json
     }
 
-    fn encode(
+    /// `pub(crate)` so the TUI client's inflater can be tested against the
+    /// encoder that actually produces the stream.
+    pub(crate) fn encode(
         &mut self,
         frame: PendingFrame,
         patch_enabled: bool,
@@ -1261,6 +1279,10 @@ async fn handle_live_ws_inner(
             );
             stats.samples += 1;
             stats.sample_micros += sample_started.elapsed().as_micros() as u64;
+            #[cfg(unix)]
+            capture_settings
+                .grid_transport
+                .store(grid_frame, Ordering::Relaxed);
 
             match outcome {
                 CaptureOutcome::Frame(content, cursor) => {
@@ -1726,7 +1748,8 @@ async fn handle_live_ws_inner(
                         {
                             continue;
                         }
-                        write_pane_input(&tmux_name, data.to_vec(), &nudge).await;
+                        write_pane_input(&tmux_name, data.to_vec(), input_nudge(&settings, &nudge))
+                            .await;
                     }
                     Some(Ok(Message::Text(text))) => {
                         let Ok(control) = serde_json::from_str::<LiveControlMessage>(&text) else {
@@ -1937,7 +1960,12 @@ async fn handle_live_ws_inner(
                                     row,
                                     count,
                                 ) {
-                                    write_pane_input(&tmux_name, bytes, &nudge).await;
+                                    write_pane_input(
+                                        &tmux_name,
+                                        bytes,
+                                        input_nudge(&settings, &nudge),
+                                    )
+                                    .await;
                                 }
                             }
                         }
@@ -1971,9 +1999,21 @@ async fn handle_live_ws_inner(
     debug!(target: "terminal.ws", tmux = %tmux_name, kind = "live", "live ws closed");
 }
 
-/// Write input into the pane, then nudge the capture loop so the echo lands
-/// without waiting out its sleep.
-async fn write_pane_input(tmux_name: &str, bytes: Vec<u8>, nudge: &tokio::sync::Notify) {
+/// The nudge an input write should fire, if any. Where the grid already wakes
+/// the loop on the pane's own output there is none: nudging samples the screen
+/// the app has not repainted yet and spends the wake, so the repaint that
+/// follows waits out a whole [`FRAME_MIN_INTERVAL_MS`] floor. A polling loop
+/// has no such signal and the nudge is what beats its interval.
+fn input_nudge<'a>(
+    settings: &LiveSettings,
+    nudge: &'a tokio::sync::Notify,
+) -> Option<&'a tokio::sync::Notify> {
+    (!settings.grid_wakes_capture()).then_some(nudge)
+}
+
+/// Write input into the pane, then fire [`input_nudge`] so a polled echo lands
+/// without waiting out the loop's sleep.
+async fn write_pane_input(tmux_name: &str, bytes: Vec<u8>, nudge: Option<&tokio::sync::Notify>) {
     let name = tmux_name.to_string();
     // A live VT channel with socket input (ours or another surface's) is the
     // pane's single input writer; otherwise input goes through tmux
@@ -1994,7 +2034,9 @@ async fn write_pane_input(tmux_name: &str, bytes: Vec<u8>, nudge: &tokio::sync::
         }
     })
     .await;
-    nudge.notify_one();
+    if let Some(nudge) = nudge {
+        nudge.notify_one();
+    }
 }
 
 /// The bytes a `wheel` message sends, or `None` when the viewer may not
@@ -2056,12 +2098,25 @@ fn window_pane_count(tmux_name: &str) -> Option<u16> {
     String::from_utf8_lossy(&out.stdout).trim().parse().ok()
 }
 
+/// Whether the grid's own change signal drives the capture loop's wakeups, so
+/// the loop samples when the pane emits output rather than on a timer. A wide
+/// window (a client reading scrollback) or an idle cadence (a backgrounded
+/// viewer) keeps the big-frame throttle instead.
+fn grid_wakes_capture(
+    grid_transport: bool,
+    window_lines: usize,
+    screen_rows: usize,
+    fast: bool,
+) -> bool {
+    let screen = screen_rows.max(DEFAULT_WINDOW_LINES);
+    grid_transport && fast && window_lines <= screen * 4
+}
+
 /// Sleep until the next reason to sample: the cadence ceiling (death
-/// detection, size-owner heartbeat), an input nudge, or, when a grid drives a
-/// screen-sized window, the grid's own change signal. A wide window means a
-/// client reading scrollback, so it keeps the big-frame throttle even on the
-/// grid path; and no cycle runs faster than FRAME_MIN_INTERVAL_MS so a spewing
-/// pane cannot push more than ~60 frames a second.
+/// detection, size-owner heartbeat), an input nudge, or, when
+/// [`grid_wakes_capture`], the grid's own change signal. No cycle runs faster
+/// than FRAME_MIN_INTERVAL_MS, so a spewing pane cannot push more than ~60
+/// frames a second.
 async fn wait_for_next(
     settings: &LiveSettings,
     nudge: &tokio::sync::Notify,
@@ -2093,7 +2148,12 @@ async fn wait_for_next(
     }
     #[cfg(unix)]
     {
-        let grid_arm = grid_driven && small_window && fast;
+        let grid_arm = grid_wakes_capture(
+            grid_driven,
+            settings.window_lines.load(Ordering::Relaxed),
+            settings.screen_rows.load(Ordering::Relaxed) as usize,
+            fast,
+        );
         tokio::select! {
             _ = tokio::time::sleep(Duration::from_millis(ms)) => {}
             _ = nudge.notified() => {}
@@ -2788,11 +2848,11 @@ mod tests {
     fn a_resize_whose_reseed_missed_withholds_frames_until_it_lands() {
         use futures_util::FutureExt;
 
-        let home = crate::session::test_support::isolate_app_dir();
-        let _socket = crate::session::test_support::EnvGuard::set(&[(
-            "AOE_TMUX_SOCKET",
-            home.path().join("tmux.sock"),
-        )]);
+        // App dir only. The tmux socket resolves once per process
+        // (`tmux_socket`), so a per-test socket binds whichever test runs
+        // first and leaves every later one pointed at its deleted temp dir.
+        // Unique session names are what keep these tests apart.
+        let _home = crate::session::test_support::isolate_app_dir();
         if crate::tmux::tmux_command().arg("-V").output().is_err() {
             eprintln!("Skipping test: tmux unavailable");
             return;
@@ -2947,6 +3007,38 @@ mod tests {
         });
         drop(held);
         crate::tmux::vt::unregister_for_test(pane.name());
+    }
+
+    #[test]
+    fn the_grid_signal_wakes_the_capture_loop_only_for_a_live_edge_viewer() {
+        let screen = 40;
+        let live_window = screen + 20;
+        let cases = [
+            ("grid at the live edge", true, live_window, true, true),
+            ("snapshot transport polls", false, live_window, true, false),
+            ("backgrounded viewer polls", true, live_window, false, false),
+            (
+                "reading scrollback polls",
+                true,
+                DEFAULT_WINDOW_LINES * 4 + 1,
+                true,
+                false,
+            ),
+            (
+                "a tall screen keeps its window covered",
+                true,
+                screen * 4,
+                true,
+                true,
+            ),
+        ];
+        for (name, grid, window, fast, expected) in cases {
+            assert_eq!(
+                grid_wakes_capture(grid, window, screen, fast),
+                expected,
+                "{name}"
+            );
+        }
     }
 
     #[test]
