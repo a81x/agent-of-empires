@@ -117,11 +117,18 @@ describe("MobileLiveTerminal wheel forwarding", () => {
     expect(forwardWheel).toHaveBeenCalled();
   });
 
-  it("does NOT forward when the app has no mouse mode (keeps capture scroll)", () => {
-    const { scroller, forwardWheel } = renderTerm(frame({ altScreen: true, mouse: false }));
-    expect(scroller.className).toContain("overflow-y-auto");
+  // A full-screen app without mouse tracking still owns its own scrollback,
+  // and the daemon sends it PageUp/PageDown. Scrolling the browser's spacer
+  // of unrelated normal-buffer history would show the user nothing.
+  it("forwards the wheel to a full-screen app that never enabled mouse tracking", () => {
+    const { scroller, forwardWheel, forwardButton } = renderTerm(frame({ altScreen: true, mouse: false }));
+    expect(scroller.className).toContain("overflow-hidden");
     fireEvent.wheel(scroller, { deltaY: 120 });
-    expect(forwardWheel).not.toHaveBeenCalled();
+    expect(forwardWheel).toHaveBeenCalled();
+    // A button report is the part that needs tracking: an app that never
+    // asked for one reads it as typed escape bytes.
+    fireEvent.pointerDown(scroller, { pointerType: "mouse", button: 0, clientX: 10, clientY: 20 });
+    expect(forwardButton).not.toHaveBeenCalled();
   });
 
   it("does NOT forward for a normal-screen agent", () => {

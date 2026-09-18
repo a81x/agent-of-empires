@@ -928,13 +928,19 @@ export function MobileLiveTerminal({
   const history = frame?.history ?? 0;
   const fetchedHistory = Math.max(0, lines.length - screenRows);
   const spacerLines = Math.max(0, history - fetchedHistory);
-  // Full-screen mouse app (alternate screen): its scrollback is not
-  // capturable, so the spacer of unrelated normal-buffer history is
-  // useless. Pin to the live edge (no spacer, no native scroll) and
-  // forward the wheel to the app instead; the next frame reflects its
-  // scroll. Mirrors the TUI's forward_wheel_to_live_pane.
+  // Full-screen app (alternate screen): its scrollback is not capturable, so
+  // the spacer of unrelated normal-buffer history is useless. Pin to the live
+  // edge (no spacer, no native scroll) and forward the wheel to the app
+  // instead; the next frame reflects its scroll.
+  //
+  // Mouse tracking is deliberately not part of this gate, which mirrors the
+  // TUI's `wheel_forward_cell`: the daemon sends a wheel report to an app that
+  // asked for one and PageUp/PageDown to one that did not, so either way the
+  // app is what scrolls. Button reports are the ones that need tracking, and
+  // they gate on `mouseTrackingRef` at the press.
   const altScreen = frame?.altScreen ?? false;
-  const forwardMode = altScreen && (frame?.mouse ?? false);
+  const forwardMode = altScreen;
+  const mouseTracking = frame?.mouse ?? false;
   const mouseSgr = frame?.mouseSgr ?? false;
   const effectiveSpacerLines = forwardMode ? 0 : spacerLines;
   // Gesture forwarding, unlike the layout above, yields to a live selection.
@@ -945,9 +951,10 @@ export function MobileLiveTerminal({
   // layout keeps using `forwardMode` on purpose: `effectiveSpacerLines` feeds
   // the row keys, and flipping it mid-selection would remount every row.
   const forwardGestures = forwardMode && !selectionHeld;
-  const { forwardModeRef, mouseSgrRef } = useTerminalGestureBoundary({
+  const { forwardModeRef, mouseTrackingRef, mouseSgrRef } = useTerminalGestureBoundary({
     scrollerRef,
     forwardMode: forwardGestures,
+    mouseTracking,
     mouseSgr,
   });
   // Sub-notch scroll remainder (px) carried across events, and the last
@@ -1317,7 +1324,10 @@ export function MobileLiveTerminal({
   // the user can still select page text. Coordinates come from `pointerCell`.
   const onPointerDown = useCallback(
     (e: React.PointerEvent) => {
-      if (e.pointerType !== "mouse" || !forwardModeRef.current || e.shiftKey) return;
+      // A button report goes only to an app that enabled tracking; one that
+      // did not would read it as typed escape bytes.
+      if (e.pointerType !== "mouse" || !forwardModeRef.current || !mouseTrackingRef.current) return;
+      if (e.shiftKey) return;
       const base = e.button === 1 ? 1 : e.button === 2 ? 2 : e.button === 0 ? 0 : -1;
       if (base < 0) return;
       // A primary press that lands on a linkified URL belongs to the browser.
@@ -1339,7 +1349,7 @@ export function MobileLiveTerminal({
         // jsdom / unsupported: capture is a nicety, not required.
       }
     },
-    [pointerCell, forwardButton, inputRef, forwardModeRef, mouseSgrRef],
+    [pointerCell, forwardButton, inputRef, forwardModeRef, mouseTrackingRef, mouseSgrRef],
   );
   const onPointerMove = useCallback(
     (e: React.PointerEvent) => {
