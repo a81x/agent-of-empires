@@ -23,18 +23,15 @@ type ReplayPageResponse = {
 
 type Dispatch = (action: Action) => void;
 
-function getReplay(sid: string, params: string): Promise<Response> {
-  return fetch(`/api/sessions/${encodeURIComponent(sid)}/acp/replay?${params}`, { credentials: "same-origin" });
-}
+const getReplay = (sid: string, params: string): Promise<Response> =>
+  fetch(`/api/sessions/${encodeURIComponent(sid)}/acp/replay?${params}`, { credentials: "same-origin" });
 
 // The frames leg feeds control state the daemon doesn't model; `view=rows` feeds the transcript.
-function getReplayPair(sid: string, params: string): Promise<[Response, Response]> {
-  return Promise.all([getReplay(sid, params), getReplay(sid, `${params}&view=rows`)]);
-}
+const getReplayPair = (sid: string, params: string): Promise<[Response, Response]> =>
+  Promise.all([getReplay(sid, params), getReplay(sid, `${params}&view=rows`)]);
 
-async function readRows(res: Response): Promise<TranscriptRow[]> {
-  return ((await res.json()) as ReplayPageResponse).rows ?? [];
-}
+const readRows = async (res: Response): Promise<TranscriptRow[]> =>
+  ((await res.json()) as ReplayPageResponse).rows ?? [];
 
 /** Catch up from `lastSeq.current`, updating it on a cold open. Errors are swallowed; a later lagged notice retries. */
 export async function fetchReplay(

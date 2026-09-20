@@ -1,5 +1,6 @@
 import { useCallback, useLayoutEffect, useRef, useState, useSyncExternalStore } from "react";
 import type { RefObject } from "react";
+import { listen } from "./domEvents";
 
 // Repainting text under a selection collapses it (and dismisses the iOS Copy callout), so hold the value.
 export function useSelectionHold<T>(
@@ -7,10 +8,7 @@ export function useSelectionHold<T>(
   containerRef: RefObject<HTMLElement | null>,
   absorb?: (held: T, next: T) => T | null,
 ): { value: T; held: boolean } {
-  const subscribe = useCallback((onChange: () => void) => {
-    document.addEventListener("selectionchange", onChange);
-    return () => document.removeEventListener("selectionchange", onChange);
-  }, []);
+  const subscribe = useCallback((onChange: () => void) => listen(onChange, [document, "selectionchange"]), []);
   const getSnapshot = useCallback(() => {
     const container = containerRef.current;
     const selection = document.getSelection();

@@ -10,6 +10,7 @@ import {
   type CommandLink,
 } from "../lib/pluginCommands";
 import { PluginLinkPicker } from "../components/plugin/PluginLinkPicker";
+import { listen } from "./domEvents";
 import { useLatestRef } from "./useLatestRef";
 
 export function usePluginCommands(
@@ -36,12 +37,12 @@ export function usePluginCommands(
 
   const live = useLatestRef({ commands, entries, activeSessionId });
   useEffect(() => {
-    const handler = (e: KeyboardEvent) => {
+    const handler = (e: Event) => {
       if (e.defaultPrevented) return;
       const t = e.target as HTMLElement | null;
       if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable)) return;
       const { commands, entries, activeSessionId } = live.current;
-      const effect = pickKeybindEffect(commands, entries, activeSessionId, e);
+      const effect = pickKeybindEffect(commands, entries, activeSessionId, e as KeyboardEvent);
       if (!effect) return;
       e.preventDefault();
       if (effect.kind === "open") {
@@ -52,8 +53,7 @@ export function usePluginCommands(
         invokeActionlessCommand(effect.cmd, activeSessionId);
       }
     };
-    document.addEventListener("keydown", handler);
-    return () => document.removeEventListener("keydown", handler);
+    return listen(handler, [document, "keydown"]);
   }, [live]);
 
   const overlay = pickerLinks ? <PluginLinkPicker links={pickerLinks} onClose={() => setPickerLinks(null)} /> : null;
