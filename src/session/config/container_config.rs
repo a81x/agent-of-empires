@@ -2923,6 +2923,40 @@ mod tests {
     use std::fs;
     use tempfile::TempDir;
 
+    /// Write a repo-level `.agent-of-empires/config.toml` under `project`.
+    fn write_repo_config(project: &Path, contents: &str) {
+        let config_dir = project.join(".agent-of-empires");
+        fs::create_dir_all(&config_dir).unwrap();
+        fs::write(config_dir.join("config.toml"), contents).unwrap();
+    }
+
+    /// An isolated HOME plus the hook base state every container test needs,
+    /// held together so one binding keeps all three guards alive.
+    struct IsolatedHome {
+        home: TempDir,
+        _base: crate::hooks::test_support::BaseGuard,
+        _base_dir: TempDir,
+        _home: crate::session::test_support::HomeGuard,
+    }
+
+    impl IsolatedHome {
+        fn new() -> Self {
+            let (base, _, base_dir) = BaseGuard::ready();
+            let home = TempDir::new().unwrap();
+            let home_guard = crate::session::test_support::isolate_home(home.path());
+            Self {
+                home,
+                _base: base,
+                _base_dir: base_dir,
+                _home: home_guard,
+            }
+        }
+
+        fn path(&self) -> &Path {
+            self.home.path()
+        }
+    }
+
     /// `build_container_config` with the arguments these tests rarely vary.
     struct Build<'a> {
         selection: ContainerAgentSelection<'a>,
@@ -4691,9 +4725,7 @@ mod tests {
     #[test]
     #[serial_test::serial]
     fn claude_sandboxes_share_one_credential_mount() {
-        let (_hg, _, _tmp_base) = BaseGuard::ready();
-        let temp_home = TempDir::new().unwrap();
-        let _home_guard = crate::session::test_support::isolate_home(temp_home.path());
+        let temp_home = IsolatedHome::new();
         let host = temp_home.path().join(".claude");
         fs::create_dir_all(&host).unwrap();
         // Beats any real credential the macOS Keychain contributes while
@@ -4826,10 +4858,8 @@ mod tests {
 
         // Create a project directory with repo config
         let project_dir = TempDir::new().unwrap();
-        let config_dir = project_dir.path().join(".agent-of-empires");
-        fs::create_dir_all(&config_dir).unwrap();
-        fs::write(
-            config_dir.join("config.toml"),
+        write_repo_config(
+            project_dir.path(),
             r#"
 [sandbox]
 environment = ["MY_VAR=hello", "CI=true"]
@@ -4837,8 +4867,7 @@ volume_ignores = [".venv", "node_modules"]
 extra_volumes = ["/host/data:/container/data:ro"]
 mount_ssh = true
 "#,
-        )
-        .unwrap();
+        );
 
         // Initialize a git repo so compute_volume_paths works
         git2::Repository::init(project_dir.path()).unwrap();
@@ -4907,9 +4936,7 @@ mount_ssh = true
     #[test]
     #[serial_test::serial]
     fn test_build_container_config_run_policy() {
-        let (_hg, _, _tmp_base) = BaseGuard::ready();
-        let temp_home = TempDir::new().unwrap();
-        let _home_guard = crate::session::test_support::isolate_home(temp_home.path());
+        let temp_home = IsolatedHome::new();
 
         // Global config carries run policy; repo config overrides are ignored.
         #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -4932,10 +4959,8 @@ security_opt = ["seccomp=unconfined"]
         .unwrap();
 
         let project_dir = TempDir::new().unwrap();
-        let config_dir = project_dir.path().join(".agent-of-empires");
-        fs::create_dir_all(&config_dir).unwrap();
-        fs::write(
-            config_dir.join("config.toml"),
+        write_repo_config(
+            project_dir.path(),
             r#"
 [sandbox]
 privileged = true
@@ -4943,8 +4968,7 @@ cap_add = ["NET_ADMIN"]
 cap_drop = []
 extra_run_args = ["--privileged"]
 "#,
-        )
-        .unwrap();
+        );
 
         git2::Repository::init(project_dir.path()).unwrap();
 
@@ -4971,19 +4995,14 @@ extra_run_args = ["--privileged"]
     #[test]
     #[serial_test::serial]
     fn test_build_container_config_drops_repo_network_escape_and_relabel() {
-        let (_hg, _, _tmp_base) = BaseGuard::ready();
-        let temp_home = TempDir::new().unwrap();
-        let _home_guard = crate::session::test_support::isolate_home(temp_home.path());
+        let temp_home = IsolatedHome::new();
 
         for network in ["container:victim", "ns:/var/run/netns/x"] {
             let project_dir = TempDir::new().unwrap();
-            let config_dir = project_dir.path().join(".agent-of-empires");
-            fs::create_dir_all(&config_dir).unwrap();
-            fs::write(
-                config_dir.join("config.toml"),
+            write_repo_config(
+                project_dir.path(),
                 format!("[sandbox]\nnetwork = \"{network}\"\nselinux_relabel = true\n"),
-            )
-            .unwrap();
+            );
 
             git2::Repository::init(project_dir.path()).unwrap();
 
@@ -5029,16 +5048,13 @@ extra_run_args = ["--privileged"]
         fs::create_dir_all(project_dir.path().join("src/App/obj")).unwrap();
         fs::create_dir_all(project_dir.path().join("tests/Lib/bin")).unwrap();
 
-        let config_dir = project_dir.path().join(".agent-of-empires");
-        fs::create_dir_all(&config_dir).unwrap();
-        fs::write(
-            config_dir.join("config.toml"),
+        write_repo_config(
+            project_dir.path(),
             r#"
 [sandbox]
 volume_ignores = ["**/bin", "**/obj", "target"]
 "#,
-        )
-        .unwrap();
+        );
 
         git2::Repository::init(project_dir.path()).unwrap();
 
@@ -5103,17 +5119,14 @@ volume_ignores = ["**/bin", "**/obj", "target"]
         }
 
         let build = |project: &Path| {
-            let config_dir = project.join(".agent-of-empires");
-            fs::create_dir_all(&config_dir).unwrap();
-            fs::write(
-                config_dir.join("config.toml"),
+            write_repo_config(
+                project,
                 r#"
 [sandbox]
 volume_ignores = ["target"]
 volume_ignores_strategy = "named"
 "#,
-            )
-            .unwrap();
+            );
             Build::new("claude").run(project).unwrap()
         };
 
@@ -5198,9 +5211,7 @@ volume_ignores_strategy = "named"
     #[test]
     #[serial_test::serial]
     fn test_build_container_config_sibling_worktree_loads_main_repo_sandbox_settings() {
-        let (_hg, _, _tmp_base) = BaseGuard::ready();
-        let temp_home = TempDir::new().unwrap();
-        let _home_guard = crate::session::test_support::isolate_home(temp_home.path());
+        let temp_home = IsolatedHome::new();
 
         // Main repo with repo config under .agent-of-empires/
         let parent = TempDir::new().unwrap();
@@ -5213,16 +5224,13 @@ volume_ignores_strategy = "named"
         repo.commit(Some("HEAD"), &sig, &sig, "Initial", &tree, &[])
             .unwrap();
 
-        let config_dir = main_repo.join(".agent-of-empires");
-        fs::create_dir_all(&config_dir).unwrap();
-        fs::write(
-            config_dir.join("config.toml"),
+        write_repo_config(
+            main_repo,
             r#"
 [sandbox]
 volume_ignores = ["node_modules"]
 "#,
-        )
-        .unwrap();
+        );
 
         // Sibling worktree under <parent>/worktrees/feat
         let worktree_path = parent.path().join("worktrees").join("feat");
@@ -5318,9 +5326,7 @@ volume_ignores = ["node_modules"]
     #[test]
     #[serial_test::serial]
     fn test_build_container_config_isolates_codex_home_per_instance() {
-        let (_hg, _, _tmp_base) = BaseGuard::ready();
-        let temp_home = TempDir::new().unwrap();
-        let _home_guard = crate::session::test_support::isolate_home(temp_home.path());
+        let temp_home = IsolatedHome::new();
 
         let project_dir = TempDir::new().unwrap();
         git2::Repository::init(project_dir.path()).unwrap();
@@ -5386,9 +5392,7 @@ volume_ignores = ["node_modules"]
     #[test]
     #[serial_test::serial]
     fn test_build_container_config_yolo_trusts_codex_project_only_in_yolo() {
-        let (_hg, _, _tmp_base) = BaseGuard::ready();
-        let temp_home = TempDir::new().unwrap();
-        let _home_guard = crate::session::test_support::isolate_home(temp_home.path());
+        let temp_home = IsolatedHome::new();
 
         let project_dir = TempDir::new().unwrap();
         git2::Repository::init(project_dir.path()).unwrap();
@@ -5431,9 +5435,7 @@ volume_ignores = ["node_modules"]
     #[serial_test::serial]
     fn test_build_container_config_seeds_claude_folder_trust() {
         for is_yolo in [false, true] {
-            let (_hg, _, _tmp_base) = BaseGuard::ready();
-            let temp_home = TempDir::new().unwrap();
-            let _home_guard = crate::session::test_support::isolate_home(temp_home.path());
+            let temp_home = IsolatedHome::new();
 
             let project_dir = TempDir::new().unwrap();
             git2::Repository::init(project_dir.path()).unwrap();
@@ -5478,9 +5480,7 @@ volume_ignores = ["node_modules"]
     #[test]
     #[serial_test::serial]
     fn test_build_container_config_seeds_declared_agent_config_dir() {
-        let (_hg, _, _tmp_base) = BaseGuard::ready();
-        let temp_home = TempDir::new().unwrap();
-        let _home_guard = crate::session::test_support::isolate_home(temp_home.path());
+        let temp_home = IsolatedHome::new();
 
         let declared = temp_home.path().join(".claude-personal");
         let app_dir = crate::session::get_app_dir().unwrap();
@@ -5554,9 +5554,7 @@ claude-personal = "~/.claude-personal"
     #[test]
     #[serial_test::serial]
     fn test_declared_codex_config_dir_trusts_at_the_mounted_level() {
-        let (_hg, _, _tmp_base) = BaseGuard::ready();
-        let temp_home = TempDir::new().unwrap();
-        let _home_guard = crate::session::test_support::isolate_home(temp_home.path());
+        let temp_home = IsolatedHome::new();
 
         let declared = temp_home.path().join(".codex-work");
         let app_dir = crate::session::get_app_dir().unwrap();
@@ -5651,9 +5649,7 @@ codex-work = "{}"
     #[test]
     #[serial_test::serial]
     fn test_build_container_config_yolo_disables_gemini_folder_trust() {
-        let (_hg, _, _tmp_base) = BaseGuard::ready();
-        let temp_home = TempDir::new().unwrap();
-        let _home_guard = crate::session::test_support::isolate_home(temp_home.path());
+        let temp_home = IsolatedHome::new();
 
         let project_dir = TempDir::new().unwrap();
         git2::Repository::init(project_dir.path()).unwrap();
@@ -5687,9 +5683,7 @@ codex-work = "{}"
     #[test]
     #[serial_test::serial]
     fn test_ensure_folder_trust_config_restores_codex_after_refresh() {
-        let (_hg, _, _tmp_base) = BaseGuard::ready();
-        let temp_home = TempDir::new().unwrap();
-        let _home_guard = crate::session::test_support::isolate_home(temp_home.path());
+        let temp_home = IsolatedHome::new();
 
         let codex_dir = temp_home.path().join(".codex");
         let instance_id = "codex-yolo-refresh-test";
@@ -5738,9 +5732,7 @@ trust_level = "trusted"
     #[test]
     #[serial_test::serial]
     fn test_ensure_folder_trust_config_restores_gemini_after_refresh() {
-        let (_hg, _, _tmp_base) = BaseGuard::ready();
-        let temp_home = TempDir::new().unwrap();
-        let _home_guard = crate::session::test_support::isolate_home(temp_home.path());
+        let temp_home = IsolatedHome::new();
 
         let gemini_dir = temp_home.path().join(".gemini");
         let gemini_sandbox = gemini_dir
@@ -5790,9 +5782,7 @@ trust_level = "trusted"
     #[test]
     #[serial_test::serial]
     fn user_volume_shadowing_hook_config_disables_publisher_evidence() {
-        let (_hg, _, _tmp_base) = BaseGuard::ready();
-        let temp_home = TempDir::new().unwrap();
-        let _home_guard = crate::session::test_support::isolate_home(temp_home.path());
+        let temp_home = IsolatedHome::new();
         let shadow = temp_home.path().join("shadow-cursor");
         fs::create_dir_all(&shadow).unwrap();
         crate::session::config::update_config(|config| {
@@ -5871,9 +5861,7 @@ trust_level = "trusted"
     #[test]
     #[serial_test::serial]
     fn test_build_container_config_installs_sidecar_hooks_files() {
-        let (_hg, _, _tmp_base) = BaseGuard::ready();
-        let temp_home = TempDir::new().unwrap();
-        let _home_guard = crate::session::test_support::isolate_home(temp_home.path());
+        let temp_home = IsolatedHome::new();
 
         let project_dir = TempDir::new().unwrap();
         git2::Repository::init(project_dir.path()).unwrap();
@@ -5957,9 +5945,7 @@ trust_level = "trusted"
     #[test]
     #[serial_test::serial]
     fn sandbox_identity_hooks_remain_when_status_hooks_are_disabled() {
-        let (_hg, _, _tmp_base) = BaseGuard::ready();
-        let temp_home = TempDir::new().unwrap();
-        let _home_guard = crate::session::test_support::isolate_home(temp_home.path());
+        let temp_home = IsolatedHome::new();
         let profile = "sandbox-identity-only-hooks";
         let profile_dir = crate::session::get_profile_dir(profile).unwrap();
         fs::write(
@@ -6005,9 +5991,7 @@ trust_level = "trusted"
     #[test]
     #[serial_test::serial]
     fn test_build_container_config_installs_hooks_into_selected_kiro_agent() {
-        let (_hg, _, _tmp_base) = BaseGuard::ready();
-        let temp_home = TempDir::new().unwrap();
-        let _home_guard = crate::session::test_support::isolate_home(temp_home.path());
+        let temp_home = IsolatedHome::new();
 
         let project_dir = TempDir::new().unwrap();
         git2::Repository::init(project_dir.path()).unwrap();
@@ -6054,9 +6038,7 @@ trust_level = "trusted"
         // The host `.kiro/agents` dir is staged into `.kiro/sandbox/agents`
         // before hook install, so a prefixed agent file (filename != name) must
         // be resolved by its `name` field there, mirroring the host path.
-        let (_hg, _, _tmp_base) = BaseGuard::ready();
-        let temp_home = TempDir::new().unwrap();
-        let _home_guard = crate::session::test_support::isolate_home(temp_home.path());
+        let temp_home = IsolatedHome::new();
 
         let host_agents = temp_home.path().join(".kiro/agents");
         std::fs::create_dir_all(&host_agents).unwrap();
@@ -6183,9 +6165,7 @@ trust_level = "trusted"
     #[test]
     #[serial_test::serial]
     fn test_build_container_config_uses_detected_codex_for_custom_wrapper_hooks() {
-        let (_hg, _, _tmp_base) = BaseGuard::ready();
-        let temp_home = TempDir::new().unwrap();
-        let _home_guard = crate::session::test_support::isolate_home(temp_home.path());
+        let temp_home = IsolatedHome::new();
 
         crate::session::config::update_config(|global| {
             global.session.agent_status_hooks = false;
@@ -6417,9 +6397,7 @@ trusted_hash = "keep"
     #[test]
     #[serial_test::serial]
     fn test_build_container_config_mounts_codex_home_from_extra_env() {
-        let (_hg, _, _tmp_base) = BaseGuard::ready();
-        let temp_home = TempDir::new().unwrap();
-        let _home_guard = crate::session::test_support::isolate_home(temp_home.path());
+        let temp_home = IsolatedHome::new();
 
         let project_dir = TempDir::new().unwrap();
         git2::Repository::init(project_dir.path()).unwrap();
@@ -6454,9 +6432,7 @@ trusted_hash = "keep"
     #[test]
     #[serial_test::serial]
     fn test_build_container_config_mounts_codex_home_from_sandbox_environment() {
-        let (_hg, _, _tmp_base) = BaseGuard::ready();
-        let temp_home = TempDir::new().unwrap();
-        let _home_guard = crate::session::test_support::isolate_home(temp_home.path());
+        let temp_home = IsolatedHome::new();
 
         let app_dir = crate::session::get_app_dir().unwrap();
         fs::write(
@@ -6500,9 +6476,7 @@ environment = ["CODEX_HOME=/root/profile-codex"]
     #[test]
     #[serial_test::serial]
     fn test_build_container_config_uses_passed_profile_not_global_default() {
-        let (_hg, _, _tmp_base) = BaseGuard::ready();
-        let temp_home = TempDir::new().unwrap();
-        let _home_guard = crate::session::test_support::isolate_home(temp_home.path());
+        let temp_home = IsolatedHome::new();
 
         #[cfg(any(target_os = "linux", target_os = "macos"))]
         let app_dir = temp_home
@@ -6655,16 +6629,13 @@ extra_volumes = ["/host/personal-only:/container/personal-only:ro"]
         // Write repo-level config in the main repo dir, since
         // resolve_config_with_repo loads it from there (find_main_repo) even
         // when the session targets a sibling worktree.
-        let config_dir = repo_path.join(".agent-of-empires");
-        fs::create_dir_all(&config_dir).unwrap();
-        fs::write(
-            config_dir.join("config.toml"),
+        write_repo_config(
+            repo_path,
             r#"
 [sandbox]
 volume_ignores = ["target", "node_modules"]
 "#,
-        )
-        .unwrap();
+        );
 
         let project_path_str = worktree_path.to_str().unwrap();
         let config = Build::new("claude")
@@ -6730,16 +6701,13 @@ volume_ignores = ["target", "node_modules"]
         // Write repo-level config in the main repo dir, since
         // resolve_config_with_repo loads it from there (find_main_repo) even
         // when the session targets a sibling worktree.
-        let config_dir = main_repo_path.join(".agent-of-empires");
-        fs::create_dir_all(&config_dir).unwrap();
-        fs::write(
-            config_dir.join("config.toml"),
+        write_repo_config(
+            main_repo_path,
             r#"
 [sandbox]
 volume_ignores = ["target"]
 "#,
-        )
-        .unwrap();
+        );
 
         let project_path_str = worktree_path.to_str().unwrap();
         let config = Build::new("claude")
@@ -7267,9 +7235,7 @@ volume_ignores = ["target"]
     #[test]
     #[serial_test::serial]
     fn sandbox_empty_desired_hooks_remove_stale_aoe_entries() {
-        let (_hook_guard, _, _tmp_base) = BaseGuard::ready();
-        let temp_home = TempDir::new().unwrap();
-        let _home_guard = crate::session::test_support::isolate_home(temp_home.path());
+        let temp_home = IsolatedHome::new();
         let profile = "sandbox-empty-hook-cleanup";
         let profile_dir = crate::session::get_profile_dir(profile).unwrap();
         fs::write(
