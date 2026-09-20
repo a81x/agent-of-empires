@@ -365,6 +365,27 @@ fn build_inherited_settings(sandbox: &SandboxConfig) -> Vec<(String, String)> {
     settings
 }
 
+/// Row index per main-form field, resolved by
+/// [`NewSessionDialog::field_indices`].
+pub(super) struct FieldIndices {
+    pub profile: usize,
+    pub path: usize,
+    pub title: usize,
+    pub tool: usize,
+    pub structured: usize,
+    pub yolo: usize,
+    pub worktree: usize,
+    pub sandbox: usize,
+    pub group: usize,
+    /// One past the last focusable row, where Tab wraps.
+    pub count: usize,
+}
+
+impl FieldIndices {
+    /// Stands in for a field the current layout hides.
+    pub const ABSENT: usize = usize::MAX;
+}
+
 impl NewSessionDialog {
     pub fn new(
         tools: AvailableTools,
@@ -679,20 +700,42 @@ impl NewSessionDialog {
 
     /// Index of the path field, which precedes title. Shifts by one when the
     /// profile picker occupies field 0.
-    fn path_field(&self) -> usize {
-        if self.has_profile_selection() {
-            1
-        } else {
-            0
+    /// Which main-form row each field occupies. The layout is dynamic: a lone
+    /// profile or tool hides its cycler, a host-only agent drops the sandbox
+    /// and worktree rows, and a non-ACP tool drops the structured toggle.
+    /// Hidden fields get [`FieldIndices::ABSENT`], which no focus index can
+    /// equal, so callers compare without special-casing.
+    pub(super) fn field_indices(&self) -> FieldIndices {
+        let is_host_only = self.selected_tool_host_only();
+        let mut next = 0;
+        let mut take = |present: bool| {
+            if !present {
+                return FieldIndices::ABSENT;
+            }
+            let index = next;
+            next += 1;
+            index
+        };
+        FieldIndices {
+            profile: take(self.has_profile_selection()),
+            path: take(true),
+            title: take(true),
+            tool: take(self.available_tools.len() > 1),
+            structured: take(self.structured_capable),
+            yolo: take(!self.selected_tool_always_yolo()),
+            worktree: take(!is_host_only),
+            sandbox: take(self.docker_available && !is_host_only),
+            group: take(true),
+            count: next,
         }
     }
 
+    fn path_field(&self) -> usize {
+        self.field_indices().path
+    }
+
     fn title_field(&self) -> usize {
-        if self.has_profile_selection() {
-            2
-        } else {
-            1
-        }
+        self.field_indices().title
     }
 
     /// Re-resolve defaults on a profile change, preserving what the user
@@ -1045,56 +1088,14 @@ impl NewSessionDialog {
     /// Left / Right branches so a click produces identical state. Text fields
     /// have no primary action.
     fn activate_focused_field(&mut self) {
-        let has_profile_selection = self.available_profiles.len() > 1;
-        let has_tool_selection = self.available_tools.len() > 1;
-        let is_host_only = self.selected_tool_host_only();
-        let has_sandbox = self.docker_available && !is_host_only;
-        let has_yolo = !self.selected_tool_always_yolo();
-        let has_structured = self.structured_capable;
-        let profile_field = if has_profile_selection { 0 } else { usize::MAX };
-        let mut fi = if has_profile_selection { 1 } else { 0 };
-        fi += 2; // title + path
-        let tool_field = if has_tool_selection {
-            let f = fi;
-            fi += 1;
-            f
-        } else {
-            usize::MAX
-        };
-        let structured_field = if has_structured {
-            let f = fi;
-            fi += 1;
-            f
-        } else {
-            usize::MAX
-        };
-        let yolo_mode_field = if has_yolo {
-            let f = fi;
-            fi += 1;
-            f
-        } else {
-            usize::MAX
-        };
-        let worktree_field = if !is_host_only {
-            let f = fi;
-            fi += 1;
-            f
-        } else {
-            usize::MAX
-        };
-        let sandbox_field = if has_sandbox {
-            // Sandbox is the last index to resolve, so no `fi += 1`.
-            fi
-        } else {
-            usize::MAX
-        };
+        let fields = self.field_indices();
 
-        if self.focused_field == profile_field {
+        if self.focused_field == fields.profile {
             if self.available_profiles.len() > 1 {
                 self.profile_index = (self.profile_index + 1) % self.available_profiles.len();
                 self.reload_config_defaults();
             }
-        } else if self.focused_field == tool_field {
+        } else if self.focused_field == fields.tool {
             if self.available_tools.len() > 1 {
                 self.tool_index = (self.tool_index + 1) % self.available_tools.len();
                 if self.selected_tool_always_yolo() {
@@ -1109,11 +1110,11 @@ impl NewSessionDialog {
                 }
                 self.reload_tool_config();
             }
-        } else if self.focused_field == structured_field {
+        } else if self.focused_field == fields.structured {
             self.structured_enabled = !self.structured_enabled;
-        } else if self.focused_field == yolo_mode_field {
+        } else if self.focused_field == fields.yolo {
             self.yolo_mode = !self.yolo_mode;
-        } else if self.focused_field == worktree_field {
+        } else if self.focused_field == fields.worktree {
             // Worktree and scratch are mutually exclusive, so this surfaces
             // an inline hint rather than silently toggling.
             if self.scratch {
@@ -1127,7 +1128,7 @@ impl NewSessionDialog {
                     self.worktree_config_mode = false;
                 }
             }
-        } else if self.focused_field == sandbox_field {
+        } else if self.focused_field == fields.sandbox {
             self.sandbox_enabled = !self.sandbox_enabled;
             if self.sandbox_enabled {
                 let config = self.resolve_config_for_path(&self.profile);
@@ -1229,57 +1230,7 @@ impl NewSessionDialog {
             return DialogResult::Continue;
         }
 
-        let has_profile_selection = self.available_profiles.len() > 1;
-        let has_tool_selection = self.available_tools.len() > 1;
-        let is_host_only = self.selected_tool_host_only();
-        let has_sandbox = self.docker_available && !is_host_only;
-        let has_yolo = !self.selected_tool_always_yolo();
-        let has_structured = self.structured_capable;
-        // Field order: [profile], path, title, [tool], [structured], [yolo], worktree, [sandbox], group
-        // Worktree sub-options (new_branch, extra_repos) are in a Ctrl+P overlay.
-        // Tool config (extra_args, command_override) is in a Ctrl+P overlay on tool field.
-        // Sandbox sub-options are in a separate sandbox_config_mode overlay.
-        let profile_field = if has_profile_selection { 0 } else { usize::MAX };
-        let mut fi = if has_profile_selection { 1 } else { 0 }; // next field index
-        fi += 2; // title + path
-        let tool_field = if has_tool_selection {
-            let f = fi;
-            fi += 1;
-            f
-        } else {
-            usize::MAX
-        };
-        let structured_field = if has_structured {
-            let f = fi;
-            fi += 1;
-            f
-        } else {
-            usize::MAX
-        };
-        let yolo_mode_field = if has_yolo {
-            let f = fi;
-            fi += 1;
-            f
-        } else {
-            usize::MAX
-        };
-        let worktree_field = if !is_host_only {
-            let f = fi;
-            fi += 1;
-            f
-        } else {
-            usize::MAX
-        };
-        let sandbox_field = if has_sandbox {
-            let f = fi;
-            fi += 1;
-            f
-        } else {
-            usize::MAX
-        };
-        let group_field = fi;
-        fi += 1;
-        let max_field = fi;
+        let fields = self.field_indices();
 
         if key.code == KeyCode::Char('p') && key.modifiers.contains(KeyModifiers::CONTROL) {
             if self.focused_field == self.path_field() {
@@ -1292,22 +1243,22 @@ impl NewSessionDialog {
                 self.dir_picker.activate(&initial);
                 return DialogResult::Continue;
             }
-            if self.focused_field == tool_field {
+            if self.focused_field == fields.tool {
                 self.tool_config_mode = true;
                 self.tool_config_focused_field = 0;
                 return DialogResult::Continue;
             }
-            if self.focused_field == group_field && !self.existing_groups.is_empty() {
+            if self.focused_field == fields.group && !self.existing_groups.is_empty() {
                 self.group_picker.activate(self.existing_groups.clone());
                 return DialogResult::Continue;
             }
-            if self.focused_field == worktree_field {
+            if self.focused_field == fields.worktree {
                 self.worktree_config_mode = true;
                 self.worktree_config_focused_field = 0;
                 self.error_message = None;
                 return DialogResult::Continue;
             }
-            if self.focused_field == sandbox_field && self.sandbox_enabled {
+            if self.focused_field == fields.sandbox && self.sandbox_enabled {
                 self.refresh_inherited_sandbox_settings();
                 self.sandbox_config_mode = true;
                 self.sandbox_focused_field = 0;
@@ -1319,7 +1270,7 @@ impl NewSessionDialog {
             return DialogResult::Continue;
         }
 
-        if self.handle_group_shortcuts(key, group_field) {
+        if self.handle_group_shortcuts(key, fields.group) {
             return DialogResult::Continue;
         }
 
@@ -1352,14 +1303,14 @@ impl NewSessionDialog {
                 if self.focused_field == self.path_field() {
                     self.clear_path_ghost();
                 }
-                if self.focused_field == group_field {
+                if self.focused_field == fields.group {
                     self.clear_group_ghost();
                 }
-                self.focused_field = (self.focused_field + 1) % max_field;
+                self.focused_field = (self.focused_field + 1) % fields.count;
                 if self.focused_field == self.path_field() {
                     self.recompute_path_ghost();
                 }
-                if self.focused_field == group_field {
+                if self.focused_field == fields.group {
                     self.recompute_group_ghost();
                 }
                 DialogResult::Continue
@@ -1368,24 +1319,24 @@ impl NewSessionDialog {
                 if self.focused_field == self.path_field() {
                     self.clear_path_ghost();
                 }
-                if self.focused_field == group_field {
+                if self.focused_field == fields.group {
                     self.clear_group_ghost();
                 }
                 self.focused_field = if self.focused_field == 0 {
-                    max_field - 1
+                    fields.count - 1
                 } else {
                     self.focused_field - 1
                 };
                 if self.focused_field == self.path_field() {
                     self.recompute_path_ghost();
                 }
-                if self.focused_field == group_field {
+                if self.focused_field == fields.group {
                     self.recompute_group_ghost();
                 }
                 DialogResult::Continue
             }
             KeyCode::Left | KeyCode::Right | KeyCode::Char(' ')
-                if self.focused_field == profile_field =>
+                if self.focused_field == fields.profile =>
             {
                 if self.available_profiles.len() > 1 {
                     if key.code == KeyCode::Left {
@@ -1403,7 +1354,7 @@ impl NewSessionDialog {
                 DialogResult::Continue
             }
             KeyCode::Left | KeyCode::Right | KeyCode::Char(' ')
-                if self.focused_field == tool_field =>
+                if self.focused_field == fields.tool =>
             {
                 if key.code == KeyCode::Left {
                     self.tool_index = if self.tool_index == 0 {
@@ -1428,7 +1379,7 @@ impl NewSessionDialog {
                 DialogResult::Continue
             }
             KeyCode::Left | KeyCode::Right | KeyCode::Char(' ')
-                if self.focused_field == worktree_field =>
+                if self.focused_field == fields.worktree =>
             {
                 // Without this guard the user could turn scratch on, Space
                 // worktree back on, and submit a payload the server rejects.
@@ -1445,7 +1396,7 @@ impl NewSessionDialog {
                 DialogResult::Continue
             }
             KeyCode::Left | KeyCode::Right | KeyCode::Char(' ')
-                if self.focused_field == sandbox_field =>
+                if self.focused_field == fields.sandbox =>
             {
                 self.sandbox_enabled = !self.sandbox_enabled;
                 if self.sandbox_enabled {
@@ -1464,24 +1415,24 @@ impl NewSessionDialog {
                 DialogResult::Continue
             }
             KeyCode::Left | KeyCode::Right | KeyCode::Char(' ')
-                if self.focused_field == yolo_mode_field =>
+                if self.focused_field == fields.yolo =>
             {
                 self.yolo_mode = !self.yolo_mode;
                 DialogResult::Continue
             }
             KeyCode::Left | KeyCode::Right | KeyCode::Char(' ')
-                if self.focused_field == structured_field =>
+                if self.focused_field == fields.structured =>
             {
                 self.structured_enabled = !self.structured_enabled;
                 DialogResult::Continue
             }
             _ => {
-                if self.focused_field != profile_field
-                    && self.focused_field != tool_field
-                    && self.focused_field != worktree_field
-                    && self.focused_field != sandbox_field
-                    && self.focused_field != yolo_mode_field
-                    && self.focused_field != structured_field
+                if self.focused_field != fields.profile
+                    && self.focused_field != fields.tool
+                    && self.focused_field != fields.worktree
+                    && self.focused_field != fields.sandbox
+                    && self.focused_field != fields.yolo
+                    && self.focused_field != fields.structured
                 {
                     self.current_input_mut()
                         .handle_event(&crossterm::event::Event::Key(key));
@@ -1490,7 +1441,7 @@ impl NewSessionDialog {
                         self.path_invalid_flash_until = None;
                         self.recompute_path_ghost();
                     }
-                    if self.focused_field == group_field {
+                    if self.focused_field == fields.group {
                         self.recompute_group_ghost();
                     }
                 }
@@ -1901,33 +1852,11 @@ impl NewSessionDialog {
     }
 
     fn current_input_mut(&mut self) -> &mut Input {
-        let has_tool_selection = self.available_tools.len() > 1;
-        let has_yolo = !self.selected_tool_always_yolo();
-        let base = if self.has_profile_selection() { 1 } else { 0 };
-
-        let is_host_only = self.selected_tool_host_only();
-        // Field layout: [profile], title, path, [tool], [structured], [yolo], [worktree], [sandbox], group
-        let mut fi = base + 2 + if has_tool_selection { 1 } else { 0 };
-        if self.structured_capable {
-            fi += 1; // structured checkbox
-        }
-        if has_yolo {
-            fi += 1;
-        }
-        if !is_host_only {
-            fi += 1; // worktree checkbox
-        }
-        if self.docker_available && !is_host_only {
-            fi += 1; // sandbox checkbox
-        }
-        let group_field = fi;
-
-        let path_field = self.path_field();
-        let title_field = self.title_field();
+        let fields = self.field_indices();
         match self.focused_field {
-            n if n == title_field => &mut self.title,
-            n if n == path_field => &mut self.path,
-            n if n == group_field => &mut self.group,
+            n if n == fields.title => &mut self.title,
+            n if n == fields.path => &mut self.path,
+            n if n == fields.group => &mut self.group,
             _ => &mut self.title,
         }
     }

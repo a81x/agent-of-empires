@@ -140,40 +140,7 @@ impl NewSessionDialog {
 
         let mut ci = 0; // chunk index
 
-        // Field indices must match handle_key.
-        // Field order: [profile], path, title, [tool], [structured], ...
-        let base = if has_profile_selection { 1 } else { 0 };
-        let title_field = base + 1;
-        let mut fi = base + 2 + if has_tool_selection { 1 } else { 0 };
-        let structured_field = if has_structured {
-            let f = fi;
-            fi += 1;
-            f
-        } else {
-            usize::MAX
-        };
-        let yolo_mode_field = if has_yolo {
-            let f = fi;
-            fi += 1;
-            f
-        } else {
-            usize::MAX
-        };
-        let worktree_field = if !is_host_only {
-            let f = fi;
-            fi += 1;
-            f
-        } else {
-            usize::MAX
-        };
-        let sandbox_field = if has_sandbox {
-            let f = fi;
-            fi += 1;
-            f
-        } else {
-            usize::MAX
-        };
-        let group_field = fi;
+        let fields = self.field_indices();
 
         if has_profile_selection {
             let area = chunks[ci];
@@ -200,17 +167,16 @@ impl NewSessionDialog {
             area,
             "Title:",
             &self.title,
-            self.focused_field == title_field,
+            self.focused_field == fields.title,
             Some("(random civ)"),
             theme,
         );
-        self.focusable_rects.push((title_field, area));
+        self.focusable_rects.push((fields.title, area));
         ci += 1;
 
         // Always shown, interactive or read-only. Cycler and suffix ordering
         // are shared with the Restart dialog.
-        let tool_field = base + 2;
-        let is_tool_focused = has_tool_selection && self.focused_field == tool_field;
+        let is_tool_focused = has_tool_selection && self.focused_field == fields.tool;
         let selected_tool = self.available_tools[self.tool_index].as_str();
         let mut tool_spans = tool_cycler_spans(
             "Tool:",
@@ -232,12 +198,12 @@ impl NewSessionDialog {
         frame.render_widget(Paragraph::new(Line::from(tool_spans)), area);
         // A read-only tool row must not accept focus on click.
         if has_tool_selection {
-            self.focusable_rects.push((tool_field, area));
+            self.focusable_rects.push((fields.tool, area));
         }
         ci += 1;
 
         if has_structured {
-            let is_focused = self.focused_field == structured_field;
+            let is_focused = self.focused_field == fields.structured;
             let label_style = if is_focused {
                 Style::default().fg(theme.accent).underlined()
             } else {
@@ -272,12 +238,12 @@ impl NewSessionDialog {
             }
             let area = chunks[ci];
             frame.render_widget(Paragraph::new(Line::from(spans)), area);
-            self.focusable_rects.push((structured_field, area));
+            self.focusable_rects.push((fields.structured, area));
             ci += 1;
         }
 
         if has_yolo {
-            let is_yolo_focused = self.focused_field == yolo_mode_field;
+            let is_yolo_focused = self.focused_field == fields.yolo;
             let yolo_label_style = if is_yolo_focused {
                 Style::default().fg(theme.accent).underlined()
             } else {
@@ -306,12 +272,12 @@ impl NewSessionDialog {
             ]);
             let area = chunks[ci];
             frame.render_widget(Paragraph::new(yolo_line), area);
-            self.focusable_rects.push((yolo_mode_field, area));
+            self.focusable_rects.push((fields.yolo, area));
             ci += 1;
         }
 
         if !is_host_only {
-            let is_wt_focused = self.focused_field == worktree_field;
+            let is_wt_focused = self.focused_field == fields.worktree;
             let label_style = if is_wt_focused {
                 Style::default().fg(theme.accent).underlined()
             } else {
@@ -364,12 +330,12 @@ impl NewSessionDialog {
 
             let area = chunks[ci];
             frame.render_widget(Paragraph::new(Line::from(spans)), area);
-            self.focusable_rects.push((worktree_field, area));
+            self.focusable_rects.push((fields.worktree, area));
             ci += 1;
         }
 
         if has_sandbox {
-            let is_sandbox_focused = self.focused_field == sandbox_field;
+            let is_sandbox_focused = self.focused_field == fields.sandbox;
             let sandbox_label_style = if is_sandbox_focused {
                 Style::default().fg(theme.accent).underlined()
             } else {
@@ -406,13 +372,13 @@ impl NewSessionDialog {
 
             let area = chunks[ci];
             frame.render_widget(Paragraph::new(Line::from(spans)), area);
-            self.focusable_rects.push((sandbox_field, area));
+            self.focusable_rects.push((fields.sandbox, area));
             ci += 1;
         }
 
         // Group (always visible, at the bottom before hints)
         let group_placeholder =
-            if !self.existing_groups.is_empty() && self.focused_field == group_field {
+            if !self.existing_groups.is_empty() && self.focused_field == fields.group {
                 Some("(Ctrl+P to browse groups)")
             } else {
                 None
@@ -423,12 +389,12 @@ impl NewSessionDialog {
             area,
             "Group:",
             &self.group,
-            self.focused_field == group_field,
+            self.focused_field == fields.group,
             group_placeholder,
             self.group_ghost_text(),
             theme,
         );
-        self.focusable_rects.push((group_field, area));
+        self.focusable_rects.push((fields.group, area));
         ci += 1;
 
         // Hints/errors (last chunk)
@@ -481,7 +447,7 @@ impl NewSessionDialog {
                 hint_spans.push(Span::styled("Ctrl+P", Style::default().fg(theme.hint)));
                 hint_spans.push(Span::raw(" browse  "));
             }
-            if self.focused_field == group_field && !self.existing_groups.is_empty() {
+            if self.focused_field == fields.group && !self.existing_groups.is_empty() {
                 if self.group_ghost_text().is_some() {
                     hint_spans.push(Span::styled("→", Style::default().fg(theme.hint)));
                     hint_spans.push(Span::raw(" accept  "));
@@ -489,11 +455,11 @@ impl NewSessionDialog {
                 hint_spans.push(Span::styled("Ctrl+P", Style::default().fg(theme.hint)));
                 hint_spans.push(Span::raw(" groups  "));
             }
-            if self.focused_field == tool_field {
+            if self.focused_field == fields.tool {
                 hint_spans.push(Span::styled("Ctrl+P", Style::default().fg(theme.hint)));
                 hint_spans.push(Span::raw(" configure  "));
             }
-            if self.focused_field == worktree_field && self.worktree_enabled {
+            if self.focused_field == fields.worktree && self.worktree_enabled {
                 hint_spans.push(Span::styled("Ctrl+P", Style::default().fg(theme.hint)));
                 hint_spans.push(Span::raw(" configure  "));
             }
