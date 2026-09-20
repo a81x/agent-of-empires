@@ -4,29 +4,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, renderHook } from "@testing-library/react";
 
 import { useMobileKeyboard } from "./useMobileKeyboard";
+import { stubMatchMedia } from "./__tests__/fixtures";
 
 type Listener = (...args: unknown[]) => void;
-
-function stubMatchMedia(initialCoarse: boolean) {
-  let matches = initialCoarse;
-  const listeners = new Set<Listener>();
-  const mql = {
-    get matches() {
-      return matches;
-    },
-    media: "(pointer: coarse)",
-    addEventListener: (_: string, cb: Listener) => listeners.add(cb),
-    removeEventListener: (_: string, cb: Listener) => listeners.delete(cb),
-  };
-  window.matchMedia = vi.fn().mockReturnValue(mql) as unknown as typeof window.matchMedia;
-  return {
-    set(next: boolean) {
-      matches = next;
-      listeners.forEach((cb) => cb());
-    },
-    listenerCount: () => listeners.size,
-  };
-}
 
 function stubVisualViewport(initialHeight: number) {
   const listeners = new Map<string, Set<Listener>>();
@@ -85,7 +65,7 @@ function drainRaf(rounds = 30) {
 }
 
 function mountMobile(height = 800) {
-  stubMatchMedia(true);
+  stubMatchMedia(true, "(pointer: coarse)");
   const vp = stubVisualViewport(height);
   const hook = renderHook(() => useMobileKeyboard());
   const resizeTo = (h: number) =>
@@ -104,7 +84,7 @@ describe("useMobileKeyboard", () => {
   });
 
   it("is a no-op on the desktop (fine pointer) path", () => {
-    stubMatchMedia(false);
+    stubMatchMedia(false, "(pointer: coarse)");
     const ctl = stubVisualViewport(800);
     const { result } = renderHook(() => useMobileKeyboard());
     expect(result.current.isMobile).toBe(false);
@@ -135,7 +115,7 @@ describe("useMobileKeyboard", () => {
   });
 
   it("becomes mobile when matchMedia later reports coarse, then clears on leaving", () => {
-    const mq = stubMatchMedia(false);
+    const mq = stubMatchMedia(false, "(pointer: coarse)");
     stubVisualViewport(800);
     const { result } = renderHook(() => useMobileKeyboard());
     act(() => mq.set(true));
@@ -145,7 +125,7 @@ describe("useMobileKeyboard", () => {
   });
 
   it("removes all viewport listeners on unmount", () => {
-    stubMatchMedia(true);
+    stubMatchMedia(true, "(pointer: coarse)");
     const docRemove = vi.spyOn(document, "removeEventListener");
     const winRemove = vi.spyOn(window, "removeEventListener");
     const { unmount, vp } = mountMobile();

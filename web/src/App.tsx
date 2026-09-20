@@ -25,6 +25,7 @@ import { useEdgeSwipe } from "./hooks/useEdgeSwipe";
 import { useIsCoarsePointer } from "./hooks/useIsCoarsePointer";
 import { useMobileViewportLock } from "./hooks/useMobileViewportLock";
 import { useIsWideViewport } from "./hooks/useIsWideViewport";
+import { listen } from "./hooks/domEvents";
 import { useAppPanes } from "./hooks/app/useAppPanes";
 import { useKeyboardProxy } from "./hooks/app/useKeyboardProxy";
 import { useOnboarding } from "./hooks/app/useOnboarding";
@@ -156,9 +157,7 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    const onTokenExpired = () => setTokenExpired(true);
-    window.addEventListener(TOKEN_EXPIRED_EVENT, onTokenExpired);
-    return () => window.removeEventListener(TOKEN_EXPIRED_EVENT, onTokenExpired);
+    return listen(() => setTokenExpired(true), [window, TOKEN_EXPIRED_EVENT]);
   }, []);
 
   useEffect(() => {
@@ -167,8 +166,7 @@ export default function App() {
       setLoginRequired(true);
       setLoginAuthenticated(false);
     };
-    window.addEventListener(LOGIN_REQUIRED_EVENT, onLoginRequired);
-    return () => window.removeEventListener(LOGIN_REQUIRED_EVENT, onLoginRequired);
+    return listen(onLoginRequired, [window, LOGIN_REQUIRED_EVENT]);
   }, []);
 
   useEffect(refreshLoginStatus, [refreshLoginStatus]);
@@ -381,8 +379,7 @@ function AppContent({
       e.preventDefault();
       setSendDialogOpen(true);
     };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
+    return listen(onKey as EventListener, [window, "keydown"]);
   }, [commentSendEnabled, diffComments.count]);
 
   const unreadIndicatorEnabled = useUnreadIndicatorEnabled();
@@ -483,8 +480,7 @@ function AppContent({
       const detail = (e as CustomEvent).detail as { sessionId?: string } | undefined;
       if (detail?.sessionId) handleSelectSession(detail.sessionId);
     };
-    window.addEventListener(OPEN_SESSION_EVENT, onOpen);
-    return () => window.removeEventListener(OPEN_SESSION_EVENT, onOpen);
+    return listen(onOpen, [window, OPEN_SESSION_EVENT]);
   }, [handleSelectSession]);
 
   const lifecycle = useSessionLifecycle({

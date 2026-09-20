@@ -1,6 +1,34 @@
-// Session, workspace, and repo-group builders shared by the hook tests.
+// Session, workspace, and repo-group builders plus the matchMedia stub shared by the hook tests.
 
+import { vi } from "vitest";
 import type { RepoGroup, SessionResponse, Workspace } from "../../lib/types";
+
+type Listener = () => void;
+
+/** Replace `window.matchMedia` with a controllable stub for `media`. */
+export function stubMatchMedia(initialMatches: boolean, media: string) {
+  let matches = initialMatches;
+  const listeners = new Set<Listener>();
+  const mql = {
+    get matches() {
+      return matches;
+    },
+    media,
+    addEventListener: (_: string, cb: Listener) => listeners.add(cb),
+    removeEventListener: (_: string, cb: Listener) => listeners.delete(cb),
+  };
+  window.matchMedia = vi.fn().mockReturnValue(mql) as unknown as typeof window.matchMedia;
+  return {
+    setWithoutEvent(next: boolean) {
+      matches = next;
+    },
+    set(next: boolean) {
+      matches = next;
+      listeners.forEach((cb) => cb());
+    },
+    listenerCount: () => listeners.size,
+  };
+}
 
 export function session(over: Partial<SessionResponse> = {}): SessionResponse {
   return {
