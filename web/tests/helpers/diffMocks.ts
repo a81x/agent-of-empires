@@ -47,22 +47,26 @@ export function diffFileResponse(f: DiffFileInput, oldContent: string, newConten
 }
 
 /** Route the file list. A function is called per request, for sequenced responses. */
-export async function mockDiffFiles(page: Page, json: unknown | ((call: number) => unknown)) {
+export async function mockDiffFiles(page: Page, json: object | ((call: number) => object)) {
   let calls = 0;
   await page.unroute("**/api/sessions/*/diff/files");
   await page.route("**/api/sessions/*/diff/files", (r) =>
-    r.fulfill({ json: typeof json === "function" ? (json as (call: number) => unknown)(++calls) : json }),
+    r.fulfill({ json: typeof json === "function" ? json(++calls) : json }),
   );
 }
 
-export async function mockDiffFileContents(page: Page, json: unknown) {
+export async function mockDiffFileContents(page: Page, json: object) {
   await page.route(/\/api\/sessions\/[^/]+\/diff\/file\?/, (r) => r.fulfill({ json }));
 }
 
 /** Boot the terminal session mocks with a diff file list already routed. */
 export async function setupDiffSession(
   page: Page,
-  opts: { files?: unknown; contents?: unknown; sessionFields?: Record<string, unknown> } = {},
+  opts: {
+    files?: object | ((call: number) => object);
+    contents?: object;
+    sessionFields?: Record<string, unknown>;
+  } = {},
 ) {
   await mockTerminalApis(page, { sessionFields: opts.sessionFields });
   if (opts.files !== undefined) await mockDiffFiles(page, opts.files);
