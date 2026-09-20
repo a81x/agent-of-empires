@@ -14,6 +14,24 @@ use crate::tui::components::{
 };
 use crate::tui::styles::Theme;
 
+/// What [`NewSessionDialog::render_list_field`] needs to draw one editable
+/// list: the two it serves differ only in wording and whether the add/edit
+/// input offers a ghost completion.
+struct ListField<'a> {
+    label: &'static str,
+    /// Plural noun in the collapsed `[N <unit>]` summary.
+    unit: &'static str,
+    hint: &'static str,
+    empty_hint: &'static str,
+    entries: &'a [String],
+    selected: usize,
+    expanded: bool,
+    editing: Option<&'a Input>,
+    adding_new: bool,
+    ghost: Option<String>,
+    focused: bool,
+}
+
 impl NewSessionDialog {
     pub fn render(&mut self, frame: &mut Frame, area: Rect, theme: &Theme) {
         // Rebuilt every frame: a layout change moves every later field, so a
@@ -723,7 +741,24 @@ impl NewSessionDialog {
         ci += 1;
 
         // Environment
-        self.render_env_field(frame, chunks[ci], self.sandbox_focused_field == 1, theme);
+        self.render_list_field(
+            frame,
+            chunks[ci],
+            theme,
+            ListField {
+                label: "Environment",
+                unit: "items",
+                hint: " (a)dd (d)el (Enter)edit (Esc)close",
+                empty_hint: "    (press 'a' to add KEY or KEY=VALUE)",
+                entries: &self.extra_env,
+                selected: self.env_selected_index,
+                expanded: self.env_list_expanded,
+                editing: self.env_editing_input.as_ref(),
+                adding_new: self.env_adding_new,
+                ghost: None,
+                focused: self.sandbox_focused_field == 1,
+            },
+        );
         self.sandbox_config_rects.push((1, chunks[ci]));
         ci += 1;
 
@@ -891,11 +926,26 @@ impl NewSessionDialog {
         }
 
         // Extra Repos
-        self.render_extra_repos_field(
+        self.render_list_field(
             frame,
             chunks[3],
-            self.worktree_config_focused_field == 3,
             theme,
+            ListField {
+                label: "Extra Repos",
+                unit: "repos",
+                hint: " (a)dd (d)el (Enter)edit (Ctrl+P)browse (Esc)close",
+                empty_hint: "    (press 'a' to add repo path)",
+                entries: &self.workspace_repos,
+                selected: self.workspace_repo_selected_index,
+                expanded: self.workspace_repos_expanded,
+                editing: self.workspace_repo_editing_input.as_ref(),
+                adding_new: self.workspace_repo_adding_new,
+                ghost: self
+                    .workspace_repo_ghost
+                    .as_ref()
+                    .map(|g| g.ghost_text.clone()),
+                focused: self.worktree_config_focused_field == 3,
+            },
         );
         self.worktree_config_rects.push((3, chunks[3]));
 
@@ -951,272 +1001,109 @@ impl NewSessionDialog {
         }
     }
 
-    fn render_env_field(&self, frame: &mut Frame, area: Rect, is_focused: bool, theme: &Theme) {
-        let label_style = if is_focused {
+    /// One editable list field: `Environment` and `Extra Repos` differ only in
+    /// their labels, their summary unit, and whether the add/edit input offers
+    /// a path ghost completion.
+    fn render_list_field(&self, frame: &mut Frame, area: Rect, theme: &Theme, spec: ListField<'_>) {
+        let label_style = if spec.focused {
             Style::default().fg(theme.accent).underlined()
         } else {
             Style::default().fg(theme.text)
         };
+        let label = Span::styled(format!("{}:", spec.label), label_style);
 
-        if !self.env_list_expanded {
-            // Collapsed view
-            let count = self.extra_env.len();
-            let summary = if count == 0 {
-                "(empty - press Enter to add)".to_string()
-            } else {
-                format!("[{} items]", count)
-            };
-            let summary_style = if count > 0 {
-                Style::default().fg(theme.accent)
-            } else {
-                Style::default().fg(theme.dimmed)
-            };
-
-            let line = Line::from(vec![
-                Span::styled("Environment:", label_style),
-                Span::raw(" "),
-                Span::styled(summary, summary_style),
-            ]);
-            frame.render_widget(Paragraph::new(line), area);
-        } else {
-            // Expanded view with list
-            let mut lines: Vec<Line> = Vec::new();
-            let mut cursor_row: Option<(usize, &'static str, &Input)> = None;
-
-            // Header with controls hint
-            let header = Line::from(vec![
-                Span::styled("Environment:", label_style),
-                Span::styled(
-                    " (a)dd (d)el (Enter)edit (Esc)close",
+        if !spec.expanded {
+            let count = spec.entries.len();
+            let (summary, style) = if count == 0 {
+                (
+                    "(empty - press Enter to add)".to_string(),
                     Style::default().fg(theme.dimmed),
-                ),
-            ]);
-            lines.push(header);
-
-            // Check if we're in editing/adding mode
-            if let Some(ref input) = self.env_editing_input {
-                if self.env_adding_new {
-                    // Show existing items
-                    for (i, entry) in self.extra_env.iter().enumerate() {
-                        let prefix = if i == self.env_selected_index {
-                            "  > "
-                        } else {
-                            "    "
-                        };
-                        lines.push(Line::from(Span::styled(
-                            format!("{}{}", prefix, entry),
-                            Style::default().fg(theme.text),
-                        )));
-                    }
-                    // Show input for new item
-                    let input_line = Line::from(vec![
-                        Span::styled("  + ", Style::default().fg(theme.accent)),
-                        Span::styled(input.value(), Style::default().fg(theme.accent).bold()),
-                        Span::styled("_", Style::default().fg(theme.accent)),
-                    ]);
-                    lines.push(input_line);
-                    cursor_row = Some((lines.len() - 1, "  + ", input));
-                } else {
-                    // Editing existing item
-                    for (i, entry) in self.extra_env.iter().enumerate() {
-                        if i == self.env_selected_index {
-                            // Show editable input
-                            let input_line = Line::from(vec![
-                                Span::styled("  > ", Style::default().fg(theme.accent)),
-                                Span::styled(
-                                    input.value(),
-                                    Style::default().fg(theme.accent).bold(),
-                                ),
-                                Span::styled("_", Style::default().fg(theme.accent)),
-                            ]);
-                            lines.push(input_line);
-                            cursor_row = Some((lines.len() - 1, "  > ", input));
-                        } else {
-                            let prefix = "    ";
-                            lines.push(Line::from(Span::styled(
-                                format!("{}{}", prefix, entry),
-                                Style::default().fg(theme.text),
-                            )));
-                        }
-                    }
-                }
+                )
             } else {
-                // Normal list display
-                if self.extra_env.is_empty() {
-                    lines.push(Line::from(Span::styled(
-                        "    (press 'a' to add KEY or KEY=VALUE)",
+                (
+                    format!("[{count} {}]", spec.unit),
+                    Style::default().fg(theme.accent),
+                )
+            };
+            let line = Line::from(vec![label, Span::raw(" "), Span::styled(summary, style)]);
+            frame.render_widget(Paragraph::new(line), area);
+            return;
+        }
+
+        let mut lines = vec![Line::from(vec![
+            label,
+            Span::styled(spec.hint, Style::default().fg(theme.dimmed)),
+        ])];
+        let mut cursor_row: Option<(usize, &'static str, &Input)> = None;
+
+        // The ghost, when offered, renders after the value only once the
+        // visible window reaches the end of the input.
+        let prefix_width = 4usize; // "  + " or "  > "
+        let available_width = area.width.saturating_sub(prefix_width as u16) as usize;
+        let input_line = |prefix: &'static str, input: &Input| -> Line<'static> {
+            let scroll = input_scroll(input, available_width);
+            let (visible_value, end_visible) =
+                visible_slice(input.value(), scroll, available_width);
+            let mut spans = vec![
+                Span::styled(prefix, Style::default().fg(theme.accent)),
+                Span::styled(visible_value, Style::default().fg(theme.accent).bold()),
+            ];
+            if end_visible {
+                if let Some(ghost) = &spec.ghost {
+                    spans.push(Span::styled(
+                        ghost.clone(),
                         Style::default().fg(theme.dimmed),
-                    )));
-                } else {
-                    for (i, entry) in self.extra_env.iter().enumerate() {
-                        let is_selected = i == self.env_selected_index;
-                        let prefix = if is_selected { "  > " } else { "    " };
-                        let style = if is_selected {
-                            Style::default().fg(theme.accent).bold()
-                        } else {
-                            Style::default().fg(theme.text)
-                        };
-                        lines.push(Line::from(Span::styled(
-                            format!("{}{}", prefix, entry),
-                            style,
-                        )));
+                    ));
+                }
+            }
+            spans.push(Span::styled("_", Style::default().fg(theme.accent)));
+            Line::from(spans)
+        };
+        // A selected row keeps its marker while another item is being typed,
+        // but drops the accent so the prompt reads as the active one.
+        let entry_line = |index: usize, entry: &String, editing: bool| {
+            let selected = index == spec.selected;
+            let prefix = if selected { "  > " } else { "    " };
+            let style = if selected && !editing {
+                Style::default().fg(theme.accent).bold()
+            } else {
+                Style::default().fg(theme.text)
+            };
+            Line::from(Span::styled(format!("{prefix}{entry}"), style))
+        };
+
+        match spec.editing {
+            Some(input) if spec.adding_new => {
+                for (i, entry) in spec.entries.iter().enumerate() {
+                    lines.push(entry_line(i, entry, true));
+                }
+                lines.push(input_line("  + ", input));
+                cursor_row = Some((lines.len() - 1, "  + ", input));
+            }
+            Some(input) => {
+                for (i, entry) in spec.entries.iter().enumerate() {
+                    if i == spec.selected {
+                        lines.push(input_line("  > ", input));
+                        cursor_row = Some((lines.len() - 1, "  > ", input));
+                    } else {
+                        lines.push(entry_line(i, entry, true));
                     }
                 }
             }
-
-            frame.render_widget(Paragraph::new(lines), area);
-            if let Some((row, prefix, input)) = cursor_row {
-                Self::set_input_cursor_on_row(frame, area, row, prefix, input);
+            None if spec.entries.is_empty() => lines.push(Line::from(Span::styled(
+                spec.empty_hint,
+                Style::default().fg(theme.dimmed),
+            ))),
+            None => {
+                for (i, entry) in spec.entries.iter().enumerate() {
+                    lines.push(entry_line(i, entry, false));
+                }
             }
         }
-    }
 
-    fn render_extra_repos_field(
-        &self,
-        frame: &mut Frame,
-        area: Rect,
-        is_focused: bool,
-        theme: &Theme,
-    ) {
-        let label_style = if is_focused {
-            Style::default().fg(theme.accent).underlined()
-        } else {
-            Style::default().fg(theme.text)
-        };
-
-        if !self.workspace_repos_expanded {
-            // Collapsed view
-            let count = self.workspace_repos.len();
-            let summary = if count == 0 {
-                "(empty - press Enter to add)".to_string()
-            } else {
-                format!("[{} repos]", count)
-            };
-            let summary_style = if count > 0 {
-                Style::default().fg(theme.accent)
-            } else {
-                Style::default().fg(theme.dimmed)
-            };
-
-            let line = Line::from(vec![
-                Span::styled("Extra Repos:", label_style),
-                Span::raw(" "),
-                Span::styled(summary, summary_style),
-            ]);
-            frame.render_widget(Paragraph::new(line), area);
-        } else {
-            // Expanded view with list
-            let mut lines: Vec<Line> = Vec::new();
-            let mut cursor_row: Option<(usize, &'static str, &Input)> = None;
-
-            let header = Line::from(vec![
-                Span::styled("Extra Repos:", label_style),
-                Span::styled(
-                    " (a)dd (d)el (Enter)edit (Ctrl+P)browse (Esc)close",
-                    Style::default().fg(theme.dimmed),
-                ),
-            ]);
-            lines.push(header);
-
-            if let Some(ref input) = self.workspace_repo_editing_input {
-                let ghost_text = self
-                    .workspace_repo_ghost
-                    .as_ref()
-                    .map(|g| g.ghost_text.clone());
-
-                let prefix_width = 4; // "  + " or "  > "
-                let available_width = area.width.saturating_sub(prefix_width as u16) as usize;
-
-                let make_input_line = |prefix: &'static str,
-                                       val: &str,
-                                       ghost: &Option<String>,
-                                       th: &Theme,
-                                       inp: &Input|
-                 -> Line<'static> {
-                    let scroll = input_scroll(inp, available_width);
-                    let (visible_value, end_visible) = visible_slice(val, scroll, available_width);
-
-                    let mut spans = vec![
-                        Span::styled(prefix, Style::default().fg(th.accent)),
-                        Span::styled(visible_value, Style::default().fg(th.accent).bold()),
-                    ];
-                    if end_visible {
-                        if let Some(ref g) = ghost {
-                            spans.push(Span::styled(g.clone(), Style::default().fg(th.dimmed)));
-                        }
-                    }
-                    spans.push(Span::styled("_", Style::default().fg(th.accent)));
-                    Line::from(spans)
-                };
-
-                if self.workspace_repo_adding_new {
-                    for (i, entry) in self.workspace_repos.iter().enumerate() {
-                        let prefix = if i == self.workspace_repo_selected_index {
-                            "  > "
-                        } else {
-                            "    "
-                        };
-                        lines.push(Line::from(Span::styled(
-                            format!("{}{}", prefix, entry),
-                            Style::default().fg(theme.text),
-                        )));
-                    }
-                    lines.push(make_input_line(
-                        "  + ",
-                        input.value(),
-                        &ghost_text,
-                        theme,
-                        input,
-                    ));
-                    cursor_row = Some((lines.len() - 1, "  + ", input));
-                } else {
-                    for (i, entry) in self.workspace_repos.iter().enumerate() {
-                        if i == self.workspace_repo_selected_index {
-                            lines.push(make_input_line(
-                                "  > ",
-                                input.value(),
-                                &ghost_text,
-                                theme,
-                                input,
-                            ));
-                            cursor_row = Some((lines.len() - 1, "  > ", input));
-                        } else {
-                            let prefix = "    ";
-                            lines.push(Line::from(Span::styled(
-                                format!("{}{}", prefix, entry),
-                                Style::default().fg(theme.text),
-                            )));
-                        }
-                    }
-                }
-            } else {
-                // Normal list display
-                if self.workspace_repos.is_empty() {
-                    lines.push(Line::from(Span::styled(
-                        "    (press 'a' to add repo path)",
-                        Style::default().fg(theme.dimmed),
-                    )));
-                } else {
-                    for (i, entry) in self.workspace_repos.iter().enumerate() {
-                        let is_selected = i == self.workspace_repo_selected_index;
-                        let prefix = if is_selected { "  > " } else { "    " };
-                        let style = if is_selected {
-                            Style::default().fg(theme.accent).bold()
-                        } else {
-                            Style::default().fg(theme.text)
-                        };
-                        lines.push(Line::from(Span::styled(
-                            format!("{}{}", prefix, entry),
-                            style,
-                        )));
-                    }
-                }
-            }
-
-            frame.render_widget(Paragraph::new(lines), area);
-            if let Some((row, prefix, input)) = cursor_row {
-                Self::set_input_cursor_on_row(frame, area, row, prefix, input);
-            }
+        frame.render_widget(Paragraph::new(lines), area);
+        if let Some((row, prefix, input)) = cursor_row {
+            Self::set_input_cursor_on_row(frame, area, row, prefix, input);
         }
     }
 
