@@ -1275,219 +1275,147 @@ mod tests {
         assert_eq!(row.status, Status::Idle, "the Stopped applied");
     }
 
-    // #2237.
+    /// #2237 plus the one-shot fork/import markers: a reassignment clears a stale
+    /// dormant marker even when the id is unchanged, a consumed fork drops both markers
+    /// together so a restart neither re-forks nor re-seeds the transcript, and a change
+    /// that is not consuming a fork leaves `import_pending` for the restart that needs it.
     #[test]
-    fn acp_session_assigned_clears_stale_dormant_marker_on_same_id() {
-        let mut inst = Instance::new("seed", "/tmp/seed");
-        inst.acp_session_id = Some("sid-1".to_string());
-        inst.idle_dormant_since = Some(chrono::Utc::now());
+    fn apply_acp_session_change_matrix() {
+        use AcpSessionChange::*;
+        type Row = (Option<String>, Option<String>, Option<bool>, bool);
 
-        // Same id as already stored.
-        let persist = apply_acp_session_change(
-            &mut inst,
-            "seed",
-            Some(&AcpSessionChange::Assigned("sid-1".to_string())),
-        );
-        assert!(
-            inst.idle_dormant_since.is_none(),
-            "dormant marker must be cleared when a worker (re)assigns"
-        );
-        assert!(
-            persist.is_some(),
-            "clearing a stale marker must trigger a persist even on an unchanged id"
-        );
-    }
+        fn applied(
+            id: Option<&str>,
+            fork: Option<&str>,
+            import: Option<bool>,
+            dormant: bool,
+            change: AcpSessionChange,
+        ) -> Row {
+            let mut inst = Instance::new("seed", "/tmp/seed");
+            inst.view = crate::session::View::Structured;
+            inst.acp_session_id = id.map(str::to_string);
+            inst.fork_pending = fork.map(str::to_string);
+            inst.import_pending = import;
+            inst.idle_dormant_since = dormant.then(chrono::Utc::now);
+            let persist = apply_acp_session_change(&mut inst, "sess-1", Some(&change));
+            (
+                inst.acp_session_id,
+                inst.fork_pending,
+                inst.import_pending,
+                persist.is_some(),
+            )
+        }
+        fn want(id: Option<&str>, fork: Option<&str>, import: Option<bool>, persists: bool) -> Row {
+            (
+                id.map(str::to_string),
+                fork.map(str::to_string),
+                import,
+                persists,
+            )
+        }
 
-    // A structured fork mints a brand-new child id on its first session/fork, so the
-    // assigned id differs from the (None) acp_session_id and we take the new-assignment
-    // path.
-    #[test]
-    fn assigning_forked_id_clears_fork_pending_and_persists() {
-        let mut inst = Instance::new("seed", "/tmp/seed");
-        inst.view = crate::session::View::Structured;
-        inst.acp_session_id = None;
-        inst.fork_pending = Some("parent-acp-id".into());
-        inst.import_pending = Some(true);
-
-        let profile = apply_acp_session_change(
-            &mut inst,
-            "sess-1",
-            Some(&AcpSessionChange::Assigned("forked-child-id".into())),
-        );
-
-        assert_eq!(inst.acp_session_id.as_deref(), Some("forked-child-id"));
         assert_eq!(
-            inst.fork_pending, None,
-            "fork_pending cleared once the forked id is assigned"
+            applied(Some("sid-1"), None, None, true, Assigned("sid-1".into())),
+            want(Some("sid-1"), None, None, true),
+            "a stale dormant marker must be cleared, and persisted, on an unchanged id"
         );
         assert_eq!(
-            inst.import_pending, None,
-            "import_pending consumed alongside fork_pending so a restart does not re-seed the transcript into the forked store"
-        );
-        assert!(
-            profile.is_some(),
-            "must persist so the forked id survives restart"
-        );
-    }
-
-    // A different-id assignment that is NOT consuming a fork (fork_pending is None) must
-    // leave import_pending alone.
-    #[test]
-    fn non_fork_assignment_preserves_import_pending() {
-        let mut inst = Instance::new("seed", "/tmp/seed");
-        inst.acp_session_id = None;
-        inst.fork_pending = None;
-        inst.import_pending = Some(true);
-
-        let profile = apply_acp_session_change(
-            &mut inst,
-            "sess-1",
-            Some(&AcpSessionChange::Assigned("some-new-id".into())),
-        );
-
-        assert_eq!(inst.acp_session_id.as_deref(), Some("some-new-id"));
-        assert_eq!(
-            inst.import_pending,
-            Some(true),
-            "a non-fork different-id assignment must not consume import_pending"
-        );
-        assert!(
-            profile.is_some(),
-            "a new id assignment must persist regardless of markers"
-        );
-    }
-
-    // A SessionContextReset from a FAILED structured fork must clear the one-shot fork
-    // marker (and its paired import marker) so neither the reconciler nor the supervisor
-    // re-issues the same failing session/fork on the next reattach.
-    #[test]
-    fn reset_clears_fork_pending_and_import_pending() {
-        let mut inst = Instance::new("seed", "/tmp/seed");
-        inst.view = crate::session::View::Structured;
-        inst.acp_session_id = Some("stale-parent-id".into());
-        inst.fork_pending = Some("parent-acp-id".into());
-        inst.import_pending = Some(true);
-
-        let profile = apply_acp_session_change(
-            &mut inst,
-            "sess-1",
-            Some(&AcpSessionChange::Reset("fork_failed: boom".into())),
-        );
-
-        assert_eq!(inst.acp_session_id, None, "reset clears the stored id");
-        assert_eq!(
-            inst.fork_pending, None,
-            "a failed fork's one-shot marker must clear so it is not retried"
+            applied(Some("sid-1"), None, None, false, Assigned("sid-1".into())),
+            want(Some("sid-1"), None, None, false),
+            "an unchanged id with nothing stale is a no-op"
         );
         assert_eq!(
-            inst.import_pending, None,
-            "import_pending is consumed alongside fork_pending on reset"
-        );
-        assert!(profile.is_some(), "the reset must persist");
-    }
-
-    // A SessionContextReset from a plain session/load failure (no fork pending) must clear
-    // the dead id but leave import_pending untouched.
-    #[test]
-    fn reset_without_fork_pending_preserves_import_pending() {
-        let mut inst = Instance::new("seed", "/tmp/seed");
-        inst.acp_session_id = Some("dead-id".into());
-        inst.fork_pending = None;
-        inst.import_pending = Some(true);
-
-        let profile = apply_acp_session_change(
-            &mut inst,
-            "sess-1",
-            Some(&AcpSessionChange::Reset("session/load failed: gone".into())),
-        );
-
-        assert_eq!(inst.acp_session_id, None, "reset clears the dead id");
-        assert_eq!(
-            inst.import_pending,
-            Some(true),
-            "a non-fork reset must not consume import_pending"
-        );
-        assert!(profile.is_some(), "the reset must persist");
-    }
-
-    #[test]
-    fn acp_session_assigned_same_id_no_marker_is_noop() {
-        let mut inst = Instance::new("seed", "/tmp/seed");
-        inst.acp_session_id = Some("sid-1".to_string());
-        inst.idle_dormant_since = None;
-        // Same id, nothing stale to clear: must stay a no-op (no rewrite).
-        let persist = apply_acp_session_change(
-            &mut inst,
-            "seed",
-            Some(&AcpSessionChange::Assigned("sid-1".to_string())),
-        );
-        assert!(
-            persist.is_none(),
-            "unchanged id with no stale marker is a no-op"
-        );
-    }
-
-    // #3080.
-    #[test]
-    fn session_cleared_derives_cleared_change() {
-        assert_eq!(
-            derive_acp_session_change(&crate::acp::Event::SessionCleared),
-            Some(AcpSessionChange::Cleared),
-            "a /clear must invalidate the persisted ACP resume id"
-        );
-    }
-
-    // Applying Cleared must null the stored id and force a clean restart by dropping the
-    // paired fork/import markers too.
-    #[test]
-    fn cleared_nulls_stored_id_and_pending_markers() {
-        let mut inst = Instance::new("seed", "/tmp/seed");
-        inst.view = crate::session::View::Structured;
-        inst.acp_session_id = Some("pre-clear-id".into());
-        inst.fork_pending = Some("parent-acp-id".into());
-        inst.import_pending = Some(true);
-
-        let profile =
-            apply_acp_session_change(&mut inst, "sess-1", Some(&AcpSessionChange::Cleared));
-
-        assert_eq!(inst.acp_session_id, None, "clear drops the stored id");
-        assert_eq!(
-            inst.fork_pending, None,
-            "clear drops fork_pending so restart does not re-fork the parent"
+            applied(
+                None,
+                Some("parent"),
+                Some(true),
+                false,
+                Assigned("child".into())
+            ),
+            want(Some("child"), None, None, true),
+            "the forked id consumes both one-shot markers"
         );
         assert_eq!(
-            inst.import_pending, None,
-            "clear drops import_pending so restart is a clean session/new"
+            applied(None, None, Some(true), false, Assigned("new-id".into())),
+            want(Some("new-id"), None, Some(true), true),
+            "a non-fork assignment keeps import_pending"
         );
-        assert!(profile.is_some(), "the clear must persist");
-    }
-
-    // Regression for the event-ordering the listener sees.
-    #[test]
-    fn assign_then_clear_leaves_no_stored_id() {
-        let mut inst = Instance::new("seed", "/tmp/seed");
-        inst.view = crate::session::View::Structured;
-
-        apply_acp_session_change(
-            &mut inst,
-            "sess-1",
-            Some(&AcpSessionChange::Assigned("old-id".into())),
-        );
-        assert_eq!(inst.acp_session_id, Some("old-id".into()));
-
-        apply_acp_session_change(&mut inst, "sess-1", Some(&AcpSessionChange::Cleared));
         assert_eq!(
-            inst.acp_session_id, None,
-            "a /clear after an assignment must not leave the old id on disk"
+            applied(
+                Some("stale"),
+                Some("parent"),
+                Some(true),
+                false,
+                Reset("fork_failed: boom".into())
+            ),
+            want(None, None, None, true),
+            "a failed fork's markers must clear so the reconciler does not retry it"
+        );
+        assert_eq!(
+            applied(
+                Some("dead-id"),
+                None,
+                Some(true),
+                false,
+                Reset("session/load failed: gone".into())
+            ),
+            want(None, None, Some(true), true),
+            "a plain load failure clears the dead id only"
+        );
+        assert_eq!(
+            applied(
+                Some("pre-clear"),
+                Some("parent"),
+                Some(true),
+                false,
+                Cleared
+            ),
+            want(None, None, None, true),
+            "a clear forces a restart into a clean session/new"
         );
     }
 
     #[test]
-    fn derive_acp_status_maps_terminal_events() {
+    fn derive_acp_session_change_reads_only_session_lifecycle_events() {
+        use crate::acp::Event;
+        assert_eq!(
+            derive_acp_session_change(&Event::AcpSessionAssigned {
+                acp_session_id: "uuid-1234".into()
+            }),
+            Some(AcpSessionChange::Assigned("uuid-1234".into()))
+        );
+        assert_eq!(
+            derive_acp_session_change(&Event::SessionContextReset {
+                reason: "session/load failed: bad id".into()
+            }),
+            Some(AcpSessionChange::Reset(
+                "session/load failed: bad id".into()
+            ))
+        );
+        // #3080: a /clear must invalidate the persisted ACP resume id.
+        assert_eq!(
+            derive_acp_session_change(&Event::SessionCleared),
+            Some(AcpSessionChange::Cleared)
+        );
+        for unrelated in [
+            Event::AgentMessageChunk { text: "x".into() },
+            Event::Stopped {
+                reason: "prompt_complete".into(),
+            },
+            Event::ThinkingStarted,
+        ] {
+            assert_eq!(derive_acp_session_change(&unrelated), None);
+        }
+    }
+
+    #[test]
+    fn derive_acp_status_maps_events_to_status_intents() {
         use crate::acp::approvals::{ApprovalDecision, Nonce};
+        use crate::acp::elicitations::{Elicitation, ElicitationOutcome};
         use crate::acp::permissions::build_approval;
         use crate::acp::state::ToolCall;
         use crate::acp::Event;
+
         let tool_call = ToolCall {
             id: "t".into(),
             name: "shell".into(),
@@ -1498,30 +1426,7 @@ mod tests {
             memory_recall: None,
             diffs: Vec::new(),
         };
-        assert_eq!(
-            derive_acp_status(&Event::UserPromptSent {
-                prompt_id: None,
-                text: "hi".into(),
-                attachments: Vec::new(),
-            }),
-            Some(StatusIntent::Set(Status::Running))
-        );
-        assert_eq!(
-            derive_acp_status(&Event::ApprovalRequested {
-                approval: build_approval(tool_call.clone(), Vec::new()),
-            }),
-            Some(StatusIntent::Set(Status::Waiting))
-        );
-        assert_eq!(
-            derive_acp_status(&Event::ApprovalResolved {
-                nonce: Nonce("x".into()),
-                decision: ApprovalDecision::Allow,
-            }),
-            Some(StatusIntent::Set(Status::Running))
-        );
-        // A pending elicitation blocks the turn on the user just like an approval, so the
-        // sidebar dot must go yellow (Waiting) and recover to Running on resolution.
-        let elicitation = crate::acp::elicitations::Elicitation {
+        let elicitation = Elicitation {
             nonce: Nonce("e-1".into()),
             message: "Pick".into(),
             title: None,
@@ -1531,128 +1436,96 @@ mod tests {
             requested_at: chrono::Utc::now(),
             resolved: None,
         };
-        assert_eq!(
-            derive_acp_status(&Event::ElicitationRequested { elicitation }),
-            Some(StatusIntent::Set(Status::Waiting))
-        );
-        assert_eq!(
-            derive_acp_status(&Event::ElicitationResolved {
-                nonce: Nonce("e-1".into()),
-                outcome: crate::acp::elicitations::ElicitationOutcome::Accepted,
-                answers: Vec::new(),
-            }),
-            Some(StatusIntent::Set(Status::Running))
-        );
-        assert_eq!(
-            derive_acp_status(&Event::Stopped {
-                reason: "prompt_complete".into()
-            }),
-            Some(StatusIntent::Set(Status::Idle))
-        );
-        // Rate-limit park.
-        assert_eq!(
-            derive_acp_status(&Event::Stopped {
-                reason: "rate_limited".into()
-            }),
-            Some(StatusIntent::Set(Status::Idle))
-        );
-        assert_eq!(
-            derive_acp_status(&Event::AgentStartupError {
-                message: "boom".into()
-            }),
-            Some(StatusIntent::Set(Status::Error))
-        );
-        // AcpSessionAssigned heals an Error banner, never an in-progress turn.
-        assert_eq!(
-            derive_acp_status(&Event::AcpSessionAssigned {
-                acp_session_id: "uuid".into()
-            }),
-            Some(StatusIntent::HealError)
-        );
-        // Rate-limit auto-resume breadcrumb heals like AcpSessionAssigned.
-        assert_eq!(
-            derive_acp_status(&Event::RateLimitAutoResumed {
-                resets_at: chrono::Utc::now(),
-                manual: false,
-            }),
-            Some(StatusIntent::HealError)
-        );
-    }
+        let set = |s: Status| Some(StatusIntent::Set(s));
 
-    #[test]
-    fn derive_acp_session_change_extracts_assigned_id() {
-        use crate::acp::Event;
-        let ev = Event::AcpSessionAssigned {
-            acp_session_id: "uuid-1234".into(),
-        };
-        assert_eq!(
-            derive_acp_session_change(&ev),
-            Some(AcpSessionChange::Assigned("uuid-1234".into()))
-        );
-    }
-
-    #[test]
-    fn derive_acp_session_change_extracts_reset_reason() {
-        use crate::acp::Event;
-        let ev = Event::SessionContextReset {
-            reason: "session/load failed: bad id".into(),
-        };
-        assert_eq!(
-            derive_acp_session_change(&ev),
-            Some(AcpSessionChange::Reset(
-                "session/load failed: bad id".into()
-            ))
-        );
-    }
-
-    #[test]
-    fn derive_acp_session_change_ignores_unrelated_events() {
-        use crate::acp::Event;
-        assert_eq!(
-            derive_acp_session_change(&Event::AgentMessageChunk { text: "x".into() }),
-            None
-        );
-        assert_eq!(
-            derive_acp_session_change(&Event::Stopped {
-                reason: "prompt_complete".into()
-            }),
-            None
-        );
-        assert_eq!(derive_acp_session_change(&Event::ThinkingStarted), None);
-    }
-
-    #[test]
-    fn derive_acp_status_running_on_agent_activity() {
-        use crate::acp::state::ToolCall;
-        use crate::acp::Event;
-        // A turn that resumes agent-side (fired ScheduleWakeup, background TaskOutput
-        // notification) streams only these events, never a UserPromptSent.
-        assert_eq!(
-            derive_acp_status(&Event::AgentMessageChunk { text: "x".into() }),
-            Some(StatusIntent::Set(Status::Running))
-        );
-        assert_eq!(
-            derive_acp_status(&Event::ThinkingStarted),
-            Some(StatusIntent::Set(Status::Running))
-        );
-        assert_eq!(
-            derive_acp_status(&Event::ToolCallStarted {
-                tool_call: ToolCall {
-                    id: "t".into(),
-                    name: "shell".into(),
-                    kind: "execute".into(),
-                    args_preview: "{}".into(),
-                    started_at: chrono::Utc::now(),
-                    parent_tool_call_id: None,
-                    memory_recall: None,
-                    diffs: Vec::new(),
+        let cases = [
+            // Agent-side activity drives Running on its own: a turn resumed by a fired
+            // wakeup or a background TaskOutput never sends a UserPromptSent.
+            (
+                Event::UserPromptSent {
+                    prompt_id: None,
+                    text: "hi".into(),
+                    attachments: Vec::new(),
                 },
-            }),
-            Some(StatusIntent::Set(Status::Running))
-        );
-        // ThinkingEnded is a sub-phase terminator, not a work signal; leaving
-        // it None avoids needless intents (ThinkingStarted already set Running).
-        assert_eq!(derive_acp_status(&Event::ThinkingEnded), None);
+                set(Status::Running),
+            ),
+            (
+                Event::AgentMessageChunk { text: "x".into() },
+                set(Status::Running),
+            ),
+            (Event::ThinkingStarted, set(Status::Running)),
+            (
+                Event::ToolCallStarted {
+                    tool_call: tool_call.clone(),
+                },
+                set(Status::Running),
+            ),
+            // A pending approval or elicitation blocks the turn on the user, and both
+            // recover to Running once resolved.
+            (
+                Event::ApprovalRequested {
+                    approval: build_approval(tool_call, Vec::new()),
+                },
+                set(Status::Waiting),
+            ),
+            (
+                Event::ApprovalResolved {
+                    nonce: Nonce("x".into()),
+                    decision: ApprovalDecision::Allow,
+                },
+                set(Status::Running),
+            ),
+            (
+                Event::ElicitationRequested { elicitation },
+                set(Status::Waiting),
+            ),
+            (
+                Event::ElicitationResolved {
+                    nonce: Nonce("e-1".into()),
+                    outcome: ElicitationOutcome::Accepted,
+                    answers: Vec::new(),
+                },
+                set(Status::Running),
+            ),
+            // Every Stopped reason surfaces as Idle, the rate-limit park included.
+            (
+                Event::Stopped {
+                    reason: "prompt_complete".into(),
+                },
+                set(Status::Idle),
+            ),
+            (
+                Event::Stopped {
+                    reason: "rate_limited".into(),
+                },
+                set(Status::Idle),
+            ),
+            (
+                Event::AgentStartupError {
+                    message: "boom".into(),
+                },
+                set(Status::Error),
+            ),
+            // A live session heals an Error banner but never an in-progress turn.
+            (
+                Event::AcpSessionAssigned {
+                    acp_session_id: "uuid".into(),
+                },
+                Some(StatusIntent::HealError),
+            ),
+            (
+                Event::RateLimitAutoResumed {
+                    resets_at: chrono::Utc::now(),
+                    manual: false,
+                },
+                Some(StatusIntent::HealError),
+            ),
+            // ThinkingEnded ends a sub-phase; ThinkingStarted already set Running.
+            (Event::ThinkingEnded, None),
+        ];
+        for (event, want) in cases {
+            assert_eq!(derive_acp_status(&event), want);
+        }
     }
 
     // --- #2248: a structured session must heal out of a stale Stopped ---
