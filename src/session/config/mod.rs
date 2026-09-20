@@ -4225,37 +4225,30 @@ mod tests {
         assert_eq!(sb.port_mappings, vec!["3000:3000"]);
     }
 
-    // Tests for AppStateConfig
+    /// The `[app_state]` defaults and keys. A file written before a flag
+    /// existed reads back as not-yet-seen rather than seen.
     #[test]
-    fn test_app_state_config_default() {
+    fn app_state_config_defaults_and_keys() {
         let app = AppStateConfig::default();
         assert!(!app.has_seen_welcome);
         assert!(!app.has_seen_web_tour);
         assert!(app.last_seen_version.is_none());
         assert!(app.dismissed_update_version.is_none());
-    }
 
-    #[test]
-    fn test_app_state_config_deserialize() {
-        let toml = r#"
+        let app: AppStateConfig = toml::from_str(
+            r#"
             has_seen_welcome = true
             last_seen_version = "1.0.0"
             dismissed_update_version = "1.0.0"
-        "#;
-        let app: AppStateConfig = toml::from_str(toml).unwrap();
+            "#,
+        )
+        .unwrap();
         assert!(app.has_seen_welcome);
-        // Absent from the toml: defaults to false (backward compatible).
         assert!(!app.has_seen_web_tour);
         assert_eq!(app.last_seen_version, Some("1.0.0".to_string()));
         assert_eq!(app.dismissed_update_version, Some("1.0.0".to_string()));
-    }
 
-    #[test]
-    fn test_app_state_config_web_tour_roundtrip() {
-        let toml = r#"
-            has_seen_web_tour = true
-        "#;
-        let app: AppStateConfig = toml::from_str(toml).unwrap();
+        let app: AppStateConfig = toml::from_str("has_seen_web_tour = true").unwrap();
         assert!(app.has_seen_web_tour);
         assert!(!app.has_seen_welcome);
     }
@@ -4487,53 +4480,34 @@ mod tests {
         }
     }
 
-    // Tests for DiffConfig
+    /// The `[diff]` defaults, the keys config.toml may set, and that
+    /// `split_view` survives a serialize/parse round trip.
     #[test]
-    fn test_diff_config_default() {
+    fn diff_config_defaults_and_keys() {
         let diff = DiffConfig::default();
         assert!(diff.default_branch.is_none());
         assert_eq!(diff.context_lines, 3);
-    }
+        assert!(!diff.split_view);
 
-    #[test]
-    fn test_diff_config_deserialize() {
-        let toml = r#"
-            default_branch = "main"
-            context_lines = 5
-        "#;
-        let diff: DiffConfig = toml::from_str(toml).unwrap();
-        assert_eq!(diff.default_branch, Some("main".to_string()));
-        assert_eq!(diff.context_lines, 5);
-    }
-
-    #[test]
-    fn test_diff_config_partial_deserialize() {
-        let toml = r#"default_branch = "develop""#;
-        let diff: DiffConfig = toml::from_str(toml).unwrap();
+        let diff: DiffConfig = toml::from_str(r#"default_branch = "develop""#).unwrap();
         assert_eq!(diff.default_branch, Some("develop".to_string()));
         assert_eq!(diff.context_lines, 3);
-    }
 
-    #[test]
-    fn test_diff_config_in_full_config() {
-        let toml = r#"
+        let config: Config = toml::from_str(
+            r#"
             [diff]
             default_branch = "main"
             context_lines = 10
-        "#;
-        let config: Config = toml::from_str(toml).unwrap();
+            split_view = true
+            "#,
+        )
+        .unwrap();
         assert_eq!(config.diff.default_branch, Some("main".to_string()));
         assert_eq!(config.diff.context_lines, 10);
-    }
+        assert!(config.diff.split_view);
 
-    #[test]
-    fn diff_config_split_view_roundtrips() {
-        let mut cfg = DiffConfig::default();
-        assert!(!cfg.split_view);
-        cfg.split_view = true;
-        let toml = toml::to_string(&cfg).unwrap();
-        let back: DiffConfig = toml::from_str(&toml).unwrap();
-        assert!(back.split_view);
+        let reparsed: DiffConfig = toml::from_str(&toml::to_string(&config.diff).unwrap()).unwrap();
+        assert!(reparsed.split_view);
     }
 
     #[test]

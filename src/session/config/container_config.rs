@@ -3088,41 +3088,46 @@ mod tests {
         }
     }
 
-    // --- compute_volume_paths tests ---
-
-    fn setup_regular_repo() -> (TempDir, std::path::PathBuf) {
-        let dir = TempDir::new().unwrap();
-        let repo = git2::Repository::init(dir.path()).unwrap();
-
-        // Create initial commit so HEAD is valid
+    fn commit_head(repo: &git2::Repository) {
         let sig = git2::Signature::now("Test", "test@example.com").unwrap();
         let tree_id = repo.index().unwrap().write_tree().unwrap();
         let tree = repo.find_tree(tree_id).unwrap();
         repo.commit(Some("HEAD"), &sig, &sig, "Initial", &tree, &[])
             .unwrap();
+    }
 
+    fn setup_regular_repo() -> (TempDir, PathBuf) {
+        let dir = TempDir::new().unwrap();
+        commit_head(&git2::Repository::init(dir.path()).unwrap());
         let repo_path = dir.path().to_path_buf();
         (dir, repo_path)
     }
 
-    fn setup_bare_repo_with_worktree() -> (TempDir, std::path::PathBuf, std::path::PathBuf) {
+    /// Branch `wt-branch` off HEAD and check it out at `worktree`. False when
+    /// the `git` binary is unavailable, which the callers treat as a skip.
+    fn add_worktree(repo_path: &Path, worktree: &Path) -> bool {
+        let repo = git2::Repository::open(repo_path).unwrap();
+        let head = repo.head().unwrap().peel_to_commit().unwrap();
+        repo.branch("wt-branch", &head, false).unwrap();
+        drop(repo);
+        std::process::Command::new("git")
+            .args(["worktree", "add", worktree.to_str().unwrap(), "wt-branch"])
+            .current_dir(repo_path)
+            .output()
+            .is_ok_and(|output| output.status.success())
+    }
+
+    fn setup_bare_repo_with_worktree() -> (TempDir, PathBuf, PathBuf) {
         let dir = TempDir::new().unwrap();
         let bare_path = dir.path().join(".bare");
-
-        // Create bare repository
         let repo = git2::Repository::init_bare(&bare_path).unwrap();
-
-        // Create initial commit
         let sig = git2::Signature::now("Test", "test@example.com").unwrap();
         let tree_id = repo.treebuilder(None).unwrap().write().unwrap();
         let tree = repo.find_tree(tree_id).unwrap();
         repo.commit(Some("HEAD"), &sig, &sig, "Initial", &tree, &[])
             .unwrap();
+        fs::write(dir.path().join(".git"), "gitdir: ./.bare\n").unwrap();
 
-        // Create .git file pointing to bare repo
-        std::fs::write(dir.path().join(".git"), "gitdir: ./.bare\n").unwrap();
-
-        // Create worktree
         let worktree_path = dir.path().join("main");
         let _ = std::process::Command::new("git")
             .args(["worktree", "add", worktree_path.to_str().unwrap(), "HEAD"])
@@ -3133,44 +3138,35 @@ mod tests {
         (dir, main_repo_path, worktree_path)
     }
 
+    /// A repo root, a plain directory and a non-git subdirectory of a repo all
+    /// mount themselves alone at `/workspace/{basename}`. The last is #375: the
+    /// ancestor repo (a home directory under dotfile management) must not be
+    /// what gets mounted.
     #[test]
-    fn test_compute_volume_paths_regular_repo() {
-        let (_dir, repo_path) = setup_regular_repo();
-        let project_path_str = repo_path.to_str().unwrap();
+    fn compute_volume_paths_mounts_one_directory_for_a_repo_root_or_plain_dir() {
+        let (_repo_dir, repo_path) = setup_regular_repo();
+        let plain_dir = TempDir::new().unwrap();
+        let ancestor = TempDir::new().unwrap();
+        git2::Repository::init(ancestor.path()).unwrap();
+        let subdir = ancestor.path().join("playground");
+        fs::create_dir_all(&subdir).unwrap();
 
-        let (volumes, working_dir) = compute_volume_paths(&repo_path, project_path_str).unwrap();
-
-        assert_eq!(volumes.len(), 1);
-        // Regular repo: mount path should be the project path
-        assert_eq!(
-            volumes[0].host_path,
-            repo_path.to_string_lossy().to_string()
-        );
-        // Container path and working dir should be the same
-        assert_eq!(volumes[0].container_path, working_dir);
-        // Should be /workspace/{dir_name}
-        let dir_name = repo_path.file_name().unwrap().to_string_lossy();
-        assert_eq!(
-            volumes[0].container_path,
-            format!("/workspace/{}", dir_name)
-        );
-    }
-
-    #[test]
-    fn test_compute_volume_paths_non_git_directory() {
-        let dir = TempDir::new().unwrap();
-        let project_path_str = dir.path().to_str().unwrap();
-
-        let (volumes, working_dir) = compute_volume_paths(dir.path(), project_path_str).unwrap();
-
-        assert_eq!(volumes.len(), 1);
-        // Non-git: mount path should be the project path
-        assert_eq!(
-            volumes[0].host_path,
-            dir.path().to_string_lossy().to_string()
-        );
-        // Container path and working dir should be the same
-        assert_eq!(volumes[0].container_path, working_dir);
+        for project in [&repo_path, &plain_dir.path().to_path_buf(), &subdir] {
+            let (volumes, working_dir) =
+                compute_volume_paths(project, project.to_str().unwrap()).unwrap();
+            let label = project.display();
+            assert_eq!(volumes.len(), 1, "{label}");
+            assert_eq!(volumes[0].host_path, project.to_string_lossy(), "{label}");
+            assert_eq!(volumes[0].container_path, working_dir, "{label}");
+            assert_eq!(
+                working_dir,
+                format!(
+                    "/workspace/{}",
+                    project.file_name().unwrap().to_string_lossy()
+                ),
+                "{label}"
+            );
+        }
     }
 
     /// Every arrival at `/workspace/{basename}` is reported as `Fallthrough`, including
@@ -3183,29 +3179,25 @@ mod tests {
         // An orphaned worktree: a `.git` file whose gitdir points nowhere, the
         // state a pruned admin entry leaves behind (#2414).
         let orphaned = dir.path().join("myrepo-worktrees").join("contexec");
-        std::fs::create_dir_all(&orphaned).unwrap();
-        std::fs::write(
+        fs::create_dir_all(&orphaned).unwrap();
+        fs::write(
             orphaned.join(".git"),
             "gitdir: ../../does-not-exist/.git/worktrees/contexec\n",
         )
         .unwrap();
 
         let plain = dir.path().join("plain");
-        std::fs::create_dir_all(&plain).unwrap();
+        fs::create_dir_all(&plain).unwrap();
         let (_repo_dir, repo_path) = setup_regular_repo();
 
-        for (case, path, expected) in [
-            ("an orphaned worktree", &orphaned, MountResolve::Fallthrough),
-            (
-                "a worktree with no .git at all",
-                &plain,
-                MountResolve::Fallthrough,
-            ),
-            ("a healthy repo root", &repo_path, MountResolve::Fallthrough),
+        for (case, path) in [
+            ("an orphaned worktree", &orphaned),
+            ("a worktree with no .git at all", &plain),
+            ("a healthy repo root", &repo_path),
         ] {
             let (_volumes, workspace_path, resolve) =
                 compute_volume_paths_with_resolve(path, path.to_str().unwrap()).unwrap();
-            assert_eq!(resolve, expected, "{case}");
+            assert_eq!(resolve, MountResolve::Fallthrough, "{case}");
             // All three land on the same path, which is why a caller cannot tell
             // them apart from the result alone.
             assert_eq!(
@@ -3215,262 +3207,138 @@ mod tests {
         }
     }
 
+    /// A bare-repo layout mounts the repo root either way; from a worktree the
+    /// working dir points inside that one mount.
     #[test]
-    fn test_compute_volume_paths_bare_repo_worktree() {
+    fn compute_volume_paths_bare_repo_mounts_the_repo_root() {
         let (_dir, main_repo_path, worktree_path) = setup_bare_repo_with_worktree();
+        let main_canon = main_repo_path.canonicalize().unwrap();
+        let repo_name = main_repo_path.file_name().unwrap().to_string_lossy();
 
-        // Skip if worktree wasn't created (git might not be available)
+        let (volumes, working_dir) =
+            compute_volume_paths(&main_repo_path, main_repo_path.to_str().unwrap()).unwrap();
+        assert_eq!(volumes.len(), 1);
+        assert_eq!(
+            Path::new(&volumes[0].host_path).canonicalize().unwrap(),
+            main_canon
+        );
+        assert!(!working_dir.is_empty());
+
+        // git may be unavailable, in which case there is no worktree to check.
         if !worktree_path.exists() {
             return;
         }
-
-        let project_path_str = worktree_path.to_str().unwrap();
-
         let (volumes, working_dir) =
-            compute_volume_paths(&worktree_path, project_path_str).unwrap();
-
-        // Bare repo worktree: single mount of the repo root
+            compute_volume_paths(&worktree_path, worktree_path.to_str().unwrap()).unwrap();
         assert_eq!(volumes.len(), 1);
-
-        // Canonicalize paths for comparison (handles /var -> /private/var on macOS)
-        let mount_path_canon = Path::new(&volumes[0].host_path).canonicalize().unwrap();
-        let main_repo_canon = main_repo_path.canonicalize().unwrap();
-
-        // For bare repo worktree: mount the entire repo root
-        assert_eq!(mount_path_canon, main_repo_canon);
-
-        // Container path should be /workspace/{repo_name}
-        let repo_name = main_repo_path.file_name().unwrap().to_string_lossy();
+        assert_eq!(
+            Path::new(&volumes[0].host_path).canonicalize().unwrap(),
+            main_canon
+        );
         assert_eq!(
             volumes[0].container_path,
             format!("/workspace/{}", repo_name)
         );
-
-        // Working dir should point to the worktree within the mount
         assert!(working_dir.starts_with(&format!("/workspace/{}", repo_name)));
         assert!(working_dir.ends_with("/main"));
     }
 
+    /// A sibling worktree of a non-bare repo mounts both trees, flat under
+    /// `/workspace/`, and works from the worktree.
     #[test]
-    fn test_compute_volume_paths_non_bare_repo_worktree() {
+    fn compute_volume_paths_sibling_worktree_mounts_both_trees() {
         let (_dir, repo_path) = setup_regular_repo();
-
-        // Create a worktree from the regular (non-bare) repo
         let worktree_path = repo_path.parent().unwrap().join("my-worktree");
-        let head = git2::Repository::open(&repo_path)
-            .unwrap()
-            .head()
-            .unwrap()
-            .peel_to_commit()
-            .unwrap()
-            .id();
-        let repo = git2::Repository::open(&repo_path).unwrap();
-        repo.branch("wt-branch", &repo.find_commit(head).unwrap(), false)
-            .unwrap();
-        drop(repo);
-
-        let output = std::process::Command::new("git")
-            .args([
-                "worktree",
-                "add",
-                worktree_path.to_str().unwrap(),
-                "wt-branch",
-            ])
-            .current_dir(&repo_path)
-            .output()
-            .unwrap();
-
-        if !output.status.success() {
-            // git not available, skip
+        if !add_worktree(&repo_path, &worktree_path) {
             return;
         }
 
-        let project_path_str = worktree_path.to_str().unwrap();
-
         let (volumes, working_dir) =
-            compute_volume_paths(&worktree_path, project_path_str).unwrap();
+            compute_volume_paths(&worktree_path, worktree_path.to_str().unwrap()).unwrap();
 
-        // For non-bare sibling worktrees: mount the main repo and worktree separately
-        // as flat siblings under /workspace/.
         assert_eq!(volumes.len(), 2);
-
-        // First volume: the main repo
         let repo_canon = repo_path.canonicalize().unwrap();
-        let mount0_canon = Path::new(&volumes[0].host_path).canonicalize().unwrap();
-        assert_eq!(mount0_canon, repo_canon);
-        let repo_name = repo_canon.file_name().unwrap().to_string_lossy();
+        assert_eq!(
+            Path::new(&volumes[0].host_path).canonicalize().unwrap(),
+            repo_canon
+        );
         assert_eq!(
             volumes[0].container_path,
-            format!("/workspace/{}", repo_name),
+            format!(
+                "/workspace/{}",
+                repo_canon.file_name().unwrap().to_string_lossy()
+            )
         );
-
-        // Second volume: the worktree
-        let wt_canon = worktree_path.canonicalize().unwrap();
-        let mount1_canon = Path::new(&volumes[1].host_path).canonicalize().unwrap();
-        assert_eq!(mount1_canon, wt_canon);
+        assert_eq!(
+            Path::new(&volumes[1].host_path).canonicalize().unwrap(),
+            worktree_path.canonicalize().unwrap()
+        );
         assert_eq!(volumes[1].container_path, "/workspace/my-worktree");
-
-        // Working dir should point to the worktree
         assert_eq!(working_dir, "/workspace/my-worktree");
     }
 
     #[test]
-    fn test_compute_volume_paths_bare_repo_root() {
-        let (_dir, main_repo_path, _worktree_path) = setup_bare_repo_with_worktree();
-
-        let project_path_str = main_repo_path.to_str().unwrap();
-
-        let (volumes, working_dir) =
-            compute_volume_paths(&main_repo_path, project_path_str).unwrap();
-
-        assert_eq!(volumes.len(), 1);
-
-        // When at repo root, mount path equals project path
-        let mount_canon = Path::new(&volumes[0].host_path).canonicalize().unwrap();
-        let main_canon = main_repo_path.canonicalize().unwrap();
-        assert_eq!(mount_canon, main_canon);
-
-        // Working dir should be set
-        assert!(!working_dir.is_empty());
-    }
-
-    #[test]
-    fn test_compute_volume_paths_subdir_of_ancestor_repo_not_mounted() {
-        // Simulates the scenario from GitHub issue #375: a user has a git repo at
-        // their home directory (e.g., for dotfile management) and sets their project
-        // path to a non-git subdirectory like ~/playground. Without the guard,
-        // git2::Repository::discover walks up and finds the ancestor repo, causing
-        // the entire parent (home directory) to be mounted into the container.
-        let dir = TempDir::new().unwrap();
-
-        // Create a git repo at the "parent" (simulating ~/  with dotfile management)
-        let _repo = git2::Repository::init(dir.path()).unwrap();
-
-        // Create a subdirectory that is NOT its own git repo (simulating ~/playground)
-        let subdir = dir.path().join("playground");
-        fs::create_dir_all(&subdir).unwrap();
-
-        let project_path_str = subdir.to_str().unwrap();
-
-        let (volumes, working_dir) = compute_volume_paths(&subdir, project_path_str).unwrap();
-
-        assert_eq!(volumes.len(), 1);
-        // The subdirectory should be mounted directly, NOT the parent repo
-        assert_eq!(volumes[0].host_path, subdir.to_string_lossy().to_string());
-        assert_eq!(volumes[0].container_path, working_dir);
-        assert_eq!(volumes[0].container_path, "/workspace/playground");
-    }
-
-    #[test]
     fn test_common_ancestor() {
-        assert_eq!(
-            common_ancestor(Path::new("/a/b/c"), Path::new("/a/b/d")),
-            PathBuf::from("/a/b")
-        );
-        assert_eq!(
-            common_ancestor(Path::new("/a/b"), Path::new("/a/b")),
-            PathBuf::from("/a/b")
-        );
-        assert_eq!(
-            common_ancestor(Path::new("/a/b/c"), Path::new("/x/y/z")),
-            PathBuf::from("/")
-        );
+        let cases = [
+            ("/a/b/c", "/a/b/d", "/a/b"),
+            ("/a/b", "/a/b", "/a/b"),
+            ("/a/b/c", "/x/y/z", "/"),
+        ];
+        for (a, b, expected) in cases {
+            assert_eq!(
+                common_ancestor(Path::new(a), Path::new(b)),
+                PathBuf::from(expected)
+            );
+        }
     }
 
+    /// A worktree nested deeper than its main repo (repo at `/scm/my-repo`,
+    /// worktree at `/scm/worktrees/my-repo/1`) keeps its relative depth in the
+    /// container, so the `.git` file's relative gitdir still resolves.
     #[test]
-    fn test_compute_volume_paths_non_bare_worktree_nested_layout() {
-        // Simulates a host layout where the worktree is nested deeper than the
-        // main repo relative to their common ancestor (e.g., repo at
-        // /scm/my-repo and worktree at /scm/worktrees/my-repo/1).
+    fn compute_volume_paths_nested_worktree_keeps_relative_depth() {
         let dir = TempDir::new().unwrap();
         let repo_path = dir.path().join("my-repo");
         fs::create_dir_all(&repo_path).unwrap();
-        let repo = git2::Repository::init(&repo_path).unwrap();
-        {
-            let mut index = repo.index().unwrap();
-            let oid = index.write_tree().unwrap();
-            let sig = git2::Signature::now("test", "test@test.com").unwrap();
-            let tree = repo.find_tree(oid).unwrap();
-            repo.commit(Some("HEAD"), &sig, &sig, "init", &tree, &[])
-                .unwrap();
-        }
+        commit_head(&git2::Repository::init(&repo_path).unwrap());
 
-        let worktrees_dir = dir.path().join("worktrees").join("my-repo");
-        fs::create_dir_all(&worktrees_dir).unwrap();
-        let worktree_path = worktrees_dir.join("1");
-
-        let head = repo.head().unwrap().peel_to_commit().unwrap().id();
-        repo.branch("wt-branch", &repo.find_commit(head).unwrap(), false)
-            .unwrap();
-        drop(repo);
-
-        let output = std::process::Command::new("git")
-            .args([
-                "worktree",
-                "add",
-                worktree_path.to_str().unwrap(),
-                "wt-branch",
-            ])
-            .current_dir(&repo_path)
-            .output()
-            .unwrap();
-
-        if !output.status.success() {
+        let worktree_path = dir.path().join("worktrees").join("my-repo").join("1");
+        fs::create_dir_all(worktree_path.parent().unwrap()).unwrap();
+        if !add_worktree(&repo_path, &worktree_path) {
             return;
         }
 
-        // AoE's create_worktree converts .git to relative paths via
-        // convert_git_file_to_relative. Replicate that here since we
-        // called git directly.
+        // AoE's create_worktree rewrites .git to a relative gitdir; calling git
+        // directly does not, so replicate it.
         let git_file = worktree_path.join(".git");
-        let content = fs::read_to_string(&git_file).unwrap();
-        let abs_path = content
-            .lines()
-            .find_map(|l| l.strip_prefix("gitdir:").map(str::trim))
-            .unwrap();
-        if Path::new(abs_path).is_absolute() {
+        let gitdir = read_gitdir(&git_file);
+        if Path::new(&gitdir).is_absolute() {
             let wt_canon = worktree_path.canonicalize().unwrap();
-            let gitdir_canon = Path::new(abs_path).canonicalize().unwrap();
+            let gitdir_canon = Path::new(&gitdir).canonicalize().unwrap();
             if let Some(rel) = crate::git::GitWorktree::diff_paths(&gitdir_canon, &wt_canon) {
                 fs::write(&git_file, format!("gitdir: {}\n", rel.display())).unwrap();
             }
         }
 
-        let project_path_str = worktree_path.to_str().unwrap();
         let (volumes, working_dir) =
-            compute_volume_paths(&worktree_path, project_path_str).unwrap();
-
+            compute_volume_paths(&worktree_path, worktree_path.to_str().unwrap()).unwrap();
         assert_eq!(volumes.len(), 2);
 
-        // The container paths must preserve relative depth so the .git file's
-        // relative gitdir path resolves correctly.
         let repo_canon = repo_path.canonicalize().unwrap();
         let wt_canon = worktree_path.canonicalize().unwrap();
         let common = common_ancestor(&repo_canon, &wt_canon);
-        let expected_repo = format!(
-            "/workspace/{}",
-            repo_canon.strip_prefix(&common).unwrap().display()
-        );
-        let expected_wt = format!(
-            "/workspace/{}",
-            wt_canon.strip_prefix(&common).unwrap().display()
-        );
+        let container_path = |path: &Path| {
+            format!(
+                "/workspace/{}",
+                path.strip_prefix(&common).unwrap().display()
+            )
+        };
+        assert_eq!(volumes[0].container_path, container_path(&repo_canon));
+        assert_eq!(volumes[1].container_path, container_path(&wt_canon));
+        assert_eq!(working_dir, container_path(&wt_canon));
 
-        assert_eq!(volumes[0].container_path, expected_repo);
-        assert_eq!(volumes[1].container_path, expected_wt);
-        assert_eq!(working_dir, expected_wt);
-
-        // Verify the .git file's relative path resolves correctly in the
-        // container layout.
-        let content = fs::read_to_string(&git_file).unwrap();
-        let gitdir_rel = content
-            .lines()
-            .find_map(|l| l.strip_prefix("gitdir:").map(str::trim))
-            .unwrap();
-
-        let resolved = PathBuf::from(&working_dir).join(gitdir_rel);
-
-        // Normalize the path (resolve .. components)
+        // The relative gitdir must land inside the main repo's mount.
+        let resolved = PathBuf::from(&working_dir).join(read_gitdir(&git_file));
         let mut normalized = Vec::new();
         for component in resolved.components() {
             match component {
@@ -3481,16 +3349,18 @@ mod tests {
             }
         }
         let normalized: PathBuf = normalized.iter().collect();
+        assert!(normalized
+            .to_string_lossy()
+            .starts_with(&volumes[0].container_path));
+    }
 
-        // Should land inside the main repo's .git/worktrees/ directory
-        assert!(
-            normalized
-                .to_string_lossy()
-                .starts_with(&volumes[0].container_path),
-            "Resolved gitdir path '{}' should start with main repo container path '{}'",
-            normalized.display(),
-            volumes[0].container_path
-        );
+    fn read_gitdir(git_file: &Path) -> String {
+        fs::read_to_string(git_file)
+            .unwrap()
+            .lines()
+            .find_map(|line| line.strip_prefix("gitdir:").map(str::trim))
+            .unwrap()
+            .to_string()
     }
 
     // --- sandbox config tests ---
