@@ -7,17 +7,7 @@ import { ProjectSearchList } from "./ProjectSearchList";
 import { useProjectPicker } from "./projectPicker";
 import { CloneRepoForm } from "./CloneRepoForm";
 import { ToggleRow } from "./Toggle";
-
-interface WizardData {
-  path: string;
-  extraRepoPaths: string[];
-  repoBases: Record<string, string>;
-  useWorktree: boolean;
-  attachExisting: boolean;
-  scratch: boolean;
-  importAcpSessionId?: string;
-  [key: string]: unknown;
-}
+import type { WizardData } from "../wizardReducer";
 
 type Tab = "recent" | "browse" | "clone" | "import";
 

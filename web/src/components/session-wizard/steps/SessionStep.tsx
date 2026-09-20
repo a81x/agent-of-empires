@@ -1,18 +1,7 @@
 import { useRef, useState } from "react";
 import { useBranchSuggestions } from "./branchSuggestions";
 import { ToggleRow } from "./Toggle";
-
-interface WizardData {
-  path: string;
-  worktreeBranch: string;
-  useWorktree: boolean;
-  attachExisting: boolean;
-  baseBranch: string;
-  group: string;
-  scratch: boolean;
-  pathIsGitRepo: boolean;
-  [key: string]: unknown;
-}
+import type { WizardData } from "../wizardReducer";
 
 interface Props {
   data: WizardData;

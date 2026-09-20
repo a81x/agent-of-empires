@@ -1,3 +1,5 @@
+import type { WizardData } from "../wizardReducer";
+
 const TEXT_INPUT =
   "w-full bg-surface-900 border border-surface-700 rounded-lg px-3 py-2.5 text-sm font-mono text-text-primary placeholder:text-text-dim focus:border-brand-600 focus:outline-none";
 
@@ -62,12 +64,7 @@ function EnvVarList({ values, onChange }: { values: string[]; onChange: (v: stri
 }
 
 interface Props {
-  sandboxEnabled: boolean;
-  sandboxImage: string;
-  extraEnv: string[];
-  customInstruction: string;
-  extraArgs: string;
-  commandOverride: string;
+  data: WizardData;
   /** Set when structured view makes `extraArgs` inert. */
   extraArgsIgnored: boolean;
   resolvedCommand: string;
@@ -75,35 +72,25 @@ interface Props {
 }
 
 /** Container, instruction and launch-command knobs behind the wizard's advanced fold. */
-export function AdvancedLaunchFields({
-  sandboxEnabled,
-  sandboxImage,
-  extraEnv,
-  customInstruction,
-  extraArgs,
-  commandOverride,
-  extraArgsIgnored,
-  resolvedCommand,
-  onChange,
-}: Props) {
+export function AdvancedLaunchFields({ data, extraArgsIgnored, resolvedCommand, onChange }: Props) {
   return (
     <div className="space-y-4">
-      {sandboxEnabled && (
+      {data.sandboxEnabled && (
         <>
           <LabeledInput
             label="Container image"
-            value={sandboxImage}
+            value={data.sandboxImage}
             onChange={(v) => onChange("sandboxImage", v)}
             placeholder="ghcr.io/agent-of-empires/aoe-sandbox:latest"
           />
-          <EnvVarList values={extraEnv} onChange={(v) => onChange("extraEnv", v)} />
+          <EnvVarList values={data.extraEnv} onChange={(v) => onChange("extraEnv", v)} />
         </>
       )}
 
       <div>
         <label className="block text-sm text-text-dim mb-1.5">Agent instructions</label>
         <textarea
-          value={customInstruction}
+          value={data.customInstruction}
           onChange={(e) => onChange("customInstruction", e.target.value)}
           placeholder="Custom instructions for this session..."
           rows={3}
@@ -113,7 +100,7 @@ export function AdvancedLaunchFields({
 
       <LabeledInput
         label="Additional arguments"
-        value={extraArgs}
+        value={data.extraArgs}
         onChange={(v) => onChange("extraArgs", v)}
         placeholder="e.g. --port 8080"
       >
@@ -126,7 +113,7 @@ export function AdvancedLaunchFields({
 
       <LabeledInput
         label="Command override"
-        value={commandOverride}
+        value={data.commandOverride}
         onChange={(v) => onChange("commandOverride", v)}
         placeholder="Override the agent launch command"
       >

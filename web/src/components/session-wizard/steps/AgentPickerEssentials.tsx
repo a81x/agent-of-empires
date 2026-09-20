@@ -1,10 +1,6 @@
 import type { AgentInfo } from "../../../lib/types";
 import { effectiveLifecycle, type AgentLifecycleInfo } from "../../../lib/agentProfiles";
-
-interface WizardData {
-  tool: string;
-  [key: string]: unknown;
-}
+import type { WizardData } from "../wizardReducer";
 
 interface Props {
   data: WizardData;

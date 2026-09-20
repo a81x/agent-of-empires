@@ -8,22 +8,7 @@ import { profileDefaults, type ProfileDefaults } from "../profileDefaults";
 import { AdvancedLaunchFields } from "./AdvancedLaunchFields";
 import { ProfilePresetPicker } from "./ProfilePresetPicker";
 import { ToggleRow } from "./Toggle";
-
-interface WizardData {
-  tool: string;
-  useWorktree: boolean;
-  profile: string;
-  profileDirty: boolean;
-  sandboxEnabled: boolean;
-  yoloMode: boolean;
-  sandboxImage: string;
-  extraEnv: string[];
-  customInstruction: string;
-  extraArgs: string;
-  commandOverride: string;
-  useStructuredView: boolean;
-  [key: string]: unknown;
-}
+import type { WizardData } from "../wizardReducer";
 
 interface Props {
   data: WizardData;
@@ -201,12 +186,7 @@ export function AgentOptions({
       )}
 
       <AdvancedLaunchFields
-        sandboxEnabled={data.sandboxEnabled}
-        sandboxImage={data.sandboxImage}
-        extraEnv={data.extraEnv}
-        customInstruction={data.customInstruction}
-        extraArgs={data.extraArgs}
-        commandOverride={data.commandOverride}
+        data={data}
         extraArgsIgnored={extraArgsIgnored}
         resolvedCommand={resolvedCommand}
         onChange={onChange}
