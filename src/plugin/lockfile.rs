@@ -93,24 +93,25 @@ impl Lockfile {
 mod tests {
     use super::*;
 
+    fn locked(source: &str, remote: bool) -> LockedPlugin {
+        LockedPlugin {
+            source: source.into(),
+            requested_ref: remote.then(|| "v1.0.0".into()),
+            resolved_commit: remote.then(|| "deadbeef".into()),
+            version: "1.0.0".into(),
+            manifest_hash: "sha256:abc".into(),
+            tree_hash: "sha256:tree".into(),
+            trust: "community".into(),
+            release_tag: remote.then(|| "v1.0.0".into()),
+            asset_name: remote.then(|| "widget-x86_64.tar.gz".into()),
+            asset_sha256: remote.then(|| "sha256:def".into()),
+        }
+    }
+
     #[test]
     fn round_trips_through_toml() {
         let mut lf = Lockfile::default();
-        lf.upsert(
-            "acme.widget",
-            LockedPlugin {
-                source: "gh:acme/widget".into(),
-                requested_ref: Some("v1.0.0".into()),
-                resolved_commit: Some("deadbeef".into()),
-                version: "1.0.0".into(),
-                manifest_hash: "sha256:abc".into(),
-                tree_hash: "sha256:tree".into(),
-                trust: "community".into(),
-                release_tag: Some("v1.0.0".into()),
-                asset_name: Some("widget-x86_64.tar.gz".into()),
-                asset_sha256: Some("sha256:def".into()),
-            },
-        );
+        lf.upsert("acme.widget", locked("gh:acme/widget", true));
         let text = toml::to_string_pretty(&lf).unwrap();
         let back: Lockfile = toml::from_str(&text).unwrap();
         assert_eq!(back.lock_version, LOCK_VERSION);
@@ -123,21 +124,7 @@ mod tests {
     #[test]
     fn remove_reports_presence() {
         let mut lf = Lockfile::default();
-        lf.upsert(
-            "acme.widget",
-            LockedPlugin {
-                source: "/local/path".into(),
-                requested_ref: None,
-                resolved_commit: None,
-                version: "0.1.0".into(),
-                manifest_hash: "sha256:abc".into(),
-                tree_hash: "sha256:tree".into(),
-                trust: "community".into(),
-                release_tag: None,
-                asset_name: None,
-                asset_sha256: None,
-            },
-        );
+        lf.upsert("acme.widget", locked("/local/path", false));
         assert!(lf.remove("acme.widget"));
         assert!(!lf.remove("acme.widget"));
     }

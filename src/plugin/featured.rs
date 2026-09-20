@@ -61,30 +61,7 @@ mod tests {
     }
 
     #[test]
-    fn looks_up_by_id() {
-        let index = FeaturedIndex::from_toml_str(
-            r#"
-[plugins."agent-of-empires.example"]
-source = "gh:agent-of-empires/example"
-versions = { "1.0" = "sha256:abc" }
-"#,
-        )
-        .unwrap();
-        let entry = index.get("agent-of-empires.example").expect("present");
-        assert_eq!(entry.source, "gh:agent-of-empires/example");
-        assert_eq!(
-            entry.versions.get("1.0").map(String::as_str),
-            Some("sha256:abc")
-        );
-        assert!(index.get("acme.absent").is_none());
-
-        assert!(index.is_featured_source("gh:agent-of-empires/example"));
-        assert!(index.is_featured_source("gh:Agent-Of-Empires/Example"));
-        assert!(!index.is_featured_source("gh:someone/else"));
-    }
-
-    #[test]
-    fn verifies_any_vetted_hash() {
+    fn looks_up_by_id_and_verifies_any_vetted_hash() {
         let index = FeaturedIndex::from_toml_str(
             r#"
 [plugins."agent-of-empires.example"]
@@ -93,7 +70,22 @@ versions = { "1.0" = "sha256:aaa", "1.1" = "sha256:bbb" }
 "#,
         )
         .unwrap();
+
         let entry = index.get("agent-of-empires.example").expect("present");
+        assert_eq!(entry.source, "gh:agent-of-empires/example");
+        assert_eq!(
+            entry.versions.get("1.0").map(String::as_str),
+            Some("sha256:aaa")
+        );
+        assert!(index.get("acme.absent").is_none());
+
+        assert!(index.is_featured_source("gh:agent-of-empires/example"));
+        assert!(
+            index.is_featured_source("gh:Agent-Of-Empires/Example"),
+            "the source match is case-insensitive"
+        );
+        assert!(!index.is_featured_source("gh:someone/else"));
+
         assert!(entry.verifies("sha256:aaa"));
         assert!(entry.verifies("sha256:bbb"));
         assert!(!entry.verifies("sha256:ccc"));
