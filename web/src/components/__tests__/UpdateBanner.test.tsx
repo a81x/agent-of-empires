@@ -57,31 +57,15 @@ describe("UpdateBanner", () => {
     expect(link.getAttribute("href")).toBe("https://example.com/releases/1.1.0");
   });
 
-  it("renders nothing when no update is available", async () => {
-    fetchUpdateStatus.mockResolvedValue(makeStatus({ update_available: false }));
-    const { container } = render(<UpdateBanner />);
-    await waitFor(() => expect(fetchUpdateStatus).toHaveBeenCalled());
-    expect(container.querySelector('[role="status"]')).toBeNull();
-  });
-
-  it("renders nothing in auto mode even when an update is available", async () => {
-    fetchUpdateStatus.mockResolvedValue(makeStatus({ update_check_mode: "auto" }));
-    const { container } = render(<UpdateBanner />);
-    await waitFor(() => expect(fetchUpdateStatus).toHaveBeenCalled());
-    expect(container.querySelector('[role="status"]')).toBeNull();
-  });
-
-  // In "off" mode the server reports update_available: false, so the banner never has anything to render; the
-  // client only special-cases "auto".
-  it("renders nothing in off mode (server reports no update available)", async () => {
-    fetchUpdateStatus.mockResolvedValue(makeStatus({ update_check_mode: "off", update_available: false }));
-    const { container } = render(<UpdateBanner />);
-    await waitFor(() => expect(fetchUpdateStatus).toHaveBeenCalled());
-    expect(container.querySelector('[role="status"]')).toBeNull();
-  });
-
-  it("renders nothing when the version was already dismissed server-side", async () => {
-    fetchUpdateStatus.mockResolvedValue(makeStatus({ dismissed_version: "1.1.0" }));
+  // "off" mode has no separate client path: the server reports update_available: false, so only "auto" is
+  // special-cased here.
+  it.each([
+    ["no update is available", { update_available: false }],
+    ["auto mode handles the install", { update_check_mode: "auto" }],
+    ["off mode reports no update", { update_check_mode: "off", update_available: false }],
+    ["the version was already dismissed server-side", { dismissed_version: "1.1.0" }],
+  ] as [string, Partial<UpdateStatus>][])("renders nothing when %s", async (_name, overrides) => {
+    fetchUpdateStatus.mockResolvedValue(makeStatus(overrides));
     const { container } = render(<UpdateBanner />);
     await waitFor(() => expect(fetchUpdateStatus).toHaveBeenCalled());
     expect(container.querySelector('[role="status"]')).toBeNull();
