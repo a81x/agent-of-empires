@@ -68,6 +68,24 @@ struct AgentConfigMount {
     clean_files: &'static [&'static str],
 }
 
+impl AgentConfigMount {
+    /// The empty mount every entry in [`AGENT_CONFIG_MOUNTS`] starts from, so
+    /// each names only the fields it actually uses.
+    const EMPTY: Self = Self {
+        tool_name: "",
+        host_rel: "",
+        container_suffix: "",
+        skip_entries: &[],
+        seed_files: &[],
+        copy_dirs: &[],
+        keychain_credential: None,
+        home_seed_files: &[],
+        preserve_files: &[],
+        shared_credential_files: &[],
+        clean_files: &[],
+    };
+}
+
 /// Agent config definitions. Each entry describes one agent CLI's config directory.
 /// To add a new agent, add an entry here -- no code changes needed.
 const AGENT_CONFIG_MOUNTS: &[AgentConfigMount] = &[
@@ -76,7 +94,6 @@ const AGENT_CONFIG_MOUNTS: &[AgentConfigMount] = &[
         host_rel: ".claude",
         container_suffix: ".claude",
         skip_entries: &["sandbox", "projects"],
-        seed_files: &[],
         // `hooks` carries user hook scripts referenced by settings.json. settings.json
         // is copied as a top-level file, so without the scripts it points at, every
         // referenced hook errors in-container ("No such file or directory"). See #3014.
@@ -99,7 +116,7 @@ const AGENT_CONFIG_MOUNTS: &[AgentConfigMount] = &[
         ],
         preserve_files: &["history.jsonl"],
         shared_credential_files: &[".credentials.json"],
-        clean_files: &[],
+        ..AgentConfigMount::EMPTY
     },
     AgentConfigMount {
         tool_name: "opencode",
@@ -118,117 +135,65 @@ const AGENT_CONFIG_MOUNTS: &[AgentConfigMount] = &[
             "opencode.db-wal",
             "opencode.db-shm",
         ],
-        seed_files: &[],
-        copy_dirs: &[],
-        keychain_credential: None,
-        home_seed_files: &[],
-        preserve_files: &[],
-        shared_credential_files: &[],
-        clean_files: &[],
+        ..AgentConfigMount::EMPTY
     },
     AgentConfigMount {
         tool_name: "opencode",
         host_rel: ".config/opencode",
         container_suffix: ".config/opencode",
         skip_entries: &["sandbox"],
-        seed_files: &[],
-        copy_dirs: &[],
-        keychain_credential: None,
-        home_seed_files: &[],
-        preserve_files: &[],
-        shared_credential_files: &[],
-        clean_files: &[],
+        ..AgentConfigMount::EMPTY
     },
     AgentConfigMount {
         tool_name: "codex",
         host_rel: ".codex",
         container_suffix: ".codex",
         skip_entries: &["sandbox"],
-        seed_files: &[],
-        copy_dirs: &[],
-        keychain_credential: None,
-        home_seed_files: &[],
-        preserve_files: &[],
-        shared_credential_files: &[],
-        clean_files: &[],
+        ..AgentConfigMount::EMPTY
     },
     AgentConfigMount {
         tool_name: "gemini",
         host_rel: ".gemini",
         container_suffix: ".gemini",
         skip_entries: &["sandbox"],
-        seed_files: &[],
-        copy_dirs: &[],
-        keychain_credential: None,
-        home_seed_files: &[],
-        preserve_files: &[],
-        shared_credential_files: &[],
-        clean_files: &[],
+        ..AgentConfigMount::EMPTY
     },
     AgentConfigMount {
         tool_name: "vibe",
         host_rel: ".vibe",
         container_suffix: ".vibe",
         skip_entries: &["sandbox"],
-        seed_files: &[],
-        copy_dirs: &[],
-        keychain_credential: None,
-        home_seed_files: &[],
-        preserve_files: &[],
-        shared_credential_files: &[],
-        clean_files: &[],
+        ..AgentConfigMount::EMPTY
     },
     AgentConfigMount {
         tool_name: "cursor",
         host_rel: ".cursor",
         container_suffix: ".cursor",
         skip_entries: &["sandbox"],
-        seed_files: &[],
-        copy_dirs: &[],
-        keychain_credential: None,
-        home_seed_files: &[],
-        preserve_files: &[],
-        shared_credential_files: &[],
-        clean_files: &[],
+        ..AgentConfigMount::EMPTY
     },
     AgentConfigMount {
         tool_name: "copilot",
         host_rel: ".copilot",
         container_suffix: ".copilot",
         skip_entries: &["sandbox"],
-        seed_files: &[],
-        copy_dirs: &[],
-        keychain_credential: None,
-        home_seed_files: &[],
-        preserve_files: &[],
-        shared_credential_files: &[],
-        clean_files: &[],
+        ..AgentConfigMount::EMPTY
     },
     AgentConfigMount {
         tool_name: "pi",
         host_rel: ".pi",
         container_suffix: ".pi",
         skip_entries: &["sandbox"],
-        seed_files: &[],
         copy_dirs: &["agent"],
-        keychain_credential: None,
-        home_seed_files: &[],
-        preserve_files: &[],
-        shared_credential_files: &[],
-        clean_files: &[],
+        ..AgentConfigMount::EMPTY
     },
     AgentConfigMount {
         tool_name: "omp",
         host_rel: ".omp",
         container_suffix: ".omp",
         skip_entries: &["sandbox"],
-        seed_files: &[],
         copy_dirs: &["agent"],
-        keychain_credential: None,
-        home_seed_files: &[],
-        preserve_files: &[],
-        shared_credential_files: &[],
-        clean_files: &[],
+        ..AgentConfigMount::EMPTY
     },
     AgentConfigMount {
         tool_name: "hermes",
@@ -248,68 +213,42 @@ const AGENT_CONFIG_MOUNTS: &[AgentConfigMount] = &[
             "tmp",
             "state.db",
         ],
-        seed_files: &[],
-        copy_dirs: &[],
-        keychain_credential: None,
-        home_seed_files: &[],
         // shell-hooks-allowlist.json is regenerated by install_hermes_hooks
         // on every session, but we preserve it in case the user has
         // additional approvals beyond the AoE-managed ones.
         preserve_files: &["shell-hooks-allowlist.json"],
-        shared_credential_files: &[],
-        clean_files: &[],
+        ..AgentConfigMount::EMPTY
     },
     AgentConfigMount {
         tool_name: "droid",
         host_rel: ".factory",
         container_suffix: ".factory",
         skip_entries: &["sandbox"],
-        seed_files: &[],
-        copy_dirs: &[],
-        keychain_credential: None,
-        home_seed_files: &[],
-        preserve_files: &[],
-        shared_credential_files: &[],
-        clean_files: &[],
+        ..AgentConfigMount::EMPTY
     },
     AgentConfigMount {
         tool_name: "kiro",
         host_rel: ".kiro",
         container_suffix: ".kiro",
         skip_entries: &["sandbox", "sessions", "logs", "cache"],
-        seed_files: &[],
         copy_dirs: &["agents", "steering", "prompts", "settings"],
-        keychain_credential: None,
-        home_seed_files: &[],
-        preserve_files: &[],
-        shared_credential_files: &[],
-        clean_files: &[],
+        ..AgentConfigMount::EMPTY
     },
     AgentConfigMount {
         tool_name: "qwen",
         host_rel: ".qwen",
         container_suffix: ".qwen",
         skip_entries: &["sandbox", "sessions", "cache"],
-        seed_files: &[],
-        copy_dirs: &[],
-        keychain_credential: None,
-        home_seed_files: &[],
-        preserve_files: &[],
-        shared_credential_files: &[],
-        clean_files: &[],
+        ..AgentConfigMount::EMPTY
     },
     AgentConfigMount {
         tool_name: "antigravity",
         host_rel: ".gemini/antigravity-cli",
         container_suffix: ".gemini/antigravity-cli",
         skip_entries: &["sandbox", "logs", "cache"],
-        seed_files: &[],
         copy_dirs: &["plugins"],
-        keychain_credential: None,
-        home_seed_files: &[],
         preserve_files: &["antigravity-oauth-token"],
-        shared_credential_files: &[],
-        clean_files: &[],
+        ..AgentConfigMount::EMPTY
     },
     AgentConfigMount {
         tool_name: "kimi",
@@ -318,13 +257,8 @@ const AGENT_CONFIG_MOUNTS: &[AgentConfigMount] = &[
         // Skip the sandbox staging dir (recursion), plus Kimi's session,
         // log, and cache state, which the container regenerates.
         skip_entries: &["sandbox", "sessions", "logs", "cache", "agents"],
-        seed_files: &[],
         copy_dirs: &["skills"],
-        keychain_credential: None,
-        home_seed_files: &[],
-        preserve_files: &[],
-        shared_credential_files: &[],
-        clean_files: &[],
+        ..AgentConfigMount::EMPTY
     },
     AgentConfigMount {
         tool_name: "prime-agent",
@@ -336,13 +270,8 @@ const AGENT_CONFIG_MOUNTS: &[AgentConfigMount] = &[
         // skills/ stays un-skipped and is copied below so user-authored
         // host skills reach the container, like Kimi's mount.
         skip_entries: &["sandbox", "sessions", "kernel-venv"],
-        seed_files: &[],
         copy_dirs: &["skills"],
-        keychain_credential: None,
-        home_seed_files: &[],
-        preserve_files: &[],
-        shared_credential_files: &[],
-        clean_files: &[],
+        ..AgentConfigMount::EMPTY
     },
 ];
 
