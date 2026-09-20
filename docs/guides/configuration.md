@@ -110,6 +110,10 @@ Per-agent structured view defaults live under `[acp]`, not `[session]`:
 
 The rest of `[acp]` tunes the structured view globally; see [Structured View Internals](../development/internals/structured-view.md#global-tuning-acp).
 
+### Recovering hook-based status detection
+
+AoE writes per-session status into `/tmp/aoe-hooks-<euid>/`. When that directory cannot be initialized (another user squatted the path, a permissive umask or ACL widened it, a symlink was planted, or `/tmp` was reaped mid-run), AoE logs the resolved path with a recovery hint and falls back to reading the pane, which costs latency but no functionality. Check it with `ls -ldn /tmp/aoe-hooks-$(id -u)`, which should be `drwx------` and owned by you. Removing the directory (`rm -rf /tmp/aoe-hooks-$(id -u)`) and starting a session recreates it, a wrong ACL clears with `setfacl -b`, and a path owned by another user has to be removed by them or by root, since `/tmp` is sticky. `aoe uninstall` removes the hooks from every agent settings file and tears the directory down, leaving status detection on pane content alone.
+
 ## Status hooks
 
 Local shell commands run by the TUI on a status change, for desktop notifications and similar personal automation. Off by default, and global/profile only because they run arbitrary commands.
