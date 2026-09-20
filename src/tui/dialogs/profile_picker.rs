@@ -10,24 +10,18 @@ use super::DialogResult;
 use crate::tui::components::set_prefixed_input_cursor_position;
 use crate::tui::styles::Theme;
 
-/// Result when profile picker submits
 pub enum ProfilePickerAction {
     Switch(String),
     Created(String),
     Deleted(String),
 }
 
-/// Sub-mode of the profile picker
 enum Mode {
-    /// Browsing the profile list
     List,
-    /// Entering a name for a new profile
     CreateInput,
-    /// Confirming deletion of the selected profile
     ConfirmDelete,
 }
 
-/// Info about a single profile entry
 pub struct ProfileEntry {
     pub name: String,
     pub session_count: usize,
@@ -38,11 +32,8 @@ pub struct ProfilePickerDialog {
     mode: Mode,
     profiles: Vec<ProfileEntry>,
     selected: usize,
-    /// Input for new profile name
     name_input: Input,
-    /// Error/validation message
     error: Option<String>,
-    /// Confirmation selection: true = Yes, false = No
     confirm_selected: bool,
 }
 
@@ -67,9 +58,8 @@ impl ProfilePickerDialog {
     }
 
     fn can_delete_selected(&self) -> bool {
-        // The invariant is "at least one profile must exist", a count, not a
-        // name. Any non-active profile is deletable as long as it is not the
-        // last one. The backend `delete_profile` enforces the same rule.
+        // The invariant is a count, not a name: any non-active profile is
+        // deletable while it is not the last. `delete_profile` agrees.
         self.selected_profile()
             .is_some_and(|p| !p.is_active && self.profiles.len() > 1)
     }
@@ -353,7 +343,6 @@ impl ProfilePickerDialog {
             .constraints(constraints)
             .split(inner);
 
-        // Name input
         let value = self.name_input.value();
         let input_line = Line::from(vec![
             Span::styled("Name: ", Style::default().fg(theme.text)),
@@ -365,7 +354,6 @@ impl ProfilePickerDialog {
 
         let mut chunk_idx = 2;
 
-        // Error message
         if let Some(err) = &self.error {
             frame.render_widget(
                 Paragraph::new(err.as_str())
@@ -376,7 +364,6 @@ impl ProfilePickerDialog {
             chunk_idx += 1;
         }
 
-        // Hint
         let hint_line = Line::from(vec![
             Span::styled("Enter", Style::default().fg(theme.hint)),
             Span::raw(" confirm  "),
@@ -409,7 +396,6 @@ impl ProfilePickerDialog {
             .constraints([Constraint::Min(1), Constraint::Length(1)])
             .split(inner);
 
-        // Message
         if let Some(profile) = self.selected_profile() {
             let msg = format!(
                 "Delete '{}' ({} session{})?",
@@ -425,7 +411,6 @@ impl ProfilePickerDialog {
             );
         }
 
-        // Buttons
         let yes_style = if self.confirm_selected {
             Style::default().fg(theme.error).bold()
         } else {

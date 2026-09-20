@@ -16,34 +16,26 @@ use crate::tui::styles::Theme;
 
 impl NewSessionDialog {
     pub fn render(&mut self, frame: &mut Frame, area: Rect, theme: &Theme) {
-        // Rebuilt every frame: layout changes (a profile gains/loses
-        // its description row, scratch toggles off worktree, etc.) move
-        // every subsequent field, so stale rects would point at the
-        // wrong row. Clearing here also wipes rects when an overlay
-        // mode replaces the main form, so a click during sandbox /
-        // tool / worktree config mode doesn't snap focus to whatever
-        // main-form field used to be under that cell.
+        // Rebuilt every frame: a layout change moves every later field, so a
+        // stale rect points at the wrong row. Clearing here also empties them
+        // while an overlay replaces the main form.
         self.focusable_rects.clear();
 
-        // If loading, render the loading overlay instead
         if self.loading {
             self.render_loading(frame, area, theme);
             return;
         }
 
-        // If in sandbox config mode, render that overlay instead
         if self.sandbox_config_mode {
             self.render_sandbox_config(frame, area, theme);
             return;
         }
 
-        // If in tool config mode, render that overlay instead
         if self.tool_config_mode {
             self.render_tool_config(frame, area, theme);
             return;
         }
 
-        // If in worktree config mode, render that overlay instead
         if self.worktree_config_mode {
             self.render_worktree_config(frame, area, theme);
             return;
@@ -56,17 +48,11 @@ impl NewSessionDialog {
         let has_yolo = !self.selected_tool_always_yolo();
         let has_structured = self.structured_capable;
         let dialog_width = 80;
-        // Capture the full overlay area up front so the centered-pop
-        // pickers at the bottom of this function don't accidentally
-        // use a per-field `area` that the loop below shadows on every
-        // row. Without this the dir / group / branch / projects
-        // pickers anchor against whichever Layout chunk the local
-        // `area` last pointed at (typically the Group row) and render
-        // as a tiny strip inside the underlying dialog.
+        // Captured before the loop below shadows `area` per field, or the
+        // centered pickers anchor to whichever row it last held.
         let full_area = area;
-        // When the selected profile has a description, the profile row needs
-        // an extra line to render it beneath the name. We compute this once
-        // here so the layout constraint and the renderer agree on height.
+        // A profile description adds a line under the name; computed once so
+        // the constraint and the renderer agree on the height.
         let profile_field_height: u16 =
             if has_profile_selection && self.selected_profile_description().is_some() {
                 3
@@ -74,7 +60,6 @@ impl NewSessionDialog {
                 2
             };
 
-        // Build constraints dynamically based on visible fields only
         let mut constraints = Vec::new();
         if has_profile_selection {
             constraints.push(Constraint::Length(profile_field_height)); // Profile
@@ -98,12 +83,8 @@ impl NewSessionDialog {
         }
         constraints.push(Constraint::Length(2)); // Group (always, at the bottom)
 
-        // For errors, calculate how many lines we need based on the text length.
-        // Inner width = dialog_width - 2 (border) - 2 (margin) = 76.
-        // The regular hint line reserves 2 rows so the per-field keybind
-        // hints can wrap (e.g. when both path-shortcut hints and the global
-        // Ctrl+T scratch chip are present at once) instead of getting
-        // truncated mid-word at the modal edge.
+        // Inner width is 76: dialog width less borders and margin. The hint
+        // line reserves 2 rows so per-field hints wrap instead of truncating.
         let error_lines: u16 = if let Some(error) = &self.error_message {
             let inner_width = (dialog_width - 4) as usize;
             let error_text = format!("✗ Error: {}", error);
@@ -114,7 +95,6 @@ impl NewSessionDialog {
         };
         constraints.push(Constraint::Min(error_lines)); // Hints/errors
 
-        // Compute dialog height from actual constraints
         let fields_height: u16 = constraints
             .iter()
             .map(|c| match c {
@@ -145,10 +125,9 @@ impl NewSessionDialog {
             .constraints(constraints)
             .split(inner);
 
-        // Render fields sequentially, tracking chunk index to match dynamic constraints
         let mut ci = 0; // chunk index
 
-        // Field index calculations (must match handle_key).
+        // Field indices must match handle_key.
         // Field order: [profile], path, title, [tool], [structured], ...
         let base = if has_profile_selection { 1 } else { 0 };
         let title_field = base + 1;
@@ -183,7 +162,6 @@ impl NewSessionDialog {
         };
         let group_field = fi;
 
-        // Profile picker (only when multiple profiles)
         if has_profile_selection {
             let area = chunks[ci];
             self.render_profile_field(frame, area, theme);
@@ -191,8 +169,7 @@ impl NewSessionDialog {
             ci += 1;
         }
 
-        // Path (rendered first so the user picks the working directory
-        // before naming the session).
+        // Path precedes title: pick the directory before naming the session.
         let path_field_idx = self.path_field();
         let path_placeholder = if self.focused_field == path_field_idx {
             Some("(Ctrl+P to browse directories)")
@@ -204,7 +181,6 @@ impl NewSessionDialog {
         self.focusable_rects.push((path_field_idx, area));
         ci += 1;
 
-        // Title
         let area = chunks[ci];
         render_text_field(
             frame,
@@ -218,8 +194,8 @@ impl NewSessionDialog {
         self.focusable_rects.push((title_field, area));
         ci += 1;
 
-        // Tool (always shown, interactive or read-only). The cycler and suffix
-        // ordering are shared with the Restart dialog.
+        // Always shown, interactive or read-only. Cycler and suffix ordering
+        // are shared with the Restart dialog.
         let tool_field = base + 2;
         let is_tool_focused = has_tool_selection && self.focused_field == tool_field;
         let selected_tool = self.available_tools[self.tool_index].as_str();
@@ -241,14 +217,12 @@ impl NewSessionDialog {
         ));
         let area = chunks[ci];
         frame.render_widget(Paragraph::new(Line::from(tool_spans)), area);
-        // Push the tool rect only when interactive (multiple tools).
-        // A read-only tool row shouldn't accept focus on click.
+        // A read-only tool row must not accept focus on click.
         if has_tool_selection {
             self.focusable_rects.push((tool_field, area));
         }
         ci += 1;
 
-        // Structured view checkbox (only for ACP-capable tools)
         if has_structured {
             let is_focused = self.focused_field == structured_field;
             let label_style = if is_focused {
@@ -289,7 +263,6 @@ impl NewSessionDialog {
             ci += 1;
         }
 
-        // YOLO Mode checkbox (hidden for AlwaysYolo agents like pi)
         if has_yolo {
             let is_yolo_focused = self.focused_field == yolo_mode_field;
             let yolo_label_style = if is_yolo_focused {
@@ -324,7 +297,6 @@ impl NewSessionDialog {
             ci += 1;
         }
 
-        // Worktree checkbox (with config summary) -- hidden for host-only agents
         if !is_host_only {
             let is_wt_focused = self.focused_field == worktree_field;
             let label_style = if is_wt_focused {
@@ -383,7 +355,6 @@ impl NewSessionDialog {
             ci += 1;
         }
 
-        // Sandbox checkbox with summary (only when a container runtime is available)
         if has_sandbox {
             let is_sandbox_focused = self.focused_field == sandbox_field;
             let sandbox_label_style = if is_sandbox_focused {

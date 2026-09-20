@@ -1,4 +1,4 @@
-//! Acknowledgment dialog for first-time agent status hook installation
+//! Acknowledgment dialog for first-time status hook installation.
 
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::prelude::*;
@@ -16,8 +16,7 @@ pub struct HooksInstallDialog {
     scroll_offset: u16,
     accept_button_area: Rect,
     cancel_button_area: Rect,
-    /// Which button the mouse is over, for the hover highlight. Visual
-    /// only; never changes `selected`.
+    /// The hovered button. Visual only; never changes `selected`.
     hover: HoverState,
 }
 
@@ -143,9 +142,8 @@ impl HooksInstallDialog {
         None
     }
 
-    /// Highlight the button under the cursor without changing the
-    /// Accept / Cancel selection. See `ConfirmDialog::handle_hover` for
-    /// the rationale. Returns `true` when the highlighted button changed.
+    /// Highlight the button under the cursor without changing the selection.
+    /// True when the highlight changed.
     pub fn handle_hover(&mut self, col: u16, row: u16) -> bool {
         self.hover.update(
             col,
@@ -218,10 +216,8 @@ impl HooksInstallDialog {
             "Each hook runs:",
             Style::default().bold(),
         )));
-        // The euid in the displayed path matches the runtime path baked into
-        // the hook command and is already exposed via `id -u` and `ps`. The
-        // alternative (a placeholder) would mislead users about what is
-        // actually installed.
+        // The euid shown matches the runtime path baked into the hook command,
+        // and is already exposed by `id -u`. A placeholder would mislead.
         lines.push(Line::from(format!(
             "  printf {{status}} > {}/$AOE_INSTANCE_ID/status",
             crate::hooks::hook_base_path().display()
@@ -275,7 +271,6 @@ impl HooksInstallDialog {
             ])
             .split(inner);
 
-        // Header
         let header = Paragraph::new(
             "AoE needs to install hooks into your agent's settings\nto detect session status (running/waiting/idle).",
         )
@@ -283,7 +278,6 @@ impl HooksInstallDialog {
         .wrap(Wrap { trim: true });
         frame.render_widget(header, chunks[0]);
 
-        // Scrollable content
         let visible_lines: Vec<Line> = content_lines
             .into_iter()
             .skip(self.scroll_offset as usize)
@@ -297,7 +291,6 @@ impl HooksInstallDialog {
             );
         frame.render_widget(content_paragraph, chunks[1]);
 
-        // Buttons
         let accept_style = if self.selected {
             Style::default().fg(theme.running).bold()
         } else {

@@ -24,21 +24,17 @@ pub struct ProjectsDialog {
     items: Vec<Project>,
     selected: usize,
     mode: Mode,
-    /// Path input when adding
     add_input: Input,
-    /// Optional default base branch input when adding
     add_base_branch: Input,
-    /// Scope selection when adding (Global vs Profile)
     add_scope: ProjectScope,
     /// Allow registering even if path is already in the other scope.
     add_allow_override: bool,
-    /// Cursor field while adding: 0=path, 1=base-branch, 2=scope, 3=allow-override
+    /// 0=path, 1=base-branch, 2=scope, 3=allow-override.
     add_focused: usize,
     error: Option<String>,
     info: Option<String>,
-    /// One-time notice shown on top of the dialog after registering a non-git
-    /// directory, explaining that git features are unavailable. Gated by
-    /// `app_state.has_seen_non_git_project_warning` so it appears once.
+    /// One-time "git features unavailable" notice after registering a non-git
+    /// directory, latched by `app_state.has_seen_non_git_project_warning`.
     non_git_notice: Option<InfoDialog>,
     /// Close the dialog when Esc cancels the add form opened from a direct flow.
     close_on_add_cancel: bool,
@@ -98,8 +94,7 @@ impl ProjectsDialog {
     }
 
     pub fn handle_key(&mut self, key: KeyEvent) -> DialogResult<()> {
-        // The one-time non-git notice sits on top of the dialog; while it is up,
-        // keys dismiss it rather than driving the list or add form.
+        // While the notice is up, keys dismiss it rather than driving the form.
         if let Some(notice) = &mut self.non_git_notice {
             if matches!(notice.handle_key(key), DialogResult::Cancel) {
                 self.non_git_notice = None;
@@ -184,8 +179,7 @@ impl ProjectsDialog {
                 }
                 let path_buf = std::path::PathBuf::from(&path);
                 let canonical = path_buf.canonicalize().unwrap_or_else(|_| path_buf.clone());
-                // Non-git directories are allowed (sessions run in place); only
-                // reject paths that don't resolve to a directory.
+                // Non-git directories are allowed; sessions run in place.
                 if !canonical.is_dir() {
                     self.error = Some(format!(
                         "Path does not exist or is not a directory: {}",
@@ -252,16 +246,11 @@ impl ProjectsDialog {
         }
     }
 
-    /// Show the one-time "not a git repository" notice, unless the user has
-    /// already seen it. Latches `app_state.has_seen_non_git_project_warning`
-    /// (in `state.toml`) so it never repeats.
-    ///
-    /// Reads the latch via `AppStateConfig::load()` directly rather than the
-    /// merged `Config::load()`, so a malformed `config.toml` can never block
-    /// reading (or writing) this latch: the two files are independent. If the
-    /// read fails (a corrupt `state.toml`), we show the notice again rather
-    /// than assume it was already seen, and `update_app_state` below then
-    /// declines to write, leaving the corrupt file for the user to fix.
+    /// Show the one-time "not a git repository" notice unless the latch in
+    /// `state.toml` says it was seen. Read through `AppStateConfig::load()`
+    /// rather than the merged config, so a malformed `config.toml` cannot
+    /// block it; a corrupt `state.toml` re-shows the notice and declines to
+    /// write, leaving the file for the user to fix.
     fn maybe_warn_non_git(&mut self, project_name: &str) {
         let state = crate::session::config::AppStateConfig::load().ok();
         if state.is_some_and(|s| s.has_seen_non_git_project_warning) {
@@ -317,7 +306,6 @@ impl ProjectsDialog {
             .constraints(constraints)
             .split(inner);
 
-        // Project list
         if self.items.is_empty() {
             let p = Paragraph::new("No registered projects. Press 'a' to add one.")
                 .style(Style::default().fg(theme.dimmed));
@@ -358,14 +346,12 @@ impl ProjectsDialog {
             frame.render_widget(Paragraph::new(lines), chunks[0]);
         }
 
-        // Separator
         frame.render_widget(
             Paragraph::new("─".repeat(inner.width as usize))
                 .style(Style::default().fg(theme.dimmed)),
             chunks[1],
         );
 
-        // Add form or status line
         match self.mode {
             Mode::Browse => {
                 let mut spans = vec![];
@@ -457,9 +443,8 @@ impl ProjectsDialog {
                     )));
                 }
                 frame.render_widget(Paragraph::new(lines), chunks[2]);
-                // The real terminal cursor follows the focused text field. Each
-                // field renders on its own row within chunks[2], so offset the
-                // 1-row cursor rect by the field's line index.
+                // Each field owns a row in chunks[2], so offset the cursor rect
+                // by the field's line index.
                 let row = |offset: u16| Rect {
                     y: chunks[2].y.saturating_add(offset),
                     height: 1,
@@ -478,7 +463,6 @@ impl ProjectsDialog {
             }
         }
 
-        // Hints
         let hint_spans: Vec<Span> = match self.mode {
             Mode::Browse => vec![
                 Span::styled("a", Style::default().fg(theme.hint)),
@@ -503,8 +487,7 @@ impl ProjectsDialog {
         };
         frame.render_widget(Paragraph::new(Line::from(hint_spans)), chunks[3]);
 
-        // The one-time non-git notice renders last so it sits on top of the
-        // projects dialog body.
+        // Rendered last so the notice sits on top of the dialog body.
         if let Some(notice) = &mut self.non_git_notice {
             notice.render(frame, area, theme);
         }
@@ -522,20 +505,14 @@ mod tests {
         KeyEvent::new(code, KeyModifiers::NONE)
     }
 
-    /// Point HOME/XDG_CONFIG_HOME at `temp` for the test body. Returns the
-    /// shared [`crate::session::test_support::HomeGuard`], which restores the
-    /// prior env on Drop and holds the process-global env lock for its
-    /// lifetime; the caller MUST bind it (`let _home = ...`) so the override
-    /// outlives the body instead of the previous fire-and-forget `set_var`
-    /// that leaked the tempdir HOME into sibling tests. The returned
-    /// `HomeGuard` is itself `#[must_use]`, so binding is enforced.
+    /// Point HOME/XDG_CONFIG_HOME at `temp` for the test body. The returned
+    /// guard holds the process-global env lock and restores the prior env on
+    /// Drop, so it must be bound for the whole body.
     fn isolate_home(temp: &std::path::Path) -> crate::session::test_support::HomeGuard {
         crate::session::test_support::isolate_home(temp)
     }
 
-    /// Drive the dialog through an add of `dir`: enter add mode, set the path
-    /// input directly (typing char-by-char is unnecessary for this logic), and
-    /// submit.
+    /// Add `dir`: enter add mode, set the path input directly, submit.
     fn add_dir(dialog: &mut ProjectsDialog, dir: &std::path::Path) {
         dialog.handle_key(key(KeyCode::Char('a')));
         dialog.add_input = Input::new(dir.to_string_lossy().to_string());

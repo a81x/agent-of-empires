@@ -220,7 +220,9 @@ mod tests {
             DialogResult::Continue
         ));
         d.handle_key(key(KeyCode::Char('i')));
-        assert!(matches!(d.handle_key(key(KeyCode::Enter)), DialogResult::Submit(ref s) if s == "hi"));
+        assert!(
+            matches!(d.handle_key(key(KeyCode::Enter)), DialogResult::Submit(ref s) if s == "hi")
+        );
     }
 
     #[test]
@@ -238,7 +240,9 @@ mod tests {
             assert!(matches!(d.handle_key(newline), DialogResult::Continue));
             type_str(&mut d, "l2");
             assert_eq!(d.get_text(), "l1\nl2");
-            assert!(matches!(d.handle_key(key(KeyCode::Enter)), DialogResult::Submit(ref s) if s == "l1\nl2"));
+            assert!(
+                matches!(d.handle_key(key(KeyCode::Enter)), DialogResult::Submit(ref s) if s == "l1\nl2")
+            );
         }
     }
 
@@ -248,13 +252,18 @@ mod tests {
         type_str(&mut d, "hi ");
         d.handle_paste("world");
         assert_eq!(d.get_text(), "hi world");
-        assert!(matches!(d.handle_key(key(KeyCode::Enter)), DialogResult::Submit(ref s) if s == "hi world"));
+        assert!(
+            matches!(d.handle_key(key(KeyCode::Enter)), DialogResult::Submit(ref s) if s == "hi world")
+        );
 
         // Dictation emits lone CRs as sentence breaks; embedded \r reaches the
         // agent as a premature submit, so both forms collapse to \n.
         for (pasted, want) in [
             ("line1\nline2\nline3", "line1\nline2\nline3"),
-            ("first\r\nsecond\rthird\r\nfourth", "first\nsecond\nthird\nfourth"),
+            (
+                "first\r\nsecond\rthird\r\nfourth",
+                "first\nsecond\nthird\nfourth",
+            ),
         ] {
             let mut d = dialog();
             d.handle_paste(pasted);
@@ -407,7 +416,12 @@ mod tests {
     #[test]
     fn shifted_kill_and_restore_chords_still_work() {
         // Some terminals deliver Ctrl+Shift+U as Char('U') with CONTROL.
-        let shift_ctrl = |c| KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL | KeyModifiers::SHIFT);
+        let shift_ctrl = |c| {
+            KeyEvent::new(
+                KeyCode::Char(c),
+                KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+            )
+        };
         let mut d = dialog();
         type_str(&mut d, "z");
         d.handle_key(shift_ctrl('U'));
