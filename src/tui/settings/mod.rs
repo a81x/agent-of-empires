@@ -17,37 +17,21 @@ pub use fields::{FieldValue, HookField, SettingField, SettingsCategory};
 pub use input::SettingsAction;
 
 /// How long the "Settings saved" toast lingers before it auto-dismisses.
-/// Matches the dashboard's transient update-bar window (`app.rs`).
 const SUCCESS_MESSAGE_TTL: std::time::Duration = std::time::Duration::from_secs(10);
 
-/// Serialize a config (or `Option<RepoConfig>`) to JSON for change detection.
-/// Comparing the serialized form (the same representation that gets written to
-/// disk) sidesteps adding `PartialEq` to every nested config type, and a
-/// serialization failure degrades to `Null` so two failures compare equal
-/// rather than spuriously flagging changes.
+/// Serialize a config to JSON for change detection, so no nested config type
+/// needs `PartialEq`. A failure degrades to `Null` so two failures compare equal.
 fn config_to_json<T: serde::Serialize>(value: &T) -> serde_json::Value {
     serde_json::to_value(value).unwrap_or(serde_json::Value::Null)
 }
 
-/// Bonus a query token earns for matching a hit's title (category +
-/// label) rather than only its description prose. Sized to dominate any
-/// per-token nucleo score so title matches always rank first; a field
-/// that merely mentions the term in its description still matches, just
-/// lower in the popup.
+/// Bonus for matching a hit's title rather than only its description, sized to
+/// dominate any per-token nucleo score so title matches always rank first.
 const TITLE_MATCH_BONUS: u32 = 100_000;
 
-/// Fuzzy-score a field against a settings-search query. The query is
-/// split on whitespace and every token must fuzzy-match somewhere in
-/// `title` (category label + field label) or `full` (title +
-/// description); AND semantics, so "max workers" still matches "Max
-/// Concurrent Workers". Per-token scores are summed so closer matches
-/// rank higher, and a title match earns [`TITLE_MATCH_BONUS`] so
-/// "sandbox" surfaces the Sandbox tab's own settings before fields
-/// that only mention it in prose. An empty query scores every field 0,
-/// which keeps the popup listing all fields in their natural order.
-/// The fuzzy match also covers acronyms, so "mcw" finds "Max
-/// Concurrent Workers". Reuses the same nucleo pattern as the command
-/// palette.
+/// Fuzzy-score a field against a settings-search query: every whitespace token
+/// must match `title` or `full`, scores are summed, and a title match earns
+/// [`TITLE_MATCH_BONUS`]. An empty query scores 0, listing fields in order.
 fn fuzzy_settings_score(query: &str, title: &str, full: &str) -> Option<u32> {
     use nucleo_matcher::pattern::{Atom, AtomKind, CaseMatching, Normalization};
     use nucleo_matcher::{Config, Matcher, Utf32Str};
@@ -80,7 +64,6 @@ fn fuzzy_settings_score(query: &str, title: &str, full: &str) -> Option<u32> {
     Some(total)
 }
 
-/// Which scope of settings is being edited
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SettingsScope {
     #[default]
@@ -89,7 +72,6 @@ pub enum SettingsScope {
     Repo,
 }
 
-/// Focus state for the settings view
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SettingsFocus {
     #[default]
@@ -97,7 +79,6 @@ pub enum SettingsFocus {
     Fields,
 }
 
-/// State for editing a list field
 #[derive(Debug, Clone, Default)]
 pub struct ListEditState {
     pub selected_index: usize,
@@ -105,27 +86,22 @@ pub struct ListEditState {
     pub adding_new: bool,
 }
 
-/// One result in the settings-search jump popup: a field that matched
-/// the user's query along with where it lives.
+/// A field that matched the settings-search query, plus where it lives.
 #[derive(Debug, Clone)]
 pub(super) struct SearchHit {
     pub category: SettingsCategory,
-    /// Stable field identity (`SettingField::ident`) used to relocate the
-    /// cursor on jump, since fields are rebuilt from the schema per category.
+    /// Stable identity used to relocate the cursor on jump, since fields are
+    /// rebuilt from the schema per category.
     pub field_ident: String,
     pub field_label: String,
     pub category_label: &'static str,
-    /// Current value of the field at the time the hit list was built,
-    /// rendered dimmed after the label so the popup doubles as a quick
-    /// way to review settings without jumping to each one (issue #2932).
-    /// Safe to snapshot: editing is frozen while the popup is open.
+    /// Value snapshotted when the hit list was built. Safe because editing is
+    /// frozen while the popup is open.
     pub value_display: String,
 }
 
-/// One row in the left-hand categories panel. Sections are
-/// non-interactive dividers that group related categories visually
-/// (Sessions, Hooks, Environment, etc.); navigation skips past them
-/// and `selected_category` is always the index of a `Tab` row.
+/// A row in the categories panel. Sections are non-interactive dividers that
+/// navigation skips; `selected_category` is always the index of a `Tab` row.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum CategoryRow {
     Section(&'static str),
@@ -141,168 +117,108 @@ impl CategoryRow {
     }
 }
 
-/// The settings view state
 pub struct SettingsView {
-    /// Current profile name being edited
     pub(super) profile: String,
 
-    /// All available profile names (sorted)
     pub(super) available_profiles: Vec<String>,
 
-    /// Project path for repo-level settings (None if no session selected)
     pub(super) project_path: Option<String>,
 
-    /// Repo-level config (original, for load/save)
     pub(super) repo_config: Option<RepoConfig>,
 
-    /// Repo config converted to ProfileConfig for TUI editing (overrides relative to resolved base)
+    /// Repo config as overrides relative to `resolved_base`.
     pub(super) repo_as_profile: ProfileConfig,
 
-    /// Resolved base config (global + profile merged) used as the "global" when editing Repo scope
+    /// Global + profile merged, the base that Repo scope overrides.
     pub(super) resolved_base: Config,
 
-    /// Which scope tab is selected
     pub(super) scope: SettingsScope,
 
-    /// Which panel has focus
     pub(super) focus: SettingsFocus,
 
-    /// Rows in the left-hand categories panel: a mix of non-interactive
-    /// section dividers and selectable category tabs. `selected_category`
-    /// is always the index of a `CategoryRow::Tab` entry.
     pub(super) categories: Vec<CategoryRow>,
 
-    /// Currently selected category-row index. Points at a `Tab`
-    /// row; navigation helpers maintain this invariant.
+    /// Always the index of a `Tab` row; navigation helpers keep it so.
     pub(super) selected_category: usize,
 
-    /// Fields for the current category
     pub(super) fields: Vec<SettingField>,
 
-    /// Currently selected field index
     pub(super) selected_field: usize,
 
-    /// Global config being edited
     pub(super) global_config: Config,
 
-    /// Profile config being edited (overrides)
     pub(super) profile_config: ProfileConfig,
 
-    /// Text input when editing a text/number field
     pub(super) editing_input: Option<Input>,
 
-    /// State for list editing
     pub(super) list_edit_state: Option<ListEditState>,
 
-    /// Custom instruction editor dialog
     pub(super) custom_instruction_dialog: Option<CustomInstructionDialog>,
 
-    /// Scroll offset for the fields panel (in lines)
     pub(super) fields_scroll_offset: u16,
 
-    /// Last known viewport height for the fields panel (set during render)
     pub(super) fields_viewport_height: u16,
 
-    /// Last known content width for the fields panel (set during render).
-    /// Used to compute description wrap heights outside the render pass,
-    /// so `ensure_field_visible` and the scroll math match what the
-    /// next frame will actually paint.
+    /// Content width captured during render, so scroll math outside the render
+    /// pass wraps descriptions the way the next frame will paint them.
     pub(super) fields_content_width: u16,
 
-    /// Unsaved changes, recomputed against the saved `baseline_*` snapshots
-    /// so reverting an edit clears the flag instead of latching it.
+    /// Recomputed against `baseline_*`, so reverting an edit clears it.
     pub(super) has_changes: bool,
 
-    /// Serialized snapshots of the editable configs as of the last load or
-    /// save. The unsaved-changes flag compares the live configs against these.
+    /// The editable configs as of the last load or save.
     pub(super) baseline_global: serde_json::Value,
     pub(super) baseline_profile: serde_json::Value,
     pub(super) baseline_repo: serde_json::Value,
 
-    /// Whether the help overlay is shown
     pub(super) show_help: bool,
 
-    /// Error message to display
     pub(super) error_message: Option<String>,
 
-    /// Success message to display (e.g. "Settings saved"). Rendered in the
-    /// footer status row, not over the fields.
     pub(super) success_message: Option<String>,
 
-    /// When the success toast should auto-dismiss. Set alongside
-    /// `success_message` on save so the "Settings saved" notice fades on its
-    /// own if the user just walks away, mirroring the dashboard's transient
-    /// update bar. Errors are sticky and have no expiry.
+    /// When the success toast auto-dismisses. Errors are sticky and have none.
     pub(super) success_message_expires_at: Option<std::time::Instant>,
 
-    /// The settings-search query. `Some` while search is active: the
-    /// permanent bar becomes the input and the jump popup renders
-    /// beneath it with the ranked hits; keys route to the query + hit
-    /// list until the user picks a hit (Enter jumps to it) or hits
-    /// Esc. `None` is the idle bar with its placeholder.
+    /// `Some` while search is active: keys route to the query and hit list
+    /// until Enter jumps or Esc closes. `None` is the idle bar.
     pub(super) search_input: Option<Input>,
 
-    /// Hits that match the current `search_input` query, recomputed
-    /// each time the query changes. Empty query lists every
-    /// interactive field across every category, so the user can
-    /// browse the full catalog as a flat list sorted by category
-    /// then by field order.
+    /// Hits for the current query; an empty query lists every field.
     pub(super) search_hits: Vec<SearchHit>,
 
-    /// Cursor inside `search_hits`, bounded by `search_hits.len()`
-    /// so it stays valid as the query narrows.
     pub(super) search_selected: usize,
 
-    /// Captured by the popup render: the screen row of each visible
-    /// hit along with its `search_hits` index. Drives click + hover
-    /// routing without re-deriving the scroll math (the command
-    /// palette's `visible_item_rows` pattern).
+    /// Screen row and `search_hits` index per visible hit, captured by the
+    /// popup render so click and hover need no scroll math.
     pub(super) search_hit_rows: Vec<(u16, usize)>,
 
-    /// Rect of the rendered popup frame. Click routing uses it to
-    /// distinguish "inside popup but missed a row" (no-op) from
-    /// "outside popup" (dismiss).
+    /// Popup frame, so a click inside it that misses a row is a no-op rather
+    /// than a dismiss.
     pub(super) search_popup_area: ratatui::layout::Rect,
 
-    /// Rect of the permanent search bar, captured each frame so a
-    /// click on the idle bar opens the search like typing `/` does.
+    /// Search bar, so clicking the idle bar opens search like `/`.
     pub(super) search_bar_rect: ratatui::layout::Rect,
 
-    /// Hit rect per scope tab in the header. Captured during render
-    /// so a click on `[ Global ]` / `[ Profile ]` / `[ Repo ]` can
-    /// switch scope without going through the keyboard. Cleared and
-    /// repopulated each frame.
+    /// Hit rect per scope tab, so a click can switch scope.
     pub(super) scope_tab_rects: Vec<(SettingsScope, ratatui::layout::Rect)>,
-    /// Hit rect per row in the categories panel, indexed into
-    /// `self.categories`. Only Tab rows are pushed; Section dividers
-    /// are skipped so a click on a heading is a no-op.
+    /// Hit rect per `categories` Tab row; Section dividers are skipped.
     pub(super) category_rects: Vec<(usize, ratatui::layout::Rect)>,
-    /// Hit rect per visible field row, indexed into `self.fields`.
-    /// Skipped while a field is being edited or a list is being
-    /// edited so a stray click during composition doesn't reset focus.
+    /// Hit rect per visible `fields` row, empty while editing so a stray click
+    /// during composition cannot reset focus.
     pub(super) field_rects: Vec<(usize, ratatui::layout::Rect)>,
-    /// Rect of the fields-panel scrollbar, captured each frame so the
-    /// wheel and a grab-drag on the bar can move the fields viewport.
-    /// A zero-area rect (the default when content fits) makes the
-    /// hit test miss, so there's nothing to grab when nothing scrolls.
+    /// Fields-panel scrollbar. Zero-area when content fits, so nothing to grab.
     pub(super) scrollbar_area: ratatui::layout::Rect,
-    /// Last `(col, row)` reported by a `MouseEventKind::Moved` event
-    /// while a non-editing settings surface is in view. Drives the
-    /// hover highlight on scope chips, categories, and fields, kept
-    /// separate from `selected_*` / `focus` so the mouse never
-    /// disturbs the keyboard cursor. Cleared on every keypress so
-    /// hover doesn't linger after the user switches modalities.
+    /// Last hovered cell, kept apart from `selected_*` so the mouse never
+    /// disturbs the keyboard cursor. Cleared on every keypress.
     pub(super) mouse_pos: Option<(u16, u16)>,
 
-    /// Embedded plugin manager for the Plugins category: the same dialog the
-    /// command palette opens (`crate::tui::dialogs::PluginManagerDialog`),
-    /// hosted inline so the builtin plugin list lives on the settings screen.
-    /// One implementation, reused; it reloads its own list on mutation.
+    /// The command palette's plugin manager, hosted inline in the Plugins
+    /// category.
     pub(super) plugin_manager: crate::tui::dialogs::PluginManagerDialog,
 
-    /// Sub-focus within the Plugins category's right pane: `false` targets
-    /// the plugin manager (top), `true` the editable plugin settings fields
-    /// beneath it. Tab toggles; reset when the field list rebuilds.
+    /// Plugins right pane sub-focus: `true` targets the settings fields below
+    /// the manager. Tab toggles; reset when the field list rebuilds.
     pub(super) plugins_fields_focus: bool,
 }
 
@@ -350,8 +266,6 @@ impl SettingsView {
             scope: SettingsScope::Global,
             focus: SettingsFocus::Categories,
             categories,
-            // 0 is the leading section divider; seek to the first
-            // Tab below so the user lands on a real category.
             selected_category: 0,
             fields: Vec::new(),
             selected_field: 0,
@@ -386,21 +300,15 @@ impl SettingsView {
             plugins_fields_focus: false,
         };
 
-        // The constructor parks `selected_category` at 0, which is the
-        // first section divider in the layout. Snap to the first real
-        // Tab before the first render so the cursor lands on Theme.
+        // 0 is the leading section divider; land on the first real Tab.
         view.selected_category = view.first_tab_index();
         view.rebuild_fields();
         Ok(view)
     }
 
-    /// Build the categories-panel layout. Categories are grouped under
-    /// section dividers (Appearance / Sessions / Hooks / Environment /
-    /// Notifications / System) so the list isn't 14 unrelated tabs in
-    /// arbitrary order. Status Hooks, Tmux, and Sound are dropped in Repo
-    /// scope because their sections are not repo-overridable (see
-    /// `REPO_OVERRIDABLE_SECTIONS` in `session::config::repo_config`), so a repo
-    /// edit would strand at save.
+    /// Categories grouped under section dividers. Status Hooks, Tmux and Sound
+    /// are dropped in Repo scope: `REPO_OVERRIDABLE_SECTIONS` excludes them, so
+    /// a repo edit there would strand at save.
     fn categories_for_scope(scope: SettingsScope) -> Vec<CategoryRow> {
         let mut rows: Vec<CategoryRow> = Vec::new();
         let push_section = |rows: &mut Vec<CategoryRow>, label: &'static str| {
