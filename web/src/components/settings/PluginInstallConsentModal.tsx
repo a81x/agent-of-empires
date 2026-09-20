@@ -1,5 +1,5 @@
 import type { PluginInstallConsent } from "../../lib/api";
-import { BuildSteps, ModalSection, PluginModal } from "./PluginModal";
+import { BuildSteps, ModalActions, ModalSection, PluginModal } from "./PluginModal";
 import { uniqueSlots } from "./uniqueSlots";
 
 interface Props {
@@ -63,26 +63,15 @@ export function PluginInstallConsentModal({ consent, busy, error, onApprove, onC
         </p>
       )}
 
-      <div className="flex justify-end gap-2">
-        <button
-          type="button"
-          className="rounded border border-surface-700 px-3 py-1 text-xs hover:bg-surface-800 disabled:opacity-50"
-          disabled={busy}
-          onClick={onClose}
-          data-testid="plugin-install-cancel"
-        >
-          Cancel
-        </button>
-        <button
-          type="button"
-          className="rounded bg-brand-600 px-3 py-1 text-xs font-medium text-white hover:bg-brand-500 disabled:opacity-50"
-          disabled={busy}
-          onClick={onApprove}
-          data-testid="plugin-install-approve"
-        >
-          {busy ? "Starting…" : "Approve and install"}
-        </button>
-      </div>
+      <ModalActions
+        busy={busy}
+        cancelLabel="Cancel"
+        cancelTestId="plugin-install-cancel"
+        onCancel={onClose}
+        confirmLabel={busy ? "Starting…" : "Approve and install"}
+        confirmTestId="plugin-install-approve"
+        onConfirm={onApprove}
+      />
     </PluginModal>
   );
 }

@@ -107,3 +107,28 @@ export function BuildSteps({ steps, testId }: { steps: string[]; testId: string 
     </ModalSection>
   );
 }
+
+const CANCEL = "rounded border border-surface-700 px-3 py-1 text-xs hover:bg-surface-800 disabled:opacity-50";
+const CONFIRM = "rounded bg-brand-600 px-3 py-1 text-xs font-medium text-white hover:bg-brand-500 disabled:opacity-50";
+
+/** The modal's trailing cancel/confirm pair; both go flat while `busy`. */
+export function ModalActions(p: {
+  busy: boolean;
+  cancelLabel: string;
+  cancelTestId: string;
+  onCancel: () => void;
+  confirmLabel: string;
+  confirmTestId: string;
+  onConfirm: () => void;
+}) {
+  return (
+    <div className="flex justify-end gap-2">
+      <button type="button" className={CANCEL} disabled={p.busy} onClick={p.onCancel} data-testid={p.cancelTestId}>
+        {p.cancelLabel}
+      </button>
+      <button type="button" className={CONFIRM} disabled={p.busy} onClick={p.onConfirm} data-testid={p.confirmTestId}>
+        {p.confirmLabel}
+      </button>
+    </div>
+  );
+}

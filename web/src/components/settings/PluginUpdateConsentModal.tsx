@@ -1,5 +1,5 @@
 import type { PluginUpdateChangelog, PluginUpdateConsent } from "../../lib/api";
-import { BuildSteps, ModalSection, PluginModal } from "./PluginModal";
+import { BuildSteps, ModalActions, ModalSection, PluginModal } from "./PluginModal";
 import { uniqueSlots } from "./uniqueSlots";
 
 interface Props {
@@ -102,26 +102,15 @@ export function PluginUpdateConsentModal({
         </p>
       )}
 
-      <div className="flex justify-end gap-2">
-        <button
-          type="button"
-          className="rounded border border-surface-700 px-3 py-1 text-xs hover:bg-surface-800 disabled:opacity-50"
-          disabled={busy}
-          onClick={needsConsent ? onDecline : closeIfIdle}
-          data-testid="plugin-update-decline"
-        >
-          {needsConsent ? "Decline" : "Cancel"}
-        </button>
-        <button
-          type="button"
-          className="rounded bg-brand-600 px-3 py-1 text-xs font-medium text-white hover:bg-brand-500 disabled:opacity-50"
-          disabled={busy}
-          onClick={onApprove}
-          data-testid="plugin-update-approve"
-        >
-          {busy ? "Updating…" : needsConsent ? "Approve and update" : "Update"}
-        </button>
-      </div>
+      <ModalActions
+        busy={busy}
+        cancelLabel={needsConsent ? "Decline" : "Cancel"}
+        cancelTestId="plugin-update-decline"
+        onCancel={() => (needsConsent ? onDecline?.() : closeIfIdle())}
+        confirmLabel={busy ? "Updating…" : needsConsent ? "Approve and update" : "Update"}
+        confirmTestId="plugin-update-approve"
+        onConfirm={onApprove}
+      />
     </PluginModal>
   );
 }
