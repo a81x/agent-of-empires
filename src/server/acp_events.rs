@@ -722,6 +722,41 @@ mod tests {
     use crate::acp::protocol::AcpBroadcastFrame;
     use crate::server::test_support;
 
+    /// A broadcast only reaches receivers that subscribed before the send, and a spawned
+    /// listener subscribes as its first act.
+    async fn await_subscribed(state: &AppState) {
+        for _ in 0..500 {
+            if state.acp_events_tx.receiver_count() > 0 {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+        }
+        panic!("listener never subscribed");
+    }
+
+    /// Poll the session row until `want` holds, bounded so a failure reports the reason.
+    async fn await_row(
+        state: &AppState,
+        id: &str,
+        want: fn(&Instance) -> bool,
+        why: &str,
+    ) -> Instance {
+        for _ in 0..500 {
+            let row = state
+                .instances
+                .read()
+                .await
+                .iter()
+                .find(|i| i.id == id)
+                .cloned();
+            if let Some(row) = row.filter(|row| want(row)) {
+                return row;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+        }
+        panic!("{why}");
+    }
+
     /// #3741.
     #[test]
     fn approval_tally_counts_the_effective_decision_and_skips_cancellations() {
@@ -1001,36 +1036,7 @@ mod tests {
         let first_generation = state.acp_supervisor.test_insert_worker(&id).await;
         let listener = tokio::spawn(acp_event_listener(state.clone()));
 
-        /// Poll the row until `want` holds, bounded so a failure reports the reason.
-        async fn await_row(
-            state: &AppState,
-            id: &str,
-            want: fn(&Instance) -> bool,
-            why: &str,
-        ) -> Instance {
-            for _ in 0..500 {
-                let row = state
-                    .instances
-                    .read()
-                    .await
-                    .iter()
-                    .find(|i| i.id == id)
-                    .cloned();
-                if let Some(row) = row.filter(|row| want(row)) {
-                    return row;
-                }
-                tokio::time::sleep(std::time::Duration::from_millis(2)).await;
-            }
-            panic!("{why}");
-        }
-
-        for _ in 0..500 {
-            if state.acp_events_tx.receiver_count() > 0 {
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(2)).await;
-        }
-        assert!(state.acp_events_tx.receiver_count() > 0);
+        await_subscribed(&state).await;
 
         let send = |seq, event, worker_generation| {
             state
@@ -1127,18 +1133,7 @@ mod tests {
         let state = test_support::build_test_app_state(vec![inst]);
         let listener = tokio::spawn(acp_event_listener(state.clone()));
 
-        // A broadcast only reaches receivers that subscribed before the send, and the
-        // spawned listener subscribes as its first act.
-        for _ in 0..500 {
-            if state.acp_events_tx.receiver_count() > 0 {
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(2)).await;
-        }
-        assert!(
-            state.acp_events_tx.receiver_count() > 0,
-            "listener never subscribed"
-        );
+        await_subscribed(&state).await;
 
         // The turn ends.
         state
@@ -1153,36 +1148,22 @@ mod tests {
             })
             .expect("listener is subscribed");
 
-        // The listener owns the write, so poll rather than sleeping a fixed interval.
-        let mut mirrored = false;
-        for _ in 0..500 {
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-            if state
-                .instances
-                .read()
-                .await
-                .iter()
-                .any(|i| i.id == id && i.unread)
-            {
-                mirrored = true;
-                break;
-            }
-        }
+        let row = await_row(
+            &state,
+            &id,
+            |i| i.unread,
+            "daemon memory must mirror the mark, so /api/sessions reports it",
+        )
+        .await;
         listener.abort();
         let _ = listener.await;
 
-        assert!(
-            mirrored,
-            "daemon memory must mirror the mark, so /api/sessions reports it"
-        );
+        assert_eq!(row.status, Status::Idle, "the Stopped applied");
         assert!(
             load_profile_row(profile, &id).is_some_and(|i| i.unread),
             "and the mark must be durable, which is the #3181 fix; a memory-only \
              mark is dropped by the next reload"
         );
-        let instances = state.instances.read().await;
-        let row = instances.iter().find(|i| i.id == id).expect("row present");
-        assert_eq!(row.status, Status::Idle, "the Stopped applied");
     }
 
     /// #2237 plus the one-shot fork/import markers: a reassignment clears a stale
