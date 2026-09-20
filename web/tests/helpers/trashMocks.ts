@@ -3,6 +3,7 @@
 
 import { expect, type Locator, type Page } from "@playwright/test";
 import { mockSessionShellApis, mockStaticApis } from "./apiMocks";
+import { sessionResponse } from "./sessions";
 
 export interface TrashSession {
   id: string;
@@ -45,35 +46,25 @@ export interface TrashMockOptions {
 function sessionPayload(s: TrashSession) {
   const cleanable = s.cleanableWorktree ?? false;
   const sandboxed = s.sandboxed ?? false;
-  const toTrash = s.deleteToTrash ?? true;
-  return {
+  return sessionResponse({
     id: s.id,
-    title: s.title ?? s.id,
-    project_path: s.projectPath ?? `/tmp/${s.id}`,
-    group_path: s.groupPath ?? `/tmp/${s.id}`,
-    tool: "claude",
+    title: s.title,
+    project_path: s.projectPath,
+    group_path: s.groupPath ?? s.projectPath ?? `/tmp/${s.id}`,
     status: s.trashed ? "Stopped" : "Running",
-    yolo_mode: false,
-    created_at: new Date().toISOString(),
-    last_accessed_at: null,
-    idle_entered_at: null,
-    last_error: null,
     branch: s.branch ?? null,
     main_repo_path: s.mainRepoPath ?? null,
     is_sandboxed: sandboxed,
     has_cleanable_worktree: cleanable,
     has_managed_worktree: false,
-    has_terminal: true,
-    profile: "default",
     trashed_at: s.trashed ? new Date().toISOString() : null,
     cleanup_defaults: {
-      delete_to_trash: toTrash,
+      delete_to_trash: s.deleteToTrash ?? true,
       delete_worktree: cleanable,
       delete_branch: cleanable,
       delete_sandbox: sandboxed,
     },
-    workspace_repos: [],
-  };
+  });
 }
 
 export async function installTrashMocks(

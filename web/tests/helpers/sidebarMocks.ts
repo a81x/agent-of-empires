@@ -1,6 +1,7 @@
 // Mocked sidebar API surface for sidebar specs.
 
 import type { Page, Route } from "@playwright/test";
+import { sessionResponse } from "./sessions";
 
 export interface MockSessionInput {
   id: string;
@@ -26,30 +27,19 @@ function fillCreatedAt(s: MockSessionInput, fallbackIndex: number): MockSession 
   };
 }
 
-function sessionResponse(s: MockSession) {
-  return {
+function toResponse(s: MockSession) {
+  return sessionResponse({
     id: s.id,
     title: s.title,
     project_path: s.project_path,
     group_path: s.group ?? "",
-    tool: "claude",
-    status: "Idle",
-    yolo_mode: false,
     created_at: s.created_at,
-    last_accessed_at: null,
-    idle_entered_at: null,
-    last_error: null,
     branch: s.branch,
-    main_repo_path: null,
-    is_sandboxed: false,
-    has_terminal: true,
-    profile: "default",
-    workspace_repos: [],
     remote_owner: s.remote_owner ?? null,
     remote_owner_key:
       s.remote_owner_key !== undefined ? s.remote_owner_key : s.remote_owner ? `${s.remote_owner}@example.com` : null,
     ...s.fields,
-  };
+  });
 }
 
 /** The server's workspace id (see useWorkspaces.ts). */
@@ -88,7 +78,7 @@ export async function installSidebarMocks(page: Page, opts: SidebarMockOptions):
     if (r.request().method() !== "GET") return r.fulfill({ status: 400 });
     return r.fulfill({
       json: {
-        sessions: filled.map(sessionResponse),
+        sessions: filled.map(toResponse),
         workspace_ordering: ordering,
       },
     });

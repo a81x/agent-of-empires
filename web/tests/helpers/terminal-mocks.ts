@@ -1,4 +1,5 @@
 import { expect, type Page } from "@playwright/test";
+import { sessionResponse } from "./sessions";
 
 export interface MockHandle {
   wsMessages: Buffer[];
@@ -107,43 +108,16 @@ export async function mockTerminalApis(
     return r.fulfill({
       json: {
         sessions: [
-          {
+          sessionResponse({
             id: "pinch-test",
-            title: "pinch-test",
-            project_path: "/tmp/pinch-test",
             group_path: "/tmp",
             tool: opts.tool ?? "claude",
             status: "Running",
-            yolo_mode: false,
-            created_at: new Date().toISOString(),
-            last_accessed_at: null,
-            last_error: null,
-            branch: null,
-            main_repo_path: null,
-            is_sandboxed: false,
-            has_terminal: true,
-            profile: "default",
-            workspace_repos: [],
             ...opts.sessionFields,
-          },
-          ...(opts.extraSessions ?? []).map((session) => ({
-            id: session.id,
-            title: session.title,
-            project_path: `/tmp/${session.id}`,
-            group_path: "/tmp",
-            tool: opts.tool ?? "claude",
-            status: "Running",
-            yolo_mode: false,
-            created_at: new Date().toISOString(),
-            last_accessed_at: null,
-            last_error: null,
-            branch: null,
-            main_repo_path: null,
-            is_sandboxed: false,
-            has_terminal: true,
-            profile: "default",
-            workspace_repos: [],
-          })),
+          }),
+          ...(opts.extraSessions ?? []).map((session) =>
+            sessionResponse({ ...session, group_path: "/tmp", tool: opts.tool ?? "claude", status: "Running" }),
+          ),
         ],
         workspace_ordering: [],
       },

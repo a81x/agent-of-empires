@@ -1,4 +1,5 @@
 import { test, expect } from "./helpers/mockedTest";
+import { sessionResponse } from "./helpers/sessions";
 import { Page } from "@playwright/test";
 import { clickSidebarSession } from "./helpers/sidebar";
 import { makePatch } from "./helpers/patch";
@@ -80,27 +81,15 @@ async function setup(page: Page, opts: SetupOpts = {}) {
     return r.fulfill({
       json: {
         sessions: [
-          {
+          sessionResponse({
             id: "sess-1",
             title: "diff-comments-test",
-            project_path: "/tmp/diff-comments-test",
             group_path: "/tmp",
-            tool: "claude",
             status: "Running",
-            yolo_mode: false,
-            created_at: new Date().toISOString(),
-            last_accessed_at: null,
-            last_error: null,
-            branch: null,
-            main_repo_path: null,
-            is_sandboxed: false,
-            has_terminal: true,
-            profile: "default",
-            workspace_repos: [],
             view: structuredView ? "structured" : "terminal",
             acp_worker_state: acpWorkerState,
             claude_fullscreen: false,
-          },
+          }),
         ],
         workspace_ordering: [],
       },
