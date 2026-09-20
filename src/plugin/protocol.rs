@@ -138,13 +138,9 @@ mod tests {
     }
 
     #[test]
-    fn blank_line_is_skipped() {
+    fn a_blank_line_is_skipped_and_a_malformed_one_is_an_error() {
         assert!(parse_request("   ").unwrap().is_none());
         assert!(parse_request("").unwrap().is_none());
-    }
-
-    #[test]
-    fn malformed_line_is_error() {
         assert!(parse_request("{not json").is_err());
     }
 

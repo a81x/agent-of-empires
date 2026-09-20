@@ -3223,34 +3223,34 @@ mod import_tests {
     }
 
     #[test]
-    fn terminal_import_pins_resume_target() {
-        let s = summary("abc123-def456", "/home/me/proj", Some("Fix bug"));
-        let inst = build_import_instance(&s, false, "");
-        assert_eq!(inst.tool, "claude");
-        assert_eq!(inst.project_path, "/home/me/proj");
-        assert_eq!(inst.title, "Fix bug");
+    fn build_import_instance_pins_the_replay_target_for_each_view() {
+        let terminal = build_import_instance(
+            &summary("abc123-def456", "/home/me/proj", Some("Fix bug")),
+            false,
+            "",
+        );
+        assert_eq!(terminal.tool, "claude");
+        assert_eq!(terminal.project_path, "/home/me/proj");
+        assert_eq!(terminal.title, "Fix bug");
         assert_eq!(
-            inst.resume_intent,
+            terminal.resume_intent,
             ResumeIntent::Use("abc123-def456".to_string())
         );
-    }
 
-    #[test]
-    fn title_falls_back_to_short_id() {
-        let s = summary("abcdef12-3456-7890", "/home/me/proj", None);
-        let inst = build_import_instance(&s, false, "team/imports");
-        assert_eq!(inst.title, "Claude import abcdef12");
-        assert_eq!(inst.group_path, "team/imports");
-    }
+        let untitled = build_import_instance(
+            &summary("abcdef12-3456-7890", "/home/me/proj", None),
+            false,
+            "team/imports",
+        );
+        assert_eq!(untitled.title, "Claude import abcdef12");
+        assert_eq!(untitled.group_path, "team/imports");
 
-    #[test]
-    fn structured_import_seeds_replay_fields() {
-        let s = summary("sid-1", "/home/me/proj", Some("x"));
-        let inst = build_import_instance(&s, true, "");
-        assert!(inst.is_structured());
-        assert_eq!(inst.acp_session_id.as_deref(), Some("sid-1"));
-        assert_eq!(inst.import_pending, Some(true));
-        assert_eq!(inst.resume_intent, ResumeIntent::Default);
+        let structured =
+            build_import_instance(&summary("sid-1", "/home/me/proj", Some("x")), true, "");
+        assert!(structured.is_structured());
+        assert_eq!(structured.acp_session_id.as_deref(), Some("sid-1"));
+        assert_eq!(structured.import_pending, Some(true));
+        assert_eq!(structured.resume_intent, ResumeIntent::Default);
     }
 
     #[test]
