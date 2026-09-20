@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useEffectEvent, useRef, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useEffectEvent, useRef } from "react";
+import { useSnapshotStore } from "./useSnapshotStore";
 import { getOrCreateDeviceBindingSecret } from "../lib/deviceBinding";
 import { getToken } from "../lib/token";
 import { buttonMouseBytes, wheelMouseBytes } from "../lib/liveMouse";
@@ -91,34 +92,17 @@ export function useLiveTerminal(
   // Hold input until the server confirms this connection owns the pane.
   const ownerKnownRef = useRef(false);
 
-  const storeRef = useRef<{
-    snapshot: LiveTerminalState;
-    listeners: Set<() => void>;
-  } | null>(null);
-  if (storeRef.current == null) {
-    storeRef.current = { snapshot: INITIAL_STATE, listeners: new Set() };
-  }
-  const setState = useCallback((fn: (prev: LiveTerminalState) => LiveTerminalState) => {
-    const store = storeRef.current!;
-    store.snapshot = fn(store.snapshot);
-    store.listeners.forEach((l) => l());
+  const { state, read, setState } = useSnapshotStore(() => INITIAL_STATE);
+
+  const sendIfOpen = useCallback((data: string | ArrayBufferView<ArrayBuffer>) => {
+    const ws = wsRef.current;
+    if (ws?.readyState === WebSocket.OPEN) ws.send(data);
   }, []);
-  const subscribe = useCallback((listener: () => void) => {
-    storeRef.current!.listeners.add(listener);
-    return () => {
-      storeRef.current!.listeners.delete(listener);
-    };
-  }, []);
-  const getSnapshot = useCallback(() => storeRef.current!.snapshot, []);
-  const state = useSyncExternalStore(subscribe, getSnapshot);
 
   const setWindowInternal = (lines: number) => {
     if (desiredRef.current.window === lines) return;
     desiredRef.current.window = lines;
-    const ws = wsRef.current;
-    if (ws?.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify({ type: "window", lines }));
-    }
+    sendIfOpen(JSON.stringify({ type: "window", lines }));
   };
 
   useEffect(() => {
@@ -251,7 +235,7 @@ export function useLiveTerminal(
         let content: string;
         let lines: string[];
         if (msg.type === "patch") {
-          const prev = storeRef.current!.snapshot.frame;
+          const prev = read().frame;
           if (prev?.lines == null || lastSeq == null || msg.base !== lastSeq) {
             if (!resyncPending) {
               resyncPending = true;
@@ -384,85 +368,77 @@ export function useLiveTerminal(
       wsRef.current = null;
       connectRef.current = null;
     };
-  }, [sessionId, wsPath, setState]);
+  }, [sessionId, wsPath, setState, read]);
 
   const typedWordRef = useRef("");
 
-  const sendData = useCallback((data: string): boolean => {
-    typedWordRef.current = "";
-    const ws = wsRef.current;
-    const canSend = ownerKnownRef.current && storeRef.current!.snapshot.isOwner;
-    if (canSend && ws?.readyState === WebSocket.OPEN) {
-      ws.send(new TextEncoder().encode(data));
-      return true;
-    }
-    // A confirmed non-owner must not queue keystrokes for a later takeover.
-    if (ownerKnownRef.current && !storeRef.current!.snapshot.isOwner) return false;
-    const bytes = new TextEncoder().encode(data);
-    const pending = pendingInputRef.current;
-    const used = pending.reduce((total, item) => total + item.byteLength, 0);
-    if (bytes.byteLength > MAX_PENDING_INPUT_BYTES - used) return false;
-    pending.push(bytes);
-    return true;
-  }, []);
-
-  const claim = useCallback(() => {
-    const ws = wsRef.current;
-    if (ws?.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify({ type: "claim" }));
-    }
-  }, []);
-
-  const forwardWheel = useCallback((up: boolean, sgr: boolean, col: number, row: number) => {
-    const ws = wsRef.current;
-    if (ws?.readyState === WebSocket.OPEN) {
-      ws.send(wheelMouseBytes(up, sgr, col, row));
-    }
-  }, []);
-
-  const forwardButton = useCallback(
-    (baseButton: number, release: boolean, motion: boolean, sgr: boolean, col: number, row: number) => {
+  const sendData = useCallback(
+    (data: string): boolean => {
+      typedWordRef.current = "";
       const ws = wsRef.current;
-      if (ws?.readyState === WebSocket.OPEN) {
-        ws.send(buttonMouseBytes(baseButton, release, motion, sgr, col, row));
+      const isOwner = read().isOwner;
+      if (ownerKnownRef.current && isOwner && ws?.readyState === WebSocket.OPEN) {
+        ws.send(new TextEncoder().encode(data));
+        return true;
       }
+      // A confirmed non-owner must not queue keystrokes for a later takeover.
+      if (ownerKnownRef.current && !isOwner) return false;
+      const bytes = new TextEncoder().encode(data);
+      const pending = pendingInputRef.current;
+      const used = pending.reduce((total, item) => total + item.byteLength, 0);
+      if (bytes.byteLength > MAX_PENDING_INPUT_BYTES - used) return false;
+      pending.push(bytes);
+      return true;
     },
-    [],
+    [read],
   );
 
-  const sendResize = useCallback((cols: number, rows: number) => {
-    const prev = desiredRef.current.resize;
-    if (prev && prev.cols === cols && prev.rows === rows) return;
-    desiredRef.current.resize = { cols, rows };
-    const ws = wsRef.current;
-    if (ws?.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify({ type: "resize", cols, rows }));
-    }
-  }, []);
+  const claim = useCallback(() => sendIfOpen(JSON.stringify({ type: "claim" })), [sendIfOpen]);
+
+  const forwardWheel = useCallback(
+    (up: boolean, sgr: boolean, col: number, row: number) => sendIfOpen(wheelMouseBytes(up, sgr, col, row)),
+    [sendIfOpen],
+  );
+
+  const forwardButton = useCallback(
+    (baseButton: number, release: boolean, motion: boolean, sgr: boolean, col: number, row: number) =>
+      sendIfOpen(buttonMouseBytes(baseButton, release, motion, sgr, col, row)),
+    [sendIfOpen],
+  );
+
+  const sendResize = useCallback(
+    (cols: number, rows: number) => {
+      const prev = desiredRef.current.resize;
+      if (prev && prev.cols === cols && prev.rows === rows) return;
+      desiredRef.current.resize = { cols, rows };
+      sendIfOpen(JSON.stringify({ type: "resize", cols, rows }));
+    },
+    [sendIfOpen],
+  );
 
   const setWindow = useCallback((lines: number) => {
     setWindowInternal(lines);
   }, []);
 
-  const setCadence = useCallback((fast: boolean) => {
-    if (desiredRef.current.fast === fast) return;
-    desiredRef.current.fast = fast;
-    const ws = wsRef.current;
-    if (ws?.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify({ type: "cadence", fast }));
-    }
-  }, []);
+  const setCadence = useCallback(
+    (fast: boolean) => {
+      if (desiredRef.current.fast === fast) return;
+      desiredRef.current.fast = fast;
+      sendIfOpen(JSON.stringify({ type: "cadence", fast }));
+    },
+    [sendIfOpen],
+  );
 
   const enterReading = useCallback(
     (rows: number) => {
       if (readingRef.current) return;
       readingRef.current = true;
-      const latest = storeRef.current!.snapshot.frame;
+      const latest = read().frame;
       const full = Math.min(4000, Math.max(rows, latest ? latest.rows + latest.history : rows));
       setWindowInternal(full);
       setState((prev) => ({ ...prev, reading: true }));
     },
-    [setState],
+    [read, setState],
   );
 
   const returnToLive = useCallback(

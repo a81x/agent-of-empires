@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useRef } from "react";
+import { useSnapshotStore } from "./useSnapshotStore";
 
 interface MobileKeyboardSnapshot {
   isMobile: boolean;
@@ -6,32 +7,16 @@ interface MobileKeyboardSnapshot {
   keyboardHeight: number;
 }
 
-function createKeyboardStore() {
-  const initialIsMobile = typeof window !== "undefined" && window.matchMedia?.("(pointer: coarse)").matches;
-  let snapshot: MobileKeyboardSnapshot = {
-    isMobile: initialIsMobile,
+export function useMobileKeyboard() {
+  const { state, setState } = useSnapshotStore<MobileKeyboardSnapshot>(() => ({
+    isMobile: typeof window !== "undefined" && !!window.matchMedia?.("(pointer: coarse)").matches,
     keyboardOpen: false,
     keyboardHeight: 0,
-  };
-  const listeners = new Set<() => void>();
-  return {
-    getSnapshot: () => snapshot,
-    update: (partial: Partial<MobileKeyboardSnapshot>) => {
-      snapshot = { ...snapshot, ...partial };
-      listeners.forEach((l) => l());
-    },
-    subscribe: (listener: () => void) => {
-      listeners.add(listener);
-      return () => listeners.delete(listener);
-    },
-  };
-}
-
-type KeyboardStore = ReturnType<typeof createKeyboardStore>;
-
-export function useMobileKeyboard() {
-  const [store] = useState<KeyboardStore>(() => createKeyboardStore());
-  const state = useSyncExternalStore(store.subscribe, store.getSnapshot);
+  }));
+  const update = useCallback(
+    (partial: Partial<MobileKeyboardSnapshot>) => setState((prev) => ({ ...prev, ...partial })),
+    [setState],
+  );
 
   const rafRef = useRef(0);
   const stableCountRef = useRef(0);
@@ -41,20 +26,11 @@ export function useMobileKeyboard() {
   useEffect(() => {
     if (typeof window === "undefined" || !window.matchMedia) return;
     const mql = window.matchMedia("(pointer: coarse)");
-    const onChange = () => {
-      if (mql.matches) {
-        store.update({ isMobile: true });
-      } else {
-        store.update({
-          isMobile: false,
-          keyboardOpen: false,
-          keyboardHeight: 0,
-        });
-      }
-    };
+    const onChange = () =>
+      update(mql.matches ? { isMobile: true } : { isMobile: false, keyboardOpen: false, keyboardHeight: 0 });
     mql.addEventListener?.("change", onChange);
     return () => mql.removeEventListener?.("change", onChange);
-  }, [store]);
+  }, [update]);
 
   useEffect(() => {
     if (!state.isMobile) return;
@@ -85,7 +61,7 @@ export function useMobileKeyboard() {
         lastOpen = open;
         lastPadding = padding;
         stableCountRef.current = 0;
-        store.update({ keyboardOpen: open, keyboardHeight: padding });
+        update({ keyboardOpen: open, keyboardHeight: padding });
       }
 
       return totalOcclusion;
@@ -150,11 +126,7 @@ export function useMobileKeyboard() {
       window.removeEventListener("orientationchange", handleOrientationChange);
       window.removeEventListener("scroll", handleViewportChange);
     };
-  }, [state.isMobile, store]);
+  }, [state.isMobile, update]);
 
-  return {
-    isMobile: state.isMobile,
-    keyboardOpen: state.keyboardOpen,
-    keyboardHeight: state.keyboardHeight,
-  };
+  return state;
 }

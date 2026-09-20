@@ -3,6 +3,7 @@ import { lazy, Suspense, useCallback, useEffect, useRef, useState, type ReactNod
 import { resolveTourSteps, type TourScope, type TourStep } from "../lib/tourSteps";
 import type { TourSettingsTab } from "../components/tour/TourRunner";
 import { isAutomatedSession } from "../lib/onboarding";
+import { useLatestRef } from "./useLatestRef";
 
 const TourRunner = lazy(() => import("../components/tour/TourRunner"));
 
@@ -89,39 +90,16 @@ export function useTour({
     begin();
   }, [begin]);
 
-  const autoLaunchReadyRef = useRef(autoLaunchReady);
-  const seenKnownRef = useRef(seenKnown);
-  const scopeRef = useRef(scope);
-  const isDesktopRef = useRef(isDesktop);
-  const seenRef = useRef(seen);
-  const beginRef = useRef(begin);
-  useEffect(() => {
-    autoLaunchReadyRef.current = autoLaunchReady;
-    seenKnownRef.current = seenKnown;
-    scopeRef.current = scope;
-    isDesktopRef.current = isDesktop;
-    seenRef.current = seen;
-    beginRef.current = begin;
-  }, [autoLaunchReady, seenKnown, scope, isDesktop, seen, begin]);
+  const beginRef = useLatestRef(begin);
   useEffect(() => {
     if (autoStartedRef.current) return;
     const automated = isAutomatedSession();
-    if (
-      !shouldAutoLaunch({
-        autoLaunchReady,
-        seenKnown,
-        scope,
-        isDesktop,
-        seen,
-        automated,
-      })
-    )
-      return;
+    if (!shouldAutoLaunch({ autoLaunchReady, seenKnown, scope, isDesktop, seen, automated })) return;
     const id = beginRef.current(() => {
       autoStartedRef.current = true;
     });
     return () => cancelAnimationFrame(id);
-  }, [autoLaunchReady, seenKnown, scope, isDesktop, seen]);
+  }, [autoLaunchReady, seenKnown, scope, isDesktop, seen, beginRef]);
 
   const handleFinish = useCallback(
     (markSeen: boolean) => {

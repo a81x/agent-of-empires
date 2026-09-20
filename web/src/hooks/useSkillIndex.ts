@@ -38,7 +38,3 @@ export function useSkillIndex(): SkillIndex {
   }, []);
   return index;
 }
-
-export function __resetSkillIndexCacheForTests(): void {
-  skillsPromise = null;
-}
