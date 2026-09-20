@@ -1706,7 +1706,7 @@
       "risk": "low",
       "specs": [
         "src/components/diff/__tests__/MarkdownFileView.test.tsx",
-        "src/components/diff/__tests__/DiffFileViewer.markdown.test.tsx"
+        "src/components/diff/__tests__/DiffFileViewer.layout.test.tsx"
       ],
       "components": ["web/src/components/diff/MarkdownFileView.tsx", "web/src/components/diff/DiffFileViewer.tsx"]
     },
@@ -1858,8 +1858,12 @@
       "id": "right-panel.diff-split-toggle",
       "kind": "vitest",
       "risk": "medium",
-      "specs": ["src/components/diff/__tests__/DiffFileViewer.split.test.tsx"],
-      "components": ["web/src/components/diff/DiffFileViewer.tsx", "web/src/components/diff/DiffViewerHeader.tsx"]
+      "specs": ["src/components/diff/__tests__/DiffFileViewer.layout.test.tsx"],
+      "components": [
+        "web/src/components/diff/DiffFileViewer.tsx",
+        "web/src/components/diff/DiffViewerHeader.tsx",
+        "web/src/components/diff/viewerChrome.tsx"
+      ]
     },
     {
       "id": "right-panel.diff-render-and-find",
