@@ -73,8 +73,10 @@ async function handlePrompt(
       abortSignal,
     });
 
+    const update = (update: Record<string, unknown>) =>
+      client.notify("session/update", { sessionId: params.sessionId, update });
+
     let assistantBuffer = "";
-    const toolCallTitles = new Map<string, string>();
     for await (const part of result.fullStream) {
       if (abortSignal.aborted) break;
       switch (part.type) {
@@ -85,55 +87,34 @@ async function handlePrompt(
             "";
           if (!delta) break;
           assistantBuffer += delta;
-          await client.notify("session/update", {
-            sessionId: params.sessionId,
-            update: {
-              sessionUpdate: "agent_message_chunk",
-              content: { type: "text", text: delta },
-            },
+          await update({
+            sessionUpdate: "agent_message_chunk",
+            content: { type: "text", text: delta },
           });
           break;
         }
         case "tool-call": {
-          const id = part.toolCallId;
           const name = part.toolName;
-          toolCallTitles.set(id, name);
-          await client.notify("session/update", {
-            sessionId: params.sessionId,
-            update: {
-              sessionUpdate: "tool_call",
-              toolCallId: id,
-              title: name,
-              kind: classifyKind(name),
-              status: "pending",
-              rawInput: part.input as Record<string, unknown>,
-            },
+          await update({
+            sessionUpdate: "tool_call",
+            toolCallId: part.toolCallId,
+            title: name,
+            kind: classifyKind(name),
+            status: "pending",
+            rawInput: part.input as Record<string, unknown>,
           });
           break;
         }
-        case "tool-result": {
-          const id = part.toolCallId;
-          await client.notify("session/update", {
-            sessionId: params.sessionId,
-            update: {
-              sessionUpdate: "tool_call_update",
-              toolCallId: id,
-              status: "completed",
-              rawOutput: serialiseToolOutput(part.output),
-            },
-          });
-          break;
-        }
+        case "tool-result":
         case "tool-error": {
-          const id = part.toolCallId;
-          await client.notify("session/update", {
-            sessionId: params.sessionId,
-            update: {
-              sessionUpdate: "tool_call_update",
-              toolCallId: id,
-              status: "failed",
-              rawOutput: { error: String(part.error) },
-            },
+          const failed = part.type === "tool-error";
+          await update({
+            sessionUpdate: "tool_call_update",
+            toolCallId: part.toolCallId,
+            status: failed ? "failed" : "completed",
+            rawOutput: failed
+              ? { error: String(part.error) }
+              : serialiseToolOutput(part.output),
           });
           break;
         }
@@ -188,10 +169,7 @@ async function handlePrompt(
         sessionId: params.sessionId,
         update: {
           sessionUpdate: "agent_message_chunk",
-          content: {
-            type: "text",
-            text: `\n[aoe-agent error] ${message}\n`,
-          },
+          content: { type: "text", text: `\n[aoe-agent error] ${message}\n` },
         },
       })
       .catch(() => undefined);

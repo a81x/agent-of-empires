@@ -40,10 +40,6 @@ pub struct AgentRegistry {
 }
 
 impl AgentRegistry {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
     /// One entry per tool with a published ACP server, plus aoe's own `aoe-agent`.
     pub fn with_defaults() -> Self {
         let claude_install = install_hint_for("claude-agent-acp").unwrap_or("(see project docs)");
@@ -134,14 +130,6 @@ impl AgentRegistry {
 
     pub fn get(&self, name: &str) -> Option<&AgentSpec> {
         self.agents.get(name)
-    }
-
-    pub fn upsert(&mut self, name: String, spec: AgentSpec) {
-        self.agents.insert(name, spec);
-    }
-
-    pub fn remove(&mut self, name: &str) -> Option<AgentSpec> {
-        self.agents.remove(name)
     }
 
     /// Entries sorted by name.
