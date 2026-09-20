@@ -1071,39 +1071,47 @@ mod plugin_enabled_changes_tests {
     use serde_json::json;
 
     #[test]
-    fn detects_toggles_and_ignores_unchanged() {
-        let before = json!({
-            "a": { "enabled": true },
-            "b": { "enabled": false },
-            "c": { "enabled": true, "settings": { "k": 1 } },
-        });
-        let after = Some(json!({
-            "a": { "enabled": false },
-            "b": { "enabled": false },
-            "c": { "enabled": true, "settings": { "k": 2 } },
-        }));
-        let changes = plugin_enabled_changes(Some(&before), &after);
-        assert_eq!(changes, vec![("a".to_string(), false)]);
-    }
-
-    #[test]
-    fn absent_entry_counts_as_enabled() {
-        // A new id appearing as disabled is a change; one appearing enabled
-        // is not (enabled is the default for unknown ids).
-        let after = Some(json!({
-            "fresh-off": { "enabled": false },
-            "fresh-on": { "enabled": true },
-        }));
-        let changes = plugin_enabled_changes(None, &after);
-        assert_eq!(changes, vec![("fresh-off".to_string(), false)]);
-    }
-
-    #[test]
-    fn dropped_disabled_entry_reverts_to_enabled() {
-        let before = json!({ "gone": { "enabled": false } });
-        let after = Some(json!({}));
-        let changes = plugin_enabled_changes(Some(&before), &after);
-        assert_eq!(changes, vec![("gone".to_string(), true)]);
+    fn reports_only_the_toggles() {
+        // (before, after, expected changes). An id absent from `before`
+        // counts as enabled, so only a fresh disable is a change; an id
+        // dropped from `after` reverts to enabled.
+        let cases: &[(
+            Option<serde_json::Value>,
+            serde_json::Value,
+            Vec<(&str, bool)>,
+        )] = &[
+            (
+                Some(json!({
+                    "a": { "enabled": true },
+                    "b": { "enabled": false },
+                    "c": { "enabled": true, "settings": { "k": 1 } },
+                })),
+                json!({
+                    "a": { "enabled": false },
+                    "b": { "enabled": false },
+                    "c": { "enabled": true, "settings": { "k": 2 } },
+                }),
+                vec![("a", false)],
+            ),
+            (
+                None,
+                json!({ "fresh-off": { "enabled": false }, "fresh-on": { "enabled": true } }),
+                vec![("fresh-off", false)],
+            ),
+            (
+                Some(json!({ "gone": { "enabled": false } })),
+                json!({}),
+                vec![("gone", true)],
+            ),
+        ];
+        for (before, after, want) in cases {
+            let want: Vec<(String, bool)> =
+                want.iter().map(|(id, on)| (id.to_string(), *on)).collect();
+            assert_eq!(
+                plugin_enabled_changes(before.as_ref(), &Some(after.clone())),
+                want
+            );
+        }
     }
 }
 
@@ -1111,37 +1119,28 @@ mod plugin_enabled_changes_tests {
 mod categories_for_scope_tests {
     use super::{CategoryRow, SettingsCategory, SettingsScope, SettingsView};
 
-    fn has_tab(rows: &[CategoryRow], cat: SettingsCategory) -> bool {
-        rows.iter().any(|r| r.as_tab() == Some(cat))
-    }
-
-    /// StatusHooks, Tmux, and Sound are gated off Repo scope because their
-    /// sections are not repo-overridable (#3229); a Repo tab would render
-    /// edits that strand at save time. Global keeps every tab.
+    /// StatusHooks, Tmux and Sound are gated off Repo scope: their sections
+    /// are not repo-overridable, so a Repo tab would strand edits at save.
     #[test]
     fn repo_scope_drops_non_repo_overridable_categories() {
+        let has_tab = |rows: &[CategoryRow], cat| rows.iter().any(|r| r.as_tab() == Some(cat));
         let repo = SettingsView::categories_for_scope(SettingsScope::Repo);
-        for cat in [
-            SettingsCategory::StatusHooks,
-            SettingsCategory::Tmux,
-            SettingsCategory::Sound,
-        ] {
-            assert!(!has_tab(&repo, cat), "{cat:?} must be absent under Repo");
-        }
-        // Sanity: a repo-overridable category IS visible.
-        assert!(has_tab(&repo, SettingsCategory::Sandbox));
-
         let global = SettingsView::categories_for_scope(SettingsScope::Global);
         for cat in [
             SettingsCategory::StatusHooks,
             SettingsCategory::Tmux,
             SettingsCategory::Sound,
         ] {
+            assert!(!has_tab(&repo, cat), "{cat:?} must be absent under Repo");
             assert!(
                 has_tab(&global, cat),
                 "{cat:?} must be present under Global"
             );
         }
+        assert!(
+            has_tab(&repo, SettingsCategory::Sandbox),
+            "repo-overridable"
+        );
     }
 }
 
@@ -1152,10 +1151,9 @@ pub(super) mod test_util {
     use crate::session::Storage;
     use tempfile::TempDir;
 
-    /// A `SettingsView` against an isolated app dir, shared by the
-    /// input and render test modules. Keep both guards alive for the
-    /// test body: the env is restored when `AppDirGuard` drops, before
-    /// the `TempDir` deletes itself.
+    /// A `SettingsView` over an isolated app dir. Keep both guards alive for
+    /// the test body: `AppDirGuard` restores the env before the `TempDir`
+    /// deletes itself.
     pub fn fresh_view() -> (TempDir, AppDirGuard, SettingsView) {
         let temp = TempDir::new().unwrap();
         let guard = isolate_app_dir_at(temp.path());
@@ -1172,11 +1170,8 @@ mod dirty_tracking_tests {
     use serial_test::serial;
     use tempfile::TempDir;
 
-    /// Returns the `HomeGuard` first so it drops before the `TempDir`:
-    /// the env is restored before the tempdir is deleted, and the guard
-    /// holds the process-global env lock for the whole test body. The old
-    /// bare `set_var` never restored HOME, leaking a since-deleted tempdir
-    /// HOME into later tests (the #2600 failure mode).
+    /// The `HomeGuard` comes first so it drops before the `TempDir`, and it
+    /// holds the process-global env lock for the whole body.
     fn fresh_view() -> (
         crate::session::test_support::HomeGuard,
         TempDir,
@@ -1189,9 +1184,7 @@ mod dirty_tracking_tests {
         (home, temp, view)
     }
 
-    /// Editing a setting and then reverting it to the saved value must not
-    /// leave the view reporting unsaved changes (issue #2083). The flag is
-    /// diff-based, not a one-way latch.
+    /// The unsaved-changes flag is diff-based, not a one-way latch.
     #[test]
     #[serial]
     fn reverting_an_edit_clears_unsaved_changes() {
@@ -1212,8 +1205,7 @@ mod dirty_tracking_tests {
         );
     }
 
-    /// Saving adopts the live config as the new baseline, so an edit that
-    /// matches a previously-saved value is correctly seen as a change again.
+    /// Saving adopts the live config as the new baseline.
     #[test]
     #[serial]
     fn save_resets_the_baseline() {
@@ -1236,23 +1228,19 @@ mod dirty_tracking_tests {
         );
     }
 
-    /// The clobber this PR exists to kill, at the Settings pane. A global
-    /// field written by another process while the pane sits open must survive
-    /// the save. The old `*c = self.global_config.clone()` wrote the
-    /// open-time snapshot verbatim and silently reverted it, the same way the
-    /// removed `save_config` did.
+    /// A global field written by another process while the pane sits open
+    /// must survive the save, rather than being reverted by the open-time
+    /// snapshot.
     #[test]
     #[serial]
     fn global_save_preserves_concurrent_external_edit() {
         let (_home, _temp, mut view) = fresh_view();
         view.scope = SettingsScope::Global;
 
-        // The user edits one field in the pane.
         view.global_config.default_profile = "edited-by-user".to_string();
         view.recompute_dirty();
 
-        // Meanwhile a peer process writes an unrelated global field straight
-        // to disk, after this view took its baseline snapshot.
+        // A peer writes an unrelated global field after the baseline snapshot.
         crate::session::config::update_config(|c| {
             c.session.confirm_delete = false;
         })
@@ -1271,8 +1259,6 @@ mod dirty_tracking_tests {
         );
     }
 
-    /// A save that changes nothing must not write the snapshot over a peer's
-    /// concurrent edits either.
     #[test]
     #[serial]
     fn global_save_with_no_edits_preserves_concurrent_external_edit() {
@@ -1292,17 +1278,14 @@ mod dirty_tracking_tests {
         );
     }
 
-    /// A lifecycle operation resync must keep unsaved staged edits: the
-    /// staged diff is re-applied per user-editable field on top of the disk
-    /// state, while a lifecycle-owned field (the grant) always takes the disk
-    /// value, even on a plugin the user also staged an edit for.
+    /// A resync re-applies the staged diff per user-editable field over the
+    /// disk state, while a lifecycle-owned field takes the disk value.
     #[test]
     #[serial]
     fn resync_after_plugin_mutation_preserves_staged_edits() {
         let (_home, _temp, mut view) = fresh_view();
         view.scope = SettingsScope::Global;
 
-        // The user stages (unsaved): disable plugin "a".
         view.global_config
             .plugins
             .entry("a".to_string())
@@ -1311,8 +1294,7 @@ mod dirty_tracking_tests {
         view.recompute_dirty();
         assert!(view.has_changes);
 
-        // A lifecycle operation rewrites plugin config on disk: grants "a"
-        // and installs "b".
+        // A lifecycle operation grants "a" and installs "b" on disk.
         crate::session::config::update_config(|c| {
             let a = c.plugins.entry("a".to_string()).or_default();
             a.grant = Some(crate::session::CapabilityGrant {
@@ -1339,10 +1321,8 @@ mod dirty_tracking_tests {
         assert!(view.has_changes, "the staged toggle keeps the view dirty");
     }
 
-    /// The Plugins tab is Global-only, so `]` from either of its sub-panes
-    /// switches scope like on every other Global-only tab (Telemetry),
-    /// falling back to the new scope's first tab, instead of the manager
-    /// pane swallowing the key.
+    /// The Plugins tab is Global-only, so `]` from either sub-pane switches
+    /// scope and falls back to the new scope's first tab.
     #[test]
     #[serial]
     fn scope_keys_from_plugins_tab_switch_scope_in_both_sub_panes() {
@@ -1376,8 +1356,7 @@ mod dirty_tracking_tests {
         }
     }
 
-    /// A staged entry for a plugin with no config row on disk (a first toggle
-    /// for a builtin) survives a resync; it was never in the baseline, so no
+    /// A staged entry that was never in the baseline survives a resync: no
     /// lifecycle operation can have removed it.
     #[test]
     #[serial]
@@ -1416,49 +1395,34 @@ mod search_tests {
     const TITLE: &str = "Session Max Concurrent Workers";
     const FULL: &str = "Session Max Concurrent Workers How many agents run at once";
 
-    /// An empty query scores every field 0 so the popup lists all of them.
     #[test]
-    fn empty_query_matches_everything() {
-        assert_eq!(fuzzy_settings_score("", TITLE, FULL), Some(0));
-        assert_eq!(fuzzy_settings_score("   ", TITLE, FULL), Some(0));
-    }
+    fn every_token_must_match_and_a_title_hit_outranks_a_description_hit() {
+        // An empty query scores 0, so the popup lists every field.
+        for query in ["", "   "] {
+            assert_eq!(fuzzy_settings_score(query, TITLE, FULL), Some(0));
+        }
 
-    /// The acronym story: "mcw" must fuzzy-match "Max Concurrent Workers",
-    /// which the old substring search could not do.
-    #[test]
-    fn acronym_matches() {
-        assert!(
-            fuzzy_settings_score("mcw", TITLE, FULL).is_some(),
-            "'mcw' should match Max Concurrent Workers"
-        );
-        assert!(
-            fuzzy_settings_score(
-                "mcw",
-                "Appearance Theme",
-                "Appearance Theme Dashboard looks"
-            )
-            .is_none(),
-            "'mcw' should not match an unrelated field"
-        );
-    }
-
-    /// Multi-token queries keep AND semantics: every whitespace token must
-    /// match, so "max workers" still finds the field even out of order.
-    #[test]
-    fn multi_token_requires_all_tokens() {
-        assert!(fuzzy_settings_score("max workers", TITLE, FULL).is_some());
-        assert!(fuzzy_settings_score("workers max", TITLE, FULL).is_some());
+        // Fuzzy matching covers acronyms, and multi-token queries keep AND
+        // semantics in any order.
+        for query in ["mcw", "max workers", "workers max"] {
+            assert!(
+                fuzzy_settings_score(query, TITLE, FULL).is_some(),
+                "{query}"
+            );
+        }
         assert!(
             fuzzy_settings_score("max banana", TITLE, FULL).is_none(),
             "a token with no match drops the field"
         );
-    }
+        assert!(fuzzy_settings_score(
+            "mcw",
+            "Appearance Theme",
+            "Appearance Theme Dashboard looks"
+        )
+        .is_none());
 
-    /// A title (category + label) match must outrank a match that only
-    /// appears in the description, so "sandbox" surfaces the Sandbox
-    /// tab's own settings before fields that mention it in prose.
-    #[test]
-    fn title_matches_outrank_description_matches() {
+        // So "sandbox" surfaces the Sandbox tab's own settings ahead of the
+        // fields that only mention it in prose.
         let title_hit = fuzzy_settings_score(
             "sandbox",
             "Sandbox Default Image",
@@ -1484,8 +1448,7 @@ mod scroll_tests {
     use ratatui::layout::Rect;
     use serial_test::serial;
 
-    /// Force the fields panel to overflow its viewport so the scroll math
-    /// has room to move. Uses the real fields the default category loads.
+    /// Overflow the fields panel so the scroll math has room to move.
     fn make_overflowing(view: &mut super::SettingsView) {
         assert!(
             view.fields.len() > 1,
@@ -1500,9 +1463,7 @@ mod scroll_tests {
         );
     }
 
-    /// Regression for the dead scroll wheel in Settings: a wheel-down must
-    /// advance the fields offset, and wheel-up must bring it back, both
-    /// clamped to the panel bounds.
+    /// A wheel advances the fields offset either way, clamped to the panel.
     #[test]
     #[serial]
     fn wheel_scrolls_fields_panel_with_clamping() {
@@ -1517,8 +1478,6 @@ mod scroll_tests {
             "one wheel notch scrolls one line"
         );
 
-        // Scroll to the floor and confirm it clamps (no scrolling blank
-        // space past the last field into view).
         for _ in 0..50 {
             view.handle_wheel_scroll(false);
         }
@@ -1528,7 +1487,6 @@ mod scroll_tests {
             "a wheel at the bottom is a no-op"
         );
 
-        // And back up to the top.
         for _ in 0..50 {
             view.handle_wheel_scroll(true);
         }
@@ -1539,8 +1497,7 @@ mod scroll_tests {
         );
     }
 
-    /// The scrollbar hit test covers the 1-cell bar plus the padding
-    /// column to its left, and misses everything outside that band.
+    /// The hit test covers the bar plus the padding column to its left.
     #[test]
     #[serial]
     fn hit_scrollbar_covers_the_bar_and_its_padding_column() {
@@ -1554,14 +1511,11 @@ mod scroll_tests {
         assert!(!view.hit_scrollbar(70, 2), "above the track is a miss");
         assert!(!view.hit_scrollbar(70, 13), "below the track is a miss");
 
-        // With no bar drawn (nothing overflows) nothing is grabbable.
         view.scrollbar_area = Rect::default();
         assert!(!view.hit_scrollbar(70, 5), "no bar => no hit");
     }
 
-    /// Regression for grab-drag on the right bar: dragging the thumb to
-    /// the track bottom pins the offset to the max, and to the top pins
-    /// it to zero.
+    /// Dragging the thumb pins the offset to either end of the track.
     #[test]
     #[serial]
     fn scrollbar_drag_maps_row_to_offset() {
@@ -1576,13 +1530,12 @@ mod scroll_tests {
         assert!(view.scrollbar_drag_to_row(3), "drag to the top moves");
         assert_eq!(view.fields_scroll_offset, 0, "top of track => 0");
 
-        // A row past the track bottom is clamped, not extrapolated.
         view.scrollbar_drag_to_row(99);
         assert_eq!(view.fields_scroll_offset, max, "past-bottom clamps to max");
     }
 
-    /// While the search popup is open the wheel drives the ranked-hit
-    /// cursor instead of the background fields, matching Up/Down.
+    /// While the popup is open the wheel drives the hit cursor, not the
+    /// fields behind it.
     #[test]
     #[serial]
     fn wheel_moves_search_selection_when_popup_open() {
