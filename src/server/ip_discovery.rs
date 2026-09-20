@@ -60,37 +60,28 @@ mod tests {
     use super::*;
 
     #[test]
-    fn classify_ip_recognizes_tailscale_cgnat() {
+    fn classify_ip_splits_cgnat_lan_and_loopback() {
         use std::net::Ipv4Addr;
-        // CGNAT range 100.64.0.0/10 = second octet 64..=127.
-        assert_eq!(classify_ip(Ipv4Addr::new(100, 64, 0, 1)), IpKind::Tailscale);
-        assert_eq!(
-            classify_ip(Ipv4Addr::new(100, 100, 50, 50)),
-            IpKind::Tailscale
-        );
-        assert_eq!(
-            classify_ip(Ipv4Addr::new(100, 127, 255, 254)),
-            IpKind::Tailscale
-        );
-        // Boundary.
-        assert_eq!(classify_ip(Ipv4Addr::new(100, 63, 0, 1)), IpKind::Lan);
-        // Boundary: 100.128.x.x is also not CGNAT.
-        assert_eq!(classify_ip(Ipv4Addr::new(100, 128, 0, 1)), IpKind::Lan);
-    }
-
-    #[test]
-    fn classify_ip_recognizes_rfc1918_lan() {
-        use std::net::Ipv4Addr;
-        assert_eq!(classify_ip(Ipv4Addr::new(192, 168, 1, 42)), IpKind::Lan);
-        assert_eq!(classify_ip(Ipv4Addr::new(10, 0, 0, 1)), IpKind::Lan);
-        assert_eq!(classify_ip(Ipv4Addr::new(172, 16, 5, 10)), IpKind::Lan);
-    }
-
-    #[test]
-    fn classify_ip_recognizes_loopback() {
-        use std::net::Ipv4Addr;
-        assert_eq!(classify_ip(Ipv4Addr::new(127, 0, 0, 1)), IpKind::Loopback);
-        assert_eq!(classify_ip(Ipv4Addr::new(127, 1, 2, 3)), IpKind::Loopback);
+        // The Tailscale range is CGNAT, 100.64.0.0/10, so 100.63 and 100.128 are not it.
+        let cases = [
+            ([100, 64, 0, 1], IpKind::Tailscale),
+            ([100, 100, 50, 50], IpKind::Tailscale),
+            ([100, 127, 255, 254], IpKind::Tailscale),
+            ([100, 63, 0, 1], IpKind::Lan),
+            ([100, 128, 0, 1], IpKind::Lan),
+            ([192, 168, 1, 42], IpKind::Lan),
+            ([10, 0, 0, 1], IpKind::Lan),
+            ([172, 16, 5, 10], IpKind::Lan),
+            ([127, 0, 0, 1], IpKind::Loopback),
+            ([127, 1, 2, 3], IpKind::Loopback),
+        ];
+        for ([a, b, c, d], want) in cases {
+            assert_eq!(
+                classify_ip(Ipv4Addr::new(a, b, c, d)),
+                want,
+                "{a}.{b}.{c}.{d}"
+            );
+        }
     }
 
     #[test]

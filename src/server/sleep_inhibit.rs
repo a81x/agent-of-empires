@@ -125,67 +125,35 @@ mod tests {
         panic!("reconcile_sleep_inhibit must not build an inhibitor on this transition")
     }
 
+    /// One inhibitor is held for as long as it is wanted: it is acquired once, kept
+    /// across repeat ticks while the child is alive, respawned if the child died,
+    /// released when it stops being wanted, and never built when it is not.
     #[test]
-    fn reconcile_sleep_inhibit_acquires_when_desired_and_not_held() {
+    fn reconcile_sleep_inhibit_holds_one_live_inhibitor_while_desired() {
         let state = std::sync::Arc::new(std::sync::Mutex::new(MockInhibitState::default()));
         let mut slot: Option<Box<dyn crate::process::SleepInhibit>> = None;
-        reconcile_sleep_inhibit(true, &mut slot, mock_factory(&state));
-        let s = state.lock().unwrap();
-        assert_eq!(s.acquires, 1);
-        assert_eq!(s.releases, 0);
-        assert!(slot.is_some());
-    }
+        let counts = |slot: &Option<Box<dyn crate::process::SleepInhibit>>| {
+            let s = state.lock().unwrap();
+            (s.acquires, s.releases, slot.is_some())
+        };
 
-    #[test]
-    fn reconcile_sleep_inhibit_noop_when_desired_and_held_alive() {
-        let state = std::sync::Arc::new(std::sync::Mutex::new(MockInhibitState::default()));
-        let mut slot: Option<Box<dyn crate::process::SleepInhibit>> = None;
+        reconcile_sleep_inhibit(false, &mut slot, never_built);
+        assert_eq!(counts(&slot), (0, 0, false), "not desired, not held");
+
         reconcile_sleep_inhibit(true, &mut slot, mock_factory(&state));
+        assert_eq!(counts(&slot), (1, 0, true), "desired, not held");
+
         reconcile_sleep_inhibit(true, &mut slot, never_built);
-        assert_eq!(state.lock().unwrap().acquires, 1);
-        assert!(slot.is_some());
-    }
+        assert_eq!(counts(&slot), (1, 0, true), "desired, held alive");
 
-    #[test]
-    fn reconcile_sleep_inhibit_respawns_when_desired_and_child_dead() {
-        let state = std::sync::Arc::new(std::sync::Mutex::new(MockInhibitState::default()));
-        let mut slot: Option<Box<dyn crate::process::SleepInhibit>> = None;
-        reconcile_sleep_inhibit(true, &mut slot, mock_factory(&state));
         state.lock().unwrap().alive = false;
         reconcile_sleep_inhibit(true, &mut slot, mock_factory(&state));
-        let s = state.lock().unwrap();
-        assert_eq!(s.acquires, 2);
-        assert!(slot.is_some());
-    }
+        assert_eq!(counts(&slot), (2, 0, true), "desired, child died");
 
-    #[test]
-    fn reconcile_sleep_inhibit_releases_when_not_desired_and_held() {
-        let state = std::sync::Arc::new(std::sync::Mutex::new(MockInhibitState::default()));
-        let mut slot: Option<Box<dyn crate::process::SleepInhibit>> = None;
-        reconcile_sleep_inhibit(true, &mut slot, mock_factory(&state));
         reconcile_sleep_inhibit(false, &mut slot, never_built);
-        let s = state.lock().unwrap();
-        assert_eq!(s.releases, 1);
-        assert!(slot.is_none());
-    }
+        assert_eq!(counts(&slot), (2, 1, false), "no longer desired");
 
-    #[test]
-    fn reconcile_sleep_inhibit_noop_when_not_desired_and_not_held() {
-        let mut slot: Option<Box<dyn crate::process::SleepInhibit>> = None;
-        reconcile_sleep_inhibit(false, &mut slot, never_built);
-        assert!(slot.is_none());
-    }
-
-    #[test]
-    fn reconcile_sleep_inhibit_sequence_hold_release_hold() {
-        let state = std::sync::Arc::new(std::sync::Mutex::new(MockInhibitState::default()));
-        let mut slot: Option<Box<dyn crate::process::SleepInhibit>> = None;
         reconcile_sleep_inhibit(true, &mut slot, mock_factory(&state));
-        reconcile_sleep_inhibit(false, &mut slot, never_built);
-        reconcile_sleep_inhibit(true, &mut slot, mock_factory(&state));
-        let s = state.lock().unwrap();
-        assert_eq!(s.acquires, 2);
-        assert_eq!(s.releases, 1);
-        assert!(slot.is_some());
+        assert_eq!(counts(&slot), (3, 1, true), "wanted again");
     }
 }

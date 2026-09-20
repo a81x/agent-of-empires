@@ -178,28 +178,23 @@ mod tests {
         result
     }
 
+    /// The lockout arms on the `MAX_FAILURES`'th spaced failure and not before; further
+    /// failures while locked arm nothing new, and another peer is untouched.
     #[tokio::test]
-    async fn allows_under_limit() {
+    async fn lockout_arms_at_the_threshold_and_stays_per_ip() {
         let limiter = RateLimiter::new();
         let ip: IpAddr = "1.2.3.4".parse().unwrap();
+        let other: IpAddr = "5.6.7.8".parse().unwrap();
+        assert!(limiter.check_locked(ip).await.is_none());
 
-        for _ in 0..4 {
+        for _ in 0..MAX_FAILURES - 1 {
             assert!(!record_spaced(&limiter, ip).await);
         }
         assert!(limiter.check_locked(ip).await.is_none());
-    }
-
-    #[tokio::test]
-    async fn locks_at_threshold() {
-        let limiter = RateLimiter::new();
-        let ip: IpAddr = "1.2.3.4".parse().unwrap();
-
-        for _ in 0..4 {
-            record_spaced(&limiter, ip).await;
-        }
-        // 5th spaced failure triggers lockout
-        assert!(record_spaced(&limiter, ip).await);
+        assert!(record_spaced(&limiter, ip).await, "the threshold arms it");
         assert!(limiter.check_locked(ip).await.is_some());
+        assert!(!limiter.record_failure(ip).await, "already locked");
+        assert!(limiter.check_locked(other).await.is_none());
     }
 
     #[tokio::test]
@@ -219,21 +214,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn independent_ips() {
-        let limiter = RateLimiter::new();
-        let ip_a: IpAddr = "1.2.3.4".parse().unwrap();
-        let ip_b: IpAddr = "5.6.7.8".parse().unwrap();
-
-        // Lock out IP A
-        for _ in 0..5 {
-            record_spaced(&limiter, ip_a).await;
-        }
-        assert!(limiter.check_locked(ip_a).await.is_some());
-        // IP B is unaffected
-        assert!(limiter.check_locked(ip_b).await.is_none());
-    }
-
-    #[tokio::test]
     async fn burst_failures_coalesce() {
         let limiter = RateLimiter::new();
         let ip: IpAddr = "1.2.3.4".parse().unwrap();
@@ -249,24 +229,5 @@ mod tests {
                 "the burst consumes exactly one attempt, not zero or twenty",
             );
         }
-    }
-
-    #[tokio::test]
-    async fn unlocked_ip_returns_none() {
-        let limiter = RateLimiter::new();
-        let ip: IpAddr = "10.0.0.1".parse().unwrap();
-        assert!(limiter.check_locked(ip).await.is_none());
-    }
-
-    #[tokio::test]
-    async fn already_locked_failure_is_noop() {
-        let limiter = RateLimiter::new();
-        let ip: IpAddr = "1.2.3.4".parse().unwrap();
-
-        for _ in 0..5 {
-            record_spaced(&limiter, ip).await;
-        }
-        // Additional failures while locked return false (no new lockout triggered)
-        assert!(!limiter.record_failure(ip).await);
     }
 }
