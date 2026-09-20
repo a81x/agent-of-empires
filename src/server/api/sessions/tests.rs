@@ -1,12 +1,10 @@
 use super::*;
 
 /// `remove_instance` is the only way a row leaves `state.instances` on the
-/// delete path, so the epoch bump has to be tied to an actual removal
-/// rather than to reaching the call. Bumping unconditionally would spend
-/// an epoch on the final commit block after the structured purge's early
-/// removal already took the row, dropping a reload that was perfectly
-/// valid; not bumping at all leaves the window a stale reload uses to put
-/// a deleted row back.
+/// delete path, so the epoch bump must be tied to an actual removal: bumping
+/// unconditionally would spend an epoch on the final commit block after the
+/// early removal already took the row, and not bumping leaves a window a stale
+/// reload uses to put a deleted row back.
 #[test]
 fn remove_instance_bumps_the_epoch_only_when_it_removes_a_row() {
     let epoch = std::sync::atomic::AtomicU64::new(0);
@@ -27,9 +25,8 @@ fn remove_instance_bumps_the_epoch_only_when_it_removes_a_row() {
         vec!["keep"]
     );
 
-    // The structured purge reaches the final commit block after its early
-    // removal already took the row. Nothing left to remove, nothing to
-    // invalidate, so no epoch is spent.
+    // The final commit block runs after the early removal already took the
+    // row, so no epoch is spent.
     remove_instance(&mut instances, &doomed_id, &epoch);
     assert_eq!(read(), 1, "a no-op removal does not bump");
 
@@ -105,9 +102,9 @@ async fn rename_session_rejects_duplicate_and_preserves_newer_cache() {
             Ok(())
         })
         .unwrap();
-    // A user action can advance the live cache while the disk snapshot the
-    // rename will persist still has the older row. Publication must patch
-    // only rename-owned identity fields, not replace this favorite.
+    // A user action can advance the live cache while the disk snapshot still
+    // has the older row, so publication must patch only rename-owned identity
+    // fields.
     state
         .instances
         .write()
@@ -333,9 +330,8 @@ mod workspace_deletion {
 
     #[test]
     fn duplicate_owner_still_removes_the_worktree() {
-        // #2536 review: ["owner", "owner"] must not delete the owner with
-        // sibling (record-only) flags and then skip the repeat. After
-        // dedupe the single owner entry keeps the real worktree flags.
+        // #2536 review: after dedupe the single owner entry keeps the real
+        // worktree flags rather than the record-only sibling ones.
         let ids = dedupe_session_ids(&["owner".to_string(), "owner".to_string()]);
         assert_eq!(ids, vec!["owner"]);
         let plan = order_workspace_deletion(&ids, &body());
@@ -359,8 +355,7 @@ mod cityhall_capability {
 
     #[test]
     fn builtin_agent_is_acp_capable() {
-        // Built-in ACP agents resolve via the registry without reading
-        // config, so the gate accepts them regardless of the project path.
+        // Built-in ACP agents resolve via the registry without reading config.
         assert!(agent_is_acp_capable(
             "default",
             std::path::Path::new("/nonexistent"),
@@ -373,10 +368,8 @@ mod cityhall_capability {
     #[serial]
     fn an_explicit_agent_name_keys_the_custom_acp_cmd_lookup() {
         // An explicit `agent_name` can point at a different `agent_acp_cmd`
-        // entry than `tool`, and `resolve_agent_spec` resolves the custom map
-        // by that same name. Keying this lookup off `tool` reported
-        // not-capable for an agent that spawns fine, which skipped the
-        // up-front 403 in favor of a late refusal at spawn.
+        // entry than `tool`, so keying the lookup off `tool` reported
+        // not-capable for an agent that spawns fine.
         let _tmp = isolate_app_dir();
         crate::session::config::update_config(|c| {
             c.session
@@ -408,11 +401,10 @@ mod cityhall_capability {
         ));
     }
 
-    /// Why `acp_enable` gates on this predicate and not on
-    /// `pick_agent_for_tool`: the default-agent fallback always names a
-    /// registry entry, so a post-fallback registry lookup reports every
-    /// tool capable and would switch a terminal-only session into a
-    /// structured one running some other agent.
+    /// Why `acp_enable` gates on this predicate and not `pick_agent_for_tool`:
+    /// the default-agent fallback always names a registry entry, so a
+    /// post-fallback lookup reports every tool capable and would switch a
+    /// terminal-only session into a structured one running some other agent.
     #[test]
     #[serial]
     fn the_default_agent_fallback_is_not_a_capability_signal() {
@@ -533,21 +525,15 @@ fn worktree(
     }
 }
 
-// Regression witness for #2603: the ACP-capability overlay and the
-// smart-rename indicator overlay share ONE per-request cache of the
-// resolved `SessionConfig` keyed by (profile, project_path). Three
-// instances covering two unique pairs must trigger exactly two calls
-// into `resolve_config_with_repo_or_warn`, not three (per row) and not
-// four (two independent per-overlay caches, the pre-#2603 state).
-// A non-built-in tool is used so the ACP overlay does not short-circuit
-// on the built-in registry (`SessionResponse` sets `acp_capable=true`
-// in the constructor for built-ins, which would skip the resolver
-// lookup and hide any regression in the ACP overlay).
-// #3058 review: the force_smart_rename preflight must resolve config with
-// the repo-aware resolver so a repo-local agent_command_override is honored.
-// Reverting to the profile-only resolver would miss the override and fall
-// through to the "no prompt yet" path (both are 409, so this asserts the
-// body message, not just the status).
+// Regression witness for #2603: the ACP-capability and smart-rename overlays
+// share ONE per-request `SessionConfig` cache keyed by (profile, project_path),
+// so three instances covering two unique pairs must trigger exactly two
+// resolver calls. A non-built-in tool is used so the ACP overlay does not
+// short-circuit on the built-in registry and hide a regression.
+// #3058 review: the preflight must resolve config with the repo-aware resolver
+// so a repo-local agent_command_override is honored; the profile-only resolver
+// would fall through to the "no prompt yet" path, which is also a 409, so this
+// asserts the body message rather than the status.
 #[tokio::test]
 #[serial_test::serial]
 async fn force_smart_rename_preflight_sees_command_override_but_not_from_a_repo() {
@@ -810,9 +796,8 @@ fn find_by_idempotency_key_matches_trashed_but_not_missing() {
 
 #[test]
 fn fork_from_builds_terminal_seed_for_claude() {
-    // A non-structured (terminal) fork resolves through the shared
-    // `terminal_fork_seed` helper; a claude parent id yields a Terminal
-    // seed whose child id is a fresh, valid session id.
+    // A non-structured fork resolves through `terminal_fork_seed`; a claude
+    // parent id yields a Terminal seed with a fresh, valid child id.
     let seed = resolve_create_fork_seed("claude", "parent-uuid", false)
         .expect("claude terminal fork allowed");
     match seed {
@@ -831,10 +816,9 @@ fn fork_from_builds_terminal_seed_for_claude() {
 
 #[test]
 fn fork_from_builds_structured_seed_when_view_is_structured() {
-    // A structured fork carries the parent's acp_session_id straight onto a
-    // Structured seed; the builder turns that into the one-shot
-    // fork_pending marker and the live session/fork handshake mints the
-    // child id. The terminal forkability check is intentionally skipped.
+    // A structured fork carries the parent's acp_session_id onto a Structured
+    // seed; the builder turns that into the one-shot fork_pending marker and the
+    // live session/fork handshake mints the child id.
     let seed = resolve_create_fork_seed("claude", "parent-acp-id", true)
         .expect("structured fork seed is always allowed at create time");
     assert_eq!(
@@ -932,9 +916,9 @@ fn both_import_and_fork_rejected() {
 
 #[test]
 fn invalid_fork_id_is_rejected_by_create_guard() {
-    // The create path gates `fork_from` on `is_valid_session_id` so a
-    // malformed id can't slip through to `build_fork_flags`, which fails
-    // closed (no fork flags) and would silently start a fresh session.
+    // `fork_from` is gated on `is_valid_session_id`, so a malformed id cannot
+    // reach `build_fork_flags`, which fails closed and would silently start a
+    // fresh session.
     use crate::session::capture::is_valid_session_id;
     assert!(!is_valid_session_id("../etc/passwd"));
     assert!(!is_valid_session_id("has spaces"));
@@ -3363,63 +3347,45 @@ fn resolve_hook_plan_trusts_and_runs_with_trust_hooks() {
     );
 }
 
+/// None of these refuse a create. A scratch session has no repo config anchor,
+/// so it skips the repo trust check entirely (matching the CLI scratch branch),
+/// and an untrusted `.mcp.json` is gated by the supervisor at spawn rather than
+/// here, so blocking creation on it would be stricter than the CLI.
 #[test]
 #[serial_test::serial]
-fn resolve_hook_plan_absent_hooks_is_ok() {
-    // A repo with no hooks (and no global hooks) is never refused.
-    let temp_home = tempfile::tempdir().unwrap();
-    let _home = crate::session::test_support::isolate_app_dir_at(temp_home.path());
-    let _app_dir = crate::session::get_app_dir().expect("isolated app dir");
-    let project = tempfile::tempdir().unwrap();
+fn resolve_hook_plan_refuses_nothing_without_untrusted_repo_hooks() {
+    // (label, repo has untrusted on_create hooks, repo has .mcp.json, scratch)
+    for (label, hooks, mcp, scratch) in [
+        ("no hooks at all", false, false, false),
+        ("scratch pointed at untrusted hooks", true, false, true),
+        ("untrusted mcp without hooks", false, true, false),
+    ] {
+        let temp_home = tempfile::tempdir().unwrap();
+        let _home = crate::session::test_support::isolate_app_dir_at(temp_home.path());
+        let _app_dir = crate::session::get_app_dir().expect("isolated app dir");
 
-    let plan = resolve_create_hook_plan("default", project.path(), false, false)
-        .expect("no hooks means no trust needed");
-    assert!(plan.on_create.is_empty());
-    assert!(plan.trust_write.is_none());
-}
+        let hooked;
+        let plain;
+        let project = if hooks {
+            hooked = project_with_on_create_hooks(&["echo nope"]);
+            hooked.path()
+        } else {
+            plain = tempfile::tempdir().unwrap();
+            plain.path()
+        };
+        if mcp {
+            std::fs::write(
+                project.join(".mcp.json"),
+                r#"{"mcpServers": {"foo": {"command": "echo"}}}"#,
+            )
+            .unwrap();
+        }
 
-#[test]
-#[serial_test::serial]
-fn resolve_hook_plan_scratch_skips_repo_trust() {
-    // Scratch sessions have no repo config anchor; even pointing at a path
-    // with untrusted hooks must not refuse (matches the CLI scratch branch).
-    let temp_home = tempfile::tempdir().unwrap();
-    let _home = crate::session::test_support::isolate_app_dir_at(temp_home.path());
-    let _app_dir = crate::session::get_app_dir().expect("isolated app dir");
-    let project = project_with_on_create_hooks(&["echo nope"]);
-
-    let plan = resolve_create_hook_plan("default", project.path(), true, false)
-        .expect("scratch must skip the repo trust check");
-    assert!(
-        plan.on_create.is_empty(),
-        "no global hooks, so scratch resolves to nothing"
-    );
-    assert!(plan.trust_write.is_none());
-}
-
-#[test]
-#[serial_test::serial]
-fn resolve_hook_plan_does_not_block_on_untrusted_mcp_without_hooks() {
-    // A repo with an untrusted `.mcp.json` but no hooks must NOT be refused:
-    // the supervisor gates MCP at spawn, so blocking creation here would be
-    // stricter than the CLI. The session is created with MCP left untrusted.
-    let temp_home = tempfile::tempdir().unwrap();
-    let _home = crate::session::test_support::isolate_app_dir_at(temp_home.path());
-    let _app_dir = crate::session::get_app_dir().expect("isolated app dir");
-    let project = tempfile::tempdir().unwrap();
-    std::fs::write(
-        project.path().join(".mcp.json"),
-        r#"{"mcpServers": {"foo": {"command": "echo"}}}"#,
-    )
-    .unwrap();
-
-    let plan = resolve_create_hook_plan("default", project.path(), false, false)
-        .expect("untrusted MCP without hooks must not block creation");
-    assert!(plan.on_create.is_empty());
-    assert!(
-        plan.trust_write.is_none(),
-        "MCP is left untrusted when the caller did not opt in"
-    );
+        let plan = resolve_create_hook_plan("default", project, scratch, false)
+            .unwrap_or_else(|e| panic!("{label} must not refuse: {e:#}"));
+        assert!(plan.on_create.is_empty(), "{label}");
+        assert!(plan.trust_write.is_none(), "{label}");
+    }
 }
 
 #[test]
