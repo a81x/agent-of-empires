@@ -44,8 +44,14 @@ pub enum WidgetKind {
         #[serde(skip_serializing_if = "Option::is_none")]
         max: Option<i64>,
     },
-    Slider { min: i64, max: i64, step: i64 },
-    Select { options: Vec<SelectOption> },
+    Slider {
+        min: i64,
+        max: i64,
+        step: i64,
+    },
+    Select {
+        options: Vec<SelectOption>,
+    },
     List,
     /// Choices resolved by the host at render time, parameterized by sibling `depends_on` fields.
     DynamicSelect {
@@ -64,7 +70,9 @@ pub enum WidgetKind {
     },
     Cron,
     /// A bespoke widget registered under `id` on both the web and TUI.
-    Custom { id: String },
+    Custom {
+        id: String,
+    },
 }
 
 /// Mirrors `aoe_plugin_api::OptionSource`.
@@ -160,9 +168,13 @@ impl SelectOption {
 pub enum WebWritePolicy {
     Allow,
     /// Needs passphrase elevation.
-    RequiresElevation { reason: String },
+    RequiresElevation {
+        reason: String,
+    },
     /// A host execution surface the server never accepts from the web.
-    LocalOnly { reason: String },
+    LocalOnly {
+        reason: String,
+    },
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]

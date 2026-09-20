@@ -19,8 +19,14 @@ pub enum PatchRejection {
     UnknownField(String),
     Malformed(String),
     /// 403; every other rejection is 400.
-    NeedsElevation { path: String, reason: String },
-    Invalid { path: String, reason: String },
+    NeedsElevation {
+        path: String,
+        reason: String,
+    },
+    Invalid {
+        path: String,
+        reason: String,
+    },
 }
 
 impl PatchRejection {

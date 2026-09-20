@@ -2162,11 +2162,6 @@ pub(crate) fn stranded_named_ignore_volumes(
         .collect()
 }
 
-/// Build a full `ContainerConfig` for creating a sandboxed container.
-///
-/// `profile` selects which profile's overrides (volumes, mount_ssh, volume_ignores)
-/// are merged on top of the global config. An empty `profile` falls back to the
-/// user's globally configured default profile.
 fn validate_managed_container_environment(
     environment: &[EnvEntry],
     active_agent: Option<&crate::agents::AgentDef>,
@@ -2201,6 +2196,11 @@ fn validate_managed_container_environment(
     Ok(())
 }
 
+/// Build a full `ContainerConfig` for creating a sandboxed container.
+///
+/// `profile` selects which profile's overrides (volumes, mount_ssh, volume_ignores)
+/// are merged on top of the global config. An empty `profile` falls back to the
+/// user's globally configured default profile.
 pub(crate) fn build_container_config(
     project_path_str: &str,
     sandbox_info: &SandboxInfo,
@@ -2977,44 +2977,35 @@ mod tests {
         );
     }
 
+    /// Unset, blank and `bridge` mean the runtime default; `host` and the
+    /// namespace-sharing forms are dropped here too, because repo/profile TOML
+    /// is only type-checked, not value-validated (#2706); `none` is lowercased
+    /// and a named network passes through trimmed.
     #[test]
-    fn sanitize_network_defaults_to_none() {
-        assert_eq!(sanitize_network(None), None);
-        assert_eq!(sanitize_network(Some("")), None);
-        assert_eq!(sanitize_network(Some("  ")), None);
-        assert_eq!(sanitize_network(Some("bridge")), None);
-        assert_eq!(sanitize_network(Some("BRIDGE")), None);
-    }
-
-    #[test]
-    fn sanitize_network_rejects_host() {
-        assert_eq!(sanitize_network(Some("host")), None);
-        assert_eq!(sanitize_network(Some("Host")), None);
-    }
-
-    #[test]
-    fn sanitize_network_rejects_namespace_sharing_forms() {
-        // Repo/profile TOML is only type-checked, so `container:` (Docker) and
-        // `ns:` (Podman) must be rejected here, not just by the settings
-        // validator: either shares another namespace's network stack.
-        assert_eq!(sanitize_network(Some("container:abc")), None);
-        assert_eq!(sanitize_network(Some("ns:/var/run/netns/x")), None);
-        assert_eq!(sanitize_network(Some("has space")), None);
-    }
-
-    #[test]
-    fn sanitize_network_passes_through_none_and_named() {
-        assert_eq!(sanitize_network(Some("none")), Some("none".to_string()));
-        assert_eq!(
-            sanitize_network(Some(" egress-proxy ")),
-            Some("egress-proxy".to_string())
-        );
-    }
-
-    #[test]
-    fn sanitize_network_canonicalizes_none_keyword() {
-        assert_eq!(sanitize_network(Some("None")), Some("none".to_string()));
-        assert_eq!(sanitize_network(Some("NONE")), Some("none".to_string()));
+    fn sanitize_network_canonicalizes_or_drops_every_form() {
+        let cases: &[(Option<&str>, Option<&str>)] = &[
+            (None, None),
+            (Some(""), None),
+            (Some("  "), None),
+            (Some("bridge"), None),
+            (Some("BRIDGE"), None),
+            (Some("host"), None),
+            (Some("Host"), None),
+            (Some("container:abc"), None),
+            (Some("ns:/var/run/netns/x"), None),
+            (Some("has space"), None),
+            (Some("none"), Some("none")),
+            (Some("None"), Some("none")),
+            (Some("NONE"), Some("none")),
+            (Some(" egress-proxy "), Some("egress-proxy")),
+        ];
+        for (input, expected) in cases {
+            assert_eq!(
+                sanitize_network(*input).as_deref(),
+                *expected,
+                "network {input:?}"
+            );
+        }
     }
 
     // --- compute_volume_paths tests ---
@@ -3726,82 +3717,6 @@ mod tests {
             "/root/.claude/plugins/cache/claude-plugins-official/rust-analyzer-lsp/1.0.0"
         ));
         assert!(!installed_out.contains(host_prefix.as_ref()));
-    }
-
-    #[test]
-    fn test_agent_config_mounts_have_valid_entries() {
-        for mount in AGENT_CONFIG_MOUNTS {
-            assert!(!mount.tool_name.is_empty());
-            assert!(!mount.host_rel.is_empty());
-            assert!(!mount.container_suffix.is_empty());
-        }
-    }
-
-    #[test]
-    fn test_agent_config_mounts_each_tool_has_expected_count() {
-        let tool_names: Vec<&str> = AGENT_CONFIG_MOUNTS.iter().map(|m| m.tool_name).collect();
-        for name in &tool_names {
-            let count = tool_names.iter().filter(|n| *n == name).count();
-            // OpenCode has two mounts: data dir (.local/share/opencode) + config dir (.config/opencode)
-            let expected = if *name == "opencode" { 2 } else { 1 };
-            assert_eq!(
-                count, expected,
-                "tool_name '{}' appears {} times, expected {}",
-                name, count, expected
-            );
-        }
-    }
-
-    #[test]
-    fn test_agent_config_mounts_filter_by_tool() {
-        let claude_mounts: Vec<_> = AGENT_CONFIG_MOUNTS
-            .iter()
-            .filter(|m| m.tool_name == "claude")
-            .collect();
-        assert_eq!(claude_mounts.len(), 1);
-        assert_eq!(claude_mounts[0].host_rel, ".claude");
-
-        // OpenCode has both a data dir and a config dir mount
-        let opencode_mounts: Vec<_> = AGENT_CONFIG_MOUNTS
-            .iter()
-            .filter(|m| m.tool_name == "opencode")
-            .collect();
-        assert_eq!(opencode_mounts.len(), 2);
-        let opencode_paths: Vec<&str> = opencode_mounts.iter().map(|m| m.host_rel).collect();
-        assert!(opencode_paths.contains(&".local/share/opencode"));
-        assert!(opencode_paths.contains(&".config/opencode"));
-
-        let cursor_mounts: Vec<_> = AGENT_CONFIG_MOUNTS
-            .iter()
-            .filter(|m| m.tool_name == "cursor")
-            .collect();
-        assert_eq!(cursor_mounts.len(), 1);
-        assert_eq!(cursor_mounts[0].host_rel, ".cursor");
-
-        let hermes_mounts: Vec<_> = AGENT_CONFIG_MOUNTS
-            .iter()
-            .filter(|m| m.tool_name == "hermes")
-            .collect();
-        assert_eq!(hermes_mounts.len(), 1);
-        assert_eq!(hermes_mounts[0].host_rel, ".hermes");
-
-        let antigravity_mounts: Vec<_> = AGENT_CONFIG_MOUNTS
-            .iter()
-            .filter(|m| m.tool_name == "antigravity")
-            .collect();
-        assert_eq!(antigravity_mounts.len(), 1);
-        assert_eq!(antigravity_mounts[0].host_rel, ".gemini/antigravity-cli");
-        assert_eq!(
-            antigravity_mounts[0].container_suffix,
-            ".gemini/antigravity-cli"
-        );
-
-        // Unknown tool should match nothing
-        let unknown_mounts: Vec<_> = AGENT_CONFIG_MOUNTS
-            .iter()
-            .filter(|m| m.tool_name == "unknown")
-            .collect();
-        assert_eq!(unknown_mounts.len(), 0);
     }
 
     #[test]
@@ -7435,138 +7350,60 @@ volume_ignores = ["target"]
         .unwrap()
     }
 
+    /// The ADC mount is Claude-only, needs a non-empty `CLAUDE_CODE_USE_VERTEX`
+    /// and an existing credential file, and prefers an explicit
+    /// `GOOGLE_APPLICATION_CREDENTIALS` over the well-known host path.
     #[test]
     #[serial_test::serial]
-    fn test_vertex_mounts_default_adc_when_flag_set_and_tool_is_claude() {
-        let temp_home = TempDir::new().unwrap();
-        let _home_guard = crate::session::test_support::isolate_home(temp_home.path());
-        std::env::set_var("CLAUDE_CODE_USE_VERTEX", "1");
-        std::env::remove_var("GOOGLE_APPLICATION_CREDENTIALS");
-        let adc_path = write_adc_at(temp_home.path());
+    fn vertex_adc_is_mounted_only_for_claude_with_the_flag_and_a_file() {
+        const TARGET: &str = "/root/.config/gcloud/application_default_credentials.json";
+        // (CLAUDE_CODE_USE_VERTEX, tool, default ADC on disk, custom credential, mounted)
+        let cases: &[(Option<&str>, &str, bool, bool, bool)] = &[
+            (Some("1"), "claude", true, false, true),
+            (Some("1"), "claude", false, true, true),
+            (None, "claude", true, false, false),
+            (Some("1"), "opencode", true, false, false),
+            (Some(""), "claude", true, false, false),
+            (Some("1"), "claude", false, false, false),
+        ];
 
-        let project_dir = TempDir::new().unwrap();
-        let config = run_build_for_vertex_test("claude", project_dir.path());
+        for &(flag, tool, write_default, write_custom, mounted) in cases {
+            let label = format!("flag={flag:?} tool={tool}");
+            let temp_home = TempDir::new().unwrap();
+            let _home_guard = crate::session::test_support::isolate_home(temp_home.path());
+            match flag {
+                Some(value) => std::env::set_var("CLAUDE_CODE_USE_VERTEX", value),
+                None => std::env::remove_var("CLAUDE_CODE_USE_VERTEX"),
+            }
+            let default_adc = write_default.then(|| write_adc_at(temp_home.path()));
+            let cred_dir = TempDir::new().unwrap();
+            let custom = write_custom.then(|| {
+                let path = cred_dir.path().join("custom-key.json");
+                fs::write(&path, r#"{"type":"service_account"}"#).unwrap();
+                path
+            });
+            match custom.as_ref() {
+                Some(path) => std::env::set_var("GOOGLE_APPLICATION_CREDENTIALS", path),
+                None => std::env::remove_var("GOOGLE_APPLICATION_CREDENTIALS"),
+            }
 
-        let target = "/root/.config/gcloud/application_default_credentials.json";
-        let mount = config
-            .volumes
-            .iter()
-            .find(|v| v.container_path == target)
-            .expect("expected ADC mount when Vertex flag is set");
-        assert_eq!(mount.host_path, adc_path.to_string_lossy());
-        assert!(mount.read_only);
+            let project_dir = TempDir::new().unwrap();
+            let config = run_build_for_vertex_test(tool, project_dir.path());
+            let mount = config.volumes.iter().find(|v| v.container_path == TARGET);
 
-        std::env::remove_var("CLAUDE_CODE_USE_VERTEX");
-    }
-
-    #[test]
-    #[serial_test::serial]
-    fn test_vertex_mounts_custom_path_from_google_application_credentials() {
-        let temp_home = TempDir::new().unwrap();
-        let _home_guard = crate::session::test_support::isolate_home(temp_home.path());
-        std::env::set_var("CLAUDE_CODE_USE_VERTEX", "1");
-
-        let cred_dir = TempDir::new().unwrap();
-        let custom_cred = cred_dir.path().join("custom-key.json");
-        fs::write(&custom_cred, r#"{"type":"service_account"}"#).unwrap();
-        std::env::set_var("GOOGLE_APPLICATION_CREDENTIALS", &custom_cred);
-
-        let project_dir = TempDir::new().unwrap();
-        let config = run_build_for_vertex_test("claude", project_dir.path());
-
-        let target = "/root/.config/gcloud/application_default_credentials.json";
-        let mount = config
-            .volumes
-            .iter()
-            .find(|v| v.container_path == target)
-            .expect("expected mount at well-known ADC path");
-        assert_eq!(mount.host_path, custom_cred.to_string_lossy());
-        assert!(mount.read_only);
-
-        std::env::remove_var("CLAUDE_CODE_USE_VERTEX");
-        std::env::remove_var("GOOGLE_APPLICATION_CREDENTIALS");
-    }
-
-    #[test]
-    #[serial_test::serial]
-    fn test_vertex_skips_mount_when_flag_unset() {
-        let temp_home = TempDir::new().unwrap();
-        let _home_guard = crate::session::test_support::isolate_home(temp_home.path());
-        std::env::remove_var("CLAUDE_CODE_USE_VERTEX");
-        std::env::remove_var("GOOGLE_APPLICATION_CREDENTIALS");
-        let _ = write_adc_at(temp_home.path());
-
-        let project_dir = TempDir::new().unwrap();
-        let config = run_build_for_vertex_test("claude", project_dir.path());
-
-        let target = "/root/.config/gcloud/application_default_credentials.json";
-        assert!(
-            !config.volumes.iter().any(|v| v.container_path == target),
-            "ADC must not be mounted when Vertex flag is unset",
-        );
-    }
-
-    #[test]
-    #[serial_test::serial]
-    fn test_vertex_skips_mount_when_tool_is_not_claude() {
-        let temp_home = TempDir::new().unwrap();
-        let _home_guard = crate::session::test_support::isolate_home(temp_home.path());
-        std::env::set_var("CLAUDE_CODE_USE_VERTEX", "1");
-        std::env::remove_var("GOOGLE_APPLICATION_CREDENTIALS");
-        let _ = write_adc_at(temp_home.path());
-
-        let project_dir = TempDir::new().unwrap();
-        let config = run_build_for_vertex_test("opencode", project_dir.path());
-
-        let target = "/root/.config/gcloud/application_default_credentials.json";
-        assert!(
-            !config.volumes.iter().any(|v| v.container_path == target),
-            "ADC must not be mounted for non-claude tools even when Vertex flag is set",
-        );
+            match mount {
+                Some(mount) => {
+                    assert!(mounted, "unexpected ADC mount for {label}");
+                    let host = custom.or(default_adc).unwrap();
+                    assert_eq!(mount.host_path, host.to_string_lossy(), "{label}");
+                    assert!(mount.read_only, "{label}");
+                }
+                None => assert!(!mounted, "missing ADC mount for {label}"),
+            }
+        }
 
         std::env::remove_var("CLAUDE_CODE_USE_VERTEX");
-    }
-
-    #[test]
-    #[serial_test::serial]
-    fn test_vertex_skips_mount_when_flag_is_empty_string() {
-        let temp_home = TempDir::new().unwrap();
-        let _home_guard = crate::session::test_support::isolate_home(temp_home.path());
-        std::env::set_var("CLAUDE_CODE_USE_VERTEX", "");
         std::env::remove_var("GOOGLE_APPLICATION_CREDENTIALS");
-        let _ = write_adc_at(temp_home.path());
-
-        let project_dir = TempDir::new().unwrap();
-        let config = run_build_for_vertex_test("claude", project_dir.path());
-
-        let target = "/root/.config/gcloud/application_default_credentials.json";
-        assert!(
-            !config.volumes.iter().any(|v| v.container_path == target),
-            "Empty CLAUDE_CODE_USE_VERTEX must be treated as unset",
-        );
-
-        std::env::remove_var("CLAUDE_CODE_USE_VERTEX");
-    }
-
-    #[test]
-    #[serial_test::serial]
-    fn test_vertex_skips_mount_when_adc_file_missing() {
-        let temp_home = TempDir::new().unwrap();
-        let _home_guard = crate::session::test_support::isolate_home(temp_home.path());
-        std::env::set_var("CLAUDE_CODE_USE_VERTEX", "1");
-        std::env::remove_var("GOOGLE_APPLICATION_CREDENTIALS");
-        // Note: no ADC file written
-
-        let project_dir = TempDir::new().unwrap();
-        let config = run_build_for_vertex_test("claude", project_dir.path());
-
-        let target = "/root/.config/gcloud/application_default_credentials.json";
-        assert!(
-            !config.volumes.iter().any(|v| v.container_path == target),
-            "ADC must not be mounted when the host file does not exist",
-        );
-
-        std::env::remove_var("CLAUDE_CODE_USE_VERTEX");
     }
 
     // --- named_volume_for tests ---

@@ -93,7 +93,11 @@ mod tests {
             descriptor("acp", "node_path").unwrap().web_write,
             WebWritePolicy::LocalOnly { .. }
         ));
-        assert!(descriptor("acp", "max_concurrent_workers").unwrap().advanced);
+        assert!(
+            descriptor("acp", "max_concurrent_workers")
+                .unwrap()
+                .advanced
+        );
         assert!(!descriptor("acp", "default_agent").unwrap().advanced);
     }
 

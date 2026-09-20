@@ -89,7 +89,10 @@ mod tests {
     #[test]
     fn merge_recurses_objects_and_replaces_arrays() {
         let mut base = json!({"acp": {"enabled": false, "default_agent": "aoe-agent"}, "sandbox": {"extra_volumes": ["/a:/a"]}});
-        merge_json(&mut base, &json!({"acp": {"enabled": true}, "sandbox": {"extra_volumes": ["/b:/b"]}}));
+        merge_json(
+            &mut base,
+            &json!({"acp": {"enabled": true}, "sandbox": {"extra_volumes": ["/b:/b"]}}),
+        );
         assert_eq!(
             base,
             json!({"acp": {"enabled": true, "default_agent": "aoe-agent"}, "sandbox": {"extra_volumes": ["/b:/b"]}})

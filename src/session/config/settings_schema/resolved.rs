@@ -14,8 +14,12 @@ use super::{runtime_schema, section_plugin_id, FieldDescriptor};
 pub enum SettingSource {
     User,
     /// Reported only; never applied to runtime config.
-    PluginDefault { plugin: String },
-    ManifestDefault { plugin: String },
+    PluginDefault {
+        plugin: String,
+    },
+    ManifestDefault {
+        plugin: String,
+    },
     SchemaDefault,
 }
 
