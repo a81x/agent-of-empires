@@ -162,7 +162,7 @@ async fn commit_structured_view(state: &AppState, instance: &mut Instance) -> Re
         })
     })
     .await;
-    let id = &instance.id;
+    let id = instance.id.clone();
     let lifecycle_generation = match transition {
         Ok(Ok(generation)) => generation,
         Ok(Err(error)) => {
@@ -187,7 +187,7 @@ async fn commit_structured_view(state: &AppState, instance: &mut Instance) -> Re
     };
     apply(instance);
     let mut instances = state.instances.write().await;
-    if let Some(slot) = instances.iter_mut().find(|candidate| candidate.id == *id) {
+    if let Some(slot) = instances.iter_mut().find(|candidate| candidate.id == id) {
         if lifecycle_generation >= slot.lifecycle_generation {
             apply(slot);
             state

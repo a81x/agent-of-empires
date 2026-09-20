@@ -221,14 +221,6 @@ pub async fn drop_mcp_server(
     }
 }
 
-fn read_only_response() -> axum::response::Response {
-    api_error(
-        StatusCode::FORBIDDEN,
-        "read_only",
-        "Server is in read-only mode",
-    )
-}
-
 fn bad_body() -> axum::response::Response {
     (
         StatusCode::BAD_REQUEST,
