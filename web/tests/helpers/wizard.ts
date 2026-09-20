@@ -2,6 +2,7 @@
 // modal because the app shell behind it owns colliding labels ("More options", "New session").
 
 import { expect, type Locator, type Page, type Route } from "@playwright/test";
+import { sessionResponse } from "./sessions";
 
 export function wizard(page: Page): Locator {
   return page.getByTestId("session-wizard");
@@ -44,25 +45,13 @@ export async function launch(page: Page) {
 export const CLAUDE_AGENT = { name: "claude", binary: "claude", host_only: false, installed: true, install_hint: "" };
 
 export function sessionStub(overrides: Record<string, unknown> = {}) {
-  return {
+  return sessionResponse({
     id: "seed-session",
     title: "seed",
     project_path: "/tmp/example",
     group_path: "/tmp",
-    tool: "claude",
-    status: "Idle",
-    yolo_mode: false,
-    created_at: new Date().toISOString(),
-    last_accessed_at: null,
-    last_error: null,
-    branch: null,
-    main_repo_path: null,
-    is_sandboxed: false,
-    has_terminal: true,
-    profile: "default",
-    workspace_repos: [],
     ...overrides,
-  };
+  });
 }
 
 export interface WizardMockOptions {

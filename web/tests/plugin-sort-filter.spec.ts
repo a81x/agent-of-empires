@@ -1,15 +1,7 @@
-// Mocked-Playwright coverage for the plugin sort-key and filter-facet slots in
-// the sidebar (#2401).
-//
-// Drives the WorkspaceSidebar against fully-stubbed /api responses, including
-// /api/plugins/ui-state, so the only thing under test is the React wiring:
-//   1. A plugin sort-key appears in the sort picker and reorders rows by the
-//      referenced row-column's sort_value in the declared direction.
-//   2. A plugin filter-facet renders a facet control that filters rows by the
-//      referenced row-column's filter_values, combined with the text filter.
-//
-// The fallback-when-entries-vanish and the comparator math live in the unit
-// tests (src/lib/__tests__/pluginUi.test.ts, sidebarSort.test.ts).
+// #2401: a plugin sort-key appears in the sort picker and reorders rows by the
+// referenced row-column's sort_value; a plugin filter-facet renders a control
+// that filters by filter_values, combined with the text filter. The comparator
+// math and the fallback when entries vanish live in the unit tests.
 
 import { test, expect } from "./helpers/mockedTest";
 import { sessionResponse as baseSession } from "./helpers/sessions";

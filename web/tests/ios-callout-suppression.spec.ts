@@ -1,17 +1,8 @@
-// Mocked-Playwright coverage for the iOS link-preview callout suppression
-// on sidebar session rows (#1451).
-//
-// On mobile Safari the session row, an <a href>, triggers iOS's native
-// link-preview action sheet on long-press, which preempts the app's own
-// 500ms rename/delete menu. The fix adds `-webkit-touch-callout: none` via
-// the arbitrary Tailwind class `[-webkit-touch-callout:none]` on the row.
-//
-// `-webkit-touch-callout` is a WebKit-only property, so chromium (the
-// engine these mocked specs run on) reports nothing for it via
-// getComputedStyle. We therefore assert the class token is present on the
-// row: that proves the suppression rule is wired onto the element. The
-// real callout-vs-menu behavior is a manual real-device check, noted in
-// the issue test plan.
+// #1451: on mobile Safari a long-press on a session row (an <a href>) raised
+// iOS's link-preview sheet and preempted the app's 500ms row menu; the row now
+// carries `-webkit-touch-callout: none`. Chromium reports nothing for that
+// WebKit-only property, so the assertion is on the class token; the real
+// callout behavior is a manual device check.
 
 import { test, expect } from "./helpers/mockedTest";
 import { sessionResponse as baseSession } from "./helpers/sessions";

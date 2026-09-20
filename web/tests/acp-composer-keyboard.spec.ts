@@ -2,21 +2,11 @@ import { test, expect } from "./helpers/mockedTest";
 import { mockStructuredSessionApis, openStructuredViewFor } from "./helpers/structuredSessionMocks";
 import { devices, type Page } from "@playwright/test";
 
-// Mobile keyboard regression for the structured-view composer (#2011).
-//
-// On iOS regular Safari the layout viewport does NOT shrink when the soft
-// keyboard opens (interactive-widget=resizes-content is Chromium/Android only,
-// and dvh does not track the iOS keyboard), so the composer footer was left
-// pinned to the full-height bottom edge, hidden behind the keyboard. The fix
-// reserves `keyboardHeight` as bottom padding on the structured-view root so
-// the chat viewport absorbs the shrink and the composer rises above the
-// keyboard. On platforms where innerHeight shrinks with the keyboard (iOS PWA,
-// iOS 26 Safari, Android Chrome) `keyboardHeight` is 0, so the reservation is a
-// no-op and the existing dvh path is untouched.
-//
-// We render the structured view in mocked mode (one running ACP session, no
-// live agent) and drive the iOS keyboard by overriding visualViewport, the
-// same technique as mobile-keyboard.spec.ts.
+// #2011: on iOS regular Safari the layout viewport does not shrink when the
+// soft keyboard opens, so the composer footer stayed pinned behind it. The fix
+// reserves `keyboardHeight` as bottom padding on the structured-view root. Where
+// innerHeight does shrink (iOS PWA, iOS 26 Safari, Android Chrome) that height
+// is 0 and the dvh path is untouched.
 
 test.use({ ...devices["iPhone 13"] });
 

@@ -1,13 +1,8 @@
-// Mocked-Playwright coverage for the plugin row slots on a narrow mobile
-// sidebar (#2514).
-//
-// The github plugin's row-badge (icon chips) and row-column (status text) used
-// to render inline on the session-name line. On the narrow mobile drawer the
-// truncating name kept its width, so the column squeezed to zero and the
-// shrink-0 badges overflowed past the row's right edge. They now sit on their
-// own line (PluginRowLine), so both stay within the row regardless of how long
-// the session name is. This drives the real-CSS layout at a mobile viewport,
-// which jsdom cannot reproduce.
+// #2514: the github plugin's row-badge chips and row-column status used to
+// render inline with the session name, so on the narrow mobile drawer the
+// truncating name kept its width and the shrink-0 badges overflowed the row.
+// They now sit on their own line. Real CSS at a mobile viewport, which jsdom
+// cannot reproduce.
 
 import { test, expect } from "./helpers/mockedTest";
 import { sessionResponse as baseSession } from "./helpers/sessions";

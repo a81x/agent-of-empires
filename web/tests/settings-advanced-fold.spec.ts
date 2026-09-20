@@ -1,14 +1,8 @@
-// Story #3 (#1515): expanding an "Advanced" fold and editing a knob inside it
-// persists through the same save-on-change path as any other field. Ported
-// from live to the mocked suite: a canned schema (mirroring the real
-// `#[setting(...)]` labels) plus a stateful settings store stand in for the
-// backend, so the reload assertion exercises the same fetch-render-expand
-// path against the value the PATCH wrote.
-//
-// The RTL fold suite (SettingsView.folds.test.tsx) pins the hide/expand/save
-// logic per section; this spec keeps the real-DOM pass: URL-routed tabs, the
-// folded-by-default markup after a genuine page load, and the PATCH wire
-// format of an advanced edit.
+// #1515: editing a knob inside an "Advanced" fold persists through the same
+// save-on-change path as any other field. A canned schema plus a stateful
+// settings store stand in for the backend, so the reload assertion re-runs
+// fetch-render-expand against the value the PATCH wrote. SettingsView.folds
+// .test.tsx pins the per-section hide/expand/save logic.
 
 import { test, expect } from "./helpers/mockedTest";
 import { mockSettingsApis } from "./helpers/apiMocks";
