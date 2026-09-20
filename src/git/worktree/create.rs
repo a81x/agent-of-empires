@@ -36,7 +36,7 @@ fn classify_worktree_add_failure(combined: &str, branch: &str) -> GitError {
 /// Result of [`GitWorktree::fetch_branch`]. Non-`Ok` outcomes carry a detail
 /// that callers surface as a stale-base warning.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum FetchOutcome {
+enum FetchOutcome {
     Ok,
     Failed(String),
     Skipped(String),
@@ -46,7 +46,7 @@ pub enum FetchOutcome {
 impl GitWorktree {
     /// `git fetch <remote> <branch>` with stdin nulled (no passphrase prompts)
     /// and a 10 second bound.
-    pub fn fetch_branch(&self, remote: &str, branch: &str) -> FetchOutcome {
+    fn fetch_branch(&self, remote: &str, branch: &str) -> FetchOutcome {
         let mut cmd = std::process::Command::new("git");
         cmd.args(["fetch", remote, branch])
             .current_dir(&self.repo_path)
