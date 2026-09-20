@@ -1,4 +1,5 @@
 import { useWebSettings } from "../../hooks/useWebSettings";
+import { CheckboxRow } from "./FormFields";
 
 /// Per-browser diff preferences, also reachable from the diff view.
 export function DiffSettings() {
@@ -7,44 +8,18 @@ export function DiffSettings() {
   return (
     <div>
       <div className="space-y-4">
-        <div>
-          <label className="flex items-center justify-between gap-3 cursor-pointer">
-            <div>
-              <div className="text-[13px] text-text-secondary">Side-by-side diff</div>
-              <p className="text-[11px] text-text-muted mt-1">
-                Show diffs in a split (side-by-side) layout instead of unified. On narrow screens the diff falls back to
-                unified automatically.
-              </p>
-            </div>
-            <input
-              type="checkbox"
-              checked={settings.diffViewLayout === "split"}
-              onChange={(e) =>
-                update({
-                  diffViewLayout: e.target.checked ? "split" : "unified",
-                })
-              }
-              className="accent-brand-600 w-4 h-4 shrink-0"
-            />
-          </label>
-        </div>
-
-        <div>
-          <label className="flex items-center justify-between gap-3 cursor-pointer">
-            <div>
-              <div className="text-[13px] text-text-secondary">Tree file list</div>
-              <p className="text-[11px] text-text-muted mt-1">
-                Group changed files into a collapsible directory tree. Turn off for a flat list of file paths.
-              </p>
-            </div>
-            <input
-              type="checkbox"
-              checked={settings.diffViewMode === "tree"}
-              onChange={(e) => update({ diffViewMode: e.target.checked ? "tree" : "flat" })}
-              className="accent-brand-600 w-4 h-4 shrink-0"
-            />
-          </label>
-        </div>
+        <CheckboxRow
+          title="Side-by-side diff"
+          description="Show diffs in a split (side-by-side) layout instead of unified. On narrow screens the diff falls back to unified automatically."
+          checked={settings.diffViewLayout === "split"}
+          onChange={(v) => update({ diffViewLayout: v ? "split" : "unified" })}
+        />
+        <CheckboxRow
+          title="Tree file list"
+          description="Group changed files into a collapsible directory tree. Turn off for a flat list of file paths."
+          checked={settings.diffViewMode === "tree"}
+          onChange={(v) => update({ diffViewMode: v ? "tree" : "flat" })}
+        />
       </div>
     </div>
   );

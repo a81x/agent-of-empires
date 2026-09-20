@@ -96,6 +96,36 @@ export function CollapsibleSection({
   );
 }
 
+/** Checkbox row used by the per-browser preference panels. */
+export function CheckboxRow({
+  title,
+  description,
+  checked,
+  onChange,
+}: {
+  title: string;
+  description: string;
+  checked: boolean;
+  onChange: (v: boolean) => void;
+}) {
+  return (
+    <div>
+      <label className="flex items-center justify-between gap-3 cursor-pointer">
+        <div>
+          <div className="text-[13px] text-text-secondary">{title}</div>
+          <p className="text-[11px] text-text-muted mt-1">{description}</p>
+        </div>
+        <input
+          type="checkbox"
+          checked={checked}
+          onChange={(e) => onChange(e.target.checked)}
+          className="accent-brand-600 w-4 h-4 shrink-0"
+        />
+      </label>
+    </div>
+  );
+}
+
 export function ToggleField({
   label,
   description,
