@@ -1,24 +1,8 @@
-//! Migration v010: Drop legacy/in-dev `live_send_exit_chord` values.
-//!
-//! Two specific values became the default at different points and
-//! ended up baked into user configs (settings TUI's save writes the
-//! full in-memory Config, including defaults that haven't been touched
-//! by the user):
-//!
-//! - `"C-q,C-]"`: 1.9.0 shipped this as the default. `Ctrl+]` was
-//!   pulled from the default after reports that several terminals on
-//!   macOS silently swallow it.
-//! - `"C-q,C-\\"`: tried as a replacement default in development.
-//!   `Ctrl+\` also silently fails on at least one macOS terminal/
-//!   keyboard combination, so it was reverted before release.
-//!
-//! Either value, baked into a saved config, leaves the footer's live-
-//! mode banner advertising a chord that doesn't actually exit. This
-//! migration drops the field when it matches one of those two values
-//! exactly so the new default (`C-q`) takes effect on next launch.
-//! User-customized lists (anything else) are left alone, even if they
-//! happen to include `C-]` or `C-\` alongside other chords; removing
-//! a chord the user added deliberately would surprise them.
+//! Migration v010: drop `live_send_exit_chord` when it holds one of the two
+//! chords that were briefly the default, `"C-q,C-]"` and `"C-q,C-\\"`. Both
+//! are swallowed by some macOS terminals, and the settings TUI bakes untouched
+//! defaults into saved configs, so the footer advertised an exit that did not
+//! work. Any other value is a user choice and stays.
 
 use anyhow::{Context, Result};
 use std::fs;

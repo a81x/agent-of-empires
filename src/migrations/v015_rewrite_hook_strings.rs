@@ -1,91 +1,16 @@
-//! Migration v015: rewrite previously-installed AoE hook shell strings to
-//! the hardened shape introduced by PR #1803 (quoted `"$AOE_INSTANCE_ID"`
-//! plus a POSIX allowlist guard). Pre-#1803 installs keep the legacy
-//! unhardened bytes forever otherwise; this migration runs once on first
-//! launch after upgrade.
+//! Migration v015: rewrite installed AoE hook shell strings to the hardened
+//! shape from #1803 (quoted `"$AOE_INSTANCE_ID"` plus a POSIX allowlist
+//! guard).
 //!
-//! ## Strategy
-//!
-//! Per-file marker-presence gate guards a reuse of the existing `install_*`
-//! functions. The gate prevents resurrecting hooks the user uninstalled
-//! (install creates files when absent). Reuse prevents byte-drift from the
-//! live install path.
-//!
-//! ## Failure policy
-//!
-//! Per `AGENTS.md > Data Migrations`, a returned `Err` aborts boot. Gate-
-//! stage parse errors fail closed silently (a corrupt config would
-//! otherwise spam every boot, and we cannot prove the file is ours
-//! without parsing). Rewrite-stage failures (locked file, permission
-//! denied, broken symlink, transient I/O) are `tracing::warn!`'d and
-//! skipped. Only `dirs::home_dir() == None` propagates. Schema bumps
-//! after attempting every known path so one corrupt file does not block
-//! boot.
-//!
-//! ## Known limitations
-//!
-//! ### Env vars set in interactive shell only
-//!
-//! `CLAUDE_CONFIG_DIR` (or similar) set only in the launch shell and not
-//! in any profile's `environment` list is invisible at migration time.
-//! Recovery: relaunch under that env, or `aoe uninstall && aoe add --cmd
-//! <agent>`.
-//!
-//! ### Transient per-target failures are not retried
-//!
-//! Per-target rewrite failures bump the schema regardless, so v015 runs
-//! at most once. Recovery: `aoe uninstall && aoe add --cmd <agent>`.
-//!
-//! ### TOCTOU on the gate path (all formats, including Codex)
-//!
-//! `has_aoe_marker` is read lock-free for every format. The rewrite is
-//! locked only for Codex (`with_codex_config_lock`); JSON / sidecar run
-//! unlocked end-to-end. Three race windows:
-//!
-//! 1. **Gate -> write** (all formats): concurrent `aoe uninstall` between
-//!    gate-true and rewrite resurrects just-uninstalled hooks.
-//! 2. **Codex snapshot -> install gap**: `snapshot_codex_hooks_state`
-//!    drops the lock before `install_codex_hooks_with_preserved_state`
-//!    re-acquires it. A locked writer in the gap loses its state.
-//! 3. **JSON / sidecar gate-vs-write**: no lock at all. Same as (1).
-//!
-//! Window is the few hundred ms of v015 execution. Recovery: re-run
-//! `aoe uninstall`. Defense-in-depth fix (gate inside the rewrite lock,
-//! plus locks for JSON / sidecar) tracked as a follow-up.
-//!
-//! ### Mixed user+AoE matcher groups
-//!
-//! A hand-merged matcher group containing both a user hook and a legacy
-//! AoE hook is left untouched (`remove_aoe_entries` only drops
-//! all-AoE groups), AND v015 appends a fresh AoE-only group with the
-//! hardened command. Result: legacy unhardened bytes persist alongside
-//! the fresh hardened entry; both fire per event. Defense-in-depth gap
-//! bounded by PR #1803's host-side `AOE_INSTANCE_ID` validator in
-//! `Instance::start_with_size_opts`. Locked by
-//! `mixed_user_aoe_matcher_group_documents_double_firing`. Closing the
-//! gap requires in-place string rewrite inside non-AoE matcher groups;
-//! tracked as a follow-up.
-//!
-//! ### Power-loss durability across formats
-//!
-//! Every install/uninstall path in `hooks/mod.rs` routes through
-//! `crate::session::atomic_write` (resolve symlink chain, then temp file,
-//! fsync, rename, and dir fsync on the resolved target). A power loss
-//! mid-rewrite either keeps the prior bytes intact
-//! or surfaces the freshly written bytes; partial writes are not
-//! observable. Symlinks at the destination (a common dotfile-manager
-//! pattern: `~/.claude/settings.json -> ~/dotfiles/...`) are followed
-//! rather than replaced, so the underlying dotfile target receives the
-//! rewrite and the symlink survives.
-//!
-//! ### Sandbox-image hooks are not rewritten
-//!
-//! v015 walks host-reachable paths only. Hooks installed via
-//! `HookInstallTarget::Sandbox` (baked into a Docker / Podman / Apple-
-//! Containers image) keep the legacy bytes until the image is rebuilt;
-//! the next `aoe sandbox rebuild` (or equivalent) will pick up the
-//! current canonical bytes. Defense-in-depth bound: container isolation
-//! already gates the `AOE_INSTANCE_ID` injection surface PR #1803 closed.
+//! A per-file marker gate guards reuse of the live `install_*` functions, so
+//! the rewrite can neither resurrect hooks the user uninstalled nor drift
+//! from the bytes install writes. Gate parse errors and per-target rewrite
+//! failures are skipped; only a missing home directory aborts boot, and the
+//! schema bumps either way, so v015 runs once. A matcher group holding both
+//! a user hook and a legacy AoE hook keeps its legacy bytes and gains a
+//! hardened entry, so both fire; the host-side `AOE_INSTANCE_ID` validator
+//! bounds that. Host paths only: hooks baked into a sandbox image keep the
+//! legacy bytes until the image is rebuilt.
 
 use anyhow::Result;
 use std::fs;
@@ -711,160 +636,99 @@ mod tests {
         assert!(!home.join(".settl/config.toml").exists());
     }
 
+    /// A file the gate cannot parse stays byte-identical, and nothing is
+    /// written beside it.
     #[test]
     #[serial_test::serial(shell_env)]
-    fn malformed_json_gate_fails_closed_silently() {
-        let _g = unset_agent_home_env();
-        let (_tmp, home, app_dir) = setup_dirs();
-        let claude = home.join(".claude/settings.json");
-        fs::create_dir_all(claude.parent().unwrap()).unwrap();
-        fs::write(&claude, "{not json").unwrap();
-
-        run_in(&home, &app_dir).unwrap();
-
-        assert_eq!(
-            fs::read_to_string(&claude).unwrap(),
-            "{not json",
-            "malformed file must stay byte-identical (gate fails closed)"
-        );
-    }
-
-    #[test]
-    #[serial_test::serial(shell_env)]
-    fn malformed_toml_gate_fails_closed_silently() {
-        let _g = unset_agent_home_env();
-        let (_tmp, home, app_dir) = setup_dirs();
-        let settl = home.join(".settl/config.toml");
-        fs::create_dir_all(settl.parent().unwrap()).unwrap();
-        fs::write(&settl, "[[hooks\n# unclosed").unwrap();
-
-        run_in(&home, &app_dir).unwrap();
-
-        assert_eq!(
-            fs::read_to_string(&settl).unwrap(),
-            "[[hooks\n# unclosed",
-            "malformed TOML must stay byte-identical (gate fails closed)"
-        );
-    }
-
-    #[test]
-    #[serial_test::serial(shell_env)]
-    fn profile_codex_home_path_is_rewritten() {
-        let _g = unset_agent_home_env();
-        let (_tmp, home, app_dir) = setup_dirs();
-        let codex_override = home.join("work-codex");
-        fs::create_dir_all(&codex_override).unwrap();
-        write_json(
-            &codex_override.join("hooks.json"),
-            &serde_json::json!({
-                "hooks": {
-                    "SessionStart": [
-                        {"hooks": [{"type": "command", "command": LEGACY_STATUS_CMD}]}
-                    ]
-                }
-            }),
-        );
-
-        let profile_dir = app_dir.join("profiles/work");
-        fs::create_dir_all(&profile_dir).unwrap();
-        fs::write(
-            profile_dir.join("config.toml"),
-            format!(
-                "environment = [\"CODEX_HOME={}\"]\n",
-                codex_override.display()
+    fn unparseable_gate_files_stay_byte_identical() {
+        for (rel, body, sibling) in [
+            (".claude/settings.json", "{not json", None),
+            (".settl/config.toml", "[[hooks\n# unclosed", None),
+            (
+                ".hermes/config.yaml",
+                "hooks:\n  pre_tool_call:\n    - command: 'unterminated\n",
+                Some(".hermes/shell-hooks-allowlist.json"),
             ),
-        )
-        .unwrap();
+        ] {
+            let _g = unset_agent_home_env();
+            let (_tmp, home, app_dir) = setup_dirs();
+            let path = home.join(rel);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(&path, body).unwrap();
 
-        run_in(&home, &app_dir).unwrap();
+            run_in(&home, &app_dir).unwrap();
 
-        let parsed: Value =
-            serde_json::from_str(&fs::read_to_string(codex_override.join("hooks.json")).unwrap())
-                .unwrap();
-        let cmd = parsed["hooks"]["SessionStart"][0]["hooks"][0]["command"]
-            .as_str()
-            .expect("AoE command must be present at the override path");
-        assert!(
-            cmd.contains("case \"$AOE_INSTANCE_ID\""),
-            "profile-overridden Codex path must be reached and rewritten; got: {cmd}"
-        );
-        assert!(
-            !home.join(".codex/hooks.json").exists(),
-            "default ~/.codex/hooks.json must not be magicked into existence"
-        );
+            assert_eq!(fs::read_to_string(&path).unwrap(), body, "{rel}");
+            if let Some(sibling) = sibling {
+                assert!(
+                    !home.join(sibling).exists(),
+                    "{sibling} must not be written"
+                );
+            }
+        }
     }
 
+    /// A profile `environment` override is reached, and the default path it
+    /// replaces is not created.
     #[test]
     #[serial_test::serial(shell_env)]
-    fn profile_claude_config_dir_path_is_rewritten() {
-        let _g = unset_agent_home_env();
-        let (_tmp, home, app_dir) = setup_dirs();
-        // CLAUDE_CONFIG_DIR replaces the whole `~/.claude` dir, so the
-        // override file lands at `<override>/settings.json` (basename of
-        // `settings_rel_path`), matching `agent_settings_path_in`'s behavior.
-        let claude_override = home.join("work-claude");
-        fs::create_dir_all(&claude_override).unwrap();
-        write_json(
-            &claude_override.join("settings.json"),
-            &serde_json::json!({
-                "hooks": {
-                    "PreToolUse": [
-                        {"hooks": [{"type": "command", "command": LEGACY_STATUS_CMD}]}
-                    ]
-                }
-            }),
-        );
-
-        let profile_dir = app_dir.join("profiles/work");
-        fs::create_dir_all(&profile_dir).unwrap();
-        fs::write(
-            profile_dir.join("config.toml"),
-            format!(
-                "environment = [\"CLAUDE_CONFIG_DIR={}\"]\n",
-                claude_override.display()
+    fn profile_config_dir_overrides_are_rewritten() {
+        // `CLAUDE_CONFIG_DIR` replaces the whole `~/.claude` directory, so the
+        // override file lands at the basename of `settings_rel_path`.
+        for (var, dir, file, event, default) in [
+            (
+                "CODEX_HOME",
+                "work-codex",
+                "hooks.json",
+                "SessionStart",
+                ".codex/hooks.json",
             ),
-        )
-        .unwrap();
+            (
+                "CLAUDE_CONFIG_DIR",
+                "work-claude",
+                "settings.json",
+                "PreToolUse",
+                ".claude/settings.json",
+            ),
+        ] {
+            let _g = unset_agent_home_env();
+            let (_tmp, home, app_dir) = setup_dirs();
+            let override_dir = home.join(dir);
+            fs::create_dir_all(&override_dir).unwrap();
+            let mut events = serde_json::Map::new();
+            events.insert(
+                event.to_string(),
+                serde_json::json!([{"hooks": [{"type": "command", "command": LEGACY_STATUS_CMD}]}]),
+            );
+            write_json(
+                &override_dir.join(file),
+                &serde_json::json!({"hooks": events}),
+            );
 
-        run_in(&home, &app_dir).unwrap();
+            let profile_dir = app_dir.join("profiles/work");
+            fs::create_dir_all(&profile_dir).unwrap();
+            fs::write(
+                profile_dir.join("config.toml"),
+                format!("environment = [\"{var}={}\"]\n", override_dir.display()),
+            )
+            .unwrap();
 
-        let parsed: Value = serde_json::from_str(
-            &fs::read_to_string(claude_override.join("settings.json")).unwrap(),
-        )
-        .unwrap();
-        let cmd = parsed["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
-            .as_str()
-            .expect("AoE command must be present at the override path");
-        assert!(
-            cmd.contains("case \"$AOE_INSTANCE_ID\""),
-            "profile-overridden Claude path must be reached and rewritten; got: {cmd}"
-        );
-        assert!(
-            !home.join(".claude/settings.json").exists(),
-            "default ~/.claude/settings.json must not be magicked into existence"
-        );
-    }
+            run_in(&home, &app_dir).unwrap();
 
-    #[test]
-    #[serial_test::serial(shell_env)]
-    fn malformed_yaml_gate_fails_closed_silently() {
-        let _g = unset_agent_home_env();
-        let (_tmp, home, app_dir) = setup_dirs();
-        let hermes = home.join(".hermes/config.yaml");
-        fs::create_dir_all(hermes.parent().unwrap()).unwrap();
-        let original = "hooks:\n  pre_tool_call:\n    - command: 'unterminated\n";
-        fs::write(&hermes, original).unwrap();
-
-        run_in(&home, &app_dir).unwrap();
-
-        assert_eq!(
-            fs::read_to_string(&hermes).unwrap(),
-            original,
-            "malformed YAML must stay byte-identical (gate fails closed)"
-        );
-        assert!(
-            !home.join(".hermes/shell-hooks-allowlist.json").exists(),
-            "no allowlist may be written when the YAML gate fails closed"
-        );
+            let parsed: Value =
+                serde_json::from_str(&fs::read_to_string(override_dir.join(file)).unwrap())
+                    .unwrap();
+            let cmd = parsed["hooks"][event][0]["hooks"][0]["command"]
+                .as_str()
+                .expect("AoE command must be present at the override path");
+            assert!(
+                cmd.contains("case \"$AOE_INSTANCE_ID\""),
+                "{var} override must be reached and rewritten; got: {cmd}"
+            );
+            assert!(
+                !home.join(default).exists(),
+                "{default} must not be magicked into existence"
+            );
+        }
     }
 }

@@ -2306,6 +2306,27 @@ mod tests {
         format!(r#"{{"id":"{id}","tool":"gemini","sandbox_info":{{"enabled":true}}}}"#)
     }
 
+    /// An isolated app dir and `HOME` for one pass. Bind the tempdir before
+    /// the guard: the guard has to restore `HOME` before the directory it
+    /// points at is removed.
+    fn isolated() -> (
+        tempfile::TempDir,
+        crate::session::test_support::AppDirGuard,
+        PathBuf,
+        PathBuf,
+    ) {
+        let temp = tempfile::tempdir().unwrap();
+        let guard = crate::session::test_support::isolate_app_dir_at(temp.path());
+        let app = crate::session::get_app_dir().unwrap();
+        let home = dirs::home_dir().unwrap();
+        (temp, guard, app, home)
+    }
+
+    /// The persisted session rows.
+    fn rows(app: &Path) -> Value {
+        serde_json::from_slice(&fs::read(app.join("sessions.json")).unwrap()).unwrap()
+    }
+
     /// Every runtime error that means "could not answer" must be classified
     /// as such. `InspectFailed` is the catch-all `classify_probe_failure`
     /// returns for an unrecognised stderr, which is what a timed-out probe on
@@ -2449,10 +2470,7 @@ mod tests {
     #[test]
     #[serial_test::serial]
     fn unreachable_container_runtime_defers_instead_of_failing() {
-        let temp = tempfile::tempdir().unwrap();
-        let _app_guard = crate::session::test_support::isolate_app_dir_at(temp.path());
-        let app = crate::session::get_app_dir().unwrap();
-        let home = dirs::home_dir().unwrap();
+        let (_temp, _app_guard, app, home) = isolated();
         fs::create_dir_all(&app).unwrap();
         fs::create_dir_all(home.join(".gemini/sandbox/history")).unwrap();
         fs::write(home.join(".gemini/sandbox/history/id.json"), b"legacy").unwrap();
@@ -2470,8 +2488,7 @@ mod tests {
             None,
         )
         .unwrap();
-        let deferred: Value =
-            serde_json::from_slice(&fs::read(app.join("sessions.json")).unwrap()).unwrap();
+        let deferred = rows(&app);
         assert_eq!(
             deferred[0]["sandbox_store_generation"], 1,
             "an unreaped row must not commit the current generation"
@@ -2492,8 +2509,7 @@ mod tests {
             None,
         )
         .unwrap();
-        let committed: Value =
-            serde_json::from_slice(&fs::read(app.join("sessions.json")).unwrap()).unwrap();
+        let committed = rows(&app);
         assert_eq!(committed[0]["sandbox_store_generation"], 2);
         assert_eq!(
             fs::read(home.join(".gemini/sandbox-v2/one/history/id.json")).unwrap(),
@@ -2510,10 +2526,7 @@ mod tests {
     #[test]
     #[serial_test::serial]
     fn deferral_leaves_stores_pending_and_reports_it() {
-        let temp = tempfile::tempdir().unwrap();
-        let _app_guard = crate::session::test_support::isolate_app_dir_at(temp.path());
-        let app = crate::session::get_app_dir().unwrap();
-        let home = dirs::home_dir().unwrap();
+        let (_temp, _app_guard, app, home) = isolated();
         fs::create_dir_all(&app).unwrap();
         fs::create_dir_all(home.join(".gemini/sandbox/history")).unwrap();
         fs::write(home.join(".gemini/sandbox/history/id.json"), b"legacy").unwrap();
@@ -2540,8 +2553,7 @@ mod tests {
         .unwrap();
         drop(guard);
         assert!(!probed.get(), "deferral skips the container probe");
-        let pending: Value =
-            serde_json::from_slice(&fs::read(app.join("sessions.json")).unwrap()).unwrap();
+        let pending = rows(&app);
         assert_eq!(pending[0]["sandbox_store_generation"], 1);
         assert!(!home.join(".gemini/sandbox-v2").exists());
         assert!(home.join(".gemini/sandbox").is_dir());
@@ -2567,8 +2579,7 @@ mod tests {
         );
 
         run_in(&app, &home, &|_| Ok(false)).unwrap();
-        let committed: Value =
-            serde_json::from_slice(&fs::read(app.join("sessions.json")).unwrap()).unwrap();
+        let committed = rows(&app);
         assert_eq!(committed[0]["sandbox_store_generation"], 2);
         assert_eq!(
             fs::read(home.join(".gemini/sandbox-v2/one/history/id.json")).unwrap(),
@@ -2583,10 +2594,7 @@ mod tests {
     #[test]
     #[serial_test::serial]
     fn deferring_through_the_runner_advances_the_schema_and_keeps_the_store() {
-        let temp = tempfile::tempdir().unwrap();
-        let _app_guard = crate::session::test_support::isolate_app_dir_at(temp.path());
-        let app = crate::session::get_app_dir().unwrap();
-        let home = dirs::home_dir().unwrap();
+        let (_temp, _app_guard, app, home) = isolated();
         fs::create_dir_all(&app).unwrap();
         fs::create_dir_all(home.join(".gemini/sandbox/history")).unwrap();
         fs::write(home.join(".gemini/sandbox/history/id.json"), b"legacy").unwrap();
@@ -2613,8 +2621,7 @@ mod tests {
         assert!(transition_may_be_pending(&app, false).unwrap());
         assert!(home.join(".gemini/sandbox").is_dir());
         assert!(!home.join(".gemini/sandbox-v2").exists());
-        let pending: Value =
-            serde_json::from_slice(&fs::read(app.join("sessions.json")).unwrap()).unwrap();
+        let pending = rows(&app);
         assert_eq!(pending[0]["sandbox_store_generation"], 1);
     }
 
@@ -2625,10 +2632,7 @@ mod tests {
     #[test]
     #[serial_test::serial]
     fn a_bare_start_reports_pending_rows_without_copying() {
-        let temp = tempfile::tempdir().unwrap();
-        let _app_guard = crate::session::test_support::isolate_app_dir_at(temp.path());
-        let app = crate::session::get_app_dir().unwrap();
-        let home = dirs::home_dir().unwrap();
+        let (_temp, _app_guard, app, home) = isolated();
         fs::create_dir_all(&app).unwrap();
         fs::create_dir_all(home.join(".gemini/sandbox/history")).unwrap();
         fs::write(home.join(".gemini/sandbox/history/id.json"), b"legacy").unwrap();
@@ -2697,25 +2701,20 @@ mod tests {
     #[test]
     #[serial_test::serial]
     fn publishes_only_after_quiescence_and_removes_transition_artifacts() {
-        let temp = tempfile::tempdir().unwrap();
-        let _app_guard = crate::session::test_support::isolate_app_dir_at(temp.path());
-        let app = crate::session::get_app_dir().unwrap();
-        let home = dirs::home_dir().unwrap();
+        let (_temp, _app_guard, app, home) = isolated();
         fs::create_dir_all(&app).unwrap();
         fs::create_dir_all(home.join(".gemini/sandbox/history")).unwrap();
         fs::write(home.join(".gemini/sandbox/history/id.json"), b"legacy").unwrap();
         fs::write(app.join("sessions.json"), format!("[{}]", row("one"))).unwrap();
 
         run_in(&app, &home, &|_| Ok(true)).unwrap();
-        let pending: Value =
-            serde_json::from_slice(&fs::read(app.join("sessions.json")).unwrap()).unwrap();
+        let pending = rows(&app);
         assert_eq!(pending[0]["sandbox_store_generation"], 1);
         assert!(app.join(JOURNAL).is_file());
         assert!(home.join(".gemini/sandbox").is_dir());
 
         run_in(&app, &home, &|_| Ok(false)).unwrap();
-        let committed: Value =
-            serde_json::from_slice(&fs::read(app.join("sessions.json")).unwrap()).unwrap();
+        let committed = rows(&app);
         assert_eq!(committed[0]["sandbox_store_generation"], 2);
         assert_eq!(
             fs::read(home.join(".gemini/sandbox-v2/one/history/id.json")).unwrap(),
@@ -2736,10 +2735,7 @@ mod tests {
     #[test]
     #[serial_test::serial]
     fn pending_cohort_refuses_destination_drift_before_writing_it() {
-        let temp = tempfile::tempdir().unwrap();
-        let _app_guard = crate::session::test_support::isolate_app_dir_at(temp.path());
-        let app = crate::session::get_app_dir().unwrap();
-        let home = dirs::home_dir().unwrap();
+        let (temp, _app_guard, app, home) = isolated();
         fs::create_dir_all(&app).unwrap();
         let source = home.join(".gemini/sandbox");
         fs::create_dir_all(&source).unwrap();
@@ -2771,10 +2767,7 @@ mod tests {
     #[test]
     #[serial_test::serial]
     fn destination_drift_after_publication_keeps_the_checkpointed_store() {
-        let temp = tempfile::tempdir().unwrap();
-        let _app_guard = crate::session::test_support::isolate_app_dir_at(temp.path());
-        let app = crate::session::get_app_dir().unwrap();
-        let home = dirs::home_dir().unwrap();
+        let (temp, _app_guard, app, home) = isolated();
         let custom_a = temp.path().join("custom-a");
         let custom_b = temp.path().join("custom-b");
         fs::create_dir_all(custom_a.join("sandbox/one")).unwrap();
@@ -2815,10 +2808,7 @@ mod tests {
     #[test]
     #[serial_test::serial]
     fn pending_absent_custom_source_still_refuses_plan_drift() {
-        let temp = tempfile::tempdir().unwrap();
-        let _app_guard = crate::session::test_support::isolate_app_dir_at(temp.path());
-        let app = crate::session::get_app_dir().unwrap();
-        let home = dirs::home_dir().unwrap();
+        let (temp, _app_guard, app, home) = isolated();
         let custom_a = temp.path().join("custom-a");
         let custom_b = temp.path().join("custom-b");
         fs::write(
@@ -2832,8 +2822,7 @@ mod tests {
         fs::write(app.join("sessions.json"), format!("[{}]", row("one"))).unwrap();
 
         run_in(&app, &home, &|_| Ok(true)).unwrap();
-        let checkpoint: Value =
-            serde_json::from_slice(&fs::read(app.join("sessions.json")).unwrap()).unwrap();
+        let checkpoint = rows(&app);
         assert_eq!(
             checkpoint[0]
                 .get("sandbox_store_generation")
@@ -2855,8 +2844,7 @@ mod tests {
             .to_string()
             .contains("restore the previous session.agent_config_dir"));
         assert!(!custom_b.join("sandbox-v2/one").exists());
-        let checkpoint: Value =
-            serde_json::from_slice(&fs::read(app.join("sessions.json")).unwrap()).unwrap();
+        let checkpoint = rows(&app);
         assert_eq!(
             checkpoint[0]
                 .get("sandbox_store_generation")
@@ -2872,10 +2860,7 @@ mod tests {
     #[test]
     #[serial_test::serial]
     fn pending_present_custom_source_fails_closed_after_path_change() {
-        let temp = tempfile::tempdir().unwrap();
-        let _app_guard = crate::session::test_support::isolate_app_dir_at(temp.path());
-        let app = crate::session::get_app_dir().unwrap();
-        let home = dirs::home_dir().unwrap();
+        let (temp, _app_guard, app, home) = isolated();
         let custom_a = temp.path().join("custom-a");
         let custom_b = temp.path().join("custom-b");
         fs::create_dir_all(custom_a.join("sandbox/one")).unwrap();
@@ -2918,10 +2903,7 @@ gemini = "{}"
     #[test]
     #[serial_test::serial]
     fn codex_generation_only_fast_path_moves_its_existing_private_store() {
-        let temp = tempfile::tempdir().unwrap();
-        let _app_guard = crate::session::test_support::isolate_app_dir_at(temp.path());
-        let app = crate::session::get_app_dir().unwrap();
-        let home = dirs::home_dir().unwrap();
+        let (_temp, _app_guard, app, home) = isolated();
         fs::create_dir_all(&app).unwrap();
         let source = home.join(".codex/sandbox/codex-one");
         fs::create_dir_all(&source).unwrap();
@@ -2938,18 +2920,14 @@ gemini = "{}"
             fs::read(home.join(".codex/sandbox-v2/codex-one/auth.json")).unwrap(),
             b"secret"
         );
-        let rows: Value =
-            serde_json::from_slice(&fs::read(app.join("sessions.json")).unwrap()).unwrap();
+        let rows = rows(&app);
         assert_eq!(rows[0]["sandbox_store_generation"], 2);
     }
 
     #[test]
     #[serial_test::serial]
     fn recovers_publication_before_registry_commit() {
-        let temp = tempfile::tempdir().unwrap();
-        let _app_guard = crate::session::test_support::isolate_app_dir_at(temp.path());
-        let app = crate::session::get_app_dir().unwrap();
-        let home = dirs::home_dir().unwrap();
+        let (_temp, _app_guard, app, home) = isolated();
         let source = home.join(".gemini/sandbox");
         let destination = home.join(".gemini/sandbox-v2/one");
         fs::create_dir_all(&source).unwrap();
@@ -2990,8 +2968,7 @@ gemini = "{}"
         assert!(!quarantine.exists());
         assert!(!stage.exists());
         assert!(!app.join(JOURNAL).exists());
-        let rows: Value =
-            serde_json::from_slice(&fs::read(app.join("sessions.json")).unwrap()).unwrap();
+        let rows = rows(&app);
         assert_eq!(rows[0]["sandbox_store_generation"], 2);
         assert!(rows[0].get("sandbox_store_transition_paths").is_none());
     }
@@ -2999,10 +2976,7 @@ gemini = "{}"
     #[test]
     #[serial_test::serial]
     fn recovers_legacy_quarantine_before_generation_commit() {
-        let temp = tempfile::tempdir().unwrap();
-        let _app_guard = crate::session::test_support::isolate_app_dir_at(temp.path());
-        let app = crate::session::get_app_dir().unwrap();
-        let home = dirs::home_dir().unwrap();
+        let (_temp, _app_guard, app, home) = isolated();
         let source = home.join(".gemini/sandbox");
         let destination = home.join(".gemini/sandbox-v2/one");
         let legacy_quarantine = home.join(".gemini/.sandbox.v027-quarantine");
@@ -3040,8 +3014,7 @@ gemini = "{}"
         assert!(!source.exists());
         assert!(!legacy_quarantine.exists());
         assert!(!app.join(JOURNAL).exists());
-        let rows: Value =
-            serde_json::from_slice(&fs::read(app.join("sessions.json")).unwrap()).unwrap();
+        let rows = rows(&app);
         assert_eq!(rows[0]["sandbox_store_generation"], 2);
         assert!(rows[0].get("sandbox_store_transition_paths").is_none());
     }
@@ -3049,10 +3022,7 @@ gemini = "{}"
     #[test]
     #[serial_test::serial]
     fn missing_source_still_cleans_publication_artifacts() {
-        let temp = tempfile::tempdir().unwrap();
-        let _app_guard = crate::session::test_support::isolate_app_dir_at(temp.path());
-        let app = crate::session::get_app_dir().unwrap();
-        let home = dirs::home_dir().unwrap();
+        let (_temp, _app_guard, app, home) = isolated();
         let source = home.join(".gemini/sandbox");
         let destination = home.join(".gemini/sandbox-v2/one");
         let parent = destination.parent().unwrap();
@@ -3090,10 +3060,7 @@ gemini = "{}"
     #[test]
     #[serial_test::serial]
     fn rejects_untrusted_persisted_transition_paths() {
-        let temp = tempfile::tempdir().unwrap();
-        let _app_guard = crate::session::test_support::isolate_app_dir_at(temp.path());
-        let app = crate::session::get_app_dir().unwrap();
-        let home = dirs::home_dir().unwrap();
+        let (_temp, _app_guard, app, home) = isolated();
         let victim = home.join("documents/sandbox");
         fs::create_dir_all(&victim).unwrap();
         fs::write(victim.join("keep"), b"keep").unwrap();
@@ -3129,10 +3096,7 @@ gemini = "{}"
     #[test]
     #[serial_test::serial]
     fn current_rows_scrub_forged_transition_metadata_without_io() {
-        let temp = tempfile::tempdir().unwrap();
-        let _app_guard = crate::session::test_support::isolate_app_dir_at(temp.path());
-        let app = crate::session::get_app_dir().unwrap();
-        let home = dirs::home_dir().unwrap();
+        let (_temp, _app_guard, app, home) = isolated();
         let victim = home.join("current-generation-victim");
         fs::create_dir_all(&victim).unwrap();
         fs::write(victim.join("keep"), b"keep").unwrap();
@@ -3162,18 +3126,14 @@ gemini = "{}"
         assert_eq!(fs::read(victim.join("keep")).unwrap(), b"keep");
         assert!(!home.join(".gemini/sandbox-v2/one").exists());
         assert!(!app.join(JOURNAL).exists());
-        let rows: Value =
-            serde_json::from_slice(&fs::read(app.join("sessions.json")).unwrap()).unwrap();
+        let rows = rows(&app);
         assert!(rows[0].get("sandbox_store_transition_paths").is_none());
     }
 
     #[test]
     #[serial_test::serial]
     fn ignores_unprovenanced_journal_paths() {
-        let temp = tempfile::tempdir().unwrap();
-        let _app_guard = crate::session::test_support::isolate_app_dir_at(temp.path());
-        let app = crate::session::get_app_dir().unwrap();
-        let home = dirs::home_dir().unwrap();
+        let (_temp, _app_guard, app, home) = isolated();
         let victim = home.join("journal-victim");
         fs::create_dir_all(&victim).unwrap();
         fs::write(victim.join("keep"), b"keep").unwrap();
@@ -3196,10 +3156,7 @@ gemini = "{}"
     #[test]
     #[serial_test::serial]
     fn parked_rows_are_not_copied_and_hold_the_shared_source() {
-        let temp = tempfile::tempdir().unwrap();
-        let _app_guard = crate::session::test_support::isolate_app_dir_at(temp.path());
-        let app = crate::session::get_app_dir().unwrap();
-        let home = dirs::home_dir().unwrap();
+        let (_temp, _app_guard, app, home) = isolated();
         let legacy = home.join(".gemini/sandbox");
         fs::create_dir_all(&legacy).unwrap();
         fs::write(legacy.join("data"), b"data").unwrap();
@@ -3218,8 +3175,7 @@ gemini = "{}"
 
         run_in(&app, &home, &|_| Ok(false)).unwrap();
 
-        let rows: Value =
-            serde_json::from_slice(&fs::read(app.join("sessions.json")).unwrap()).unwrap();
+        let rows = rows(&app);
         assert!(
             rows[0].get("sandbox_store_generation").is_none(),
             "trashed row moved"
@@ -3268,10 +3224,7 @@ gemini = "{}"
     #[test]
     #[serial_test::serial]
     fn an_unrelated_parked_row_does_not_hold_a_ready_root() {
-        let temp = tempfile::tempdir().unwrap();
-        let _app_guard = crate::session::test_support::isolate_app_dir_at(temp.path());
-        let app = crate::session::get_app_dir().unwrap();
-        let home = dirs::home_dir().unwrap();
+        let (_temp, _app_guard, app, home) = isolated();
         let gemini = home.join(".gemini/sandbox");
         fs::create_dir_all(&gemini).unwrap();
         fs::write(gemini.join("data"), b"g").unwrap();
@@ -3310,10 +3263,7 @@ gemini = "{}"
     #[test]
     #[serial_test::serial]
     fn a_scoped_pass_retires_the_root_it_emptied() {
-        let temp = tempfile::tempdir().unwrap();
-        let _app_guard = crate::session::test_support::isolate_app_dir_at(temp.path());
-        let app = crate::session::get_app_dir().unwrap();
-        let home = dirs::home_dir().unwrap();
+        let (_temp, _app_guard, app, home) = isolated();
         let gemini = home.join(".gemini/sandbox");
         fs::create_dir_all(&gemini).unwrap();
         fs::write(gemini.join("data"), b"g").unwrap();
@@ -3345,10 +3295,7 @@ gemini = "{}"
     #[test]
     #[serial_test::serial]
     fn a_restored_row_migrates_on_its_next_pass() {
-        let temp = tempfile::tempdir().unwrap();
-        let _app_guard = crate::session::test_support::isolate_app_dir_at(temp.path());
-        let app = crate::session::get_app_dir().unwrap();
-        let home = dirs::home_dir().unwrap();
+        let (_temp, _app_guard, app, home) = isolated();
         let legacy = home.join(".gemini/sandbox");
         fs::create_dir_all(&legacy).unwrap();
         fs::write(legacy.join("data"), b"data").unwrap();
@@ -3389,10 +3336,7 @@ gemini = "{}"
     #[test]
     #[serial_test::serial]
     fn a_scoped_pass_refuses_a_store_a_live_peer_is_writing() {
-        let temp = tempfile::tempdir().unwrap();
-        let _app_guard = crate::session::test_support::isolate_app_dir_at(temp.path());
-        let app = crate::session::get_app_dir().unwrap();
-        let home = dirs::home_dir().unwrap();
+        let (_temp, _app_guard, app, home) = isolated();
         let legacy = home.join(".gemini/sandbox");
         fs::create_dir_all(&legacy).unwrap();
         fs::write(legacy.join("data"), b"data").unwrap();
@@ -3419,8 +3363,7 @@ gemini = "{}"
             !home.join(".gemini/sandbox-v2/1111111111111111").exists(),
             "a live cohort peer must block the scoped copy"
         );
-        let rows: Value =
-            serde_json::from_slice(&fs::read(app.join("sessions.json")).unwrap()).unwrap();
+        let rows = rows(&app);
         assert_ne!(
             rows[0]["sandbox_store_generation"], 2,
             "a blocked row must not be stamped current"
@@ -3442,10 +3385,7 @@ gemini = "{}"
     #[test]
     #[serial_test::serial]
     fn a_scoped_pass_moves_only_the_named_cohort() {
-        let temp = tempfile::tempdir().unwrap();
-        let _app_guard = crate::session::test_support::isolate_app_dir_at(temp.path());
-        let app = crate::session::get_app_dir().unwrap();
-        let home = dirs::home_dir().unwrap();
+        let (_temp, _app_guard, app, home) = isolated();
         let legacy = home.join(".gemini/sandbox");
         fs::create_dir_all(&legacy).unwrap();
         fs::write(legacy.join("data"), b"data").unwrap();
@@ -3476,8 +3416,7 @@ gemini = "{}"
             other.exists(),
             "the untouched cohort still needs its shared source"
         );
-        let rows: Value =
-            serde_json::from_slice(&fs::read(app.join("sessions.json")).unwrap()).unwrap();
+        let rows = rows(&app);
         assert_eq!(rows[0]["sandbox_store_generation"], 2);
         // The scoped-out row must not be stamped current: its store was never
         // copied, and generation 2 would point the session at a private store
@@ -3492,10 +3431,7 @@ gemini = "{}"
     #[test]
     #[serial_test::serial]
     fn a_scoped_pass_moves_the_parked_row_it_names() {
-        let temp = tempfile::tempdir().unwrap();
-        let _app_guard = crate::session::test_support::isolate_app_dir_at(temp.path());
-        let app = crate::session::get_app_dir().unwrap();
-        let home = dirs::home_dir().unwrap();
+        let (_temp, _app_guard, app, home) = isolated();
         let legacy = home.join(".gemini/sandbox");
         fs::create_dir_all(&legacy).unwrap();
         fs::write(legacy.join("data"), b"data").unwrap();
@@ -3517,8 +3453,7 @@ gemini = "{}"
             fs::read(home.join(".gemini/sandbox-v2/1111111111111111/data")).unwrap(),
             b"data"
         );
-        let rows: Value =
-            serde_json::from_slice(&fs::read(app.join("sessions.json")).unwrap()).unwrap();
+        let rows = rows(&app);
         assert_eq!(rows[0]["sandbox_store_generation"], 2);
         assert_ne!(rows[1]["sandbox_store_generation"], 2);
         assert!(
@@ -3565,8 +3500,7 @@ gemini = "{}"
                 !home.join(".gemini/sandbox-v2/1111111111111111").exists(),
                 "scoped={scoped}: a live archived peer must block the copy"
             );
-            let rows: Value =
-                serde_json::from_slice(&fs::read(app.join("sessions.json")).unwrap()).unwrap();
+            let rows = rows(&app);
             assert_ne!(
                 rows[0]["sandbox_store_generation"], 2,
                 "scoped={scoped}: a blocked row must not be stamped current"
@@ -3606,10 +3540,7 @@ gemini = "{}"
     #[test]
     #[serial_test::serial]
     fn a_scoped_pass_holds_the_root_a_scoped_out_cohort_lives_under() {
-        let temp = tempfile::tempdir().unwrap();
-        let _app_guard = crate::session::test_support::isolate_app_dir_at(temp.path());
-        let app = crate::session::get_app_dir().unwrap();
-        let home = dirs::home_dir().unwrap();
+        let (_temp, _app_guard, app, home) = isolated();
         let root = home.join(".codex/sandbox");
         fs::create_dir_all(root.join("1111111111111111")).unwrap();
         fs::write(root.join("1111111111111111/data"), b"one").unwrap();
@@ -3655,10 +3586,7 @@ gemini = "{}"
     #[test]
     #[serial_test::serial]
     fn unresolved_rows_do_not_block_ready_rows_or_retire_the_shared_source() {
-        let temp = tempfile::tempdir().unwrap();
-        let _app_guard = crate::session::test_support::isolate_app_dir_at(temp.path());
-        let app = crate::session::get_app_dir().unwrap();
-        let home = dirs::home_dir().unwrap();
+        let (_temp, _app_guard, app, home) = isolated();
         let legacy = home.join(".gemini/sandbox");
         fs::create_dir_all(&legacy).unwrap();
         fs::write(legacy.join("data"), b"data").unwrap();
@@ -3675,8 +3603,7 @@ gemini = "{}"
 
         run_in(&app, &home, &|_| Ok(false)).unwrap();
 
-        let rows: Value =
-            serde_json::from_slice(&fs::read(app.join("sessions.json")).unwrap()).unwrap();
+        let rows = rows(&app);
         assert!(rows[0].get("sandbox_store_generation").is_none());
         assert_eq!(rows[2]["sandbox_store_generation"], 2);
         assert_eq!(
@@ -3700,8 +3627,7 @@ gemini = "{}"
         .unwrap();
         run_in(&app, &home, &|_| Ok(false)).unwrap();
 
-        let rows: Value =
-            serde_json::from_slice(&fs::read(app.join("sessions.json")).unwrap()).unwrap();
+        let rows = rows(&app);
         assert!(rows
             .as_array()
             .unwrap()
@@ -3721,10 +3647,7 @@ gemini = "{}"
     #[serial_test::serial]
     fn persisted_sources_survive_ancestor_symlink_canonicalization() {
         use std::os::unix::fs::symlink;
-        let temp = tempfile::tempdir().unwrap();
-        let _app_guard = crate::session::test_support::isolate_app_dir_at(temp.path());
-        let app = crate::session::get_app_dir().unwrap();
-        let home = dirs::home_dir().unwrap();
+        let (temp, _app_guard, app, home) = isolated();
         let external = temp.path().join("external-gemini");
         fs::create_dir_all(external.join("sandbox")).unwrap();
         fs::write(external.join("sandbox/data"), b"data").unwrap();
@@ -3746,10 +3669,7 @@ gemini = "{}"
     #[test]
     #[serial_test::serial]
     fn an_unregistered_store_moves_without_being_expanded() {
-        let temp = tempfile::tempdir().unwrap();
-        let _app_guard = crate::session::test_support::isolate_app_dir_at(temp.path());
-        let app = crate::session::get_app_dir().unwrap();
-        let home = dirs::home_dir().unwrap();
+        let (_temp, _app_guard, app, home) = isolated();
         let root = home.join(".codex/sandbox");
         let peer = "1111111111111111";
         let orphan = "2222222222222222";
@@ -3845,10 +3765,7 @@ gemini = "{}"
     #[test]
     #[serial_test::serial]
     fn a_retired_root_does_not_fail_the_next_row() {
-        let temp = tempfile::tempdir().unwrap();
-        let _app_guard = crate::session::test_support::isolate_app_dir_at(temp.path());
-        let app = crate::session::get_app_dir().unwrap();
-        let home = dirs::home_dir().unwrap();
+        let (_temp, _app_guard, app, home) = isolated();
         fs::create_dir_all(&app).unwrap();
         let root = home.join(".codex/sandbox");
         fs::create_dir_all(root.join("codex-one")).unwrap();
@@ -3872,8 +3789,7 @@ gemini = "{}"
 
         run_in(&app, &home, &|_| Ok(false)).unwrap();
 
-        let rows: Value =
-            serde_json::from_slice(&fs::read(app.join("sessions.json")).unwrap()).unwrap();
+        let rows = rows(&app);
         assert_eq!(rows[1]["sandbox_store_generation"], 2);
         assert!(home.join(".codex/sandbox-v2/codex-two").is_dir());
     }
@@ -3886,10 +3802,7 @@ gemini = "{}"
     #[test]
     #[serial_test::serial]
     fn an_interrupted_retirement_keeps_the_published_store() {
-        let temp = tempfile::tempdir().unwrap();
-        let _app_guard = crate::session::test_support::isolate_app_dir_at(temp.path());
-        let app = crate::session::get_app_dir().unwrap();
-        let home = dirs::home_dir().unwrap();
+        let (_temp, _app_guard, app, home) = isolated();
         fs::create_dir_all(&app).unwrap();
         let root = home.join(".codex/sandbox");
         let destination = home.join(".codex/sandbox-v2/codex-one");
@@ -3911,8 +3824,7 @@ gemini = "{}"
         assert_eq!(fs::read(destination.join("auth.json")).unwrap(), b"secret");
         assert_eq!(fs::read(destination.join("own")).unwrap(), b"own");
         assert!(!root.exists());
-        let rows: Value =
-            serde_json::from_slice(&fs::read(app.join("sessions.json")).unwrap()).unwrap();
+        let rows = rows(&app);
         assert_eq!(rows[0]["sandbox_store_generation"], 2);
     }
 
@@ -3921,10 +3833,7 @@ gemini = "{}"
     #[test]
     #[serial_test::serial]
     fn a_fully_replicated_shared_root_is_still_retired() {
-        let temp = tempfile::tempdir().unwrap();
-        let _app_guard = crate::session::test_support::isolate_app_dir_at(temp.path());
-        let app = crate::session::get_app_dir().unwrap();
-        let home = dirs::home_dir().unwrap();
+        let (_temp, _app_guard, app, home) = isolated();
         let root = home.join(".codex/sandbox");
         let peer = "1111111111111111";
         fs::create_dir_all(root.join(peer)).unwrap();
@@ -3952,10 +3861,7 @@ gemini = "{}"
     #[test]
     #[serial_test::serial]
     fn an_interrupted_stage_is_cleared_when_an_unregistered_store_moves() {
-        let temp = tempfile::tempdir().unwrap();
-        let _app_guard = crate::session::test_support::isolate_app_dir_at(temp.path());
-        let app = crate::session::get_app_dir().unwrap();
-        let home = dirs::home_dir().unwrap();
+        let (_temp, _app_guard, app, home) = isolated();
         let root = home.join(".codex/sandbox");
         let peer = "1111111111111111";
         let orphan = "2222222222222222";
@@ -4116,8 +4022,7 @@ gemini = "{}"
             }
             pass.finish().unwrap().unwrap();
 
-            let rows: Value =
-                serde_json::from_slice(&fs::read(app.join("sessions.json")).unwrap()).unwrap();
+            let rows = rows(&app);
             assert!(
                 home.join(".gemini/sandbox/history/id.json").is_file(),
                 "the shared source must survive"
@@ -4162,10 +4067,7 @@ gemini = "{}"
     #[test]
     #[serial_test::serial]
     fn registries_stay_writable_while_a_store_copies() {
-        let temp = tempfile::tempdir().unwrap();
-        let _app_guard = crate::session::test_support::isolate_app_dir_at(temp.path());
-        let app = crate::session::get_app_dir().unwrap();
-        let home = dirs::home_dir().unwrap();
+        let (_temp, _app_guard, app, home) = isolated();
         fs::create_dir_all(home.join(".gemini/sandbox/history")).unwrap();
         fs::write(home.join(".gemini/sandbox/history/id.json"), b"legacy").unwrap();
         let alpha = app.join("profiles/alpha/sessions.json");
@@ -4238,10 +4140,7 @@ gemini = "{}"
     #[test]
     #[serial_test::serial]
     fn competing_passes_on_one_cohort_publish_once() {
-        let temp = tempfile::tempdir().unwrap();
-        let _app_guard = crate::session::test_support::isolate_app_dir_at(temp.path());
-        let app = crate::session::get_app_dir().unwrap();
-        let home = dirs::home_dir().unwrap();
+        let (temp, _app_guard, app, home) = isolated();
         fs::create_dir_all(&app).unwrap();
         fs::create_dir_all(home.join(".gemini/sandbox/history")).unwrap();
         fs::write(home.join(".gemini/sandbox/history/id.json"), b"legacy").unwrap();
@@ -4294,8 +4193,7 @@ gemini = "{}"
             wait_finished(&full, "a full pass beside a held cohort");
             full.join().unwrap().unwrap();
             assert_eq!(copies.load(Ordering::Relaxed), 0);
-            let rows: Value =
-                serde_json::from_slice(&fs::read(app.join("sessions.json")).unwrap()).unwrap();
+            let rows = rows(&app);
             assert_eq!(rows[0]["sandbox_store_generation"], 1, "nothing published");
 
             // A scoped pass waits for the holder instead of copying beside it.
@@ -4323,8 +4221,7 @@ gemini = "{}"
                 "the holder's copy was the only one"
             );
 
-            let rows: Value =
-                serde_json::from_slice(&fs::read(app.join("sessions.json")).unwrap()).unwrap();
+            let rows = rows(&app);
             assert_eq!(rows[0]["sandbox_store_generation"], 2);
             assert_eq!(rows[1]["sandbox_store_generation"], 2);
             for id in ["1111111111111111", "2222222222222222"] {
@@ -4374,8 +4271,7 @@ gemini = "{}"
             })
             .unwrap();
 
-        let written: Value =
-            serde_json::from_slice(&fs::read(app.join("sessions.json")).unwrap()).unwrap();
+        let written = rows(&app);
         assert_eq!(
             written[0]["sandbox_store_transition_paths"][0]["source"],
             serde_json::json!(source)
@@ -4431,10 +4327,7 @@ gemini = "{}"
     #[serial_test::serial]
     fn preserves_root_and_read_only_directory_modes() {
         use std::os::unix::fs::PermissionsExt;
-        let temp = tempfile::tempdir().unwrap();
-        let _app_guard = crate::session::test_support::isolate_app_dir_at(temp.path());
-        let app = crate::session::get_app_dir().unwrap();
-        let home = dirs::home_dir().unwrap();
+        let (_temp, _app_guard, app, home) = isolated();
         let source = home.join(".gemini/sandbox");
         fs::create_dir_all(source.join("readonly")).unwrap();
         fs::write(source.join("readonly/data"), b"data").unwrap();

@@ -1,70 +1,20 @@
-//! Hardened access to the AoE hook status directory.
+//! Hardened access to the AoE hook status directory, the single Rust entry
+//! point for every read, write, and cleanup under `/tmp/aoe-hooks-<euid>`
+//! (#1844).
 //!
-//! Issue #1844: defend against TOCTOU and symlink attacks on the world-known
-//! `/tmp/aoe-hooks` path. This module is the single Rust entry point for every
-//! reader, writer, and cleanup that touches a hook-status file on the host.
+//! The base directory is created `0o700`, opened with `O_DIRECTORY |
+//! O_NOFOLLOW`, then verified by `fstat` on the resulting fd, which pins the
+//! inode against a later path swap: wrong type, wrong uid, or any group or
+//! world bit rejects. That verified `OwnedFd` is cached, and every
+//! per-instance subdirectory and file rides `*at` calls anchored on it. A
+//! failure caches the error rather than retrying, so a bad state stays
+//! visible.
 //!
-//! ## Threat model
-//!
-//! - Defends against another local UID on a multi-tenant POSIX host pre-creating
-//!   or symlinking the base path, racing `lstat` vs `open`, or planting hostile
-//!   leaves under the per-instance directory.
-//! - Does NOT defend against a co-resident attacker with the same UID (they can
-//!   read/write our state directly anyway).
-//! - Sandbox container is per-instance and single-tenant; the multi-tenant
-//!   threat collapses there. Container-side guards live in the shell snippets
-//!   in `super::mod`, not here.
-//!
-//! ## Algorithm
-//!
-//! 1. Resolve the per-user base path: `/tmp/aoe-hooks-<euid>`. The euid
-//!    suffix prevents a co-tenant collision: pure `/tmp/aoe-hooks` would
-//!    deny user B once user A has created it.
-//! 2. `mkdir(0o700)` tolerating `EEXIST`.
-//! 3. `open(O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC | O_RDONLY)`. `O_NOFOLLOW`
-//!    only checks the FINAL component, so `/tmp -> /private/tmp` on macOS is
-//!    fine.
-//! 4. `fstat` ON THE FD. After this, the inode is pinned: any later path swap
-//!    only affects the path, not our fd. Reject if not a directory, wrong uid,
-//!    or any group/world bit set.
-//! 5. Cache the verified `OwnedFd` in a `static OnceLock` so subsequent reads
-//!    and writes ride the same fd. On error we cache an `Arc<anyhow::Error>`
-//!    so retries do not silently mask the bad state.
-//!
-//! Per-instance subdirs and per-file I/O ride the same `*at` discipline,
-//! always anchored on a fd we have already verified.
-//!
-//! ## Squatting DoS (documented limitation)
-//!
-//! An attacker who pre-creates `/tmp/aoe-hooks-<our-euid>` owned by themselves
-//! cannot be cleared by us (sticky bit on `/tmp` plus alien ownership). Effect:
-//! `with_hook_base` returns `Err`; AoE keeps running with hooks disabled and
-//! falls back to pane-detection. Recovery requires the squatter to log out,
-//! reboot, or root cooperation. Bounded DoS only; never a privilege escalation.
-//!
-//! ## `/tmp` reaper (documented limitation)
-//!
-//! systemd-tmpfiles or macOS `periodic.daily` may delete the base directory
-//! while we hold the cached fd. Subsequent `*at` calls keep working against
-//! the orphan inode (POSIX guarantee), but the hook shell snippets do path-
-//! based `mkdir -p` and create a fresh inode at the same path. Reads via
-//! the cached fd then see the orphan, writes via the shell hooks land on
-//! the new inode, and status detection silently breaks until the next AoE
-//! restart. Acceptable: pane-detection is the documented fallback.
-//!
-//! ## POSIX ACL widening (documented limitation)
-//!
-//! `verify_dir_metadata` inspects classic POSIX mode bits only (`mode &
-//! 0o077`, plus `mode & 0o7000` for setuid/setgid/sticky). It does NOT
-//! inspect POSIX ACL entries: a `setfacl -m u:other:rwx <base>` can grant
-//! a co-tenant write access without flipping any bit in `st_mode`. The
-//! mismatch is not exploitable in this threat model. An alien uid cannot
-//! `setfacl` on a `0o700` directory we own (ACL writes require ownership
-//! or write permission), and we never widen our own ACL. The shell pattern
-//! `d*------|d*------.|d*------+|d*------@` tolerates the trailing `+`
-//! glyph emitted by `ls -l` when a legitimate operator-applied ACL is
-//! present; the mode positions still must read `------`, so an ACL that
-//! widens past `r--` triggers a different glyph and the snippet rejects.
+//! The euid suffix keeps two users on a shared host from colliding. A
+//! squatter owning the path first, a `/tmp` reaper unlinking it while the fd
+//! is held, or an operator-widened POSIX ACL (only mode bits are verified)
+//! each degrade to hooks disabled and pane detection, never to escalation:
+//! an alien uid cannot `setfacl` on a `0o700` directory we own.
 
 use std::fs::Metadata;
 use std::os::fd::{AsFd, BorrowedFd, OwnedFd};

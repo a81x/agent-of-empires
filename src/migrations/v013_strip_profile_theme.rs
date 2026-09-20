@@ -1,19 +1,8 @@
-//! Migration v013: strip per-profile theme overrides.
-//!
-//! The theme became a single global preference: one theme paints every surface
-//! (TUI boot, Settings close, tmux status bar, web `/api/theme/current`)
-//! regardless of which session profile is active. Before that, the web
-//! dashboard's theme picker wrote `name` / `color_mode` into the *active
-//! profile's* `config.toml`, while the TUI wrote them to the global config and
-//! booted from it. A profile-level theme then shadowed the global pick on every
-//! Settings open/close, flipping the theme (e.g. empire -> rose-pine) until the
-//! next restart.
-//!
-//! This removes `name` and `color_mode` from the `[theme]` table of every
-//! `profiles/*/config.toml`, leaving the global `config.toml` (the authoritative
-//! theme) untouched. `idle_decay_minutes` stays profile-overridable, so only
-//! those two keys are pulled. Idempotent: a profile with no theme override is
-//! left alone.
+//! Migration v013: strip `name` and `color_mode` from the `[theme]` table of
+//! every `profiles/*/config.toml`. The theme is a single global preference
+//! now, and a profile override shadowed the global pick on every Settings
+//! open and close. `idle_decay_minutes` stays profile-overridable, and the
+//! global config is left untouched.
 
 use anyhow::{Context, Result};
 use std::fs;

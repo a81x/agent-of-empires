@@ -1,71 +1,17 @@
 //! Migration v018: strip legacy AoE-managed hooks from `~/.codex/config.toml`.
 //!
-//! ## Background
+//! Codex hooks moved to `.codex/hooks.json`, so the install and uninstall
+//! lifecycle no longer reaches entries an older release left in
+//! `config.toml`. They keep firing alongside the new ones and keep Codex's
+//! dual-source warning up. This walks every reachable `config.toml` (the
+//! default plus each `CODEX_HOME` override in the global and per-profile
+//! environment lists), marker-gates it, and hands it to
+//! [`crate::hooks::uninstall_codex_hooks`], which preserves user-authored
+//! hooks and the `[hooks.state]` trust block. It strips regardless of
+//! `[features].hooks`: that flag gates execution, not file presence.
 //!
-//! PR #2187 replaced the agent string-based hook dispatch with the
-//! `HookFormat` / `SidecarFormat` enums. The follow-up
-//! `feat/codex-hooks-json-migration` PR flips Codex from
-//! `config.toml` to `hooks.json` as the on-disk hook location: the codex
-//! `AgentHookConfig` declares `HookFormat::CodexJson` with
-//! `settings_rel_path = ".codex/hooks.json"`.
-//!
-//! [`crate::hooks::iter_hook_targets_in`] does not enumerate `config.toml`
-//! for the codex agent, so the live install / uninstall lifecycle cannot
-//! reach AoE hooks left in `config.toml` from earlier installs. Without
-//! this migration, users upgrading from a `config.toml`-era release keep
-//! seeing Codex's dual-source warning and have their AoE hooks fire twice
-//! (once from `config.toml`, once from `hooks.json`).
-//!
-//! ## Strategy
-//!
-//! Enumerate every reachable `~/.codex/config.toml` (the default location
-//! plus every `CODEX_HOME` override from the global and per-profile
-//! `environment` lists), marker-gate via
-//! [`crate::hooks::has_aoe_marker`], then call
-//! [`crate::hooks::uninstall_codex_hooks`] which already preserves
-//! user-authored hooks, mixed user+AoE matcher groups, and the
-//! `[hooks.state]` trust block.
-//!
-//! ## Idempotency
-//!
-//! A second run finds no marker (the first run removed every AoE entry)
-//! and skips. Re-installing AoE hooks into `config.toml` through
-//! [`crate::hooks::iter_hook_targets_in`] is impossible because Codex's
-//! `HookFormat` is `CodexJson`.
-//!
-//! ## Failure policy
-//!
-//! Per `AGENTS.md > Data Migrations`, a returned `Err` aborts boot. v018
-//! never bubbles per-target failures: every per-target issue surfaces as
-//! `tracing::warn!`, the schema-version still bumps so the migration runs
-//! at most once, and recovery is `aoe uninstall && aoe add` exactly as
-//! documented for v015. Only `dirs::home_dir() == None` propagates.
-//!
-//! ## TOCTOU
-//!
-//! The marker gate ([`has_aoe_marker`](crate::hooks::has_aoe_marker)) is
-//! read lock-free. The lock is acquired inside
-//! [`uninstall_codex_hooks`](crate::hooks::uninstall_codex_hooks)
-//! (`with_codex_config_lock`). A concurrent install racing the migration
-//! is benign: either its entries are removed by the uninstaller (and the
-//! installer recreates them after the migration finishes, against the new
-//! `hooks.json` target), or they were already gone when we read the gate.
-//!
-//! ## Divergence from v015
-//!
-//! v015 short-circuits when `[features].hooks = false`. v018 strips
-//! regardless of the feature flag. Rationale: the feature flag gates
-//! whether Codex EXECUTES the hooks at all; the dual-source warning we
-//! are clearing is about FILE PRESENCE. AoE must remove its own entries
-//! from `config.toml` whether or not execution is currently gated off.
-//!
-//! ## Scope: host paths only
-//!
-//! v018 walks host-reachable paths only (same convention as v015 and
-//! v017). Sandbox-image hooks installed via `HookInstallTarget::Sandbox`
-//! and baked into a container image keep their `config.toml` entries
-//! until the image is rebuilt; the next `aoe sandbox rebuild` (or
-//! equivalent) picks up the canonical `hooks.json` layout.
+//! Per-target failures warn and are skipped; only a missing home directory
+//! aborts boot. Host paths only, as in v015 and v017.
 
 use anyhow::Result;
 use std::collections::HashSet;

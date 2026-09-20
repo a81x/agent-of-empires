@@ -1,28 +1,12 @@
-//! Migration v028: settle the live-interaction status frozen onto archived
-//! sessions by builds shipped before `archive()` learned to degrade it.
+//! Migration v028: settle archived sessions still persisted at a
+//! live-interaction status (`running`, `waiting`, `starting`) to Idle, the
+//! resting state v016 chose.
 //!
-//! Archiving tears down the session's tmux (#1868), and the status poller
-//! deliberately never touches archived rows (#2206), so whatever status the
-//! row happened to hold at archive time is persisted verbatim and never
-//! revisited. A session archived while `Waiting` (agent blocked on a
-//! permission prompt) therefore kept rendering as a pending-permission row
-//! in the TUI, `aoe ps`, and the web dashboard indefinitely, with no pane
-//! and no process behind it, and no CLI verb able to clear it
-//! (`session stop` refuses: the session is not running).
-//!
-//! This one-shot migration walks every sessions.json and settles any
-//! archived row still persisted at a live-interaction status
-//! (`running`/`waiting`/`starting`) to `idle`, the same resting state v016
-//! chose for archived rows. `archive()` and the poller's archived
-//! short-circuit now degrade in-process, so this cleans up only the rows
-//! older builds left behind.
-//!
-//! ## Failure policy
-//!
-//! Per `AGENTS.md > Data Migrations`, a returned `Err` aborts boot. A
-//! sessions.json that fails to parse is logged and skipped (a corrupt file
-//! must not block boot or spam every launch). Only `get_app_dir` and
-//! directory-read failures propagate.
+//! Archiving tears down tmux and the poller never revisits archived rows, so
+//! older builds persisted whatever status held at archive time; a row archived
+//! while Waiting rendered as a pending permission prompt forever with nothing
+//! behind it. `archive()` and the poller now degrade in-process. A
+//! sessions.json that fails to parse is logged and skipped.
 
 use anyhow::{anyhow, Result};
 use std::fs;

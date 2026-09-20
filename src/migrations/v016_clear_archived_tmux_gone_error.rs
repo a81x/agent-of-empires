@@ -1,22 +1,11 @@
-//! Migration v016: clear the spurious tmux-gone Error left on archived
-//! sessions by builds shipped between #1868 (tear down tmux on archive) and
-//! #2206 (stop the status poller flipping archived rows to Error).
+//! Migration v016: demote archived sessions still persisted at
+//! `status = "error"` back to Idle.
 //!
-//! Those builds archived a session, killed its tmux, then let the status
-//! poller observe the missing tmux and stamp `status = "error"` with a
-//! "tmux session is gone" message. `last_error` is not persisted
-//! (`#[serde(skip)]`), so on reload the row carries only `status = "error"`
-//! and the message is gone; the in-process #2206 guard cannot recognize it.
-//! This one-shot migration walks every sessions.json and demotes any archived
-//! row still sitting at Error back to Idle. An archived row has no live tmux
-//! by design, so an Error status on one can only be that spurious transition.
-//!
-//! ## Failure policy
-//!
-//! Per `AGENTS.md > Data Migrations`, a returned `Err` aborts boot. A
-//! sessions.json that fails to parse is logged and skipped (a corrupt file
-//! must not block boot or spam every launch). Only `get_app_dir` and
-//! directory-read failures propagate.
+//! Builds between #1868 and #2206 archived a session, killed its tmux, then
+//! let the poller stamp the missing tmux as an error. `last_error` is not
+//! persisted, so the row survives as a bare Error. An archived row has no
+//! live tmux by design, so that Error can only be the spurious transition.
+//! A sessions.json that fails to parse is logged and skipped.
 
 use anyhow::Result;
 use std::fs;

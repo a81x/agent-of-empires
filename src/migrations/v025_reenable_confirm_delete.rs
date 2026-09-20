@@ -1,23 +1,11 @@
-//! Migration v025: re-enable the delete confirmation on existing installs.
+//! Migration v025: rewrite a persisted `session.confirm_delete = false` to
+//! `true` in the global `config.toml`.
 //!
-//! `session.confirm_delete` shipped defaulting off (#2595), and `update_config`
-//! re-serializes the whole `Config` on every write, so any install that has
-//! ever saved a setting carries an explicit `confirm_delete = false` in its
-//! `config.toml`. Flipping the compiled default to on (#3364) therefore reaches
-//! nobody but fresh installs: the persisted `false` outranks the serde default
-//! forever, and `d` keeps trashing on one keystroke.
-//!
-//! This rewrites a persisted `false` to `true` in the global `config.toml` so
-//! the guard actually lands. A `false` on disk is indistinguishable from a
-//! deliberate opt-out, but since the old default was off, nearly every one of
-//! them is a serialized default rather than a choice; the rare deliberate
-//! opt-out is one settings toggle (or one tick of the dialog's "don't warn me
-//! again" box) away from being restored.
-//!
-//! Profile configs are deliberately untouched. They are sparse, holding only
-//! the keys a user actually overrode, so a `confirm_delete = false` there is a
-//! real decision rather than a serialized default. Repo configs never carry
-//! this setting at all.
+//! The setting shipped defaulting off and `update_config` re-serializes every
+//! key, so any install that ever saved a setting carries an explicit `false`
+//! that outranks the new compiled default. Nearly all of those are serialized
+//! defaults rather than opt-outs, and the rare opt-out is one toggle away.
+//! Profile configs are sparse, so a `false` there is a real decision and stays.
 
 use anyhow::Result;
 use std::fs;

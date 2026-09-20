@@ -1,19 +1,11 @@
-//! Migration v026: repoint a persisted `acp.default_agent = "aoe-agent"`.
+//! Migration v026: repoint a persisted `acp.default_agent = "aoe-agent"` to
+//! the current default.
 //!
-//! `aoe-agent` is not packaged: nothing builds the registry's
-//! `${aoe_data_dir}/acp-worker/dist/aoe-agent` command (#3553). It was
-//! nonetheless the compiled default, v005 seeded it into `[cockpit]` (renamed
-//! to `[acp]` by v012), and `update_config` re-serializes the whole `Config` on
-//! every write, so nearly every existing install carries an explicit
-//! `default_agent = "aoe-agent"` in its `config.toml`. Now that the setting
-//! actually selects the spawned agent, that persisted value would outrank the
-//! new `claude-code` default forever and pick an agent that cannot start.
-//!
-//! Only the seeded value is rewritten; any other name is a real choice.
-//!
-//! Profile configs are deliberately untouched. They are sparse, holding only
-//! the keys a user actually overrode, so an `aoe-agent` there is a decision.
-//! Repo configs cannot carry `[acp]` at all (see `repo_config`).
+//! Nothing packages or builds the `aoe-agent` command (#3553), but it was the
+//! compiled default and `update_config` re-serializes every key, so nearly
+//! every install carries it explicitly and would keep selecting an agent that
+//! cannot start. Any other name is a real choice, and profile configs are
+//! sparse so they stay untouched.
 
 use anyhow::Result;
 use std::fs;

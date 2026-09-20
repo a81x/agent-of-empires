@@ -1,19 +1,7 @@
-//! Migration v009: Replace `[updates] check_enabled` with `update_check_mode`.
-//!
-//! Schema change for #1140. The legacy boolean only covered on/off; the new
-//! enum adds a third mode (`auto`) that quietly installs releases in the
-//! background. Without this migration, users who had `check_enabled = false`
-//! would silently flip back to the default `notify` mode on upgrade because
-//! serde drops unknown fields. The mapping:
-//!
-//! - `check_enabled = false` => `update_check_mode = "off"`
-//! - `check_enabled = true`  => `update_check_mode = "notify"` (the default)
-//! - field missing           => no-op (`update_check_mode` already defaults
-//!   to `notify` via serde)
-//!
-//! Also drops the orphaned `auto_update` boolean that lingered in older
-//! configs (it was never wired to anything; see the legacy-fields test in
-//! `src/session/config/mod.rs`).
+//! Migration v009: replace `[updates] check_enabled` with `update_check_mode`
+//! (`false` -> `"off"`, `true` -> `"notify"`, missing -> no-op, since serde
+//! already defaults to `notify`). Also drops the orphaned `auto_update`
+//! boolean older configs carry.
 
 use anyhow::{Context, Result};
 use std::fs;

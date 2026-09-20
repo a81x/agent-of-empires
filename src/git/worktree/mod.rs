@@ -14,8 +14,6 @@ use super::error::{GitError, Result};
 use super::open_repo_at;
 use super::template::{resolve_template, TemplateVars};
 
-pub(crate) use branch::DefaultBranchInfo;
-
 /// Remote assumed when no candidate remote can be picked from local refs.
 const FETCH_REMOTE: &str = "origin";
 

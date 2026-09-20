@@ -1,31 +1,12 @@
-//! Migration v023: clear the spurious container Error left on structured
-//! (ACP) sessions by builds whose TUI status poller ran the sandbox-dead
-//! check before bailing on `is_structured()`.
+//! Migration v023: demote structured (ACP) sessions still persisted at
+//! `status = "error"` back to Idle.
 //!
-//! Those builds took a structured session with `sandbox_info` set, looked up
-//! its container in `batch_container_health()`, and on a not-running reading
-//! stamped `status = "error"` with `"Container is not running"`. A structured
-//! session's container is owned by its ACP worker rather than by a tmux pane,
-//! so that reading says nothing about the session, and the heal in
-//! `update_status_with_metadata_inner` only cleared `last_error` for the
-//! tmux-gone message, leaving the row `Idle` with a phantom container error.
-//! `last_error` is `#[serde(skip)]`, so what survives a restart is the
-//! `status = "error"` alone.
-//!
-//! The poller now returns `None` for structured rows and the daemon overlay
-//! (`SessionFeed`) is their only status producer, so no new rows can be
-//! poisoned. This one-shot demotes the existing ones back to Idle. Any
-//! persisted Error on a structured row can only be that spurious transition:
-//! the daemon never persisted structured status at all in those builds (see
-//! the durability contract on `apply_acp_overlay_inplace`).
-//!
-//! ## Failure policy
-//!
-//! Per `AGENTS.md > Data Migrations`, a returned `Err` aborts boot. A
-//! sessions.json that fails to read or parse is logged and skipped: an
-//! unreadable or corrupt file must not block boot or spam every launch, and
-//! this heal is best-effort. Only `get_app_dir` and directory-read failures
-//! propagate.
+//! Builds whose poller ran the sandbox-dead check before bailing on
+//! `is_structured()` stamped a not-running container as a session error. A
+//! structured session's container belongs to its ACP worker rather than to a
+//! tmux pane, so that reading said nothing about the session, and the daemon
+//! never persisted structured status in those builds. A sessions.json that
+//! fails to read or parse is logged and skipped.
 
 use anyhow::Result;
 use std::fs;

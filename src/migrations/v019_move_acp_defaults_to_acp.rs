@@ -1,14 +1,7 @@
-//! Migration v019: move `acp_defaults` from `[session]` to `[acp]`.
-//!
-//! Per-agent structured-view defaults were introduced under `[session]`, but
-//! the setting is ACP/structured-view configuration and now lives on `AcpConfig`
-//! so the web dashboard renders it under the Structured View tab (which is
-//! section-routed to `[acp]`). Without this move an existing
-//! `[session.acp_defaults.*]` value would be silently ignored (the new field
-//! defaults empty), so the user would lose their configured defaults.
-//!
-//! Applies to the global config and every profile config. Idempotent: a value
-//! already under `[acp]` is preferred and the stale `[session]` copy is dropped.
+//! Migration v019: move `acp_defaults` from `[session]` to `[acp]` in the
+//! global config and every profile config; the new field would otherwise
+//! silently ignore a configured value. A value already under `[acp]` wins and
+//! the stale `[session]` copy is dropped.
 
 use anyhow::Result;
 use std::fs;
