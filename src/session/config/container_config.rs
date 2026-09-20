@@ -2859,9 +2859,8 @@ mod tests {
     }
 
     /// The per-instance sandbox config store AoE stages under an agent's dir.
-    fn sandbox_store(home: &IsolatedHome, agent_dir: &str, instance_id: &str) -> PathBuf {
-        home.path()
-            .join(agent_dir)
+    fn sandbox_store(home: &Path, agent_dir: &str, instance_id: &str) -> PathBuf {
+        home.join(agent_dir)
             .join(SANDBOX_PRIVATE_SUBDIR)
             .join(instance_id)
     }
@@ -4742,7 +4741,7 @@ volume_ignores_strategy = "named"
             .unwrap();
 
         write_repo_config(
-            main_repo,
+            &main_repo,
             r#"
 [sandbox]
 volume_ignores = ["node_modules"]
@@ -4797,7 +4796,7 @@ volume_ignores = ["node_modules"]
             .run(project_dir.path())
             .unwrap();
 
-        let codex_sandbox = sandbox_store(&temp_home, ".codex", &instance_id);
+        let codex_sandbox = sandbox_store(temp_home.path(), ".codex", &instance_id);
         assert!(codex_sandbox.join("hooks.json").exists());
         assert!(!codex_sandbox.join("config.toml").exists());
         assert!(!codex_sandbox.join("settings.json").exists());
@@ -4855,7 +4854,7 @@ volume_ignores = ["node_modules"]
 
         let homes: Vec<_> = instance_ids
             .iter()
-            .map(|instance_id| sandbox_store(&temp_home, ".codex", &instance_id))
+            .map(|instance_id| sandbox_store(temp_home.path(), ".codex", &instance_id))
             .collect();
         assert_ne!(homes[0], homes[1]);
         for home in &homes {
@@ -4903,7 +4902,7 @@ volume_ignores = ["node_modules"]
             .run(project_dir.path())
             .unwrap();
         let codex_config =
-            sandbox_store(&temp_home, ".codex", "codex-yolo-trust-test").join("config.toml");
+            sandbox_store(temp_home.path(), ".codex", "codex-yolo-trust-test").join("config.toml");
         let codex: toml::Value =
             toml::from_str(&fs::read_to_string(&codex_config).unwrap()).unwrap();
         let projects = codex["projects"].as_table().unwrap();
@@ -4917,8 +4916,8 @@ volume_ignores = ["node_modules"]
             .instance("gemini-yolo-trust-test")
             .run(project_dir.path())
             .unwrap();
-        let gemini_settings =
-            sandbox_store(&temp_home, ".gemini", "gemini-yolo-trust-test").join("settings.json");
+        let gemini_settings = sandbox_store(temp_home.path(), ".gemini", "gemini-yolo-trust-test")
+            .join("settings.json");
         let gemini: serde_json::Value =
             serde_json::from_str(&fs::read_to_string(&gemini_settings).unwrap()).unwrap();
         assert_eq!(
@@ -4950,7 +4949,8 @@ volume_ignores = ["node_modules"]
                 .run(project_dir.path())
                 .unwrap();
 
-            let seeded = sandbox_store(&temp_home, ".claude", &instance_id).join(".claude.json");
+            let seeded =
+                sandbox_store(temp_home.path(), ".claude", &instance_id).join(".claude.json");
             let parsed: serde_json::Value =
                 serde_json::from_str(&fs::read_to_string(&seeded).unwrap()).unwrap();
             // The trust key is the in-container working dir, not the host path.
@@ -5028,7 +5028,7 @@ claude-personal = "~/.claude-personal"
         );
 
         let default_config =
-            sandbox_store(&temp_home, ".claude", &instance_id).join(".claude.json");
+            sandbox_store(temp_home.path(), ".claude", &instance_id).join(".claude.json");
         let default_trust = fs::read_to_string(&default_config)
             .ok()
             .and_then(|c| serde_json::from_str::<serde_json::Value>(&c).ok())
@@ -5402,7 +5402,7 @@ trust_level = "trusted"
 
         let hooks: serde_json::Value = serde_json::from_str(
             &fs::read_to_string(
-                sandbox_store(&temp_home, ".cursor", &instance_id).join("hooks.json"),
+                sandbox_store(temp_home.path(), ".cursor", &instance_id).join("hooks.json"),
             )
             .unwrap(),
         )
@@ -5440,7 +5440,7 @@ trust_level = "trusted"
 
         // Hooks land in the selected agent's staged sandbox config...
         let selected_config =
-            sandbox_store(&temp_home, ".kiro", &instance_id).join("agents/custom-agent.json");
+            sandbox_store(temp_home.path(), ".kiro", &instance_id).join("agents/custom-agent.json");
         assert!(selected_config.exists());
         assert!(fs::read_to_string(&selected_config)
             .unwrap()
@@ -5482,7 +5482,7 @@ trust_level = "trusted"
         .run(project_dir.path())
         .unwrap();
 
-        let matched = sandbox_store(&temp_home, ".kiro", &instance_id)
+        let matched = sandbox_store(temp_home.path(), ".kiro", &instance_id)
             .join("agents/TeamAgents-custom-agent.json");
         assert!(matched.exists());
         let body = fs::read_to_string(&matched).unwrap();
@@ -5496,7 +5496,7 @@ trust_level = "trusted"
         );
 
         let stem_clone =
-            sandbox_store(&temp_home, ".kiro", &instance_id).join("agents/custom-agent.json");
+            sandbox_store(temp_home.path(), ".kiro", &instance_id).join("agents/custom-agent.json");
         assert!(
             !stem_clone.exists(),
             "must not create a filename-stem clone the CLI never loads"
@@ -5550,7 +5550,7 @@ trust_level = "trusted"
             .run(project_dir.path())
             .unwrap();
 
-        let codex_sandbox = sandbox_store(&temp_home, ".codex", &instance_id);
+        let codex_sandbox = sandbox_store(temp_home.path(), ".codex", &instance_id);
         assert!(!codex_sandbox.join("config.toml").exists());
 
         let hook_dir =
@@ -5601,7 +5601,7 @@ agent_detect_as = { "wrapped-codex" = "codex" }
             .run(project_dir.path())
             .unwrap();
 
-        let codex_sandbox = sandbox_store(&temp_home, ".codex", &instance_id);
+        let codex_sandbox = sandbox_store(temp_home.path(), ".codex", &instance_id);
         assert!(codex_sandbox.join("hooks.json").exists());
         assert!(config.volumes.iter().any(|v| {
             v.host_path == codex_sandbox.to_string_lossy()
@@ -5807,7 +5807,7 @@ trusted_hash = "keep"
             .run(project_dir.path())
             .unwrap();
 
-        let codex_sandbox = sandbox_store(&temp_home, ".codex", &instance_id);
+        let codex_sandbox = sandbox_store(temp_home.path(), ".codex", &instance_id);
         assert!(codex_sandbox.join("hooks.json").exists());
         assert!(config.volumes.iter().any(|v| {
             v.host_path == codex_sandbox.to_string_lossy()
@@ -5841,7 +5841,7 @@ environment = ["CODEX_HOME=/root/profile-codex"]
             .run(project_dir.path())
             .unwrap();
 
-        let codex_sandbox = sandbox_store(&temp_home, ".codex", &instance_id);
+        let codex_sandbox = sandbox_store(temp_home.path(), ".codex", &instance_id);
         assert!(codex_sandbox.join("hooks.json").exists());
         assert!(config.volumes.iter().any(|v| {
             v.host_path == codex_sandbox.to_string_lossy()
@@ -6013,7 +6013,7 @@ extra_volumes = ["/host/personal-only:/container/personal-only:ro"]
         // resolve_config_with_repo loads it from there (find_main_repo) even
         // when the session targets a sibling worktree.
         write_repo_config(
-            repo_path,
+            &repo_path,
             r#"
 [sandbox]
 volume_ignores = ["target", "node_modules"]
@@ -6074,7 +6074,7 @@ volume_ignores = ["target", "node_modules"]
         // resolve_config_with_repo loads it from there (find_main_repo) even
         // when the session targets a sibling worktree.
         write_repo_config(
-            main_repo_path,
+            &main_repo_path,
             r#"
 [sandbox]
 volume_ignores = ["target"]
@@ -6606,7 +6606,7 @@ agent_status_hooks = false
 
         let instance_id = "gemini-empty-hook-cleanup";
         let settings_path =
-            sandbox_store(&temp_home, ".gemini", &instance_id).join("settings.json");
+            sandbox_store(temp_home.path(), ".gemini", &instance_id).join("settings.json");
         let events = crate::agents::resolved_hook_events(
             crate::agents::get_agent("gemini").unwrap(),
             &crate::session::config::Config::default(),
