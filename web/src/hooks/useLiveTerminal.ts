@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useEffectEvent, useRef } from "react";
 import { useSnapshotStore } from "./useSnapshotStore";
+import { listen } from "./domEvents";
 import { getOrCreateDeviceBindingSecret } from "../lib/deviceBinding";
 import { getToken } from "../lib/token";
 import { buttonMouseBytes, wheelMouseBytes } from "../lib/liveMouse";
@@ -346,16 +347,14 @@ export function useLiveTerminal(
     const onVisibility = () => {
       if (document.visibilityState === "visible") tryAutoReconnect();
     };
-    document.addEventListener("visibilitychange", onVisibility);
-    window.addEventListener("online", tryAutoReconnect);
-    window.addEventListener("pageshow", tryAutoReconnect);
+    const stopVisibility = listen(onVisibility, [document, "visibilitychange"]);
+    const stopNetwork = listen(tryAutoReconnect, [window, "online"], [window, "pageshow"]);
 
     return () => {
       disposed = true;
       disposeInflater();
-      document.removeEventListener("visibilitychange", onVisibility);
-      window.removeEventListener("online", tryAutoReconnect);
-      window.removeEventListener("pageshow", tryAutoReconnect);
+      stopVisibility();
+      stopNetwork();
       if (retryTimerRef.current) clearTimeout(retryTimerRef.current);
       if (countdownRef.current) clearInterval(countdownRef.current);
       const ws = wsRef.current;

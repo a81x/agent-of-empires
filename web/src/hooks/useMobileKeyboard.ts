@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef } from "react";
 import { useSnapshotStore } from "./useSnapshotStore";
+import { listen } from "./domEvents";
 
 interface MobileKeyboardSnapshot {
   isMobile: boolean;
@@ -94,8 +95,8 @@ export function useMobileKeyboard() {
       startPolling();
     };
 
-    const handleFocusIn = (e: FocusEvent) => {
-      const tag = (e.target as HTMLElement)?.tagName;
+    const handleFocusIn = (e: Event) => {
+      const tag = (e.target as HTMLElement | null)?.tagName;
       if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") {
         startPolling();
       }
@@ -112,19 +113,15 @@ export function useMobileKeyboard() {
     };
 
     measure();
-    vv.addEventListener("resize", handleViewportChange);
-    vv.addEventListener("scroll", handleViewportChange);
-    document.addEventListener("focusin", handleFocusIn);
-    window.addEventListener("orientationchange", handleOrientationChange);
-    window.addEventListener("scroll", handleViewportChange);
+    const stop = [
+      listen(handleViewportChange, [vv, "resize"], [vv, "scroll"], [window, "scroll"]),
+      listen(handleFocusIn, [document, "focusin"]),
+      listen(handleOrientationChange, [window, "orientationchange"]),
+    ];
     return () => {
       cancelAnimationFrame(rafRef.current);
       if (orientTimer) clearTimeout(orientTimer);
-      vv.removeEventListener("resize", handleViewportChange);
-      vv.removeEventListener("scroll", handleViewportChange);
-      document.removeEventListener("focusin", handleFocusIn);
-      window.removeEventListener("orientationchange", handleOrientationChange);
-      window.removeEventListener("scroll", handleViewportChange);
+      for (const off of stop) off();
     };
   }, [state.isMobile, update]);
 

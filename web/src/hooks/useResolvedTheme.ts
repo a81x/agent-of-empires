@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { fetchCurrentTheme, fetchResolvedTheme } from "../lib/api";
 import { applyResolvedTheme, dispatchThemeChanged, readCachedResolvedTheme, type ResolvedTheme } from "../lib/theme";
+import { listen } from "./domEvents";
 
 export const THEME_PICKER_CHANGED_EVENT = "aoe:theme-picker-changed";
 
@@ -33,10 +34,10 @@ export function useResolvedTheme(): ResolvedTheme | null {
       const promise = detail?.name ? fetchResolvedTheme(detail.name) : fetchCurrentTheme();
       promise.then((next) => apply(next, seq));
     };
-    window.addEventListener(THEME_PICKER_CHANGED_EVENT, onChange);
+    const stop = listen(onChange, [window, THEME_PICKER_CHANGED_EVENT]);
     return () => {
       unmounted = true;
-      window.removeEventListener(THEME_PICKER_CHANGED_EVENT, onChange);
+      stop();
     };
   }, []);
 

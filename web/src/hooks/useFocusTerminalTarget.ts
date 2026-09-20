@@ -6,6 +6,7 @@ import {
   type FocusTerminalDetail,
   type TerminalFocusTarget,
 } from "../lib/terminalFocus";
+import { listen } from "./domEvents";
 
 export function useFocusTerminalTarget(target: TerminalFocusTarget, ref: React.RefObject<HTMLElement | null>): void {
   useEffect(() => {
@@ -16,8 +17,7 @@ export function useFocusTerminalTarget(target: TerminalFocusTarget, ref: React.R
       if (el) el.focus();
       else setPendingTerminalFocus(target);
     };
-    window.addEventListener(FOCUS_TERMINAL_EVENT, onFocusEvent);
-    return () => window.removeEventListener(FOCUS_TERMINAL_EVENT, onFocusEvent);
+    return listen(onFocusEvent, [window, FOCUS_TERMINAL_EVENT]);
   }, [target, ref]);
 
   useEffect(() => {

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { DiffComment, DiffCommentDraft, DiffCommentsStorageV1 } from "../components/diff/comments/types";
 import { EMPTY_STORAGE, loadComments, saveComments } from "../components/diff/comments/storage";
+import { listen } from "./domEvents";
 
 export interface UseDiffCommentsResult {
   comments: DiffComment[];
@@ -52,12 +53,7 @@ export function useDiffComments(sessionId: string | null): UseDiffCommentsResult
   useEffect(() => {
     if (!sessionId) return;
     const flush = () => saveComments(sessionId, stateRef.current);
-    window.addEventListener("beforeunload", flush);
-    window.addEventListener("pagehide", flush);
-    return () => {
-      window.removeEventListener("beforeunload", flush);
-      window.removeEventListener("pagehide", flush);
-    };
+    return listen(flush, [window, "beforeunload"], [window, "pagehide"]);
   }, [sessionId]);
 
   const addComment = useCallback(

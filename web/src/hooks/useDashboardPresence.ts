@@ -1,4 +1,5 @@
 import { useEffect } from "react";
+import { listen } from "./domEvents";
 
 const PRESENCE_INTERVAL_MS = 10_000;
 
@@ -24,19 +25,13 @@ export function useDashboardPresence(): void {
 
     update();
     const interval = window.setInterval(update, PRESENCE_INTERVAL_MS);
-    document.addEventListener("visibilitychange", update);
-    window.addEventListener("focus", update);
-    window.addEventListener("blur", clear);
-    window.addEventListener("pageshow", update);
-    window.addEventListener("pagehide", clear);
+    const stopUpdate = listen(update, [document, "visibilitychange"], [window, "focus"], [window, "pageshow"]);
+    const stopClear = listen(clear, [window, "blur"], [window, "pagehide"]);
 
     return () => {
       window.clearInterval(interval);
-      document.removeEventListener("visibilitychange", update);
-      window.removeEventListener("focus", update);
-      window.removeEventListener("blur", clear);
-      window.removeEventListener("pageshow", update);
-      window.removeEventListener("pagehide", clear);
+      stopUpdate();
+      stopClear();
       clear();
     };
   }, []);

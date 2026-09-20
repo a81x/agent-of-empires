@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { fetchProjects } from "../lib/api";
 import type { ProjectInfo } from "../lib/types";
+import { listen } from "./domEvents";
 
 export function useProjects(): {
   projects: ProjectInfo[];
@@ -17,12 +18,7 @@ export function useProjects(): {
     const onFocus = () => {
       if (document.visibilityState === "visible") void fetchProjects().then(setProjects);
     };
-    window.addEventListener("focus", onFocus);
-    document.addEventListener("visibilitychange", onFocus);
-    return () => {
-      window.removeEventListener("focus", onFocus);
-      document.removeEventListener("visibilitychange", onFocus);
-    };
+    return listen(onFocus, [window, "focus"], [document, "visibilitychange"]);
   }, [refresh]);
 
   return { projects, refresh };

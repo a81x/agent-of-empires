@@ -11,6 +11,7 @@ import {
 } from "../../lib/acpTypes";
 import { getOrCreateDeviceBindingSecret } from "../../lib/deviceBinding";
 import { getToken } from "../../lib/token";
+import { listen } from "../domEvents";
 import { useLatestRef } from "../useLatestRef";
 import { toActivityRows, transcriptDeltaAction, type Action } from "./reducer";
 import { fetchOlderPage, fetchReplay } from "./replay";
@@ -47,15 +48,8 @@ function closeQuietly(ws: WebSocket): void {
   }
 }
 
-function subscribeAll(cb: () => void, ...events: [EventTarget, string][]): () => void {
-  for (const [target, type] of events) target.addEventListener(type, cb);
-  return () => {
-    for (const [target, type] of events) target.removeEventListener(type, cb);
-  };
-}
-
-const subscribeVisibility = (cb: () => void) => subscribeAll(cb, [document, "visibilitychange"], [window, "pageshow"]);
-const subscribeOnline = (cb: () => void) => subscribeAll(cb, [window, "online"], [window, "offline"]);
+const subscribeVisibility = (cb: () => void) => listen(cb, [document, "visibilitychange"], [window, "pageshow"]);
+const subscribeOnline = (cb: () => void) => listen(cb, [window, "online"], [window, "offline"]);
 
 function acpSocketProtocols(): string[] {
   const token = getToken();

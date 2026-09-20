@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { readCachedResolvedTheme, THEME_CHANGED_EVENT, type ResolvedTheme } from "../lib/theme";
 import { DEFAULT_SHIKI_THEME } from "../lib/snippetHighlighter";
+import { listen } from "./domEvents";
 
 export interface ShikiThemeState {
   theme: string;
@@ -24,10 +25,7 @@ export function useShikiTheme(): ShikiThemeState {
         appearance: next.appearance,
       });
     };
-    window.addEventListener(THEME_CHANGED_EVENT, onChange);
-    return () => {
-      window.removeEventListener(THEME_CHANGED_EVENT, onChange);
-    };
+    return listen(onChange, [window, THEME_CHANGED_EVENT]);
   }, []);
   return state;
 }
