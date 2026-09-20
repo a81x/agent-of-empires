@@ -111,13 +111,6 @@ const PAGES = [
       "Git worktree commands and configuration reference for Agent of Empires.",
   },
   {
-    source: "docs/guides/agent-override.md",
-    dest: "guides/agent-override.md",
-    title: "Agent Command Overrides",
-    description:
-      "Override agent commands with custom scripts or sandboxed wrappers in Agent of Empires.",
-  },
-  {
     source: "docs/guides/session-resume.md",
     dest: "guides/session-resume.md",
     title: "Session Resume (Claude)",

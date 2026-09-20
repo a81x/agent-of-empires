@@ -18,6 +18,7 @@ export default defineConfig({
     '/docs/cockpit/multi-agent/': '/docs/structured-view/',
     '/guides/podman/': '/guides/sandbox/',
     '/guides/apple-containers/': '/guides/sandbox/',
+    '/guides/agent-override/': '/docs/guides/configuration/#agent-command-overrides',
   },
   integrations: [
     sitemap({

@@ -125,7 +125,7 @@ are not user-facing settings. A few things are deliberately not schematized:
   global-only runtime/UI bookkeeping (welcome/tour seen, last browse dir, sort
   order, dismissed-tip/update tracking), not a setting a user opens a form to
   change. It persists to a sibling `state.toml`, not `config.toml` (see
-  [Configuration Reference](../guides/configuration.md#statetoml)).
+  [Configuration Reference](../guides/configuration.md#file-locations)).
 
   Adding a field shaped like this? First reconsider whether it is actually a
   setting the schema should own. If it is not, extend `AppStateConfig` and
