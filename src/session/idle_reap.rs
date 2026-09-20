@@ -136,138 +136,38 @@ mod tests {
     }
 
     #[test]
-    fn disabled_threshold_never_stops() {
+    fn should_auto_stop_session_cases() {
         let n = now();
-        assert!(!should_auto_stop_session(
-            n,
-            Status::Idle,
-            Some(n - Duration::hours(10)),
-            None,
-            false,
-            0,
-        ));
-    }
-
-    #[test]
-    fn non_idle_is_never_stopped() {
-        let n = now();
-        for status in [Status::Running, Status::Waiting, Status::Error] {
-            assert!(
-                !should_auto_stop_session(
+        // (case, status, idle entered ago, last accessed ago, attached, threshold, expected)
+        let cases: &[(&str, Status, Option<i64>, Option<i64>, bool, u32, bool)] = &[
+            ("disabled threshold", Status::Idle, Some(36000), None, false, 0, false),
+            ("running", Status::Running, Some(36000), None, false, 60, false),
+            ("waiting", Status::Waiting, Some(36000), None, false, 60, false),
+            ("error", Status::Error, Some(36000), None, false, 60, false),
+            ("attached", Status::Idle, Some(36000), None, true, 60, false),
+            ("never entered idle", Status::Idle, None, None, false, 60, false),
+            ("past threshold", Status::Idle, Some(120), None, false, 60, true),
+            ("within threshold", Status::Idle, Some(30), None, false, 60, false),
+            ("exactly at threshold", Status::Idle, Some(60), None, false, 60, true),
+            ("access after idle entry re-anchors", Status::Idle, Some(7200), Some(10), false, 60, false),
+            ("access before idle entry does not", Status::Idle, Some(120), Some(18000), false, 60, true),
+            ("anchor in the future (clock skew)", Status::Idle, Some(-60), None, false, 60, false),
+        ];
+        for &(case, status, entered, accessed, attached, threshold, expected) in cases {
+            let ago = |secs: i64| n - Duration::seconds(secs);
+            assert_eq!(
+                should_auto_stop_session(
                     n,
                     status,
-                    Some(n - Duration::hours(10)),
-                    None,
-                    false,
-                    60,
+                    entered.map(ago),
+                    accessed.map(ago),
+                    attached,
+                    threshold,
                 ),
-                "status {status:?} should survive the reap"
+                expected,
+                "{case}"
             );
         }
-    }
-
-    #[test]
-    fn attached_session_is_never_stopped() {
-        let n = now();
-        assert!(!should_auto_stop_session(
-            n,
-            Status::Idle,
-            Some(n - Duration::hours(10)),
-            None,
-            true,
-            60,
-        ));
-    }
-
-    #[test]
-    fn missing_idle_entered_at_never_stops() {
-        let n = now();
-        assert!(!should_auto_stop_session(
-            n,
-            Status::Idle,
-            None,
-            None,
-            false,
-            60,
-        ));
-    }
-
-    #[test]
-    fn idle_past_threshold_stops() {
-        let n = now();
-        assert!(should_auto_stop_session(
-            n,
-            Status::Idle,
-            Some(n - Duration::seconds(120)),
-            None,
-            false,
-            60,
-        ));
-    }
-
-    #[test]
-    fn idle_within_threshold_survives() {
-        let n = now();
-        assert!(!should_auto_stop_session(
-            n,
-            Status::Idle,
-            Some(n - Duration::seconds(30)),
-            None,
-            false,
-            60,
-        ));
-    }
-
-    #[test]
-    fn exactly_at_threshold_stops() {
-        let n = now();
-        assert!(should_auto_stop_session(
-            n,
-            Status::Idle,
-            Some(n - Duration::seconds(60)),
-            None,
-            false,
-            60,
-        ));
-    }
-
-    #[test]
-    fn recent_access_after_idle_entry_spares_session() {
-        let n = now();
-        assert!(!should_auto_stop_session(
-            n,
-            Status::Idle,
-            Some(n - Duration::hours(2)),
-            Some(n - Duration::seconds(10)),
-            false,
-            60,
-        ));
-    }
-
-    #[test]
-    fn stale_access_does_not_extend_idle() {
-        let n = now();
-        assert!(should_auto_stop_session(
-            n,
-            Status::Idle,
-            Some(n - Duration::seconds(120)),
-            Some(n - Duration::hours(5)),
-            false,
-            60,
-        ));
-    }
-
-    #[test]
-    fn future_anchor_clock_skew_does_not_stop() {
-        let n = now();
-        assert!(!should_auto_stop_session(
-            n,
-            Status::Idle,
-            Some(n + Duration::seconds(60)),
-            None,
-            false,
-            60,
-        ));
     }
 
     fn idle_instance(title: &str) -> Instance {
@@ -278,41 +178,31 @@ mod tests {
     }
 
     #[test]
-    fn candidates_select_idle_past_threshold() {
+    fn candidates_select_only_reapable_plain_sessions() {
         let n = now();
-        let instances = vec![idle_instance("a")];
-        let attached = HashSet::new();
-        let got = idle_reap_candidates(&instances, n, &attached, |_| 60);
+        let idle = idle_instance("a");
+        let attached = HashSet::from([idle.tmux_session().unwrap().name().to_string()]);
+        let mut running = idle.clone();
+        running.status = Status::Running;
+        let one = std::slice::from_ref(&idle);
+
+        let got = idle_reap_candidates(one, n, &HashSet::new(), |_| 60);
         assert_eq!(got.len(), 1);
-        assert_eq!(got[0].session_id, instances[0].id);
+        assert_eq!(got[0].session_id, idle.id);
         assert_eq!(got[0].threshold_secs, 60);
-    }
 
-    #[test]
-    fn candidates_skip_disabled_threshold() {
-        let n = now();
-        let instances = vec![idle_instance("a")];
-        let attached = HashSet::new();
-        assert!(idle_reap_candidates(&instances, n, &attached, |_| 0).is_empty());
-    }
-
-    #[test]
-    fn candidates_skip_running_session() {
-        let n = now();
-        let mut inst = idle_instance("a");
-        inst.status = Status::Running;
-        let attached = HashSet::new();
-        assert!(idle_reap_candidates(&[inst], n, &attached, |_| 60).is_empty());
-    }
-
-    #[test]
-    fn candidates_skip_attached_session() {
-        let n = now();
-        let inst = idle_instance("a");
-        let name = inst.tmux_session().unwrap().name().to_string();
-        let mut attached = HashSet::new();
-        attached.insert(name);
-        assert!(idle_reap_candidates(&[inst], n, &attached, |_| 60).is_empty());
+        assert!(
+            idle_reap_candidates(one, n, &HashSet::new(), |_| 0).is_empty(),
+            "threshold 0 disables the reaper"
+        );
+        assert!(
+            idle_reap_candidates(&[running], n, &HashSet::new(), |_| 60).is_empty(),
+            "a running session is never a candidate"
+        );
+        assert!(
+            idle_reap_candidates(one, n, &attached, |_| 60).is_empty(),
+            "an attached session is never a candidate"
+        );
     }
 
     #[test]

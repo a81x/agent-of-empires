@@ -841,7 +841,8 @@ mod tests {
         let _app_guard = isolate_app_dir();
         let managed_home = "/root/.codex/codex-upgrade-test";
         let custom: &[&str] = &["CODEX_HOME=/root/custom-codex"];
-        for (extra_env, expected_home) in [(None, managed_home), (Some(custom), "/root/custom-codex")]
+        for (extra_env, expected_home) in
+            [(None, managed_home), (Some(custom), "/root/custom-codex")]
         {
             let result = build_docker_env_args_with_managed_codex_home(
                 "",
@@ -1045,7 +1046,8 @@ mod tests {
                 Some(flag) => EnvGuard::set(&[("CLAUDE_CODE_USE_VERTEX", flag)]),
                 None => EnvGuard::unset(&["CLAUDE_CODE_USE_VERTEX"]),
             };
-            let result = collect_environment(&config(&["ANTHROPIC_VERTEX_PROJECT_ID"]), &sandbox(None));
+            let result =
+                collect_environment(&config(&["ANTHROPIC_VERTEX_PROJECT_ID"]), &sandbox(None));
             assert_eq!(
                 lookup(&result, "ANTHROPIC_VERTEX_PROJECT_ID"),
                 [("my-proj".to_string(), true)],
@@ -1056,7 +1058,10 @@ mod tests {
                 usize::from(forwarded),
                 "{flag:?}"
             );
-            assert!(lookup(&result, "ANTHROPIC_API_KEY").is_empty(), "never auto-forwarded");
+            assert!(
+                lookup(&result, "ANTHROPIC_API_KEY").is_empty(),
+                "never auto-forwarded"
+            );
         }
     }
 

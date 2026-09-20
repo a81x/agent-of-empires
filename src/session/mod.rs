@@ -12,7 +12,6 @@ pub(crate) mod claim;
 // `acp` because terminal/tmux import via the CLI does not involve ACP.
 pub mod claude_import;
 pub mod config;
-// Depends on `crate::acp` (Event / event store) and is only driven from the serve daemon. See.
 pub mod conversation_summary;
 pub mod deletion;
 pub(crate) mod environment;
@@ -894,7 +893,7 @@ pub fn is_tui_active(threshold: Duration) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::test_support::isolate_app_dir;
+    use super::test_support::{isolate_app_dir, AppDirGuard};
     use super::*;
 
     #[test]
@@ -951,50 +950,31 @@ mod tests {
     }
 
     #[test]
-    fn test_fallback_prefers_existing_xdg_dir_even_over_legacy() {
-        let tmp = tempfile::TempDir::new().unwrap();
-        let xdg = tmp.path().join(".config").join("agent-of-empires");
-        let legacy = tmp.path().join(".agent-of-empires");
-        fs::create_dir_all(&xdg).unwrap();
-        fs::create_dir_all(&legacy).unwrap();
-
-        assert_eq!(
-            resolve_app_dir_with_fallback(xdg.clone(), legacy.clone(), true),
-            xdg
-        );
-        assert_eq!(
-            resolve_app_dir_with_fallback(xdg.clone(), legacy, false),
-            xdg
-        );
-    }
-
-    #[test]
-    fn test_fallback_keeps_legacy_when_xdg_absent_even_if_env_set() {
-        let tmp = tempfile::TempDir::new().unwrap();
-        let xdg = tmp.path().join(".config").join("agent-of-empires");
-        let legacy = tmp.path().join(".agent-of-empires");
-        fs::create_dir_all(&legacy).unwrap();
-
-        assert_eq!(
-            resolve_app_dir_with_fallback(xdg, legacy.clone(), true),
-            legacy
-        );
-    }
-
-    #[test]
-    fn test_fallback_fresh_install_follows_env() {
-        let tmp = tempfile::TempDir::new().unwrap();
-        let xdg = tmp.path().join(".config").join("agent-of-empires");
-        let legacy = tmp.path().join(".agent-of-empires");
-
-        assert_eq!(
-            resolve_app_dir_with_fallback(xdg.clone(), legacy.clone(), true),
-            xdg
-        );
-        assert_eq!(
-            resolve_app_dir_with_fallback(xdg, legacy.clone(), false),
-            legacy
-        );
+    fn app_dir_fallback_never_moves_existing_data() {
+        // (case, xdg dir exists, legacy dir exists, XDG_CONFIG_HOME set, xdg wins)
+        let cases = [
+            ("both present", true, true, true, true),
+            ("both present, env unset", true, true, false, true),
+            ("only legacy present", false, true, true, false),
+            ("fresh install, env set", false, false, true, true),
+            ("fresh install, env unset", false, false, false, false),
+        ];
+        for (case, xdg_exists, legacy_exists, env_set, xdg_wins) in cases {
+            let tmp = tempfile::TempDir::new().unwrap();
+            let xdg = tmp.path().join(".config").join("agent-of-empires");
+            let legacy = tmp.path().join(".agent-of-empires");
+            for (dir, exists) in [(&xdg, xdg_exists), (&legacy, legacy_exists)] {
+                if exists {
+                    fs::create_dir_all(dir).unwrap();
+                }
+            }
+            let want = if xdg_wins { &xdg } else { &legacy };
+            assert_eq!(
+                &resolve_app_dir_with_fallback(xdg.clone(), legacy.clone(), env_set),
+                want,
+                "{case}"
+            );
+        }
     }
 
     #[test]
@@ -1053,90 +1033,71 @@ mod tests {
         );
     }
 
-    #[test]
-    #[serial_test::serial]
-    fn test_collect_startup_config_warnings_bad_global() {
+    /// Write `global` and/or `profile` config into an isolated app dir and return the guard.
+    fn seed_configs(global: Option<&str>, profile: Option<&str>) -> AppDirGuard {
         let temp = isolate_app_dir();
         let dir = app_dir(&temp);
-        fs::write(
-            dir.join("config.toml"),
-            "[sandbox]\nenabled_by_default = \"not-a-bool\"\n",
-        )
-        .unwrap();
+        if let Some(body) = global {
+            fs::write(dir.join("config.toml"), body).unwrap();
+        }
+        if let Some(body) = profile {
+            let profile_dir = dir.join("profiles").join("default");
+            fs::create_dir_all(&profile_dir).unwrap();
+            fs::write(profile_dir.join("config.toml"), body).unwrap();
+        }
+        temp
+    }
 
-        let warning = collect_startup_config_warnings("").expect("expected a warning");
-        assert!(warning.contains("Failed to load global config"));
-        assert!(warning.contains("config.toml"));
+    const BAD_TYPE: &str = "[sandbox]\nenabled_by_default = \"not-a-bool\"\n";
+    const UNKNOWN_KEY: &str = "[sandbox]\nenabled_by_default = true\nprivildged = true\n";
+
+    #[test]
+    #[serial_test::serial]
+    fn startup_config_warnings_report_parse_failures_and_unknown_keys() {
+        // (case, global, profile, profile argument, fragments the warning must contain)
+        let cases: &[(&str, Option<&str>, Option<&str>, &str, &[&str])] = &[
+            (
+                "unparseable global",
+                Some(BAD_TYPE),
+                None,
+                "",
+                &["Failed to load global config", "config.toml"],
+            ),
+            (
+                "unparseable profile",
+                None,
+                Some("[worktree]\nenabled = \"not-a-bool\"\n"),
+                "default",
+                &["Failed to load profile config 'default'"],
+            ),
+            (
+                "unknown nested global key",
+                Some(UNKNOWN_KEY),
+                None,
+                "",
+                &["Unrecognized keys in global config", "sandbox.privildged"],
+            ),
+        ];
+        for (case, global, profile, arg, fragments) in cases {
+            let _temp = seed_configs(*global, *profile);
+            let warning = collect_startup_config_warnings(arg)
+                .unwrap_or_else(|| panic!("{case}: expected a warning"));
+            for fragment in *fragments {
+                assert!(warning.contains(fragment), "{case}: got {warning}");
+            }
+        }
     }
 
     #[test]
     #[serial_test::serial]
-    fn test_collect_startup_config_warnings_bad_profile() {
-        let temp = isolate_app_dir();
-        let dir = app_dir(&temp);
-        let profile_dir = dir.join("profiles").join("default");
-        fs::create_dir_all(&profile_dir).unwrap();
-        fs::write(
-            profile_dir.join("config.toml"),
-            "[worktree]\nenabled = \"not-a-bool\"\n",
-        )
-        .unwrap();
-
-        let warning = collect_startup_config_warnings("default").expect("expected a warning");
-        assert!(warning.contains("Failed to load profile config 'default'"));
-    }
-
-    #[test]
-    #[serial_test::serial]
-    fn test_collect_startup_ignored_key_warnings_reports_ignored_only() {
-        let temp = isolate_app_dir();
-        let dir = app_dir(&temp);
-        fs::write(
-            dir.join("config.toml"),
-            "[sandbox]\nenabled_by_default = true\nprivildged = true\n",
-        )
-        .unwrap();
-
-        let warning =
-            collect_startup_ignored_key_warnings("").expect("ignored key must be reported");
+    fn ignored_key_warnings_name_the_key_but_stay_silent_on_a_parse_failure() {
+        let _temp = seed_configs(Some(UNKNOWN_KEY), None);
+        let warning = collect_startup_ignored_key_warnings("").expect("ignored key is reported");
         assert!(warning.contains("sandbox.privildged"));
         assert!(!warning.contains("Failed to load"));
-    }
 
-    #[test]
-    #[serial_test::serial]
-    fn test_collect_startup_ignored_key_warnings_silent_on_parse_failure() {
-        let temp = isolate_app_dir();
-        let dir = app_dir(&temp);
-        fs::write(
-            dir.join("config.toml"),
-            "[sandbox]\nenabled_by_default = \"not-a-bool\"\n",
-        )
-        .unwrap();
-
+        let _temp = seed_configs(Some(BAD_TYPE), None);
         assert!(collect_startup_ignored_key_warnings("").is_none());
-    }
-
-    #[test]
-    #[serial_test::serial]
-    fn test_collect_startup_config_warnings_flags_nested_unknown_key() {
-        let temp = isolate_app_dir();
-        let dir = app_dir(&temp);
-        fs::write(
-            dir.join("config.toml"),
-            "[sandbox]\nenabled_by_default = true\nprivildged = true\n",
-        )
-        .unwrap();
-
-        let warning = collect_startup_config_warnings("").expect("expected a warning");
-        assert!(
-            warning.contains("Unrecognized keys in global config"),
-            "warning should announce unrecognized keys, got: {warning}"
-        );
-        assert!(
-            warning.contains("sandbox.privildged"),
-            "warning should name the dotted path, got: {warning}"
-        );
     }
 
     #[test]
@@ -1164,7 +1125,6 @@ mod tests {
         );
     }
 
-    // : even inside a user-defined map entry, a struct-field typo does flag.
     #[test]
     #[serial_test::serial]
     fn test_collect_startup_config_warnings_flags_typo_inside_map_entry() {
@@ -1213,45 +1173,26 @@ mod tests {
 
     #[test]
     #[serial_test::serial]
-    fn test_drift_none_when_no_release_dir() {
-        let _temp = isolate_app_dir();
-        assert!(debug_namespace_drift().is_none());
-    }
-
-    #[test]
-    #[serial_test::serial]
-    fn test_drift_none_when_release_empty() {
+    fn drift_fires_only_for_a_populated_release_dir_with_no_dev_dir() {
         let temp = isolate_app_dir();
+        assert!(debug_namespace_drift().is_none(), "no release dir at all");
+
         let release = release_dir_in(&temp);
         fs::create_dir_all(&release).unwrap();
-        assert!(debug_namespace_drift().is_none());
-    }
+        assert!(debug_namespace_drift().is_none(), "release dir is empty");
 
-    #[test]
-    #[serial_test::serial]
-    fn test_drift_fires_when_release_populated_and_dev_absent() {
-        let temp = isolate_app_dir();
-        let release = release_dir_in(&temp);
         fs::create_dir_all(release.join("profiles")).unwrap();
-
         let drift = debug_namespace_drift();
         if cfg!(debug_assertions) {
-            let (r, d) = drift.expect("expected drift on debug build");
+            let (r, d) = drift.expect("expected drift on a debug build");
             assert_eq!(r, release);
             assert!(d.to_string_lossy().contains("-dev"));
         } else {
             assert!(drift.is_none());
         }
-    }
 
-    #[test]
-    #[serial_test::serial]
-    fn test_drift_silent_once_dev_dir_exists() {
-        let temp = isolate_app_dir();
-        let release = release_dir_in(&temp);
-        fs::create_dir_all(release.join("profiles")).unwrap();
         let _dev = app_dir(&temp);
-        assert!(debug_namespace_drift().is_none());
+        assert!(debug_namespace_drift().is_none(), "dev dir now exists");
     }
 
     #[test]

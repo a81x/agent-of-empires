@@ -369,8 +369,8 @@ pub(crate) fn truncate_bytes(s: &str, max: usize) -> &str {
     &s[..end]
 }
 
-// Since the ACP one-shot is deferred to the first `prompt_complete` `Event::Stopped`, so it no
-// longer races the live worker for the same provider API.
+// The ACP one-shot is deferred to the first `prompt_complete` `Event::Stopped`, so it never races
+// the live worker for the same provider API.
 pub(crate) const ONESHOT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
 
 /// Run the agent one-shot in the session's working directory, capturing stdout.

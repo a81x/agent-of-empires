@@ -943,16 +943,6 @@ mod tests {
         assert_eq!(b.defer(now), Some(Duration::from_secs(5)), "restarts at 5s");
     }
 
-
-
-
-
-
-
-
-
-
-
     #[test]
     fn adaptive_interval_backs_off_to_the_cap_and_resets_on_change() {
         let mut interval = AdaptiveInterval::new(
@@ -965,7 +955,11 @@ mod tests {
         for _ in 1..POLL_STABLE_THRESHOLD {
             interval.record_no_change();
         }
-        assert_eq!(interval.current(), Duration::from_secs(2), "below the threshold");
+        assert_eq!(
+            interval.current(),
+            Duration::from_secs(2),
+            "below the threshold"
+        );
         interval.record_no_change();
         assert_eq!(
             (interval.current(), interval.stable_count),
@@ -1094,7 +1088,6 @@ mod tests {
         assert_eq!(flaky.record(name, PaneProbe::Alive, t0), (false, false));
         assert_eq!(flaky.record(name, PaneProbe::Missing, t0), (true, false));
     }
-
 
     #[test]
     #[serial]
@@ -1298,9 +1291,6 @@ mod tests {
             ))
         );
     }
-
-
-
 
     #[test]
     #[serial]

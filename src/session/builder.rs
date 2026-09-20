@@ -1312,38 +1312,25 @@ mod tests {
     }
 
     #[test]
-    fn test_empty_title_with_worktree_uses_branch_name() {
-        let title = resolve_title("", Some("feature-auth"), true, &[], &HashSet::new()).unwrap();
-        assert_eq!(title, "feature-auth");
-    }
-
-    #[test]
-    fn test_empty_title_without_worktree_uses_civilization() {
-        let title = resolve_title("", None, false, &[], &HashSet::new()).unwrap();
-        assert!(
-            civilizations::CIVILIZATIONS.contains(&title.as_str()),
-            "Expected a civilization name, got: {}",
-            title
+    fn resolve_title_prefers_explicit_then_branch_then_civilization() {
+        let taken = HashSet::new();
+        assert_eq!(
+            resolve_title("My Session", Some("feature-auth"), true, &[], &taken).unwrap(),
+            "My Session"
         );
-    }
-
-    #[test]
-    fn test_provided_title_with_worktree_keeps_title() {
-        let title = resolve_title(
-            "My Session",
-            Some("feature-auth"),
-            true,
-            &[],
-            &HashSet::new(),
-        )
-        .unwrap();
-        assert_eq!(title, "My Session");
-    }
-
-    #[test]
-    fn test_provided_title_without_worktree_keeps_title() {
-        let title = resolve_title("Custom Name", None, false, &[], &HashSet::new()).unwrap();
-        assert_eq!(title, "Custom Name");
+        assert_eq!(
+            resolve_title("Custom Name", None, false, &[], &taken).unwrap(),
+            "Custom Name"
+        );
+        assert_eq!(
+            resolve_title("", Some("feature-auth"), true, &[], &taken).unwrap(),
+            "feature-auth"
+        );
+        let generated = resolve_title("", None, false, &[], &taken).unwrap();
+        assert!(
+            civilizations::CIVILIZATIONS.contains(&generated.as_str()),
+            "expected a civilization name, got: {generated}"
+        );
     }
 
     #[test]
@@ -1396,143 +1383,99 @@ mod tests {
     }
 
     #[test]
-    fn test_worktree_branch_derived_from_title_when_name_empty() {
-        let branch = resolve_worktree_branch(true, None, "Fix Login Flow").unwrap();
-        assert!(matches!(branch, BranchSource::Derived(ref s) if s == "fix-login-flow"));
-    }
-
-    #[test]
-    fn test_worktree_branch_preserves_explicit_name() {
-        let branch = resolve_worktree_branch(true, Some("feat/auth"), "Fix Login Flow").unwrap();
-        assert!(matches!(branch, BranchSource::Explicit(ref s) if s == "feat/auth"));
-    }
-
-    #[test]
-    fn test_worktree_branch_sanitizes_explicit_with_spaces() {
-        let branch =
-            resolve_worktree_branch(true, Some("Exploration and issues v2"), "Fix Login Flow")
-                .unwrap();
+    fn resolve_worktree_branch_cases() {
+        let branch = |name: Option<&str>| resolve_worktree_branch(true, name, "Fix Login Flow");
+        assert!(matches!(branch(None), Some(BranchSource::Derived(s)) if s == "fix-login-flow"));
         assert!(
-            matches!(branch, BranchSource::Explicit(ref s) if s == "Exploration-and-issues-v2")
+            matches!(branch(Some("feat/auth")), Some(BranchSource::Explicit(s)) if s == "feat/auth")
+        );
+        assert!(
+            matches!(branch(Some("Exploration and issues v2")), Some(BranchSource::Explicit(s)) if s == "Exploration-and-issues-v2")
+        );
+        assert!(
+            resolve_worktree_branch(false, Some("feat/auth"), "Fix Login Flow").is_none(),
+            "no worktree means no branch to resolve"
         );
     }
 
     #[test]
-    fn test_git_sanitize_branch_name_passes_through_valid_refs() {
-        assert_eq!(git_sanitize_branch_name("feat/auth"), "feat/auth");
-        assert_eq!(git_sanitize_branch_name("release-1.2.3"), "release-1.2.3");
-        assert_eq!(
-            git_sanitize_branch_name("user_name/topic"),
-            "user_name/topic"
-        );
+    fn git_sanitize_branch_name_cases() {
+        for (input, want) in [
+            // Valid refs pass through untouched.
+            ("feat/auth", "feat/auth"),
+            ("release-1.2.3", "release-1.2.3"),
+            ("user_name/topic", "user_name/topic"),
+            // Characters git forbids in a ref.
+            ("has spaces", "has-spaces"),
+            ("a:b?c*d", "a-b-c-d"),
+            ("ref^name", "ref-name"),
+            ("a..b", "a-b"),
+            ("a@{b", "a-b"),
+            // Trimmed edges.
+            ("  hello  ", "hello"),
+            ("-leading", "leading"),
+            (".hidden", "hidden"),
+            ("/foo", "foo"),
+            ("foo/", "foo"),
+            // `.lock` is stripped per component, however many are stacked.
+            ("foo.lock", "foo"),
+            ("foo.lock/bar", "foo/bar"),
+            ("feat/release.lock/v2", "feat/release/v2"),
+            ("foo.lock.lock", "foo"),
+            ("feat/release.lock.lock/v2.lock.lock", "feat/release/v2"),
+            // Nothing usable, or a ref with a reserved meaning of its own.
+            ("", "session"),
+            ("@", "session"),
+            ("HEAD", "session"),
+        ] {
+            assert_eq!(git_sanitize_branch_name(input), want, "input {input:?}");
+        }
     }
 
     #[test]
-    #[serial_test::serial]
-    fn test_git_sanitize_branch_name_replaces_forbidden_chars() {
-        assert_eq!(git_sanitize_branch_name("has spaces"), "has-spaces");
-        assert_eq!(git_sanitize_branch_name("a:b?c*d"), "a-b-c-d");
-        assert_eq!(git_sanitize_branch_name("ref^name"), "ref-name");
-        assert_eq!(git_sanitize_branch_name("a..b"), "a-b");
-        assert_eq!(git_sanitize_branch_name("a@{b"), "a-b");
+    fn branch_name_from_title_cases() {
+        for (title, want) in [
+            // Git-hostile punctuation.
+            ("Fix: login @ mobile #42", "fix-login-mobile-42"),
+            ("feat/auth.refactor", "feat/auth-refactor"),
+            // Slashes are kept as path separators but never doubled or dangling.
+            ("jacob/feature-1", "jacob/feature-1"),
+            ("/leading", "leading"),
+            ("trailing/", "trailing"),
+            ("a//b", "a/b"),
+            ("a / b", "a/b"),
+            // Latin diacritics and ligatures fold to ASCII.
+            ("café fix", "cafe-fix"),
+            ("naïve solution", "naive-solution"),
+            ("Straße", "strasse"),
+            ("Łódź", "lodz"),
+            ("crème brûlée", "creme-brulee"),
+            ("œuvre", "oeuvre"),
+            // Scripts with no ASCII folding drop out.
+            ("测试", "session"),
+            ("🚀 ship", "ship"),
+        ] {
+            assert_eq!(branch_name_from_title(title), want, "title {title:?}");
+        }
     }
 
     #[test]
-    fn test_git_sanitize_branch_name_trims_edges() {
-        assert_eq!(git_sanitize_branch_name("  hello  "), "hello");
-        assert_eq!(git_sanitize_branch_name("-leading"), "leading");
-        assert_eq!(git_sanitize_branch_name(".hidden"), "hidden");
-        assert_eq!(git_sanitize_branch_name("/foo"), "foo");
-        assert_eq!(git_sanitize_branch_name("foo/"), "foo");
-        assert_eq!(git_sanitize_branch_name("foo.lock"), "foo");
-        assert_eq!(git_sanitize_branch_name(""), "session");
-    }
-
-    #[test]
-    fn test_git_sanitize_branch_name_strips_interior_lock_suffix() {
-        assert_eq!(git_sanitize_branch_name("foo.lock/bar"), "foo/bar");
-        assert_eq!(
-            git_sanitize_branch_name("feat/release.lock/v2"),
-            "feat/release/v2"
-        );
-        assert_eq!(git_sanitize_branch_name("foo.lock.lock"), "foo");
-        assert_eq!(
-            git_sanitize_branch_name("feat/release.lock.lock/v2.lock.lock"),
-            "feat/release/v2"
-        );
-    }
-
-    #[test]
-    fn test_git_sanitize_branch_name_rejects_special_complete_refs() {
-        assert_eq!(git_sanitize_branch_name("@"), "session");
-        assert_eq!(git_sanitize_branch_name("HEAD"), "session");
-    }
-
-    #[test]
-    fn test_worktree_branch_disabled_without_worktree() {
-        assert!(resolve_worktree_branch(false, Some("feat/auth"), "Fix Login Flow").is_none());
-    }
-
-    #[test]
-    fn test_branch_name_from_title_sanitizes_git_hostile_chars() {
-        assert_eq!(
-            branch_name_from_title("Fix: login @ mobile #42"),
-            "fix-login-mobile-42"
-        );
-        assert_eq!(
-            branch_name_from_title("feat/auth.refactor"),
-            "feat/auth-refactor"
-        );
-    }
-
-    #[test]
-    fn test_branch_name_from_title_preserves_slashes() {
-        assert_eq!(branch_name_from_title("jacob/feature-1"), "jacob/feature-1");
-        assert_eq!(branch_name_from_title("/leading"), "leading");
-        assert_eq!(branch_name_from_title("trailing/"), "trailing");
-        assert_eq!(branch_name_from_title("a//b"), "a/b");
-        assert_eq!(branch_name_from_title("a / b"), "a/b");
-    }
-
-    #[test]
-    fn test_branch_name_from_title_folds_latin_diacritics() {
-        assert_eq!(branch_name_from_title("café fix"), "cafe-fix");
-        assert_eq!(branch_name_from_title("naïve solution"), "naive-solution");
-        assert_eq!(branch_name_from_title("Straße"), "strasse");
-        assert_eq!(branch_name_from_title("Łódź"), "lodz");
-        assert_eq!(branch_name_from_title("crème brûlée"), "creme-brulee");
-        assert_eq!(branch_name_from_title("œuvre"), "oeuvre");
-    }
-
-    #[test]
-    fn test_branch_name_from_title_drops_unsupported_scripts() {
-        assert_eq!(branch_name_from_title("测试"), "session");
-        assert_eq!(branch_name_from_title("🚀 ship"), "ship");
-    }
-
-    #[test]
-    fn test_dedupe_branch_name_returns_base_when_free() {
-        let taken = std::collections::HashSet::new();
-        assert_eq!(dedupe_branch_name("fix-bug", &taken), "fix-bug");
-    }
-
-    #[test]
-    fn test_dedupe_branch_name_appends_suffix_on_collision() {
+    fn dedupe_branch_name_suffixes_past_every_taken_name() {
         let mut taken = HashSet::new();
+        assert_eq!(dedupe_branch_name("fix-bug", &taken), "fix-bug");
+
         taken.insert("fix-bug".to_string());
         assert_eq!(dedupe_branch_name("fix-bug", &taken), "fix-bug-2");
 
-        taken.insert("fix-bug-2".to_string());
-        taken.insert("fix-bug-3".to_string());
+        taken.extend(["fix-bug-2".to_string(), "fix-bug-3".to_string()]);
         assert_eq!(dedupe_branch_name("fix-bug", &taken), "fix-bug-4");
-    }
 
-    #[test]
-    fn test_dedupe_branch_name_matches_case_insensitively() {
-        let mut taken = HashSet::new();
         taken.insert("Tatars".to_string());
-
-        assert_eq!(dedupe_branch_name("tatars", &taken), "tatars-2");
+        assert_eq!(
+            dedupe_branch_name("tatars", &taken),
+            "tatars-2",
+            "collisions are case-insensitive"
+        );
     }
 
     fn init_repo_with_commit(name: &str) -> tempfile::TempDir {

@@ -769,29 +769,20 @@ mod tests {
     }
 
     #[test]
-    fn not_expired_when_retention_zero() {
-        let inst = trashed_days_ago(9999);
-        assert!(!is_expired(&inst, 0, Utc::now()), "0 days = keep forever");
-    }
-
-    #[test]
-    fn not_expired_when_not_trashed() {
-        let inst = Instance::new("s", "/tmp/x");
-        assert!(!is_expired(&inst, 30, Utc::now()));
-    }
-
-    #[test]
-    fn expires_exactly_at_window() {
+    fn is_expired_cases() {
         let now = Utc::now();
-        let mut inst = Instance::new("s", "/tmp/x");
-        inst.trashed_at = Some(now - chrono::Duration::days(30));
-        assert!(
-            is_expired(&inst, 30, now),
-            "trashed >= retention => expired"
-        );
-
-        inst.trashed_at = Some(now - chrono::Duration::days(29));
-        assert!(!is_expired(&inst, 30, now), "still within window");
+        // (case, trashed days ago, retention days, expected)
+        let cases = [
+            ("retention 0 keeps forever", Some(9999), 0, false),
+            ("never trashed", None, 30, false),
+            ("at the retention window", Some(30), 30, true),
+            ("one day inside the window", Some(29), 30, false),
+        ];
+        for (case, trashed_days, retention, expected) in cases {
+            let mut inst = Instance::new("s", "/tmp/x");
+            inst.trashed_at = trashed_days.map(|days| now - chrono::Duration::days(days));
+            assert_eq!(is_expired(&inst, retention, now), expected, "{case}");
+        }
     }
 
     #[test]

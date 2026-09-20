@@ -1271,9 +1271,21 @@ mod tests {
         ];
         let nested_tree = GroupTree::new_with_groups(&nested, &[]);
         for (order, want_groups, want_children) in [
-            (SortOrder::Oldest, ["zebra", "apple", "Mango"], ["zeta", "alpha"]),
-            (SortOrder::AZ, ["apple", "Mango", "zebra"], ["alpha", "zeta"]),
-            (SortOrder::ZA, ["zebra", "Mango", "apple"], ["zeta", "alpha"]),
+            (
+                SortOrder::Oldest,
+                ["zebra", "apple", "Mango"],
+                ["zeta", "alpha"],
+            ),
+            (
+                SortOrder::AZ,
+                ["apple", "Mango", "zebra"],
+                ["alpha", "zeta"],
+            ),
+            (
+                SortOrder::ZA,
+                ["zebra", "Mango", "apple"],
+                ["zeta", "alpha"],
+            ),
         ] {
             let items = flatten_tree(&tree, &groups, order);
             assert_eq!(group_names(&items), want_groups, "{order:?}");
@@ -1282,7 +1294,11 @@ mod tests {
         }
 
         for group in ["", "work"] {
-            let sessions = vec![inst("Mango", group), inst("Apple", group), inst("Zebra", group)];
+            let sessions = vec![
+                inst("Mango", group),
+                inst("Apple", group),
+                inst("Zebra", group),
+            ];
             let tree = GroupTree::new_with_groups(&sessions, &[]);
             for (order, want) in [
                 (SortOrder::Oldest, ["Mango", "Apple", "Zebra"]),
@@ -1290,7 +1306,11 @@ mod tests {
                 (SortOrder::ZA, ["Zebra", "Mango", "Apple"]),
             ] {
                 let items = flatten_tree(&tree, &sessions, order);
-                assert_eq!(session_titles(&items, &sessions), want, "{group:?} {order:?}");
+                assert_eq!(
+                    session_titles(&items, &sessions),
+                    want,
+                    "{group:?} {order:?}"
+                );
             }
         }
     }
@@ -1345,7 +1365,11 @@ mod tests {
         snoozed.unarchive();
         snoozed.snoozed_until = Some(Utc::now() - Duration::seconds(1));
         assert!(!snoozed.is_snoozed() && snoozed.snooze_remaining().is_none());
-        assert_eq!(attention_tier(&snoozed), 0, "an expired snooze releases the tier");
+        assert_eq!(
+            attention_tier(&snoozed),
+            0,
+            "an expired snooze releases the tier"
+        );
         snoozed.snooze(30);
         snoozed.unsnooze();
         assert!(snoozed.snoozed_until.is_none());
@@ -1383,9 +1407,17 @@ mod tests {
         assert!(attention_rank(2, true, true) < attention_rank(1, false, true));
         assert!(attention_rank(2, true, true) < attention_rank(4, false, true));
         for tier in [0, 2, 4] {
-            assert_eq!(attention_rank(tier, true, false), tier, "indicator disabled");
+            assert_eq!(
+                attention_rank(tier, true, false),
+                tier,
+                "indicator disabled"
+            );
         }
-        assert_eq!(attention_rank(99, true, true), 99, "unread must not promote sunk rows");
+        assert_eq!(
+            attention_rank(99, true, true),
+            99,
+            "unread must not promote sunk rows"
+        );
         assert_eq!(attention_rank(99, false, true), 99);
     }
 
@@ -1430,7 +1462,10 @@ mod tests {
         let key = attention_group_key("work", None, &[active_read.clone(), archived_unread]);
         let baseline =
             attention_group_key("work", None, &[active_read, archived("o", Status::Idle)]);
-        assert_eq!(key.1, baseline.1, "an archived unread member must not promote");
+        assert_eq!(
+            key.1, baseline.1,
+            "an archived unread member must not promote"
+        );
 
         assert_eq!(attention_group_key("empty", Some(now), &[]).1, 99);
         assert_eq!(attention_group_key("empty", None, &[]).1, u8::MAX);
@@ -1464,7 +1499,11 @@ mod tests {
         archived.archive();
         assert!(!archived.is_favorited(), "archive clears the favorite");
         let key = attention_session_key(&archived);
-        assert_eq!((key.1, key.2), (99, true), "sunk tier without favorite bias");
+        assert_eq!(
+            (key.1, key.2),
+            (99, true),
+            "sunk tier without favorite bias"
+        );
     }
 
     #[test]
@@ -1477,7 +1516,10 @@ mod tests {
         let mut nested = inst("nested", "work/frontend");
         nested.favorite();
         assert!(has_live_favorite("work", std::slice::from_ref(&nested)));
-        assert!(!has_live_favorite("personal", std::slice::from_ref(&nested)));
+        assert!(!has_live_favorite(
+            "personal",
+            std::slice::from_ref(&nested)
+        ));
         assert!(!has_live_favorite("work", &[inst("plain", "work")]));
 
         fav.snooze(60);
@@ -1593,7 +1635,10 @@ mod tests {
         let mut inst = inst("t", "");
         inst.archive();
         inst.favorite();
-        assert!(inst.is_favorited() && !inst.is_archived(), "favorite clears archive");
+        assert!(
+            inst.is_favorited() && !inst.is_archived(),
+            "favorite clears archive"
+        );
         inst.snooze(30);
         inst.favorite();
         assert!(!inst.is_snoozed(), "favorite clears snooze");
@@ -1601,7 +1646,10 @@ mod tests {
         inst.snooze(30);
         inst.archived_at = Some(Utc::now());
         inst.touch_last_accessed();
-        assert!(!inst.is_archived() && !inst.is_snoozed(), "interaction wakes the session");
+        assert!(
+            !inst.is_archived() && !inst.is_snoozed(),
+            "interaction wakes the session"
+        );
         assert!(inst.is_favorited() && inst.last_accessed_at.is_some());
     }
 

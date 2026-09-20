@@ -1445,7 +1445,10 @@ mod tests {
         assert!(owned("/tmp/ws", &["/tmp/ws/backend", "/tmp/ws/frontend"]));
         // `workspace_dir` IS the user's checkout rather than a directory above it.
         assert!(!owned("/home/u/backend", &["/home/u/backend"]));
-        assert!(!owned("/tmp/ws", &["/tmp/ws/backend", "/elsewhere/frontend"]));
+        assert!(!owned(
+            "/tmp/ws",
+            &["/tmp/ws/backend", "/elsewhere/frontend"]
+        ));
         assert!(!owned("/tmp/ws", &[]));
     }
 
@@ -1669,7 +1672,11 @@ mod tests {
             };
             for _ in 0..2 {
                 let result = perform_deletion(&request);
-                assert!(result.success, "perform_deletion failed: {:?}", result.errors);
+                assert!(
+                    result.success,
+                    "perform_deletion failed: {:?}",
+                    result.errors
+                );
                 assert!(!worktree_path.exists());
                 assert!(!main_repo.join(".git/worktrees/worktree").exists());
                 assert!(!branch_exists(&main_repo, "feature/delete-me"));
@@ -1709,7 +1716,11 @@ mod tests {
                 ..request(instance)
             });
 
-            assert!(result.success, "deletion must still succeed: {:?}", result.errors);
+            assert!(
+                result.success,
+                "deletion must still succeed: {:?}",
+                result.errors
+            );
             assert!(
                 result
                     .messages
@@ -1791,7 +1802,11 @@ mod tests {
                     ..request(instance)
                 });
 
-                assert!(result.success, "a stray file must not wedge the purge: {:?}", result.errors);
+                assert!(
+                    result.success,
+                    "a stray file must not wedge the purge: {:?}",
+                    result.errors
+                );
                 assert!(
                     result
                         .messages
@@ -1802,7 +1817,11 @@ mod tests {
                 );
                 assert_eq!(std::fs::read_to_string(&stray).unwrap(), "keep me");
                 assert!(workspace.exists());
-                assert_eq!(worktree.exists(), corrupt_ancestor, "only a managed worktree goes");
+                assert_eq!(
+                    worktree.exists(),
+                    corrupt_ancestor,
+                    "only a managed worktree goes"
+                );
             }
         }
 
@@ -1831,7 +1850,11 @@ mod tests {
                 ..request(instance)
             });
 
-            assert!(result.success, "perform_deletion failed: {:?}", result.errors);
+            assert!(
+                result.success,
+                "perform_deletion failed: {:?}",
+                result.errors
+            );
             assert!(!worktree.exists(), "worktree should be removed");
             assert!(branch_exists(&main_repo, "mine"));
         }
@@ -1892,7 +1915,11 @@ mod tests {
                     delete_sandbox: false,
                     ..request
                 });
-                assert!(result.success, "force delete should succeed: {:?}", result.errors);
+                assert!(
+                    result.success,
+                    "force delete should succeed: {:?}",
+                    result.errors
+                );
                 assert_eq!(
                     stages.iter().any(|s| s == "sandbox_worktree_preclean"),
                     sandboxed
@@ -1935,7 +1962,11 @@ mod tests {
             );
 
             let result = perform_deletion(&request);
-            assert!(result.success, "missing scratch dir must not fail: {:?}", result.errors);
+            assert!(
+                result.success,
+                "missing scratch dir must not fail: {:?}",
+                result.errors
+            );
         }
 
         #[test]
@@ -1953,7 +1984,10 @@ mod tests {
 
             let survived = bystander.join("file.txt").exists();
             let _ = fs::remove_dir_all(&bystander);
-            assert!(survived, "guard must refuse a path outside the scratch root");
+            assert!(
+                survived,
+                "guard must refuse a path outside the scratch root"
+            );
             assert!(
                 result.errors.iter().any(|e| e.contains("scratch guard")),
                 "guard refusal must be reported, got: {:?}",
