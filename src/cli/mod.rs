@@ -175,39 +175,32 @@ mod tests {
     use crate::session::claim::purge_restored_row_must_be_kept;
 
     #[test]
-    fn truncate_id_shorter_than_max_returns_input() {
-        assert_eq!(truncate_id("abc", 8), "abc");
-    }
-
-    #[test]
-    fn truncate_id_equal_to_max_returns_input() {
-        assert_eq!(truncate_id("abcdefgh", 8), "abcdefgh");
-    }
-
-    #[test]
-    fn truncate_id_ascii_truncates_to_max_chars() {
-        assert_eq!(truncate_id("abcdefghij", 8), "abcdefgh");
-    }
-
-    #[test]
-    fn truncate_id_multibyte_does_not_panic_and_respects_char_boundary() {
-        assert_eq!(truncate_id("café", 3), "caf");
-        assert_eq!(truncate_id("café", 4), "café");
-        assert_eq!(truncate_id("café", 10), "café");
-    }
-
-    #[test]
-    fn truncate_id_zero_max_returns_empty() {
-        assert_eq!(truncate_id("abc", 0), "");
-        assert_eq!(truncate_id("café", 0), "");
-    }
-
-    #[test]
-    fn patch_instance_exact_id_resolves_unambiguously() {
-        let mut v = vec![
-            Instance::new("first", "/tmp/a"),
-            Instance::new("second", "/tmp/b"),
+    fn truncate_id_clamps_to_char_boundaries() {
+        let cases = [
+            ("abc", 8, "abc"),
+            ("abcdefgh", 8, "abcdefgh"),
+            ("abcdefghij", 8, "abcdefgh"),
+            ("café", 3, "caf"),
+            ("café", 4, "café"),
+            ("café", 10, "café"),
+            ("abc", 0, ""),
+            ("café", 0, ""),
         ];
+        for (input, max, expected) in cases {
+            assert_eq!(truncate_id(input, max), expected, "{input:?}/{max}");
+        }
+    }
+
+    #[test]
+    fn patch_instance_resolves_by_id_or_title_and_rejects_an_ambiguous_prefix() {
+        let rows = || {
+            vec![
+                Instance::new("alpha", "/tmp/a"),
+                Instance::new("beta", "/tmp/b"),
+            ]
+        };
+
+        let mut v = rows();
         let target_id = v[1].id.clone();
         patch_instance(&mut v, &target_id, |i| {
             i.title = "hit".to_string();
@@ -215,15 +208,17 @@ mod tests {
         })
         .unwrap();
         assert_eq!(v[1].title, "hit");
-        assert_eq!(v[0].title, "first");
-    }
+        assert_eq!(v[0].title, "alpha", "the other row is untouched");
 
-    #[test]
-    fn patch_instance_rejects_ambiguous_prefix() {
-        let mut v = vec![
-            Instance::new("first", "/tmp/a"),
-            Instance::new("second", "/tmp/b"),
-        ];
+        let mut v = rows();
+        patch_instance(&mut v, "beta", |i| {
+            i.title = "renamed".to_string();
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(v[1].title, "renamed");
+
+        let mut v = rows();
         v[0].id = "abcdef-1".to_string();
         v[1].id = "abcdef-2".to_string();
         let err = patch_instance(&mut v, "abcdef", |_| Ok(())).unwrap_err();
@@ -231,20 +226,6 @@ mod tests {
             err.to_string().contains("Ambiguous"),
             "expected ambiguity error, got: {err}"
         );
-    }
-
-    #[test]
-    fn patch_instance_resolves_by_title() {
-        let mut v = vec![
-            Instance::new("alpha", "/tmp/a"),
-            Instance::new("beta", "/tmp/b"),
-        ];
-        patch_instance(&mut v, "beta", |i| {
-            i.title = "renamed".to_string();
-            Ok(())
-        })
-        .unwrap();
-        assert_eq!(v[1].title, "renamed");
     }
 
     #[test]
