@@ -310,27 +310,34 @@ impl ContainerRuntime {
         (!wd.is_empty()).then_some(wd)
     }
 
-    pub fn sandbox_store_generation_matches(&self, name: &str) -> Result<Option<bool>> {
+    /// `Ok(None)` means the runtime carries no labels, so the caller cannot tell.
+    fn label_matches(
+        &self,
+        name: &str,
+        key: &str,
+        predicate: impl FnOnce(Option<&str>) -> bool,
+    ) -> Result<Option<bool>> {
         if !self.base.supports_labels {
             return Ok(None);
         }
-        Ok(Some(
-            self.inspect_container_label(name, "com.agent-of-empires.sandbox-store-generation")?
-                .is_some_and(|value| value == "2"),
-        ))
+        let value = self.inspect_container_label(name, key)?;
+        Ok(Some(predicate(value.as_deref())))
+    }
+
+    pub fn sandbox_store_generation_matches(&self, name: &str) -> Result<Option<bool>> {
+        self.label_matches(
+            name,
+            "com.agent-of-empires.sandbox-store-generation",
+            |value| value == Some("2"),
+        )
     }
 
     pub fn agent_tool_matches(&self, name: &str, identity: &str) -> Result<Option<bool>> {
-        if !self.base.supports_labels {
-            return Ok(None);
-        }
-        Ok(Some(
-            self.inspect_container_label(
-                name,
-                crate::containers::container_interface::AGENT_TOOL_LABEL,
-            )?
-            .is_none_or(|value| value == identity),
-        ))
+        self.label_matches(
+            name,
+            crate::containers::container_interface::AGENT_TOOL_LABEL,
+            |value| value.is_none_or(|value| value == identity),
+        )
     }
 
     pub fn shared_credential_mounts_match(
@@ -341,40 +348,26 @@ impl ContainerRuntime {
         if config.shared_credential_mounts.is_empty() {
             return Ok(Some(true));
         }
-        if !self.base.supports_labels {
-            return Ok(None);
-        }
         let expected = config.shared_credential_label();
-        Ok(Some(
-            self.inspect_container_label(
-                name,
-                crate::containers::container_interface::SHARED_CREDENTIAL_MOUNTS_LABEL,
-            )?
-            .is_some_and(|value| value == expected),
-        ))
+        self.label_matches(
+            name,
+            crate::containers::container_interface::SHARED_CREDENTIAL_MOUNTS_LABEL,
+            |value| value == Some(expected.as_str()),
+        )
     }
 
     pub fn carries_shared_credential_label(&self, name: &str) -> Result<Option<bool>> {
-        if !self.base.supports_labels {
-            return Ok(None);
-        }
-        Ok(Some(
-            self.inspect_container_label(
-                name,
-                crate::containers::container_interface::SHARED_CREDENTIAL_MOUNTS_LABEL,
-            )?
-            .is_some(),
-        ))
+        self.label_matches(
+            name,
+            crate::containers::container_interface::SHARED_CREDENTIAL_MOUNTS_LABEL,
+            |value| value.is_some(),
+        )
     }
 
     pub fn mount_fingerprint_matches(&self, name: &str, expected: &str) -> Result<Option<bool>> {
-        if !self.base.supports_labels {
-            return Ok(None);
-        }
-        Ok(Some(
-            self.inspect_container_label(name, "com.agent-of-empires.mount-fingerprint")?
-                .is_some_and(|value| value == expected),
-        ))
+        self.label_matches(name, "com.agent-of-empires.mount-fingerprint", |value| {
+            value == Some(expected)
+        })
     }
 
     pub fn build_create_args(
@@ -646,92 +639,35 @@ mod tests {
         }
     }
 
-    fn docker_if_available() -> Option<ContainerRuntime> {
-        let rt = ContainerRuntime::docker();
-        if !rt.is_available() || !rt.is_daemon_running() {
-            None
-        } else {
-            Some(rt)
-        }
+    /// Every runtime installed and running on this host; empty in most CI images.
+    fn available_runtimes() -> Vec<ContainerRuntime> {
+        [
+            ContainerRuntime::docker(),
+            ContainerRuntime::apple_container(),
+            ContainerRuntime::podman(),
+        ]
+        .into_iter()
+        .filter(|rt| rt.is_available() && rt.is_daemon_running())
+        .collect()
     }
 
-    fn apple_container_if_available() -> Option<ContainerRuntime> {
-        let rt = ContainerRuntime::apple_container();
-        if !rt.is_available() || !rt.is_daemon_running() {
-            None
-        } else {
-            Some(rt)
-        }
-    }
-
-    fn podman_if_available() -> Option<ContainerRuntime> {
-        let rt = ContainerRuntime::podman();
-        if !rt.is_available() || !rt.is_daemon_running() {
-            None
-        } else {
-            Some(rt)
-        }
-    }
+    const MISSING_IMAGE: &str = "nonexistent-image-that-does-not-exist:v999";
 
     #[test]
     #[ignore = "pulls hello-world from a live registry; run with --ignored"]
-    fn test_image_exists_locally_with_common_image() {
-        for rt in [
-            docker_if_available(),
-            apple_container_if_available(),
-            podman_if_available(),
-        ]
-        .into_iter()
-        .flatten()
-        {
+    fn image_exists_locally_and_ensure_image_accept_a_pulled_image() {
+        for rt in available_runtimes() {
             rt.pull_image("hello-world").unwrap();
             assert!(rt.image_exists_locally("hello-world"));
-        }
-    }
-
-    #[test]
-    fn test_image_exists_locally_nonexistent() {
-        for rt in [
-            docker_if_available(),
-            apple_container_if_available(),
-            podman_if_available(),
-        ]
-        .into_iter()
-        .flatten()
-        {
-            assert!(!rt.image_exists_locally("nonexistent-image-that-does-not-exist:v999"));
-        }
-    }
-
-    #[test]
-    #[ignore = "pulls hello-world from a live registry; run with --ignored"]
-    fn test_ensure_image_uses_local_image() {
-        for rt in [
-            docker_if_available(),
-            apple_container_if_available(),
-            podman_if_available(),
-        ]
-        .into_iter()
-        .flatten()
-        {
-            rt.pull_image("hello-world").unwrap();
             assert!(rt.ensure_image("hello-world").is_ok());
         }
     }
 
     #[test]
-    fn test_ensure_image_fails_for_nonexistent_remote() {
-        for rt in [
-            docker_if_available(),
-            apple_container_if_available(),
-            podman_if_available(),
-        ]
-        .into_iter()
-        .flatten()
-        {
-            assert!(rt
-                .ensure_image("nonexistent-image-that-does-not-exist:v999")
-                .is_err());
+    fn image_exists_locally_and_ensure_image_reject_a_missing_image() {
+        for rt in available_runtimes() {
+            assert!(!rt.image_exists_locally(MISSING_IMAGE));
+            assert!(rt.ensure_image(MISSING_IMAGE).is_err());
         }
     }
 
@@ -812,28 +748,20 @@ mod tests {
     }
 
     #[test]
-    fn test_podman_runtime_uses_podman_binary() {
+    fn podman_runtime_matches_the_docker_compatible_surface() {
         let rt = ContainerRuntime::podman();
         assert_eq!(rt.kind, RuntimeKind::Podman);
         assert_eq!(rt.base.binary, "podman");
         assert_eq!(rt.base.name, "Podman");
-    }
-
-    #[test]
-    fn test_podman_supports_docker_compatible_features() {
-        let rt = ContainerRuntime::podman();
         assert!(rt.base.supports_read_only_volumes);
         assert!(rt.base.supports_remove_volumes);
         assert!(rt.base.supports_named_volumes);
         assert_eq!(rt.base.remove_subcommand, "rm");
         assert_eq!(rt.base.pull_prefix, &["pull"]);
-    }
-
-    #[test]
-    fn test_podman_exec_command_format_matches_docker() {
-        let rt = ContainerRuntime::podman();
-        let cmd = rt.exec_command("aoe-sandbox-test1234", None, "claude");
-        assert_eq!(cmd, "podman exec -it aoe-sandbox-test1234 claude");
+        assert_eq!(
+            rt.exec_command("aoe-sandbox-test1234", None, "claude"),
+            "podman exec -it aoe-sandbox-test1234 claude"
+        );
     }
 
     #[test]

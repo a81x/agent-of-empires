@@ -261,28 +261,26 @@ mod tests {
     use super::*;
     use tempfile::TempDir;
 
-    // On non-Unix `is_pid_alive` returns false.
-    #[cfg(unix)]
     #[test]
-    fn is_pid_alive_self() {
+    fn is_pid_alive_separates_this_process_from_an_unused_pid() {
+        // On non-Unix `is_pid_alive` always returns false.
+        #[cfg(unix)]
         assert!(is_pid_alive(std::process::id()));
-    }
-
-    #[test]
-    fn is_pid_alive_unlikely_pid() {
         assert!(!is_pid_alive(2_000_000_000));
     }
 
     #[test]
-    fn validate_id_accepts_uuids_and_test_ids() {
-        assert!(validate_id("550e8400-e29b-41d4-a716-446655440000").is_ok());
-        assert!(validate_id("test_session_42").is_ok());
-        assert!(validate_id("a").is_ok());
-        assert!(validate_id("Z-0").is_ok());
-    }
-
-    #[test]
-    fn validate_id_rejects_path_traversal_and_separators() {
+    fn validate_id_accepts_ids_and_rejects_path_shapes() {
+        for ok in [
+            // The production session_id shape.
+            "550e8400-e29b-41d4-a716-446655440000",
+            "test_session_42",
+            "a",
+            "Z-0",
+            &"a".repeat(128),
+        ] {
+            assert!(validate_id(ok).is_ok(), "expected {ok:?} to pass");
+        }
         for bad in [
             "",
             "..",
@@ -294,15 +292,10 @@ mod tests {
             "with\0null",
             "trailing.",
             "good-then/../bad",
+            &"a".repeat(129),
         ] {
             assert!(validate_id(bad).is_err(), "expected rejection for {bad:?}");
         }
-    }
-
-    #[test]
-    fn validate_id_rejects_overlong() {
-        assert!(validate_id(&"a".repeat(129)).is_err());
-        assert!(validate_id(&"a".repeat(128)).is_ok());
     }
 
     #[test]

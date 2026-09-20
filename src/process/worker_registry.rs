@@ -538,23 +538,33 @@ mod tests {
         f();
     }
 
+    /// A minimal record; tests that care about other fields set them on the result.
+    fn new_record(session_id: &str, pid: u32, socket: impl Into<PathBuf>) -> WorkerRecord {
+        WorkerRecord::new(
+            session_id.into(),
+            pid,
+            socket.into(),
+            "aoe-agent".into(),
+            "aoe-agent".into(),
+            PathBuf::from("/repo"),
+            None,
+            vec![],
+            vec![],
+            None,
+            None,
+        )
+    }
+
     #[test]
     #[serial]
     fn roundtrip_save_load() {
         with_temp_home(|| {
-            let rec = WorkerRecord::new(
-                "sess-abc".into(),
-                42,
-                PathBuf::from("/tmp/sock"),
-                "claude-agent-acp".into(),
-                "claude".into(),
-                PathBuf::from("/repo"),
-                Some("claude-opus-4-7".into()),
-                vec![],
-                vec!["ANTHROPIC_API_KEY".into()],
-                None,
-                Some("personal".into()),
-            );
+            let mut rec = new_record("sess-abc", 42, "/tmp/sock");
+            rec.agent_name = "claude-agent-acp".into();
+            rec.agent_key = "claude".into();
+            rec.model = Some("claude-opus-4-7".into());
+            rec.provider_env_keys = vec!["ANTHROPIC_API_KEY".into()];
+            rec.source_profile = Some("personal".into());
             save(&rec).unwrap();
             let loaded = load("sess-abc").unwrap().unwrap();
             assert_eq!(loaded.session_id, "sess-abc");
@@ -569,19 +579,7 @@ mod tests {
     #[serial]
     fn build_version_stamped_and_current() {
         with_temp_home(|| {
-            let rec = WorkerRecord::new(
-                "sess-bv".into(),
-                1,
-                PathBuf::from("/tmp/sess-bv.sock"),
-                "aoe-agent".into(),
-                "aoe-agent".into(),
-                PathBuf::from("/repo"),
-                None,
-                vec![],
-                vec![],
-                None,
-                None,
-            );
+            let rec = new_record("sess-bv", 1, "/tmp/sess-bv.sock");
             assert_eq!(rec.build_version, crate::build_info::BUILD_VERSION);
             assert!(is_build_current(&rec));
 
@@ -599,96 +597,47 @@ mod tests {
 
     #[test]
     #[serial]
-    fn load_legacy_record_without_build_version() {
+    fn load_fills_defaults_for_fields_legacy_records_lack() {
         with_temp_home(|| {
-            let dir = workers_dir().unwrap();
-            let legacy = serde_json::json!({
-                "runner_version": RUNNER_VERSION,
-                "session_id": "legacy-bv-1",
-                "pid": 7,
-                "socket_path": "/tmp/legacy-bv.sock",
-                "agent_name": "claude-agent-acp",
-                "agent_key": "claude",
-                "cwd": "/repo",
-                "model": null,
-                "additional_dirs": [],
-                "provider_env_keys": [],
-                "stored_acp_session_id": null,
-                "source_profile": null,
-                "started_at": 0,
-                "last_attached_at": null,
-                "detached_at": null
-            });
-            std::fs::write(
-                dir.join("legacy-bv-1.json"),
-                serde_json::to_string(&legacy).unwrap(),
-            )
-            .unwrap();
-            let loaded = load("legacy-bv-1").unwrap().unwrap();
-            assert_eq!(loaded.build_version, "");
-            assert!(!is_build_current(&loaded));
-        });
-    }
-
-    #[test]
-    #[serial]
-    fn load_legacy_record_without_agent_key() {
-        with_temp_home(|| {
-            let dir = workers_dir().unwrap();
-            let legacy = serde_json::json!({
-                "runner_version": RUNNER_VERSION,
-                "session_id": "legacy-1",
-                "pid": 99,
-                "socket_path": "/tmp/legacy.sock",
-                "agent_name": "claude-agent-acp",
-                "cwd": "/repo",
-                "model": null,
-                "additional_dirs": [],
-                "provider_env_keys": [],
-                "stored_acp_session_id": null,
-                "started_at": 0,
-                "last_attached_at": null,
-                "detached_at": null
-            });
-            std::fs::write(
-                dir.join("legacy-1.json"),
-                serde_json::to_string(&legacy).unwrap(),
-            )
-            .unwrap();
-            let loaded = load("legacy-1").unwrap().unwrap();
-            assert_eq!(loaded.agent_name, "claude-agent-acp");
-            assert_eq!(loaded.agent_key, "");
-        });
-    }
-
-    #[test]
-    #[serial]
-    fn load_legacy_record_without_source_profile() {
-        with_temp_home(|| {
-            let dir = workers_dir().unwrap();
-            let legacy = serde_json::json!({
-                "runner_version": RUNNER_VERSION,
-                "session_id": "legacy-sp-1",
-                "pid": 7,
-                "socket_path": "/tmp/legacy-sp.sock",
-                "agent_name": "claude-agent-acp",
-                "agent_key": "claude",
-                "cwd": "/repo",
-                "model": null,
-                "additional_dirs": [],
-                "provider_env_keys": [],
-                "stored_acp_session_id": null,
-                "started_at": 0,
-                "last_attached_at": null,
-                "detached_at": null
-            });
-            std::fs::write(
-                dir.join("legacy-sp-1.json"),
-                serde_json::to_string(&legacy).unwrap(),
-            )
-            .unwrap();
-            let loaded = load("legacy-sp-1").unwrap().unwrap();
-            assert_eq!(loaded.source_profile, None);
+            let cases: [(&str, &[&str], fn(&WorkerRecord)); 3] = [
+                ("legacy-bv", &["build_version"], |rec| {
+                    assert_eq!(rec.build_version, "");
+                    assert!(!is_build_current(rec));
+                }),
+                ("legacy-ak", &["agent_key"], |rec| {
+                    assert_eq!(rec.agent_name, "claude-agent-acp");
+                    assert_eq!(rec.agent_key, "");
+                }),
+                ("legacy-sp", &["source_profile"], |rec| {
+                    assert_eq!(rec.source_profile, None);
+                }),
+            ];
+            for (session_id, dropped, check) in cases {
+                let mut legacy = serde_json::json!({
+                    "runner_version": RUNNER_VERSION,
+                    "build_version": crate::build_info::BUILD_VERSION,
+                    "session_id": session_id,
+                    "pid": 7,
+                    "socket_path": format!("/tmp/{session_id}.sock"),
+                    "agent_name": "claude-agent-acp",
+                    "agent_key": "claude",
+                    "cwd": "/repo",
+                    "model": null,
+                    "additional_dirs": [],
+                    "provider_env_keys": [],
+                    "stored_acp_session_id": null,
+                    "source_profile": null,
+                    "started_at": 0,
+                    "last_attached_at": null,
+                    "detached_at": null
+                });
+                for field in dropped {
+                    legacy.as_object_mut().unwrap().remove(*field);
+                }
+                let path = workers_dir().unwrap().join(format!("{session_id}.json"));
+                std::fs::write(&path, serde_json::to_string(&legacy).unwrap()).unwrap();
+                check(&load(session_id).unwrap().unwrap());
+            }
         });
     }
 
@@ -696,19 +645,8 @@ mod tests {
     #[serial]
     fn source_profile_roundtrips() {
         with_temp_home(|| {
-            let rec = WorkerRecord::new(
-                "sess-sp".into(),
-                1,
-                PathBuf::from("/tmp/sess-sp.sock"),
-                "aoe-agent".into(),
-                "aoe-agent".into(),
-                PathBuf::from("/repo"),
-                None,
-                vec![],
-                vec![],
-                None,
-                Some("personal".into()),
-            );
+            let mut rec = new_record("sess-sp", 1, "/tmp/sess-sp.sock");
+            rec.source_profile = Some("personal".into());
             save(&rec).unwrap();
             let loaded = load("sess-sp").unwrap().unwrap();
             assert_eq!(loaded.source_profile.as_deref(), Some("personal"));
@@ -719,19 +657,8 @@ mod tests {
     #[serial]
     fn empty_stored_acp_session_id_is_rejected_without_data_loss() {
         with_temp_home(|| {
-            let rec = WorkerRecord::new(
-                "sess-empty-acp".into(),
-                1,
-                PathBuf::from("/tmp/sess-empty-acp.sock"),
-                "aoe-agent".into(),
-                "aoe-agent".into(),
-                PathBuf::from("/repo"),
-                None,
-                vec![],
-                vec![],
-                Some("initial-acp".into()),
-                None,
-            );
+            let mut rec = new_record("sess-empty-acp", 1, "/tmp/sess-empty-acp.sock");
+            rec.stored_acp_session_id = Some("initial-acp".into());
             save(&rec).unwrap();
             let error = update_stored_acp_session_id("sess-empty-acp", 1, "")
                 .expect_err("empty session ids are invalid");
@@ -748,19 +675,7 @@ mod tests {
             let dir = workers_dir().unwrap();
             std::fs::write(dir.join("not-json.json"), b"this isn't json").unwrap();
             std::fs::write(dir.join("ignored.txt"), b"{}").unwrap();
-            let rec = WorkerRecord::new(
-                "live".into(),
-                1,
-                PathBuf::from("/tmp/sock-live"),
-                "aoe-agent".into(),
-                "aoe-agent".into(),
-                PathBuf::from("/repo"),
-                None,
-                vec![],
-                vec![],
-                None,
-                None,
-            );
+            let rec = new_record("live", 1, "/tmp/sock-live");
             save(&rec).unwrap();
             let all = list().unwrap();
             assert_eq!(all.len(), 1);
@@ -775,19 +690,7 @@ mod tests {
             let dir = workers_dir().unwrap();
             let socket = dir.join("sess.sock");
             touch_live_socket(&socket);
-            let rec = WorkerRecord::new(
-                "sess".into(),
-                1,
-                socket.clone(),
-                "aoe-agent".into(),
-                "aoe-agent".into(),
-                PathBuf::from("/repo"),
-                None,
-                vec![],
-                vec![],
-                None,
-                None,
-            );
+            let rec = new_record("sess", 1, socket.clone());
             save(&rec).unwrap();
             let control = crate::process::worker::control_socket_sibling(&socket);
             assert!(record_path("sess").unwrap().exists());
@@ -806,19 +709,7 @@ mod tests {
             let socket = socket_path_for(session_id).unwrap();
             touch_live_socket(&socket);
             let replacement_control = crate::process::worker::control_socket_sibling(&socket);
-            let mut record = WorkerRecord::new(
-                session_id.into(),
-                111,
-                socket,
-                "aoe-agent".into(),
-                "aoe-agent".into(),
-                PathBuf::from("/repo"),
-                None,
-                vec![],
-                vec![],
-                None,
-                None,
-            );
+            let mut record = new_record(session_id, 111, socket);
             save(&record).unwrap();
             record.pid = 222;
             save(&record).unwrap();
@@ -859,19 +750,7 @@ mod tests {
     #[serial]
     fn mark_attached_clears_detached() {
         with_temp_home(|| {
-            let mut rec = WorkerRecord::new(
-                "x".into(),
-                1,
-                PathBuf::from("/tmp/x.sock"),
-                "aoe-agent".into(),
-                "aoe-agent".into(),
-                PathBuf::from("/repo"),
-                None,
-                vec![],
-                vec![],
-                None,
-                None,
-            );
+            let mut rec = new_record("x", 1, "/tmp/x.sock");
             rec.detached_at = Some(100);
             save(&rec).unwrap();
             mark_attached("x", 1);
@@ -893,19 +772,7 @@ mod tests {
     #[serial]
     fn terminate_deletes_entry_for_dead_pid() {
         with_temp_home(|| {
-            let rec = WorkerRecord::new(
-                "term-dead".into(),
-                2_000_000_000,
-                PathBuf::from("/tmp/term-dead.sock"),
-                "aoe-agent".into(),
-                "aoe-agent".into(),
-                PathBuf::from("/repo"),
-                None,
-                vec![],
-                vec![],
-                None,
-                None,
-            );
+            let rec = new_record("term-dead", 2_000_000_000, "/tmp/term-dead.sock");
             save(&rec).unwrap();
             assert!(record_path("term-dead").unwrap().exists());
             terminate("term-dead");
@@ -930,19 +797,7 @@ mod tests {
             let dir = workers_dir().unwrap();
             let sock = dir.join("v1sess.sock");
             std::fs::write(&sock, b"").unwrap();
-            let mut rec = WorkerRecord::new(
-                "v1sess".into(),
-                victim.0.id(),
-                sock.clone(),
-                "aoe-agent".into(),
-                "aoe-agent".into(),
-                PathBuf::from("/repo"),
-                None,
-                vec![],
-                vec![],
-                None,
-                None,
-            );
+            let mut rec = new_record("v1sess", victim.0.id(), sock.clone());
             rec.runner_version = 1;
             save(&rec).unwrap();
 
@@ -983,19 +838,7 @@ mod tests {
 
     #[test]
     fn worker_state_ladder() {
-        let mut rec = WorkerRecord::new(
-            "s".into(),
-            1,
-            PathBuf::from("/tmp/s.sock"),
-            "claude-agent-acp".into(),
-            "claude".into(),
-            PathBuf::from("/repo"),
-            None,
-            vec![],
-            vec![],
-            None,
-            None,
-        );
+        let mut rec = new_record("s", 1, "/tmp/s.sock");
         assert_eq!(worker_state_label(&rec, false), "dead");
         assert_eq!(worker_state_label(&rec, true), "attached");
         rec.detached_at = Some(100);
@@ -1005,57 +848,6 @@ mod tests {
         assert_eq!(worker_state_label(&rec, true), "attached");
         rec.last_attached_at = None;
         assert_eq!(worker_state_label(&rec, true), "detached");
-    }
-
-    #[test]
-    fn is_pid_alive_self() {
-        let pid = std::process::id();
-        assert!(is_pid_alive(pid));
-    }
-
-    #[test]
-    fn is_pid_alive_unlikely_pid() {
-        assert!(!is_pid_alive(2_000_000_000));
-    }
-
-    #[test]
-    fn validate_session_id_accepts_uuids_and_test_ids() {
-        assert!(
-            validate_session_id("550e8400-e29b-41d4-a716-446655440000").is_ok(),
-            "must accept UUID v4 (the production session_id shape)"
-        );
-        assert!(validate_session_id("test_session_42").is_ok());
-        assert!(validate_session_id("a").is_ok());
-        assert!(validate_session_id("Z-0").is_ok());
-    }
-
-    #[test]
-    fn validate_session_id_rejects_path_traversal_and_separators() {
-        for bad in [
-            "",
-            "..",
-            "../../etc/passwd",
-            "foo/bar",
-            "foo\\bar",
-            ".hidden",
-            "with space",
-            "with\0null",
-            "trailing.",
-            "good-then/../bad",
-        ] {
-            assert!(
-                validate_session_id(bad).is_err(),
-                "expected rejection for {bad:?}"
-            );
-        }
-    }
-
-    #[test]
-    fn validate_session_id_rejects_overlong() {
-        let long = "a".repeat(129);
-        assert!(validate_session_id(&long).is_err());
-        let ok = "a".repeat(128);
-        assert!(validate_session_id(&ok).is_ok());
     }
 
     #[test]
@@ -1070,19 +862,7 @@ mod tests {
     #[serial]
     fn pid_source_for_prefers_record_pid_when_load_ok_some() {
         with_temp_home(|| {
-            let rec = WorkerRecord::new(
-                "sess-ok-some".into(),
-                4242,
-                PathBuf::from("/tmp/unused"),
-                "claude-agent-acp".into(),
-                "claude".into(),
-                PathBuf::from("/repo"),
-                None,
-                vec![],
-                vec![],
-                None,
-                None,
-            );
+            let rec = new_record("sess-ok-some", 4242, "/tmp/unused");
             save(&rec).unwrap();
             assert_eq!(pid_source_for("sess-ok-some"), Some(4242));
         });
@@ -1102,19 +882,7 @@ mod tests {
     fn pid_source_for_falls_back_to_control_socket_on_load_err() {
         with_temp_home(|| {
             let session_id = "sess-load-err";
-            let rec = WorkerRecord::new(
-                session_id.into(),
-                4242,
-                socket_path_for(session_id).unwrap(),
-                "claude-agent-acp".into(),
-                "claude".into(),
-                PathBuf::from("/repo"),
-                None,
-                vec![],
-                vec![],
-                None,
-                None,
-            );
+            let rec = new_record(session_id, 4242, socket_path_for(session_id).unwrap());
             save(&rec).unwrap();
             let rec_path = record_path(session_id).unwrap();
             // A directory keeps path.exists() true while std::fs::read fails, even for root.
@@ -1199,20 +967,7 @@ mod tests {
     fn delete_if_owned_by_leaves_a_replacement_record() {
         with_temp_home(|| {
             let socket = workers_dir().unwrap().join("g.sock");
-            let rec = WorkerRecord::new(
-                "g".into(),
-                41,
-                socket,
-                "claude-agent-acp".into(),
-                "claude".into(),
-                PathBuf::from("/repo"),
-                None,
-                vec![],
-                vec![],
-                None,
-                None,
-            )
-            .with_generation(3);
+            let rec = new_record("g", 41, socket).with_generation(3);
             save(&rec).unwrap();
             assert!(
                 delete_if_owned_by("g", 40, 3),

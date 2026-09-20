@@ -312,53 +312,42 @@ mod tests {
     use super::*;
 
     #[test]
-    fn classify_ok_is_removed() {
+    fn classify_removal_separates_gone_from_failed() {
         assert!(matches!(classify_removal(Ok(())), Teardown::Removed));
-    }
-
-    #[test]
-    fn classify_not_found_is_already_gone() {
-        let r = Err(error::DockerError::ContainerNotFound(
-            "aoe-sandbox-x".into(),
+        assert!(matches!(
+            classify_removal(Err(error::DockerError::ContainerNotFound(
+                "aoe-sandbox-x".into()
+            ))),
+            Teardown::AlreadyGone
         ));
-        assert!(matches!(classify_removal(r), Teardown::AlreadyGone));
+        assert!(matches!(
+            classify_removal(Err(error::DockerError::RemoveFailed("daemon busy".into()))),
+            Teardown::Failed(_)
+        ));
     }
 
     #[test]
-    fn classify_other_error_is_failed() {
-        let r = Err(error::DockerError::RemoveFailed("daemon busy".into()));
-        assert!(matches!(classify_removal(r), Teardown::Failed(_)));
-    }
-
-    #[test]
-    fn probe_ok_true_is_running() {
+    fn classify_running_probe_keeps_errors_out_of_the_running_answer() {
         assert!(matches!(classify_running_probe(Ok(true)), Probe::Running));
-    }
-
-    #[test]
-    fn probe_ok_false_is_not_running() {
         assert!(matches!(
             classify_running_probe(Ok(false)),
             Probe::NotRunning
         ));
+        assert!(matches!(
+            classify_running_probe(Err(error::DockerError::InspectFailed(
+                "inspect exit 1".into()
+            ))),
+            Probe::Unknown(_)
+        ));
     }
 
     #[test]
-    fn probe_err_is_unknown() {
-        let r = Err(error::DockerError::InspectFailed("inspect exit 1".into()));
-        assert!(matches!(classify_running_probe(r), Probe::Unknown(_)));
-    }
-
-    #[test]
-    fn test_container_generate_name_short_id() {
-        let name = DockerContainer::generate_name("abc");
-        assert_eq!(name, "aoe-sandbox-abc");
-    }
-
-    #[test]
-    fn test_container_generate_name_long_id() {
-        let name = DockerContainer::generate_name("abcdefghijklmnop");
-        assert_eq!(name, "aoe-sandbox-abcdefgh");
+    fn generate_name_prefixes_and_truncates_the_session_id() {
+        assert_eq!(DockerContainer::generate_name("abc"), "aoe-sandbox-abc");
+        assert_eq!(
+            DockerContainer::generate_name("abcdefghijklmnop"),
+            "aoe-sandbox-abcdefgh"
+        );
     }
 
     #[test]

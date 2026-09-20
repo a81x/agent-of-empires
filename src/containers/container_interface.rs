@@ -221,118 +221,66 @@ mod tests {
     }
 
     #[test]
-    fn docker_env_args_inherit_keeps_value_out_of_argv() {
-        let entries = vec![EnvEntry::Inherit {
-            key: "GH_TOKEN".to_string(),
-            value: "ghp_secret".to_string(),
-        }];
-        let (argv, inherit) = docker_env_args(&entries);
-        assert_eq!(argv, vec!["-e".to_string(), "GH_TOKEN".to_string()]);
-        assert_eq!(
-            inherit,
-            vec![("GH_TOKEN".to_string(), "ghp_secret".to_string())]
-        );
-        assert!(
-            !argv.iter().any(|a| a.contains("ghp_secret")),
-            "secret leaked into argv"
-        );
-    }
-
-    #[test]
-    fn docker_env_args_literal_emits_key_eq_value() {
-        let entries = vec![EnvEntry::Literal {
-            key: "TERM".to_string(),
-            value: "xterm-256color".to_string(),
-        }];
-        let (argv, inherit) = docker_env_args(&entries);
-        assert_eq!(
-            argv,
-            vec!["-e".to_string(), "TERM=xterm-256color".to_string()]
-        );
-        assert!(inherit.is_empty());
-    }
-
-    #[test]
-    fn docker_env_args_mixed_preserves_order() {
-        let entries = vec![
-            EnvEntry::Inherit {
-                key: "SECRET".to_string(),
-                value: "s3cr3t".to_string(),
-            },
-            EnvEntry::Literal {
-                key: "TERM".to_string(),
-                value: "xterm".to_string(),
-            },
-            EnvEntry::Inherit {
-                key: "TOKEN".to_string(),
-                value: "tok".to_string(),
-            },
+    fn docker_env_args_keeps_order_hides_inherited_values_and_takes_the_first_key() {
+        let inherit = |key: &str, value: &str| EnvEntry::Inherit {
+            key: key.to_string(),
+            value: value.to_string(),
+        };
+        let literal = |key: &str, value: &str| EnvEntry::Literal {
+            key: key.to_string(),
+            value: value.to_string(),
+        };
+        // (entries, expected argv, expected inherited pairs, values that must not reach argv)
+        let cases: [(Vec<EnvEntry>, &[&str], &[(&str, &str)], &[&str]); 5] = [
+            (
+                vec![inherit("GH_TOKEN", "ghp_secret")],
+                &["-e", "GH_TOKEN"],
+                &[("GH_TOKEN", "ghp_secret")],
+                &["ghp_secret"],
+            ),
+            (
+                vec![literal("TERM", "xterm-256color")],
+                &["-e", "TERM=xterm-256color"],
+                &[],
+                &[],
+            ),
+            (
+                vec![
+                    inherit("SECRET", "s3cr3t"),
+                    literal("TERM", "xterm"),
+                    inherit("TOKEN", "tok"),
+                ],
+                &["-e", "SECRET", "-e", "TERM=xterm", "-e", "TOKEN"],
+                &[("SECRET", "s3cr3t"), ("TOKEN", "tok")],
+                &["s3cr3t"],
+            ),
+            (vec![], &[], &[], &[]),
+            (
+                vec![
+                    inherit("GH_TOKEN", "ghp_first"),
+                    literal("GH_TOKEN", "literal_should_be_skipped"),
+                    inherit("OTHER", "kept"),
+                ],
+                &["-e", "GH_TOKEN", "-e", "OTHER"],
+                &[("GH_TOKEN", "ghp_first"), ("OTHER", "kept")],
+                &["literal_should_be_skipped"],
+            ),
         ];
-        let (argv, inherit) = docker_env_args(&entries);
-        assert_eq!(
-            argv,
-            vec![
-                "-e".to_string(),
-                "SECRET".to_string(),
-                "-e".to_string(),
-                "TERM=xterm".to_string(),
-                "-e".to_string(),
-                "TOKEN".to_string(),
-            ]
-        );
-        assert_eq!(
-            inherit,
-            vec![
-                ("SECRET".to_string(), "s3cr3t".to_string()),
-                ("TOKEN".to_string(), "tok".to_string()),
-            ]
-        );
-    }
-
-    #[test]
-    fn docker_env_args_empty() {
-        let (argv, inherit) = docker_env_args(&[]);
-        assert!(argv.is_empty());
-        assert!(inherit.is_empty());
-    }
-
-    #[test]
-    fn docker_env_args_dedupes_duplicate_keys_first_wins() {
-        let entries = vec![
-            EnvEntry::Inherit {
-                key: "GH_TOKEN".to_string(),
-                value: "ghp_first".to_string(),
-            },
-            EnvEntry::Literal {
-                key: "GH_TOKEN".to_string(),
-                value: "literal_should_be_skipped".to_string(),
-            },
-            EnvEntry::Inherit {
-                key: "OTHER".to_string(),
-                value: "kept".to_string(),
-            },
-        ];
-        let (argv, inherit) = docker_env_args(&entries);
-        assert_eq!(
-            argv,
-            vec![
-                "-e".to_string(),
-                "GH_TOKEN".to_string(),
-                "-e".to_string(),
-                "OTHER".to_string(),
-            ]
-        );
-        assert_eq!(
-            inherit,
-            vec![
-                ("GH_TOKEN".to_string(), "ghp_first".to_string()),
-                ("OTHER".to_string(), "kept".to_string()),
-            ]
-        );
-        assert!(
-            !argv.iter().any(|a| a.contains("literal_should_be_skipped")),
-            "duplicate key's value leaked into argv"
-        );
+        for (entries, expected_argv, expected_inherit, secrets) in cases {
+            let (argv, inherited) = docker_env_args(&entries);
+            assert_eq!(argv, expected_argv);
+            let expected_inherit: Vec<(String, String)> = expected_inherit
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect();
+            assert_eq!(inherited, expected_inherit);
+            for secret in secrets {
+                assert!(
+                    !argv.iter().any(|a| a.contains(secret)),
+                    "{secret} leaked into argv"
+                );
+            }
+        }
     }
 
     #[test]

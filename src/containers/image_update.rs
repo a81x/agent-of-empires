@@ -270,83 +270,74 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parses_ghcr_reference_with_tag() {
-        let r = RegistryRef::parse("ghcr.io/agent-of-empires/aoe-sandbox:latest").unwrap();
-        assert_eq!(r.host, "ghcr.io");
-        assert_eq!(r.repository, "agent-of-empires/aoe-sandbox");
-        assert_eq!(r.reference, "latest");
-        assert!(!r.pinned);
+    fn registry_ref_parse_splits_host_repository_and_reference() {
+        let cases = [
+            (
+                "ghcr.io/agent-of-empires/aoe-sandbox:latest",
+                "ghcr.io",
+                "agent-of-empires/aoe-sandbox",
+                "latest",
+                false,
+            ),
+            (
+                "ghcr.io/agent-of-empires/aoe-sandbox",
+                "ghcr.io",
+                "agent-of-empires/aoe-sandbox",
+                "latest",
+                false,
+            ),
+            (
+                "ubuntu:22.04",
+                "registry-1.docker.io",
+                "library/ubuntu",
+                "22.04",
+                false,
+            ),
+            (
+                "mozillaai/foo",
+                "registry-1.docker.io",
+                "mozillaai/foo",
+                "latest",
+                false,
+            ),
+            ("localhost:5000/team/img:dev", "localhost:5000", "team/img", "dev", false),
+            (
+                "ghcr.io/agent-of-empires/aoe-sandbox@sha256:abc123def4567890",
+                "ghcr.io",
+                "agent-of-empires/aoe-sandbox",
+                "sha256:abc123def4567890",
+                true,
+            ),
+        ];
+        for (raw, host, repository, reference, pinned) in cases {
+            let r = RegistryRef::parse(raw).unwrap_or_else(|| panic!("{raw} must parse"));
+            assert_eq!((r.host.as_str(), r.repository.as_str(), r.reference.as_str(), r.pinned),
+                (host, repository, reference, pinned), "{raw}");
+        }
+        for empty in ["", "   "] {
+            assert!(RegistryRef::parse(empty).is_none());
+        }
     }
 
     #[test]
-    fn defaults_tag_to_latest() {
-        let r = RegistryRef::parse("ghcr.io/agent-of-empires/aoe-sandbox").unwrap();
-        assert_eq!(r.reference, "latest");
-        assert!(!r.pinned);
-    }
-
-    #[test]
-    fn applies_docker_hub_library_namespace() {
-        let r = RegistryRef::parse("ubuntu:22.04").unwrap();
-        assert_eq!(r.host, "registry-1.docker.io");
-        assert_eq!(r.repository, "library/ubuntu");
-        assert_eq!(r.reference, "22.04");
-    }
-
-    #[test]
-    fn keeps_namespaced_docker_hub_repository() {
-        let r = RegistryRef::parse("mozillaai/foo").unwrap();
-        assert_eq!(r.host, "registry-1.docker.io");
-        assert_eq!(r.repository, "mozillaai/foo");
-        assert_eq!(r.reference, "latest");
-    }
-
-    #[test]
-    fn parses_registry_with_port() {
-        let r = RegistryRef::parse("localhost:5000/team/img:dev").unwrap();
-        assert_eq!(r.host, "localhost:5000");
-        assert_eq!(r.repository, "team/img");
-        assert_eq!(r.reference, "dev");
-    }
-
-    #[test]
-    fn marks_digest_pinned_references() {
-        let r = RegistryRef::parse("ghcr.io/agent-of-empires/aoe-sandbox@sha256:abc123def4567890")
-            .unwrap();
-        assert!(r.pinned);
-        assert_eq!(r.reference, "sha256:abc123def4567890");
-    }
-
-    #[test]
-    fn rejects_empty_reference() {
-        assert!(RegistryRef::parse("").is_none());
-        assert!(RegistryRef::parse("   ").is_none());
-    }
-
-    #[test]
-    fn picks_matching_repo_digest() {
-        let repo_digests = "\
-ghcr.io/agent-of-empires/aoe-sandbox@sha256:aaa\n\
-docker.io/library/ubuntu@sha256:bbb\n";
-        let digest =
-            pick_repo_digest("ghcr.io/agent-of-empires/aoe-sandbox:latest", repo_digests).unwrap();
-        assert_eq!(digest, "sha256:aaa");
-    }
-
-    #[test]
-    fn falls_back_to_first_repo_digest_when_none_match() {
-        let repo_digests = "registry.example.com/other/img@sha256:ccc\n";
-        let digest =
-            pick_repo_digest("ghcr.io/agent-of-empires/aoe-sandbox:latest", repo_digests).unwrap();
-        assert_eq!(digest, "sha256:ccc");
-    }
-
-    #[test]
-    fn returns_none_for_empty_repo_digests() {
-        assert!(pick_repo_digest("ghcr.io/agent-of-empires/aoe-sandbox:latest", "").is_none());
-        assert!(
-            pick_repo_digest("ghcr.io/agent-of-empires/aoe-sandbox:latest", "\n  \n").is_none()
-        );
+    fn pick_repo_digest_prefers_a_match_then_falls_back_to_the_first() {
+        let image = "ghcr.io/agent-of-empires/aoe-sandbox:latest";
+        let cases = [
+            (
+                "ghcr.io/agent-of-empires/aoe-sandbox@sha256:aaa\ndocker.io/library/ubuntu@sha256:bbb\n",
+                Some("sha256:aaa"),
+            ),
+            ("registry.example.com/other/img@sha256:ccc\n", Some("sha256:ccc")),
+            ("", None),
+            ("\n  \n", None),
+        ];
+        for (repo_digests, expected) in cases {
+            assert_eq!(
+                pick_repo_digest(image, repo_digests).as_deref(),
+                expected,
+                "{repo_digests:?}"
+            );
+        }
     }
 
     #[test]

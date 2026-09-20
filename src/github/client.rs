@@ -342,76 +342,74 @@ mod tests {
     }
 
     #[test]
-    fn unauthorized_maps_to_unauthorized() {
-        let err = classify_status(StatusCode::UNAUTHORIZED, &HeaderMap::new(), "");
-        assert!(matches!(err, GitHubError::Unauthorized));
-    }
-
-    #[test]
-    fn forbidden_with_scope_error_names_the_scope() {
-        let headers = headers_with(&[("x-accepted-oauth-scopes", "repo")]);
-        let err = classify_status(
-            StatusCode::FORBIDDEN,
-            &headers,
-            r#"{"message":"requires the repo scope"}"#,
-        );
-        match err {
-            GitHubError::InsufficientScope { scopes } => assert_eq!(scopes, "repo"),
-            other => panic!("expected InsufficientScope, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn forbidden_with_workflow_scope_names_workflow() {
-        let headers = headers_with(&[("x-accepted-oauth-scopes", "repo, workflow")]);
-        let err = classify_status(
-            StatusCode::FORBIDDEN,
-            &headers,
-            r#"{"message":"missing the workflow scope"}"#,
-        );
-        match err {
-            GitHubError::InsufficientScope { scopes } => assert!(scopes.contains("workflow")),
-            other => panic!("expected InsufficientScope, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn forbidden_with_scope_header_but_no_scope_message_is_api() {
-        let headers = headers_with(&[("x-accepted-oauth-scopes", "repo")]);
-        let err = classify_status(
-            StatusCode::FORBIDDEN,
-            &headers,
-            r#"{"message":"Resource not accessible by integration"}"#,
-        );
-        assert!(matches!(err, GitHubError::Api { .. }));
-    }
-
-    #[test]
-    fn forbidden_rate_limited_maps_to_rate_limited() {
-        let headers = headers_with(&[("x-ratelimit-remaining", "0")]);
-        let err = classify_status(StatusCode::FORBIDDEN, &headers, "");
-        assert!(matches!(err, GitHubError::RateLimited));
-    }
-
-    #[test]
-    fn too_many_requests_maps_to_rate_limited() {
-        let err = classify_status(StatusCode::TOO_MANY_REQUESTS, &HeaderMap::new(), "");
-        assert!(matches!(err, GitHubError::RateLimited));
-    }
-
-    #[test]
-    fn plain_forbidden_maps_to_api_error() {
-        let err = classify_status(
-            StatusCode::FORBIDDEN,
-            &HeaderMap::new(),
-            r#"{"message":"Resource protected"}"#,
-        );
-        match err {
-            GitHubError::Api { status, message } => {
-                assert_eq!(status, StatusCode::FORBIDDEN);
-                assert_eq!(message, "Resource protected");
-            }
-            other => panic!("expected Api, got {other:?}"),
+    fn classify_status_separates_scope_rate_limit_and_plain_api_errors() {
+        let scope_header = &[("x-accepted-oauth-scopes", "repo")][..];
+        let cases: [(StatusCode, &[(&'static str, &str)], &str, fn(GitHubError)); 8] = [
+            (StatusCode::UNAUTHORIZED, &[], "", |err| {
+                assert!(matches!(err, GitHubError::Unauthorized))
+            }),
+            (
+                StatusCode::FORBIDDEN,
+                scope_header,
+                r#"{"message":"requires the repo scope"}"#,
+                |err| match err {
+                    GitHubError::InsufficientScope { scopes } => assert_eq!(scopes, "repo"),
+                    other => panic!("expected InsufficientScope, got {other:?}"),
+                },
+            ),
+            (
+                StatusCode::FORBIDDEN,
+                &[("x-accepted-oauth-scopes", "repo, workflow")],
+                r#"{"message":"missing the workflow scope"}"#,
+                |err| match err {
+                    GitHubError::InsufficientScope { scopes } => {
+                        assert!(scopes.contains("workflow"))
+                    }
+                    other => panic!("expected InsufficientScope, got {other:?}"),
+                },
+            ),
+            (
+                StatusCode::FORBIDDEN,
+                scope_header,
+                r#"{"message":"Resource not accessible by integration"}"#,
+                |err| assert!(matches!(err, GitHubError::Api { .. })),
+            ),
+            (
+                StatusCode::FORBIDDEN,
+                &[("x-ratelimit-remaining", "0")],
+                "",
+                |err| assert!(matches!(err, GitHubError::RateLimited)),
+            ),
+            (StatusCode::TOO_MANY_REQUESTS, &[], "", |err| {
+                assert!(matches!(err, GitHubError::RateLimited))
+            }),
+            (
+                StatusCode::FORBIDDEN,
+                &[],
+                r#"{"message":"Resource protected"}"#,
+                |err| match err {
+                    GitHubError::Api { status, message } => {
+                        assert_eq!(status, StatusCode::FORBIDDEN);
+                        assert_eq!(message, "Resource protected");
+                    }
+                    other => panic!("expected Api, got {other:?}"),
+                },
+            ),
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                &[],
+                "",
+                |err| match err {
+                    GitHubError::Api { status, message } => {
+                        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+                        assert_eq!(message, "no response body");
+                    }
+                    other => panic!("expected Api, got {other:?}"),
+                },
+            ),
+        ];
+        for (status, headers, body, check) in cases {
+            check(classify_status(status, &headers_with(headers), body));
         }
     }
 
@@ -425,18 +423,6 @@ mod tests {
         match err {
             GitHubError::NotFound { resource } => assert_eq!(resource, "Not Found"),
             other => panic!("expected NotFound, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn server_error_maps_to_api() {
-        let err = classify_status(StatusCode::INTERNAL_SERVER_ERROR, &HeaderMap::new(), "");
-        match err {
-            GitHubError::Api { status, message } => {
-                assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
-                assert_eq!(message, "no response body");
-            }
-            other => panic!("expected Api, got {other:?}"),
         }
     }
 

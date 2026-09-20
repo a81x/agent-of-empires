@@ -491,55 +491,31 @@ mod tests {
     }
 
     #[test]
-    fn classifies_nix_store() {
-        let p = PathBuf::from("/nix/store/abc123-aoe-0.4.5/bin/aoe");
-        assert_eq!(classify_path_prefix(&p, &home()), InstallMethod::Nix);
-    }
-
-    #[test]
-    fn classifies_cargo_bin() {
-        let p = home().join(".cargo/bin/aoe");
-        assert_eq!(classify_path_prefix(&p, &home()), InstallMethod::Cargo);
-    }
-
-    #[test]
-    fn classifies_usr_local_bin_as_tarball() {
-        let p = PathBuf::from("/usr/local/bin/aoe");
-        assert_eq!(
-            classify_path_prefix(&p, &home()),
-            InstallMethod::Tarball { binary_path: p }
-        );
-    }
-
-    #[test]
-    fn classifies_local_bin_as_tarball() {
-        let p = home().join(".local/bin/aoe");
-        assert_eq!(
-            classify_path_prefix(&p, &home()),
-            InstallMethod::Tarball {
-                binary_path: p.clone()
-            }
-        );
-    }
-
-    #[test]
-    fn classifies_home_bin_as_tarball() {
-        let p = home().join("bin/aoe");
-        assert_eq!(
-            classify_path_prefix(&p, &home()),
-            InstallMethod::Tarball {
-                binary_path: p.clone()
-            }
-        );
-    }
-
-    #[test]
-    fn classifies_random_path_as_unknown() {
-        let p = PathBuf::from("/opt/aoe-custom/bin/aoe");
-        assert_eq!(
-            classify_path_prefix(&p, &home()),
-            InstallMethod::Unknown { binary_path: p }
-        );
+    fn classify_path_prefix_maps_install_locations() {
+        let home = home();
+        let nix = |_: &Path| InstallMethod::Nix;
+        let cargo = |_: &Path| InstallMethod::Cargo;
+        let tarball = |p: &Path| InstallMethod::Tarball {
+            binary_path: p.to_path_buf(),
+        };
+        let unknown = |p: &Path| InstallMethod::Unknown {
+            binary_path: p.to_path_buf(),
+        };
+        let cases: &[(PathBuf, &dyn Fn(&Path) -> InstallMethod)] = &[
+            (PathBuf::from("/nix/store/abc123-aoe-0.4.5/bin/aoe"), &nix),
+            (home.join(".cargo/bin/aoe"), &cargo),
+            (PathBuf::from("/usr/local/bin/aoe"), &tarball),
+            (home.join(".local/bin/aoe"), &tarball),
+            (home.join("bin/aoe"), &tarball),
+            (PathBuf::from("/opt/aoe-custom/bin/aoe"), &unknown),
+        ];
+        for (path, expected) in cases {
+            assert_eq!(
+                classify_path_prefix(path, &home),
+                expected(path.as_path()),
+                "{path:?}"
+            );
+        }
     }
 
     #[test]
@@ -592,79 +568,48 @@ mod tests {
     }
 
     #[test]
-    fn brew_takes_priority_when_paths_match() {
-        let exe = PathBuf::from("/opt/homebrew/Cellar/aoe/0.4.5/bin/aoe");
-        let brew_path = Some(exe.clone());
-        let prefix_class = InstallMethod::Unknown {
-            binary_path: exe.clone(),
+    fn brew_classification_needs_a_probe_path_equal_to_the_exe() {
+        let brew_exe = PathBuf::from("/opt/homebrew/Cellar/aoe/0.4.5/bin/aoe");
+        let other_exe = PathBuf::from("/usr/local/bin/aoe");
+        let tarball = InstallMethod::Tarball {
+            binary_path: other_exe.clone(),
         };
-        let result = classify_with_brew(prefix_class, brew_path.as_deref(), &exe);
-        assert_eq!(result, InstallMethod::Homebrew);
+        let cases = [
+            (
+                &brew_exe,
+                Some(brew_exe.as_path()),
+                InstallMethod::Unknown {
+                    binary_path: brew_exe.clone(),
+                },
+                InstallMethod::Homebrew,
+            ),
+            (
+                &other_exe,
+                Some(brew_exe.as_path()),
+                tarball.clone(),
+                tarball.clone(),
+            ),
+            (&other_exe, None, tarball.clone(), tarball.clone()),
+        ];
+        for (exe, brew_path, prefix_class, expected) in cases {
+            assert_eq!(classify_with_brew(prefix_class, brew_path, exe), expected);
+        }
     }
 
     #[test]
-    fn brew_ignored_when_paths_differ() {
-        let exe = PathBuf::from("/usr/local/bin/aoe");
-        let brew_path = Some(PathBuf::from("/opt/homebrew/Cellar/aoe/0.4.5/bin/aoe"));
-        let prefix_class = InstallMethod::Tarball {
-            binary_path: exe.clone(),
-        };
-        let result = classify_with_brew(prefix_class.clone(), brew_path.as_deref(), &exe);
-        assert_eq!(result, prefix_class);
-    }
-
-    #[test]
-    fn brew_ignored_when_probe_returned_none() {
-        let exe = PathBuf::from("/usr/local/bin/aoe");
-        let prefix_class = InstallMethod::Tarball {
-            binary_path: exe.clone(),
-        };
-        let result = classify_with_brew(prefix_class.clone(), None, &exe);
-        assert_eq!(result, prefix_class);
-    }
-
-    #[test]
-    fn platform_string_linux_x86_64() {
-        assert_eq!(
-            platform_string_for("linux", "x86_64").unwrap(),
-            "linux-amd64"
-        );
-    }
-
-    #[test]
-    fn platform_string_linux_aarch64() {
-        assert_eq!(
-            platform_string_for("linux", "aarch64").unwrap(),
-            "linux-arm64"
-        );
-    }
-
-    #[test]
-    fn platform_string_macos_amd64() {
-        assert_eq!(
-            platform_string_for("macos", "x86_64").unwrap(),
-            "darwin-amd64"
-        );
-    }
-
-    #[test]
-    fn platform_string_macos_arm64() {
-        assert_eq!(
-            platform_string_for("macos", "aarch64").unwrap(),
-            "darwin-arm64"
-        );
-    }
-
-    #[test]
-    fn platform_string_unsupported_arch_errors() {
-        let err = platform_string_for("linux", "riscv64").unwrap_err();
-        assert!(err.to_string().contains("riscv64"));
-    }
-
-    #[test]
-    fn platform_string_unsupported_os_errors() {
-        let err = platform_string_for("windows", "x86_64").unwrap_err();
-        assert!(err.to_string().contains("windows"));
+    fn platform_string_maps_supported_targets_and_rejects_the_rest() {
+        for (os, arch, expected) in [
+            ("linux", "x86_64", "linux-amd64"),
+            ("linux", "aarch64", "linux-arm64"),
+            ("macos", "x86_64", "darwin-amd64"),
+            ("macos", "aarch64", "darwin-arm64"),
+        ] {
+            assert_eq!(platform_string_for(os, arch).unwrap(), expected);
+        }
+        for (os, arch) in [("linux", "riscv64"), ("windows", "x86_64")] {
+            let err = platform_string_for(os, arch).unwrap_err().to_string();
+            assert!(err.contains(arch) || err.contains(os), "{err}");
+        }
     }
 
     #[test]
@@ -693,54 +638,44 @@ mod tests {
     }
 
     #[test]
-    fn prompt_block_tarball_no_sudo() {
-        let m = InstallMethod::Tarball {
-            binary_path: PathBuf::from("/home/u/.local/bin/aoe"),
+    fn prompt_block_reports_method_location_and_sudo() {
+        let tarball = |p: &str| InstallMethod::Tarball {
+            binary_path: PathBuf::from(p),
         };
-        let s = format_prompt_block("0.4.5", "0.5.0", &m, false);
-        assert!(s.contains("Update v0.4.5 → v0.5.0"));
-        assert!(s.contains("Method:    tarball install"));
-        assert!(s.contains("Location:  /home/u/.local/bin/aoe"));
-        assert!(!s.contains("Sudo:"));
+        let cases = [
+            (
+                tarball("/home/u/.local/bin/aoe"),
+                false,
+                "Update v0.4.5 \u{2192} v0.5.0|Method:    tarball install|Location:  /home/u/.local/bin/aoe",
+            ),
+            (
+                tarball("/usr/local/bin/aoe"),
+                true,
+                "Sudo:      required (write-protected directory)",
+            ),
+            (
+                InstallMethod::Homebrew,
+                false,
+                "Method:    homebrew|Location:  managed by Homebrew",
+            ),
+            (InstallMethod::Nix, false, "Method:    nix"),
+        ];
+        for (method, sudo, needles) in &cases {
+            let s = format_prompt_block("0.4.5", "0.5.0", method, *sudo);
+            for needle in needles.split('|') {
+                assert!(s.contains(needle), "{needle} missing from {s}");
+            }
+            assert_eq!(s.contains("Sudo:"), *sudo);
+        }
     }
 
     #[test]
-    fn prompt_block_tarball_sudo_required() {
-        let m = InstallMethod::Tarball {
-            binary_path: PathBuf::from("/usr/local/bin/aoe"),
-        };
-        let s = format_prompt_block("0.4.5", "0.5.0", &m, true);
-        assert!(s.contains("Sudo:      required (write-protected directory)"));
-    }
-
-    #[test]
-    fn prompt_block_homebrew_omits_location_path() {
-        let s = format_prompt_block("0.4.5", "0.5.0", &InstallMethod::Homebrew, false);
-        assert!(s.contains("Method:    homebrew"));
-        assert!(s.contains("Location:  managed by Homebrew"));
-    }
-
-    #[test]
-    fn prompt_block_nix() {
-        let s = format_prompt_block("0.4.5", "0.5.0", &InstallMethod::Nix, false);
-        assert!(s.contains("Method:    nix"));
-    }
-
-    #[test]
-    fn nix_refusal_message_contains_nix_run() {
+    fn refusal_messages_point_at_the_owning_installer() {
         assert!(nix_refusal_message().contains("nix run github:agent-of-empires/agent-of-empires"));
-    }
-
-    #[test]
-    fn cargo_refusal_message_contains_cargo_install() {
         assert!(cargo_refusal_message().contains("cargo install"));
-    }
-
-    #[test]
-    fn unknown_refusal_message_contains_install_script_url() {
-        let s = unknown_refusal_message(Path::new("/opt/weird/aoe"));
-        assert!(s.contains("install.sh"));
-        assert!(s.contains("/opt/weird/aoe"));
+        let unknown = unknown_refusal_message(Path::new("/opt/weird/aoe"));
+        assert!(unknown.contains("install.sh"));
+        assert!(unknown.contains("/opt/weird/aoe"));
     }
 
     mod sudo_replace_tests {
