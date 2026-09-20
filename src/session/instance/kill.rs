@@ -331,124 +331,88 @@ impl Instance {
 
 #[cfg(test)]
 mod tests {
+    /// The conversation a Pi pane published has to outlive its instance dir at stop: no poller
+    /// survives a CLI launch, and an idle pane's `/new` can be hours older than the freshness
+    /// window that guards a resume.
     #[test]
     #[serial_test::serial]
-    fn pi_stop_persists_a_conversation_published_long_ago() {
-        // An idle pane's `/new` can be hours old by the time it stops. The freshness window that
-        // guards a resume must not apply to the last read before the sidecar is deleted.
-        let (_guard, _base, _tmp) = crate::hooks::test_support::BaseGuard::ready();
-        let home = tempfile::tempdir().unwrap();
-        let _home_guard = crate::session::test_support::isolate_app_dir_at(home.path());
+    fn pi_stop_persists_the_published_conversation() {
+        // (label, tool, detect_as, published id, sidecar written hours ago, flush by intent)
+        let cases = [
+            (
+                "fresh",
+                "pi",
+                "pi",
+                "01a05234-8889-72e2-a7c9-7ebc27b25b78",
+                false,
+                false,
+            ),
+            (
+                "stale",
+                "pi",
+                "pi",
+                "01a0538e-5868-7c22-84bc-40cfd7a09ab1",
+                true,
+                false,
+            ),
+            ("alias", "company-pi", "pi", "published-id", false, true),
+        ];
+        for (label, tool, detect_as, published, stale, by_intent) in cases {
+            let (_guard, _base, _tmp) = crate::hooks::test_support::BaseGuard::ready();
+            let home = tempfile::tempdir().unwrap();
+            let _home_guard = crate::session::test_support::isolate_app_dir_at(home.path());
 
-        let profile = "pi-sidecar-stale";
-        let mut inst = Instance::new("pi-stale", "/tmp/pi-stale");
-        inst.source_profile = profile.to_string();
-        inst.tool = "pi".to_string();
-        inst.agent_session_id = Some("22f13307-461c-4161-908e-95a247fac750".to_string());
-        inst.mark_pi_extension_launched_for_test();
+            let profile = "pi-sidecar-flush";
+            let mut inst = Instance::new(label, "/tmp/pi");
+            inst.source_profile = profile.to_string();
+            inst.tool = tool.to_string();
+            inst.detect_as = detect_as.to_string();
+            if tool != detect_as {
+                inst.command = detect_as.to_string();
+            }
+            inst.agent_session_id = Some("22f13307-461c-4161-908e-95a247fac750".to_string());
+            inst.mark_pi_extension_launched_for_test();
 
-        let storage = crate::session::storage::Storage::new_unwatched(profile).unwrap();
-        let seed = inst.clone();
-        storage
-            .update(|instances, _| {
-                *instances = vec![seed.clone()];
-                Ok(())
-            })
-            .unwrap();
+            let storage = crate::session::storage::Storage::new_unwatched(profile).unwrap();
+            let seed = inst.clone();
+            storage
+                .update(|instances, _| {
+                    *instances = vec![seed.clone()];
+                    Ok(())
+                })
+                .unwrap();
+            crate::hooks::write_session_id_via_guard(&inst.id, published).unwrap();
+            if stale {
+                let sidecar = crate::hooks::ensure_instance_dir_path(&inst.id)
+                    .unwrap()
+                    .join("session_id");
+                let hours_ago =
+                    std::time::SystemTime::now() - std::time::Duration::from_secs(6 * 3600);
+                std::fs::File::options()
+                    .write(true)
+                    .open(&sidecar)
+                    .unwrap()
+                    .set_times(std::fs::FileTimes::new().set_modified(hours_ago))
+                    .unwrap();
+                assert_eq!(
+                    crate::hooks::read_hook_session_id(&inst.id),
+                    None,
+                    "the fixture must be past the freshness window"
+                );
+            }
 
-        let published = "01a0538e-5868-7c22-84bc-40cfd7a09ab1";
-        crate::hooks::write_session_id_via_guard(&inst.id, published).unwrap();
-        let sidecar = crate::hooks::ensure_instance_dir_path(&inst.id)
-            .unwrap()
-            .join("session_id");
-        let hours_ago = std::time::SystemTime::now() - std::time::Duration::from_secs(6 * 3600);
-        std::fs::File::options()
-            .write(true)
-            .open(&sidecar)
-            .unwrap()
-            .set_times(std::fs::FileTimes::new().set_modified(hours_ago))
-            .unwrap();
-        assert_eq!(
-            crate::hooks::read_hook_session_id(&inst.id),
-            None,
-            "the fixture must be past the freshness window"
-        );
+            if by_intent {
+                inst.flush_pi_sidecar_if_published();
+            } else {
+                inst.flush_pi_sidecar_conversation(&storage);
+            }
 
-        inst.flush_pi_sidecar_conversation(&storage);
-
-        assert_eq!(
-            storage.load().unwrap()[0].agent_session_id.as_deref(),
-            Some(published),
-            "a stale sidecar is still the pane's own last word"
-        );
-    }
-
-    #[test]
-    #[serial_test::serial]
-    fn pi_stop_persists_the_conversation_the_extension_published() {
-        // A `/new` inside a CLI-launched pane is observed by nobody: no poller outlives the CLI,
-        // and the instance dir is cleaned up at stop.
-        let (_guard, _base, _tmp) = crate::hooks::test_support::BaseGuard::ready();
-        let home = tempfile::tempdir().unwrap();
-        let _home_guard = crate::session::test_support::isolate_app_dir_at(home.path());
-
-        let profile = "pi-sidecar-flush";
-        let mut inst = Instance::new("pi-flush", "/tmp/pi-flush");
-        inst.source_profile = profile.to_string();
-        inst.tool = "pi".to_string();
-        inst.agent_session_id = Some("22f13307-461c-4161-908e-95a247fac750".to_string());
-        inst.mark_pi_extension_launched_for_test();
-
-        let storage = crate::session::storage::Storage::new_unwatched(profile).unwrap();
-        let seed = inst.clone();
-        storage
-            .update(|instances, _| {
-                *instances = vec![seed.clone()];
-                Ok(())
-            })
-            .unwrap();
-
-        let published = "01a05234-8889-72e2-a7c9-7ebc27b25b78";
-        crate::hooks::write_session_id_via_guard(&inst.id, published).unwrap();
-
-        inst.flush_pi_sidecar_conversation(&storage);
-
-        assert_eq!(
-            storage.load().unwrap()[0].agent_session_id.as_deref(),
-            Some(published),
-            "the conversation the pane published must outlive its instance dir"
-        );
-    }
-
-    #[test]
-    #[serial_test::serial]
-    fn pi_alias_flushes_the_published_conversation() {
-        let (_guard, _base, _tmp) = crate::hooks::test_support::BaseGuard::ready();
-        let home = tempfile::tempdir().unwrap();
-        let _home_guard = crate::session::test_support::isolate_app_dir_at(home.path());
-        let profile = "pi-alias-sidecar-flush";
-        let mut inst = Instance::new("pi alias", "/tmp/pi-alias");
-        inst.source_profile = profile.to_string();
-        inst.tool = "company-pi".to_string();
-        inst.detect_as = "pi".to_string();
-        inst.command = "pi".to_string();
-        inst.agent_session_id = Some("old-id".to_string());
-        inst.mark_pi_extension_launched_for_test();
-        let storage = crate::session::storage::Storage::new_unwatched(profile).unwrap();
-        storage
-            .update(|instances, _| {
-                *instances = vec![inst.clone()];
-                Ok(())
-            })
-            .unwrap();
-        crate::hooks::write_session_id_via_guard(&inst.id, "published-id").unwrap();
-
-        inst.flush_pi_sidecar_if_published();
-
-        assert_eq!(
-            storage.load().unwrap()[0].agent_session_id.as_deref(),
-            Some("published-id")
-        );
+            assert_eq!(
+                storage.load().unwrap()[0].agent_session_id.as_deref(),
+                Some(published),
+                "{label}"
+            );
+        }
     }
 
     use super::*;

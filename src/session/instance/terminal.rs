@@ -130,10 +130,6 @@ impl Instance {
             .unwrap_or(false)
     }
 
-    pub fn start_terminal(&mut self) -> Result<()> {
-        self.start_terminal_with_size(None)
-    }
-
     pub fn start_terminal_with_size(&mut self, size: Option<(u16, u16)>) -> Result<()> {
         self.start_terminal_with_size_indexed(0, size)
     }
@@ -172,12 +168,8 @@ impl Instance {
         Ok(())
     }
 
-    /// Kill the paired terminal tmux session if its pane is dead (shell exited while
+    /// Kill the paired terminal tmux session if its pane is dead (the shell exited while
     /// `remain-on-exit on` kept the session as a tombstone).
-    pub fn kill_terminal_if_dead(&self) -> Result<bool> {
-        self.kill_terminal_if_dead_indexed(0)
-    }
-
     pub fn kill_terminal_if_dead_indexed(&self, index: u32) -> Result<bool> {
         let session = self.terminal_tmux_session_indexed(index)?;
         if session.exists() && session.is_pane_dead() {
@@ -286,11 +278,7 @@ impl Instance {
         Ok(())
     }
 
-    /// Container counterpart of [`Self::kill_terminal_if_dead`].
-    pub fn kill_container_terminal_if_dead(&self) -> Result<bool> {
-        self.kill_container_terminal_if_dead_indexed(0)
-    }
-
+    /// Container counterpart of [`Self::kill_terminal_if_dead_indexed`].
     pub fn kill_container_terminal_if_dead_indexed(&self, index: u32) -> Result<bool> {
         let session = self.container_terminal_tmux_session_indexed(index)?;
         if session.exists() && session.is_pane_dead() {
@@ -621,14 +609,20 @@ exec /usr/bin/env -i PATH="$TARGET_PATH" SHELL="$FALLBACK_SHELL" "$@"
 
             let missing = Instance::new("ktid_missing", "/tmp");
             crate::tmux::refresh_session_cache();
-            assert!(!missing.kill_terminal_if_dead().unwrap(), "no session");
+            assert!(
+                !missing.kill_terminal_if_dead_indexed(0).unwrap(),
+                "no session"
+            );
 
             let alive = Instance::new("ktid_alive", "/tmp");
             let alive_name = crate::tmux::TerminalSession::generate_name(&alive.id, &alive.title);
             let _alive = TmuxTestSession::from_name(alive_name.clone());
             spawn_remain_on_exit(&alive_name, "sleep 30");
             let pane = only_pane_id(&alive_name);
-            assert!(!alive.kill_terminal_if_dead().unwrap(), "live pane");
+            assert!(
+                !alive.kill_terminal_if_dead_indexed(0).unwrap(),
+                "live pane"
+            );
             assert_eq!(only_pane_id(&alive_name), pane, "live pane survives");
             let session = alive.terminal_tmux_session().unwrap();
             assert!(session.exists() && !session.is_pane_dead());
@@ -642,10 +636,13 @@ exec /usr/bin/env -i PATH="$TARGET_PATH" SHELL="$FALLBACK_SHELL" "$@"
             let session = dead.terminal_tmux_session().unwrap();
             assert!(session.exists() && session.is_pane_dead());
 
-            assert!(dead.kill_terminal_if_dead().unwrap(), "dead pane is killed");
+            assert!(
+                dead.kill_terminal_if_dead_indexed(0).unwrap(),
+                "dead pane is killed"
+            );
             assert!(!dead.terminal_tmux_session().unwrap().exists());
             assert!(
-                !dead.kill_terminal_if_dead().unwrap(),
+                !dead.kill_terminal_if_dead_indexed(0).unwrap(),
                 "second call on a missing session"
             );
         }
