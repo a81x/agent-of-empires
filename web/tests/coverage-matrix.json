@@ -206,7 +206,7 @@
       "id": "terminal.live-clickable-urls-e2e",
       "kind": "mocked-playwright",
       "risk": "high",
-      "specs": ["tests/live-link-click.spec.ts"],
+      "specs": ["tests/live-terminal-input.spec.ts"],
       "components": ["web/src/components/MobileLiveTerminal.tsx", "web/src/lib/liveTermLines.ts"]
     },
     {
@@ -220,7 +220,7 @@
       "id": "terminal.live-glyph-cell-width",
       "kind": "mocked-playwright",
       "risk": "high",
-      "specs": ["tests/live-glyph-columns.spec.ts", "src/lib/liveTermLines.test.ts"],
+      "specs": ["tests/live-terminal-input.spec.ts", "src/lib/liveTermLines.test.ts"],
       "components": ["web/src/components/MobileLiveTerminal.tsx"]
     },
     {
@@ -258,7 +258,7 @@
       "risk": "high",
       "specs": [
         "src/components/__tests__/MobileLiveTerminal.selectionHold.test.tsx",
-        "tests/live-selection-hold.spec.ts"
+        "tests/live-terminal-input.spec.ts"
       ],
       "components": [
         "web/src/components/MobileLiveTerminal.tsx",
@@ -370,7 +370,7 @@
       "id": "terminal.mobile-live-wheel-forward-e2e",
       "kind": "mocked-playwright",
       "risk": "high",
-      "specs": ["tests/live-wheel-forward.spec.ts"],
+      "specs": ["tests/live-terminal-input.spec.ts"],
       "components": [
         "web/src/lib/liveMouse.ts",
         "web/src/components/MobileLiveTerminal.tsx",
@@ -381,7 +381,7 @@
       "id": "terminal.mobile-live-click-forward-e2e",
       "kind": "mocked-playwright",
       "risk": "high",
-      "specs": ["tests/live-click-forward.spec.ts"],
+      "specs": ["tests/live-terminal-input.spec.ts"],
       "components": [
         "web/src/lib/liveMouse.ts",
         "web/src/components/MobileLiveTerminal.tsx",
