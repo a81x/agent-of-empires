@@ -3724,11 +3724,7 @@ mod tests {
             ("set -g mouse \\\n    on", true),
         ];
         for (contents, expected) in cases {
-            assert_eq!(
-                tmux_config_sets_any(contents, &["mouse"]),
-                expected,
-                "{contents:?}"
-            );
+            assert_eq!(tmux_config_sets_any(contents, &["mouse"]), expected);
         }
 
         // The clipboard options aoe manages. `set-clipboard` is a server option
@@ -3751,11 +3747,7 @@ mod tests {
             ("# set -s set-clipboard on", false),
         ];
         for (contents, expected) in clipboard_cases {
-            assert_eq!(
-                tmux_config_sets_any(contents, &clipboard),
-                expected,
-                "{contents:?}"
-            );
+            assert_eq!(tmux_config_sets_any(contents, &clipboard), expected);
         }
     }
 
@@ -3811,11 +3803,7 @@ mod tests {
             (TmuxSettingMode::Disabled, true, ForceOff),
         ];
         for (mode, user_defers, expected) in cases {
-            assert_eq!(
-                tmux_setting_action(mode, user_defers),
-                expected,
-                "{mode:?} user_defers={user_defers}"
-            );
+            assert_eq!(tmux_setting_action(mode, user_defers), expected);
         }
     }
 
@@ -3982,10 +3970,7 @@ mod tests {
         );
         // The write landed on the target, not beside the link.
         let written = std::fs::read_to_string(&target).unwrap();
-        assert!(
-            written.contains("default_profile = \"new\""),
-            "symlink target should hold the saved config, got: {written}",
-        );
+        assert!(written.contains("default_profile = \"new\""));
     }
 
     // Tests for Config defaults
@@ -4444,11 +4429,7 @@ mod tests {
             assert_eq!(modes(&config.tmux), expected, "[tmux] {toml_src:?}");
             // And a round-trip through the serializer the settings surfaces use.
             let round_tripped: Config = toml::from_str(&toml::to_string(&config).unwrap()).unwrap();
-            assert_eq!(
-                modes(&round_tripped.tmux),
-                expected,
-                "roundtrip {toml_src:?}"
-            );
+            assert_eq!(modes(&round_tripped.tmux), expected);
         }
     }
 
@@ -4473,11 +4454,7 @@ mod tests {
             .find(|f| f.section == "tmux" && f.field == "vt_live")
             .expect("vt_live field in tmux schema section");
         assert!(field.advanced, "vt_live should sit under the Advanced fold");
-        assert!(
-            !field.profile_overridable,
-            "vt_live is machine-level (the server reads global config); a \
-             profile override would desync the TUI and web transports"
-        );
+        assert!(!field.profile_overridable);
     }
 
     #[test]
@@ -4584,13 +4561,11 @@ mod tests {
         let deserialized: Config = toml::from_str(&serialized).unwrap();
         assert_eq!(
             deserialized.session.agent_command_override.get("claude"),
-            Some(&"safehouse".to_string()),
-            "agent_command_override should survive roundtrip"
+            Some(&"safehouse".to_string())
         );
         assert_eq!(
             deserialized.session.agent_extra_args.get("opencode"),
-            Some(&"--port 8080".to_string()),
-            "agent_extra_args should survive roundtrip"
+            Some(&"--port 8080".to_string())
         );
         assert_eq!(
             deserialized.acp.acp_defaults.get("opencode"),
@@ -4869,8 +4844,7 @@ mod tests {
             );
             assert_eq!(
                 (resolved.0.as_deref(), resolved.1.as_deref()),
-                (*want_model, *want_effort),
-                "model={model:?} effort={effort:?}"
+                (*want_model, *want_effort)
             );
         }
     }
@@ -4960,11 +4934,7 @@ mod tests {
                     .custom_agents
                     .insert("my-agent".to_string(), value.to_string());
             }
-            assert_eq!(
-                config.resolve_tool_command("my-agent"),
-                expected,
-                "override={override_cmd:?} custom={custom:?}"
-            );
+            assert_eq!(config.resolve_tool_command("my-agent"), expected);
         }
     }
 
@@ -4988,16 +4958,11 @@ mod tests {
                 .insert("my-agent".to_string(), value.to_string());
             assert_eq!(
                 config.agent_config_dir_for("my-agent", home),
-                expected.map(PathBuf::from),
-                "value: {value:?}"
+                expected.map(PathBuf::from)
             );
             // What the warning and the settings editor accept must be what
             // resolution keeps, or a value is dropped without a word.
-            assert_eq!(
-                is_resolvable_agent_config_dir(value),
-                expected.is_some(),
-                "value: {value:?}"
-            );
+            assert_eq!(is_resolvable_agent_config_dir(value), expected.is_some());
         }
         assert_eq!(config.agent_config_dir_for("other-agent", home), None);
     }

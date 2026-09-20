@@ -229,10 +229,7 @@ mod tests {
             json!({"worktree": {"path_template": "{repo}-{branch}"}}),
         ] {
             let err = validate_patch(&body, Scope::Profile, false).unwrap_err();
-            assert!(
-                matches!(err, PatchRejection::NeedsElevation { .. }),
-                "{body} should need elevation, got {err:?}"
-            );
+            assert!(matches!(err, PatchRejection::NeedsElevation { .. }));
             assert_eq!(err.error_code(), "elevation_required");
             assert!(validate_patch(&body, Scope::Profile, true).is_ok());
         }
@@ -248,10 +245,7 @@ mod tests {
             json!({"session": {"yolo_mode_default": true, "strict_hotkeys": false}}),
             json!({"description": "my profile"}),
         ] {
-            assert!(
-                validate_patch(&body, Scope::Profile, false).is_ok(),
-                "{body} should validate unelevated"
-            );
+            assert!(validate_patch(&body, Scope::Profile, false).is_ok());
         }
     }
 

@@ -507,11 +507,7 @@ mod tests {
             ("updates", "not_a_real_field", false),
         ];
         for (section, field, expected) in cases {
-            assert_eq!(
-                repo_may_override_field(section, field),
-                expected,
-                "{section}.{field}"
-            );
+            assert_eq!(repo_may_override_field(section, field), expected);
         }
     }
 
@@ -590,10 +586,7 @@ mod tests {
         assert_eq!(merged.worktree.path_template, "./wt/{branch}");
         assert_eq!(merged.worktree.bare_repo_path_template, "../{branch}");
         assert_eq!(merged.worktree.workspace_path_template, "../ws/{branch}");
-        assert!(
-            !merged.worktree.auto_cleanup,
-            "auto_cleanup stays repo-settable"
-        );
+        assert!(!merged.worktree.auto_cleanup);
         assert!(!merged.updates.auto_update_plugins);
         assert_eq!(
             rejected(&repo),

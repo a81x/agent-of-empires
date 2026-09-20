@@ -609,13 +609,11 @@ mod tests {
         for setting in TmuxSetting::ALL {
             assert_eq!(
                 resolve_tmux_setting(setting, &global),
-                TmuxSettingAction::Apply,
-                "{setting:?} global"
+                TmuxSettingAction::Apply
             );
             assert_eq!(
                 resolve_tmux_setting(setting, &merged),
-                TmuxSettingAction::ForceOff,
-                "{setting:?} profile"
+                TmuxSettingAction::ForceOff
             );
         }
     }

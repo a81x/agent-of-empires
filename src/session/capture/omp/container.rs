@@ -318,10 +318,7 @@ mod tests {
         );
         for pending in ["", &*session.to_string_lossy()] {
             std::fs::write(&marker, launch_marker(&meta, "pts-9", pending)).unwrap();
-            assert!(
-                run_container_script(&meta, &marker).is_empty(),
-                "{pending:?}"
-            );
+            assert!(run_container_script(&meta, &marker).is_empty());
         }
         std::fs::write(&marker, launch_marker(&meta, "pts-9", "/pending")).unwrap();
 
@@ -443,10 +440,7 @@ mod tests {
         let select = |output: &str| {
             select_omp_session_in_container(output.as_bytes(), &meta, &HashSet::new())
         };
-        assert!(
-            select(&unmaterialized("pts-9", "launch-b", ID)).is_err(),
-            "other generation"
-        );
+        assert!(select(&unmaterialized("pts-9", "launch-b", ID)).is_err());
         // No mtime proof is needed once the marker selected the breadcrumb, and a
         // later resume of a historical session is accepted.
         assert_eq!(select(&materialized(ID)).unwrap(), ID);

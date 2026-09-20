@@ -3058,11 +3058,7 @@ mod tests {
             .unwrap()
             .map(|entry| entry.unwrap().file_name())
             .collect();
-        assert_eq!(
-            outside_entries.len(),
-            1,
-            "nothing may be written through the link: {outside_entries:?}"
-        );
+        assert_eq!(outside_entries.len(), 1);
     }
 
     /// Unset, blank and `bridge` mean the runtime default; `host` and the
@@ -3088,11 +3084,7 @@ mod tests {
             (Some(" egress-proxy "), Some("egress-proxy")),
         ];
         for (input, expected) in cases {
-            assert_eq!(
-                sanitize_network(*input).as_deref(),
-                *expected,
-                "network {input:?}"
-            );
+            assert_eq!(sanitize_network(*input).as_deref(), *expected);
         }
     }
 
@@ -3218,8 +3210,7 @@ mod tests {
             // them apart from the result alone.
             assert_eq!(
                 workspace_path,
-                format!("/workspace/{}", path.file_name().unwrap().to_string_lossy()),
-                "{case}"
+                format!("/workspace/{}", path.file_name().unwrap().to_string_lossy())
             );
         }
     }
@@ -3246,29 +3237,18 @@ mod tests {
         let main_repo_canon = main_repo_path.canonicalize().unwrap();
 
         // For bare repo worktree: mount the entire repo root
-        assert_eq!(
-            mount_path_canon, main_repo_canon,
-            "Should mount the bare repo root, not just the worktree"
-        );
+        assert_eq!(mount_path_canon, main_repo_canon);
 
         // Container path should be /workspace/{repo_name}
         let repo_name = main_repo_path.file_name().unwrap().to_string_lossy();
         assert_eq!(
             volumes[0].container_path,
-            format!("/workspace/{}", repo_name),
-            "Container mount path should be /workspace/{{repo_name}}"
+            format!("/workspace/{}", repo_name)
         );
 
         // Working dir should point to the worktree within the mount
-        assert!(
-            working_dir.starts_with(&format!("/workspace/{}", repo_name)),
-            "Working dir should be under /workspace/{{repo_name}}"
-        );
-        assert!(
-            working_dir.ends_with("/main"),
-            "Working dir should end with worktree name 'main', got: {}",
-            working_dir
-        );
+        assert!(working_dir.starts_with(&format!("/workspace/{}", repo_name)));
+        assert!(working_dir.ends_with("/main"));
     }
 
     #[test]
@@ -3312,19 +3292,12 @@ mod tests {
 
         // For non-bare sibling worktrees: mount the main repo and worktree separately
         // as flat siblings under /workspace/.
-        assert_eq!(
-            volumes.len(),
-            2,
-            "Should have two volumes: main repo and worktree"
-        );
+        assert_eq!(volumes.len(), 2);
 
         // First volume: the main repo
         let repo_canon = repo_path.canonicalize().unwrap();
         let mount0_canon = Path::new(&volumes[0].host_path).canonicalize().unwrap();
-        assert_eq!(
-            mount0_canon, repo_canon,
-            "First volume should mount the main repo"
-        );
+        assert_eq!(mount0_canon, repo_canon);
         let repo_name = repo_canon.file_name().unwrap().to_string_lossy();
         assert_eq!(
             volumes[0].container_path,
@@ -3334,17 +3307,11 @@ mod tests {
         // Second volume: the worktree
         let wt_canon = worktree_path.canonicalize().unwrap();
         let mount1_canon = Path::new(&volumes[1].host_path).canonicalize().unwrap();
-        assert_eq!(
-            mount1_canon, wt_canon,
-            "Second volume should mount the worktree"
-        );
+        assert_eq!(mount1_canon, wt_canon);
         assert_eq!(volumes[1].container_path, "/workspace/my-worktree");
 
         // Working dir should point to the worktree
-        assert_eq!(
-            working_dir, "/workspace/my-worktree",
-            "Working dir should be the worktree container path"
-        );
+        assert_eq!(working_dir, "/workspace/my-worktree");
     }
 
     #[test]
@@ -3389,11 +3356,7 @@ mod tests {
 
         assert_eq!(volumes.len(), 1);
         // The subdirectory should be mounted directly, NOT the parent repo
-        assert_eq!(
-            volumes[0].host_path,
-            subdir.to_string_lossy().to_string(),
-            "Should mount the subdirectory itself, not the ancestor git repo"
-        );
+        assert_eq!(volumes[0].host_path, subdir.to_string_lossy().to_string());
         assert_eq!(volumes[0].container_path, working_dir);
         assert_eq!(volumes[0].container_path, "/workspace/playground");
     }
@@ -3602,11 +3565,7 @@ mod tests {
         assert!(sandbox.join(".env").exists());
 
         for runtime_dir in runtime_dirs {
-            assert!(
-                !sandbox.join(runtime_dir).exists(),
-                "{} should be skipped",
-                runtime_dir
-            );
+            assert!(!sandbox.join(runtime_dir).exists());
         }
         assert!(!sandbox.join("state.db").exists());
     }
@@ -3811,11 +3770,7 @@ mod tests {
     fn test_agent_config_mounts_match_agent_registry() {
         // Every mount should correspond to a registered agent
         for mount in AGENT_CONFIG_MOUNTS {
-            assert!(
-                crate::agents::get_agent(mount.tool_name).is_some(),
-                "AGENT_CONFIG_MOUNTS entry '{}' has no matching agent in the registry",
-                mount.tool_name
-            );
+            assert!(crate::agents::get_agent(mount.tool_name).is_some());
         }
     }
 
@@ -3838,11 +3793,7 @@ mod tests {
             eprintln!("skipping: git not available");
             return;
         };
-        assert!(
-            out.status.success(),
-            "git failed to parse seeded gitconfig: {}",
-            String::from_utf8_lossy(&out.stderr)
-        );
+        assert!(out.status.success());
         let helper = String::from_utf8_lossy(&out.stdout);
         assert!(helper.starts_with('!'), "helper must be a shell snippet");
         assert!(
@@ -4279,19 +4230,10 @@ mod tests {
         // continuing would silently produce a partial copy, so these abort.
         assert!(is_fatal_copy_error(&Error::from_raw_os_error(28)), "ENOSPC");
         assert!(is_fatal_copy_error(&Error::from_raw_os_error(30)), "EROFS");
-        assert!(
-            is_fatal_copy_error(&Error::from_raw_os_error(69)),
-            "EDQUOT (macOS)"
-        );
-        assert!(
-            is_fatal_copy_error(&Error::from_raw_os_error(122)),
-            "EDQUOT (Linux)"
-        );
+        assert!(is_fatal_copy_error(&Error::from_raw_os_error(69)));
+        assert!(is_fatal_copy_error(&Error::from_raw_os_error(122)));
         // A single unreadable / missing source entry is best-effort skippable.
-        assert!(
-            !is_fatal_copy_error(&Error::from_raw_os_error(13)),
-            "EACCES"
-        );
+        assert!(!is_fatal_copy_error(&Error::from_raw_os_error(13)));
         assert!(!is_fatal_copy_error(&Error::from_raw_os_error(2)), "ENOENT");
     }
 
@@ -4476,11 +4418,7 @@ mod tests {
             (credential(now + horizon + 1), None),
         ];
         for (content, expires_at) in cases {
-            assert_eq!(
-                plausible_credential_expires_at(&content, now),
-                expires_at,
-                "{content}"
-            );
+            assert_eq!(plausible_credential_expires_at(&content, now), expires_at);
         }
     }
 
@@ -4499,11 +4437,7 @@ mod tests {
             (blanked_credential(9000), credential(1000), true),
         ];
         for (existing, incoming, overwrite) in cases {
-            assert_eq!(
-                should_overwrite_credential(&existing, &incoming),
-                overwrite,
-                "{existing} -> {incoming}"
-            );
+            assert_eq!(should_overwrite_credential(&existing, &incoming), overwrite);
         }
     }
 
@@ -4661,11 +4595,7 @@ mod tests {
         for unusable in ["", "{}", "not json"] {
             fs::write(&shared, unusable).unwrap();
             prepare(CredentialFold::SeedOnly);
-            assert_eq!(
-                fs::read_to_string(&shared).unwrap(),
-                credential(100),
-                "{unusable:?}"
-            );
+            assert_eq!(fs::read_to_string(&shared).unwrap(), credential(100));
         }
 
         // A fresher copy in the store, a sandbox chain of its own, waits for
@@ -4820,11 +4750,7 @@ mod tests {
             fs::write(&shared, unfolded).unwrap();
             fs::write(&copy, &copy_content).unwrap();
             place_shadowed_credential_mountpoints(&config_for(&store));
-            assert_eq!(
-                fs::read_to_string(&copy).unwrap(),
-                copy_content,
-                "{unfolded:?}"
-            );
+            assert_eq!(fs::read_to_string(&copy).unwrap(), copy_content);
         }
         fs::write(&shared, credential(2)).unwrap();
 
@@ -4889,16 +4815,8 @@ mount_ssh = true
         let dir_name = project_dir.path().file_name().unwrap().to_string_lossy();
         let expected_venv = format!("/workspace/{}/.venv", dir_name);
         let expected_node = format!("/workspace/{}/node_modules", dir_name);
-        assert!(
-            config.anonymous_volumes.contains(&expected_venv),
-            "anonymous_volumes should contain .venv path, got: {:?}",
-            config.anonymous_volumes
-        );
-        assert!(
-            config.anonymous_volumes.contains(&expected_node),
-            "anonymous_volumes should contain node_modules path, got: {:?}",
-            config.anonymous_volumes
-        );
+        assert!(config.anonymous_volumes.contains(&expected_venv));
+        assert!(config.anonymous_volumes.contains(&expected_node));
 
         // A repo cannot mount host paths into the container or hand it the
         // user's SSH keys (#3154); the tuning fields above still apply.
@@ -4915,11 +4833,7 @@ mount_ssh = true
 
         // #2587: the session artifact dir is bind-mounted at the fixed
         // container path and exported via AOE_ARTIFACT_DIR.
-        assert!(
-            env_keys.contains(&crate::session::artifacts::ARTIFACT_DIR_ENV),
-            "AOE_ARTIFACT_DIR should be in environment, got: {:?}",
-            config.environment
-        );
+        assert!(env_keys.contains(&crate::session::artifacts::ARTIFACT_DIR_ENV));
         assert!(
             config
                 .volumes
@@ -5067,12 +4981,7 @@ volume_ignores = ["**/bin", "**/obj", "target"]
         let expect = |p: &str| format!("/workspace/{}/{}", dir_name, p);
 
         for matched in ["src/App/bin", "tests/Lib/bin", "src/App/obj"] {
-            assert!(
-                config.anonymous_volumes.contains(&expect(matched)),
-                "glob should have expanded to {}, got: {:?}",
-                matched,
-                config.anonymous_volumes
-            );
+            assert!(config.anonymous_volumes.contains(&expect(matched)));
         }
         assert!(
             config.anonymous_volumes.contains(&expect("target")),
@@ -5131,10 +5040,7 @@ volume_ignores_strategy = "named"
         };
 
         let healthy = build(&worktree_path);
-        assert!(
-            healthy.named_ignore_volumes_authoritative,
-            "a worktree that resolves to its main repo derives real mount paths"
-        );
+        assert!(healthy.named_ignore_volumes_authoritative);
 
         // Break the linkage: the same worktree now collapses to /workspace/{basename},
         // naming volumes the session never had.
@@ -5186,10 +5092,7 @@ volume_ignores_strategy = "named"
             "only the directory should match, not notes.bin"
         );
         assert_eq!(expansions[1].pattern, "**/missing");
-        assert!(
-            expansions[1].matched_container_paths.is_empty(),
-            "an unmatched glob is kept with no matches"
-        );
+        assert!(expansions[1].matched_container_paths.is_empty());
     }
 
     #[test]
@@ -5316,10 +5219,7 @@ volume_ignores = ["node_modules"]
             mount.container_path, expected_container_path,
             "container path must be the fixed in-container path, not the host euid path"
         );
-        assert_ne!(
-            mount.host_path, mount.container_path,
-            "host (per-user) and container (fixed) paths MUST differ for the bind-mount remap"
-        );
+        assert_ne!(mount.host_path, mount.container_path);
         crate::hooks::cleanup_hook_status_dir(instance_id);
     }
 
@@ -5878,11 +5778,7 @@ trust_level = "trusted"
 
         for agent in sidecar_agents {
             let sidecar = agent.sidecar_hooks.as_ref().unwrap();
-            assert!(
-                !sidecar.sandbox_config_subpath.is_empty(),
-                "{} is sandboxable so it needs a sandbox_config_subpath",
-                agent.name
-            );
+            assert!(!sidecar.sandbox_config_subpath.is_empty());
 
             let instance_id = format!("{}-sidecar-sandbox-test", agent.name);
             let config = Build::new(agent.name)
@@ -5897,11 +5793,7 @@ trust_level = "trusted"
             .unwrap()
             .iter()
             .any(|event| event.identity_field.is_some());
-            assert_eq!(
-                config.identity_publisher_installed, expects_identity,
-                "{} publisher evidence",
-                agent.name
-            );
+            assert_eq!(config.identity_publisher_installed, expects_identity);
 
             let mount = AGENT_CONFIG_MOUNTS
                 .iter()
@@ -5913,18 +5805,9 @@ trust_level = "trusted"
             let sandbox_config = sandbox_dir_for(mount, temp_home.path(), Some(&instance_id))
                 .unwrap()
                 .join(relative);
-            assert!(
-                sandbox_config.exists(),
-                "{} sandbox hook config should be installed at {}",
-                agent.name,
-                sandbox_config.display()
-            );
+            assert!(sandbox_config.exists());
             let contents = fs::read_to_string(&sandbox_config).unwrap();
-            assert!(
-                contents.contains("aoe-hooks"),
-                "{} sandbox config should contain the AoE hook marker",
-                agent.name
-            );
+            assert!(contents.contains("aoe-hooks"));
 
             let hook_dir = crate::hooks::hook_status_dir(&instance_id)
                 .expect("test id must be allowlist-safe");
@@ -6013,11 +5896,7 @@ trust_level = "trusted"
             .join(SANDBOX_PRIVATE_SUBDIR)
             .join(instance_id)
             .join("agents/custom-agent.json");
-        assert!(
-            selected_config.exists(),
-            "selected-agent sandbox hook config should be installed at {}",
-            selected_config.display()
-        );
+        assert!(selected_config.exists());
         assert!(fs::read_to_string(&selected_config)
             .unwrap()
             .contains("aoe-hooks"));
@@ -6065,11 +5944,7 @@ trust_level = "trusted"
             .join(SANDBOX_PRIVATE_SUBDIR)
             .join(instance_id)
             .join("agents/TeamAgents-custom-agent.json");
-        assert!(
-            matched.exists(),
-            "hooks should install into the name-matched staged file at {}",
-            matched.display()
-        );
+        assert!(matched.exists());
         let body = fs::read_to_string(&matched).unwrap();
         assert!(
             body.contains("aoe-hooks"),
@@ -6386,10 +6261,7 @@ trusted_hash = "keep"
             let cmd = hooks["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
                 .as_str()
                 .unwrap();
-            assert!(
-                cmd.contains(&format!("printf {expected_status}")),
-                "got command: {cmd}"
-            );
+            assert!(cmd.contains(&format!("printf {expected_status}")));
             crate::hooks::cleanup_hook_status_dir(instance_id);
         }
     }
@@ -6670,18 +6542,8 @@ volume_ignores = ["target", "node_modules"]
             .to_string();
         let expected_repo_target = format!("/workspace/{}/target", repo_name);
         let expected_repo_node = format!("/workspace/{}/node_modules", repo_name);
-        assert!(
-            config.anonymous_volumes.contains(&expected_repo_target),
-            "anonymous_volumes should contain parent repo target ({}), got: {:?}",
-            expected_repo_target,
-            config.anonymous_volumes
-        );
-        assert!(
-            config.anonymous_volumes.contains(&expected_repo_node),
-            "anonymous_volumes should contain parent repo node_modules ({}), got: {:?}",
-            expected_repo_node,
-            config.anonymous_volumes
-        );
+        assert!(config.anonymous_volumes.contains(&expected_repo_target));
+        assert!(config.anonymous_volumes.contains(&expected_repo_node));
     }
 
     /// Regression test: volume_ignores must still apply to the workspace_path
@@ -6725,12 +6587,7 @@ volume_ignores = ["target"]
             .to_string_lossy()
             .to_string();
         let expected_wt_target = format!("/workspace/{}/main/target", main_name);
-        assert!(
-            config.anonymous_volumes.contains(&expected_wt_target),
-            "anonymous_volumes should contain worktree target ({}), got: {:?}",
-            expected_wt_target,
-            config.anonymous_volumes
-        );
+        assert!(config.anonymous_volumes.contains(&expected_wt_target));
     }
 
     // --- prepare_sandbox_dir / clean_files tests ---
@@ -6809,10 +6666,7 @@ volume_ignores = ["target"]
 
         prepare_sandbox_dir(&mount, home.path(), None, CredentialFold::Freshest).unwrap();
 
-        assert!(
-            !sandbox_dir.join("opencode.db").exists(),
-            "Host database should not be copied to sandbox"
-        );
+        assert!(!sandbox_dir.join("opencode.db").exists());
         assert!(
             sandbox_dir.join("some-config.txt").exists(),
             "Non-skipped files should still be copied"

@@ -188,10 +188,7 @@ mod tests {
         for index in 0..=PRIME_AGENT_MAX_SESSION_FILES {
             std::fs::write(sessions.join(format!("{index:04}.txt")), b"noise").unwrap();
         }
-        assert!(
-            scanned_ids(tmp.path()).is_empty(),
-            "fails closed above the entry cap"
-        );
+        assert!(scanned_ids(tmp.path()).is_empty());
     }
 
     #[cfg(unix)]

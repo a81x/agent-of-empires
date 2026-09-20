@@ -664,8 +664,7 @@ mod tests {
                 .collect();
             assert_eq!(
                 pick_native_config_dir(explicit, reads, &env, daemon_env),
-                expected,
-                "{label}"
+                expected
             );
         }
     }
@@ -796,10 +795,7 @@ mod tests {
         write(home.path(), ".claude.json", "{ not json");
         write(home.path(), ".codex/config.toml", "this = = not toml");
         for agent in ["claude", "codex"] {
-            assert!(
-                load_native_mcp_servers(agent, home.path()).is_err(),
-                "{agent}"
-            );
+            assert!(load_native_mcp_servers(agent, home.path()).is_err());
         }
     }
 
@@ -922,10 +918,7 @@ enabled = true
             let view = resolve_surface("codex", None, &cwd);
             let expected: &[&str] = if enabled { &["toggle"] } else { &[] };
             assert_eq!(resolved_names(&view.effective), expected);
-            assert!(
-                view.kept_on_removal.is_empty(),
-                "disabling is not a removal"
-            );
+            assert!(view.kept_on_removal.is_empty());
             assert!(view.conflicts.is_empty(), "re-enabling must not conflict");
             assert!(!view.drift_paused);
         }

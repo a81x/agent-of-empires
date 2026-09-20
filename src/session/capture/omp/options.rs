@@ -314,10 +314,7 @@ mod tests {
             "--cwd=project/[ab]",
             "--cwd=project/{one,two}",
         ] {
-            assert!(
-                OmpCliCaptureOptions::parse(expansion).is_err(),
-                "{expansion}"
-            );
+            assert!(OmpCliCaptureOptions::parse(expansion).is_err());
         }
         assert_eq!(
             OmpCliCaptureOptions::parse("--add-dir ~/shared --cwd=~/project")
@@ -338,8 +335,7 @@ mod tests {
         ] {
             assert_eq!(
                 OmpCliCaptureOptions::parse(literal).unwrap().cwd.as_deref(),
-                Some(Path::new(expected)),
-                "{literal}"
+                Some(Path::new(expected))
             );
         }
     }

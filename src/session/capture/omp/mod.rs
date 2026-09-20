@@ -777,8 +777,7 @@ mod tests {
             };
             assert_eq!(
                 lexical_store_session_path(&meta.layout, &breadcrumb).is_ok(),
-                expect_ok,
-                "{label}"
+                expect_ok
             );
         }
         let breadcrumb = Breadcrumb {
@@ -808,10 +807,7 @@ mod tests {
         let capture = || capture_omp_session_id_from_terminal(&meta, &HashSet::new(), "pts-1");
         assert_eq!(capture().unwrap(), ID, "cross-project targets are accepted");
         set_mtime_ms(&breadcrumb, meta.launched_at_ms);
-        assert!(
-            capture().is_err(),
-            "same-watermark breadcrumb may be a previous pane's"
-        );
+        assert!(capture().is_err());
         set_mtime_ms(&breadcrumb, meta.launched_at_ms + 1);
         assert_eq!(capture().unwrap(), ID);
         write_session(&session, ID, "/wrong", "");

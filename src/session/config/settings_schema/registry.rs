@@ -164,14 +164,8 @@ mod tests {
                 assert!(obj.contains_key(key), "descriptor missing `{key}`: {d}");
             }
             assert!(d["widget"].get("kind").is_some(), "widget not tagged: {d}");
-            assert!(
-                d["web_write"].get("policy").is_some(),
-                "web_write not tagged: {d}"
-            );
-            assert!(
-                d["validation"].get("rule").is_some(),
-                "validation not tagged: {d}"
-            );
+            assert!(d["web_write"].get("policy").is_some());
+            assert!(d["validation"].get("rule").is_some());
         }
     }
 
