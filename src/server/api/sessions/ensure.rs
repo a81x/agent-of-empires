@@ -32,9 +32,6 @@ pub async fn ensure_session(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    // CityHall: only act on structured sessions this mode created; refuse a
-    // non-structured (or unknown) target so a locked-down client cannot
-    // respawn/destroy/edit an enumerated plain session. See #7.
     if let Some(resp) = cityhall_block_non_structured(&state, &id).await {
         return resp;
     }

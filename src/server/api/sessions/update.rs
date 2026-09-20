@@ -33,9 +33,6 @@ pub async fn update_session_group(
     Path(id): Path<String>,
     body: Result<Json<UpdateGroupBody>, axum::extract::rejection::JsonRejection>,
 ) -> impl IntoResponse {
-    // CityHall: only act on structured sessions this mode created; refuse a
-    // non-structured (or unknown) target so a locked-down client cannot
-    // respawn/destroy/edit an enumerated plain session. See #7.
     if let Some(resp) = cityhall_block_non_structured(&state, &id).await {
         return resp;
     }
@@ -220,9 +217,6 @@ pub async fn update_session_notifications(
     Path(id): Path<String>,
     body: Result<Json<UpdateNotificationsBody>, axum::extract::rejection::JsonRejection>,
 ) -> impl IntoResponse {
-    // CityHall: only act on structured sessions this mode created; refuse a
-    // non-structured (or unknown) target so a locked-down client cannot
-    // respawn/destroy/edit an enumerated plain session. See #7.
     if let Some(resp) = cityhall_block_non_structured(&state, &id).await {
         return resp;
     }
@@ -348,9 +342,6 @@ pub async fn update_session_diff_base(
     Path(id): Path<String>,
     body: Result<Json<UpdateDiffBaseBody>, axum::extract::rejection::JsonRejection>,
 ) -> impl IntoResponse {
-    // CityHall: only act on structured sessions this mode created; refuse a
-    // non-structured (or unknown) target so a locked-down client cannot
-    // respawn/destroy/edit an enumerated plain session. See #7.
     if let Some(resp) = cityhall_block_non_structured(&state, &id).await {
         return resp;
     }

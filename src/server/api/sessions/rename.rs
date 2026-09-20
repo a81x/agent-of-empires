@@ -180,8 +180,6 @@ pub async fn rename_session(
     Path(id): Path<String>,
     body: Result<Json<RenameSessionBody>, axum::extract::rejection::JsonRejection>,
 ) -> impl IntoResponse {
-    // CityHall: refuse a non-structured or unknown target so a locked-down
-    // client cannot respawn/destroy/edit an enumerated plain session (#7).
     if let Some(resp) = cityhall_block_non_structured(&state, &id).await {
         return resp;
     }
@@ -605,8 +603,6 @@ pub async fn set_worktree_name(
     Path(id): Path<String>,
     body: Result<Json<SetWorktreeNameBody>, axum::extract::rejection::JsonRejection>,
 ) -> impl IntoResponse {
-    // CityHall: refuse a non-structured or unknown target so a locked-down
-    // client cannot respawn/destroy/edit an enumerated plain session (#7).
     if let Some(resp) = cityhall_block_non_structured(&state, &id).await {
         return resp;
     }

@@ -438,8 +438,6 @@ pub async fn delete_session(
     Path(id): Path<String>,
     body: Option<Json<DeleteSessionBody>>,
 ) -> impl IntoResponse {
-    // CityHall: refuse a non-structured or unknown target so a locked-down
-    // client cannot respawn/destroy/edit an enumerated plain session (#7).
     if let Some(resp) = cityhall_block_non_structured(&state, &id).await {
         return resp;
     }
