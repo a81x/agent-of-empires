@@ -12,9 +12,9 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 
-use super::api_error;
 use super::validate_profile_name;
 use super::AppState;
+use super::{api_error, read_only_response};
 use crate::server::auth::AuthenticatedTokenHash;
 use crate::server::auth::{handler_elevated, AuthenticatedSession, LoopbackTrusted};
 use crate::session::config::settings_schema::{
@@ -288,13 +288,7 @@ pub async fn update_settings(
         return resp;
     }
     if state.read_only {
-        return (
-            StatusCode::FORBIDDEN,
-            Json(
-                serde_json::json!({"error": "read_only", "message": "Server is in read-only mode"}),
-            ),
-        )
-            .into_response();
+        return read_only_response();
     }
     let Json(mut body) = match body {
         Ok(b) => b,
@@ -490,13 +484,7 @@ pub async fn update_theme(
     body: Result<Json<ThemePatch>, axum::extract::rejection::JsonRejection>,
 ) -> impl IntoResponse {
     if state.read_only {
-        return (
-            StatusCode::FORBIDDEN,
-            Json(
-                serde_json::json!({"error": "read_only", "message": "Server is in read-only mode"}),
-            ),
-        )
-            .into_response();
+        return read_only_response();
     }
     let Json(mut patch) = match body {
         Ok(b) => b,
@@ -582,13 +570,7 @@ pub async fn update_theme(
 /// `config.toml`, so a corrupt global config can never block this flag.
 pub async fn mark_web_tour_seen(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     if state.read_only {
-        return (
-            StatusCode::FORBIDDEN,
-            Json(
-                serde_json::json!({"error": "read_only", "message": "Server is in read-only mode"}),
-            ),
-        )
-            .into_response();
+        return read_only_response();
     }
 
     let result = tokio::task::spawn_blocking(|| {
@@ -705,13 +687,7 @@ pub async fn mark_tip_seen(
     body: Result<Json<MarkTipSeenBody>, axum::extract::rejection::JsonRejection>,
 ) -> impl IntoResponse {
     if state.read_only {
-        return (
-            StatusCode::FORBIDDEN,
-            Json(
-                serde_json::json!({"error": "read_only", "message": "Server is in read-only mode"}),
-            ),
-        )
-            .into_response();
+        return read_only_response();
     }
     let Json(MarkTipSeenBody { id }) = match body {
         Ok(b) => b,
@@ -772,13 +748,7 @@ pub async fn set_show_tips(
     body: Result<Json<SetShowTipsBody>, axum::extract::rejection::JsonRejection>,
 ) -> impl IntoResponse {
     if state.read_only {
-        return (
-            StatusCode::FORBIDDEN,
-            Json(
-                serde_json::json!({"error": "read_only", "message": "Server is in read-only mode"}),
-            ),
-        )
-            .into_response();
+        return read_only_response();
     }
     let Json(SetShowTipsBody { enabled }) = match body {
         Ok(b) => b,
@@ -833,13 +803,7 @@ pub async fn dismiss_update(
     body: Result<Json<DismissUpdateBody>, axum::extract::rejection::JsonRejection>,
 ) -> impl IntoResponse {
     if state.read_only {
-        return (
-            StatusCode::FORBIDDEN,
-            Json(
-                serde_json::json!({"error": "read_only", "message": "Server is in read-only mode"}),
-            ),
-        )
-            .into_response();
+        return read_only_response();
     }
     let Json(body) = match body {
         Ok(b) => b,
@@ -913,13 +877,7 @@ pub async fn patch_web_ui_state(
     >,
 ) -> impl IntoResponse {
     if state.read_only {
-        return (
-            StatusCode::FORBIDDEN,
-            Json(
-                serde_json::json!({"error": "read_only", "message": "Server is in read-only mode"}),
-            ),
-        )
-            .into_response();
+        return read_only_response();
     }
     let Json(patch) = match body {
         Ok(b) => b,
@@ -994,13 +952,7 @@ pub async fn mark_volume_ignores_globs_acknowledged(
     State(state): State<Arc<AppState>>,
 ) -> impl IntoResponse {
     if state.read_only {
-        return (
-            StatusCode::FORBIDDEN,
-            Json(
-                serde_json::json!({"error": "read_only", "message": "Server is in read-only mode"}),
-            ),
-        )
-            .into_response();
+        return read_only_response();
     }
 
     let result = tokio::task::spawn_blocking(|| {
@@ -1590,13 +1542,7 @@ pub async fn create_profile(
     body: Result<Json<CreateProfileBody>, axum::extract::rejection::JsonRejection>,
 ) -> impl IntoResponse {
     if state.read_only {
-        return (
-            StatusCode::FORBIDDEN,
-            Json(
-                serde_json::json!({"error": "read_only", "message": "Server is in read-only mode"}),
-            ),
-        )
-            .into_response();
+        return read_only_response();
     }
     // Profiles are hidden entirely in CityHall (no picker, no CRUD UI).
     if let Some(resp) = super::cityhall_block(&state) {
@@ -1627,13 +1573,7 @@ pub async fn delete_profile(
     axum::extract::Path(name): axum::extract::Path<String>,
 ) -> impl IntoResponse {
     if state.read_only {
-        return (
-            StatusCode::FORBIDDEN,
-            Json(
-                serde_json::json!({"error": "read_only", "message": "Server is in read-only mode"}),
-            ),
-        )
-            .into_response();
+        return read_only_response();
     }
     // Profiles are hidden entirely in CityHall (no picker, no CRUD UI).
     if let Some(resp) = super::cityhall_block(&state) {
@@ -1673,13 +1613,7 @@ pub async fn rename_profile(
     body: Result<Json<RenameProfileBody>, axum::extract::rejection::JsonRejection>,
 ) -> impl IntoResponse {
     if state.read_only {
-        return (
-            StatusCode::FORBIDDEN,
-            Json(
-                serde_json::json!({"error": "read_only", "message": "Server is in read-only mode"}),
-            ),
-        )
-            .into_response();
+        return read_only_response();
     }
     // Profiles are hidden entirely in CityHall (no picker, no CRUD UI).
     if let Some(resp) = super::cityhall_block(&state) {
@@ -1720,13 +1654,7 @@ pub async fn default_profile(
     body: Result<Json<DefaultProfileBody>, axum::extract::rejection::JsonRejection>,
 ) -> impl IntoResponse {
     if state.read_only {
-        return (
-            StatusCode::FORBIDDEN,
-            Json(
-                serde_json::json!({"error": "read_only", "message": "Server is in read-only mode"}),
-            ),
-        )
-            .into_response();
+        return read_only_response();
     }
     // Profiles are hidden entirely in CityHall (no picker, no CRUD UI).
     if let Some(resp) = super::cityhall_block(&state) {
@@ -1833,13 +1761,7 @@ pub async fn update_profile_settings(
     body: Result<Json<serde_json::Value>, axum::extract::rejection::JsonRejection>,
 ) -> impl IntoResponse {
     if state.read_only {
-        return (
-            StatusCode::FORBIDDEN,
-            Json(
-                serde_json::json!({"error": "read_only", "message": "Server is in read-only mode"}),
-            ),
-        )
-            .into_response();
+        return read_only_response();
     }
     let Json(mut body) = match body {
         Ok(b) => b,

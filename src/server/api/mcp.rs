@@ -17,8 +17,8 @@ use axum::{
 };
 use serde::Deserialize;
 
-use super::api_error;
 use super::AppState;
+use super::{api_error, read_only_response};
 use crate::session::config::profile_config;
 use crate::session::mcp::mcp_model;
 use crate::session::mcp::mcp_state::{self, ConflictWinner};

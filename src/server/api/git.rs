@@ -5,8 +5,8 @@ use std::sync::Arc;
 use axum::{extract::State, http::StatusCode, response::IntoResponse, Json};
 use serde::{Deserialize, Serialize};
 
-use super::api_error;
 use super::AppState;
+use super::{api_error, read_only_response};
 
 // --- Clone repository ---
 
@@ -79,13 +79,7 @@ pub async fn clone_repo(
     body: Result<Json<CloneRepoBody>, axum::extract::rejection::JsonRejection>,
 ) -> impl IntoResponse {
     if state.read_only {
-        return (
-            StatusCode::FORBIDDEN,
-            Json(
-                serde_json::json!({"error": "read_only", "message": "Server is in read-only mode"}),
-            ),
-        )
-            .into_response();
+        return read_only_response();
     }
     // Cloning writes to $HOME and fetches from the network; the CityHall "Clone
     // URL" action is hidden in the UI, so close the endpoint too.

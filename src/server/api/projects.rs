@@ -14,8 +14,8 @@ use serde::{Deserialize, Serialize};
 use crate::session::projects::{self, RegistryError};
 use crate::session::{Project, ProjectScope};
 
-use super::api_error;
 use super::AppState;
+use super::{api_error, read_only_response};
 
 #[derive(Serialize)]
 pub struct ProjectResponse {
@@ -135,13 +135,7 @@ pub async fn create_project(
     }
     if state.read_only {
         tracing::warn!(target: "http.api.projects", reason = "read_only", "rejected create");
-        return (
-            StatusCode::FORBIDDEN,
-            Json(
-                serde_json::json!({"error": "read_only", "message": "Server is in read-only mode"}),
-            ),
-        )
-            .into_response();
+        return read_only_response();
     }
     let Json(body) = match body {
         Ok(b) => b,
@@ -236,13 +230,7 @@ pub async fn delete_project(
     }
     if state.read_only {
         tracing::warn!(target: "http.api.projects", reason = "read_only", "rejected delete");
-        return (
-            StatusCode::FORBIDDEN,
-            Json(
-                serde_json::json!({"error": "read_only", "message": "Server is in read-only mode"}),
-            ),
-        )
-            .into_response();
+        return read_only_response();
     }
 
     let scope = match q.scope.as_deref() {
@@ -336,13 +324,7 @@ pub async fn update_project(
     }
     if state.read_only {
         tracing::warn!(target: "http.api.projects", reason = "read_only", "rejected update");
-        return (
-            StatusCode::FORBIDDEN,
-            Json(
-                serde_json::json!({"error": "read_only", "message": "Server is in read-only mode"}),
-            ),
-        )
-            .into_response();
+        return read_only_response();
     }
 
     let Json(body) = match body {

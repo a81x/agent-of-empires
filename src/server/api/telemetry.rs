@@ -11,8 +11,8 @@ use std::sync::Arc;
 use axum::{extract::State, http::StatusCode, response::IntoResponse, Json};
 use serde::{Deserialize, Serialize};
 
-use super::api_error;
 use super::AppState;
+use super::{api_error, read_only_response};
 
 #[derive(Serialize)]
 pub struct TelemetryStatus {
@@ -48,13 +48,7 @@ pub async fn set_telemetry_consent(
     body: Result<Json<ConsentRequest>, axum::extract::rejection::JsonRejection>,
 ) -> impl IntoResponse {
     if state.read_only {
-        return (
-            StatusCode::FORBIDDEN,
-            Json(
-                serde_json::json!({"error": "read_only", "message": "Server is in read-only mode"}),
-            ),
-        )
-            .into_response();
+        return read_only_response();
     }
     let Json(req) = match body {
         Ok(b) => b,
@@ -107,13 +101,7 @@ pub async fn post_telemetry_seen(
     body: Result<Json<SeenRequest>, axum::extract::rejection::JsonRejection>,
 ) -> impl IntoResponse {
     if state.read_only {
-        return (
-            StatusCode::FORBIDDEN,
-            Json(
-                serde_json::json!({"error": "read_only", "message": "Server is in read-only mode"}),
-            ),
-        )
-            .into_response();
+        return read_only_response();
     }
     let Json(req) = match body {
         Ok(b) => b,
@@ -178,13 +166,7 @@ pub async fn post_telemetry_structured_interaction(
     body: Result<Json<StructuredInteractionRequest>, axum::extract::rejection::JsonRejection>,
 ) -> impl IntoResponse {
     if state.read_only {
-        return (
-            StatusCode::FORBIDDEN,
-            Json(
-                serde_json::json!({"error": "read_only", "message": "Server is in read-only mode"}),
-            ),
-        )
-            .into_response();
+        return read_only_response();
     }
     let Json(req) = match body {
         Ok(b) => b,

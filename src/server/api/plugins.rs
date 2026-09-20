@@ -16,16 +16,12 @@ use axum::Json;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-use super::AppState;
+use super::{api_error, AppState};
 use crate::plugin;
 use crate::plugin::install::OperationLog;
 use crate::server::auth::{handler_elevated, AuthenticatedSession, LoopbackTrusted};
 
 const CAP_COMPOSER_READ: &str = "composer.read";
-
-fn error_response(status: StatusCode, code: &str, message: String) -> Response {
-    (status, Json(json!({ "error": code, "message": message }))).into_response()
-}
 
 /// Resolve the read-only and elevation gates shared by every mutation.
 /// Elevation goes through `handler_elevated`, so a loopback-trusted
@@ -38,10 +34,10 @@ async fn mutation_gate(
     loopback_trusted: bool,
 ) -> Result<(), Response> {
     if state.read_only {
-        return Err(error_response(
+        return Err(api_error(
             StatusCode::FORBIDDEN,
             "read_only",
-            "Server is in read-only mode".into(),
+            "Server is in read-only mode",
         ));
     }
     // CityHall renders the Plugins tab read-only: install / uninstall / enable /
@@ -52,10 +48,10 @@ async fn mutation_gate(
         return Err(resp);
     }
     if !handler_elevated(state, session, loopback_trusted).await {
-        return Err(error_response(
+        return Err(api_error(
             StatusCode::FORBIDDEN,
             "elevation_required",
-            "Re-enter the passphrase to continue".into(),
+            "Re-enter the passphrase to continue",
         ));
     }
     Ok(())
@@ -230,7 +226,7 @@ pub struct DiscoverQuery {
 pub async fn plugin_discover(Query(query): Query<DiscoverQuery>) -> Response {
     match plugin::discover::discover(query.q.as_deref()).await {
         Ok(results) => Json(json!({ "results": results })).into_response(),
-        Err(e) => error_response(StatusCode::BAD_GATEWAY, "discover_failed", format!("{e:#}")),
+        Err(e) => api_error(StatusCode::BAD_GATEWAY, "discover_failed", format!("{e:#}")),
     }
 }
 
@@ -249,7 +245,7 @@ pub async fn plugin_details(Query(query): Query<DetailsQuery>) -> Response {
         // GitHub fetch failure is reported in-band (manifest_error / empty
         // release tags), so a hard error here is bad client input, not an
         // upstream outage.
-        Err(e) => error_response(StatusCode::BAD_REQUEST, "invalid_source", format!("{e:#}")),
+        Err(e) => api_error(StatusCode::BAD_REQUEST, "invalid_source", format!("{e:#}")),
     }
 }
 
@@ -284,10 +280,10 @@ pub async fn invoke_plugin_action(
     Json(body): Json<PluginActionBody>,
 ) -> Response {
     if state.read_only {
-        return error_response(
+        return api_error(
             StatusCode::FORBIDDEN,
             "read_only",
-            "Server is in read-only mode".into(),
+            "Server is in read-only mode",
         );
     }
     // Plugin panes are hidden in CityHall (plugins are display only).
@@ -295,10 +291,10 @@ pub async fn invoke_plugin_action(
         return resp;
     }
     let Some(host) = state.plugin_host.as_ref() else {
-        return error_response(
+        return api_error(
             StatusCode::SERVICE_UNAVAILABLE,
             "no_host",
-            "Plugin host is not running".into(),
+            "Plugin host is not running",
         );
     };
     // Read the UI revision before forwarding, not the value the dashboard
@@ -330,7 +326,7 @@ pub async fn invoke_plugin_action(
         )
             .into_response()
     } else {
-        error_response(
+        api_error(
             StatusCode::NOT_FOUND,
             "no_worker",
             format!("No running worker for plugin {id}"),
@@ -366,10 +362,10 @@ pub async fn invoke_plugin_command(
     Json(body): Json<InvokeCommandBody>,
 ) -> Response {
     if state.read_only {
-        return error_response(
+        return api_error(
             StatusCode::FORBIDDEN,
             "read_only",
-            "Server is in read-only mode".into(),
+            "Server is in read-only mode",
         );
     }
     // Plugin commands are not surfaced in CityHall (plugins are display only).
@@ -388,14 +384,14 @@ pub async fn invoke_plugin_command(
         }
     }
     let Some((plugin_id, has_action)) = resolved else {
-        return error_response(
+        return api_error(
             StatusCode::NOT_FOUND,
             "unknown_command",
             format!("No active plugin command {fqid}"),
         );
     };
     if has_action {
-        return error_response(
+        return api_error(
             StatusCode::BAD_REQUEST,
             "client_action_command",
             format!(
@@ -410,17 +406,17 @@ pub async fn invoke_plugin_command(
         .iter()
         .any(|i| i.id == body.session_id)
     {
-        return error_response(
+        return api_error(
             StatusCode::NOT_FOUND,
             "unknown_session",
             format!("No session {}", body.session_id),
         );
     }
     let Some(host) = state.plugin_host.as_ref() else {
-        return error_response(
+        return api_error(
             StatusCode::SERVICE_UNAVAILABLE,
             "no_host",
-            "Plugin host is not running".into(),
+            "Plugin host is not running",
         );
     };
     let params = json!({ "command": fqid, "session_id": body.session_id });
@@ -430,7 +426,7 @@ pub async fn invoke_plugin_command(
     {
         (StatusCode::ACCEPTED, Json(json!({ "ok": true }))).into_response()
     } else {
-        error_response(
+        api_error(
             StatusCode::NOT_FOUND,
             "no_worker",
             format!("No running worker for plugin {plugin_id}"),
@@ -468,15 +464,15 @@ pub async fn plugin_update_preview(
     Path(id): Path<String>,
 ) -> Response {
     if state.read_only {
-        return error_response(
+        return api_error(
             StatusCode::FORBIDDEN,
             "read_only",
-            "Server is in read-only mode".into(),
+            "Server is in read-only mode",
         );
     }
     match plugin::install::preview_update(&id).await {
         Ok(preview) => Json(preview).into_response(),
-        Err(e) => error_response(StatusCode::BAD_GATEWAY, "preview_failed", format!("{e:#}")),
+        Err(e) => api_error(StatusCode::BAD_GATEWAY, "preview_failed", format!("{e:#}")),
     }
 }
 
@@ -544,8 +540,8 @@ pub async fn dismiss_plugin_update(
     .await;
     match result {
         Ok(Ok(())) => (StatusCode::OK, Json(json!({ "ok": true }))).into_response(),
-        Ok(Err(e)) => error_response(StatusCode::BAD_REQUEST, "plugin_error", format!("{e:#}")),
-        Err(e) => error_response(StatusCode::INTERNAL_SERVER_ERROR, "internal", e.to_string()),
+        Ok(Err(e)) => api_error(StatusCode::BAD_REQUEST, "plugin_error", format!("{e:#}")),
+        Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, "internal", e.to_string()),
     }
 }
 
@@ -579,8 +575,8 @@ pub async fn set_plugin_enabled(
             }
             list_plugins().await.into_response()
         }
-        Ok(Err(e)) => error_response(StatusCode::BAD_REQUEST, "plugin_error", format!("{e:#}")),
-        Err(e) => error_response(StatusCode::INTERNAL_SERVER_ERROR, "internal", e.to_string()),
+        Ok(Err(e)) => api_error(StatusCode::BAD_REQUEST, "plugin_error", format!("{e:#}")),
+        Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, "internal", e.to_string()),
     }
 }
 
@@ -598,9 +594,7 @@ pub async fn restart_plugin_worker(
     }
     let registry = match tokio::task::spawn_blocking(plugin::reload_registry).await {
         Ok(registry) => registry,
-        Err(e) => {
-            return error_response(StatusCode::INTERNAL_SERVER_ERROR, "internal", e.to_string())
-        }
+        Err(e) => return api_error(StatusCode::INTERNAL_SERVER_ERROR, "internal", e.to_string()),
     };
     if let Some(host) = state.plugin_host.clone() {
         host.restart_worker(&id, &registry).await;
@@ -764,10 +758,10 @@ where
     Fut: std::future::Future<Output = anyhow::Result<()>> + Send + 'static,
 {
     let Some((job_id, log_path)) = state.plugin_jobs.begin(kind, target) else {
-        return error_response(
+        return api_error(
             StatusCode::CONFLICT,
             "plugin_job_active",
-            "Another plugin operation is already running".into(),
+            "Another plugin operation is already running",
         );
     };
     let jobs = state.plugin_jobs.clone();
@@ -796,10 +790,10 @@ pub async fn preview_plugin_install(
     Json(body): Json<InstallPreviewBody>,
 ) -> Response {
     if state.read_only {
-        return error_response(
+        return api_error(
             StatusCode::FORBIDDEN,
             "read_only",
-            "Server is in read-only mode".into(),
+            "Server is in read-only mode",
         );
     }
     // The marketplace / install flow is hidden and closed in CityHall.
@@ -808,7 +802,7 @@ pub async fn preview_plugin_install(
     }
     match plugin::install::preview_install(&body.source).await {
         Ok(consent) => Json(consent).into_response(),
-        Err(e) => error_response(StatusCode::BAD_GATEWAY, "preview_failed", format!("{e:#}")),
+        Err(e) => api_error(StatusCode::BAD_GATEWAY, "preview_failed", format!("{e:#}")),
     }
 }
 
@@ -888,7 +882,7 @@ pub async fn plugin_job_status(
     Query(q): Query<JobLogQuery>,
 ) -> Response {
     let Some(job) = state.plugin_jobs.get(&job_id) else {
-        return error_response(
+        return api_error(
             StatusCode::NOT_FOUND,
             "job_not_found",
             format!("No plugin job {job_id}"),
@@ -911,12 +905,12 @@ pub async fn plugin_job_status(
             }
         }))
         .into_response(),
-        Ok(Err(e)) => error_response(
+        Ok(Err(e)) => api_error(
             StatusCode::INTERNAL_SERVER_ERROR,
             "log_read_failed",
             format!("{e}"),
         ),
-        Err(e) => error_response(StatusCode::INTERNAL_SERVER_ERROR, "internal", e.to_string()),
+        Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, "internal", e.to_string()),
     }
 }
 
