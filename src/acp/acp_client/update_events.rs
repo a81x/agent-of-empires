@@ -108,6 +108,24 @@ pub(super) fn is_heartbeat_tool_call_id(id: &str) -> bool {
         .is_some_and(|(_, suffix)| !suffix.is_empty() && suffix.bytes().all(|b| b.is_ascii_digit()))
 }
 
+/// A wake or monitor tool's own event, `None` for any other tool or a profile
+/// that does not synthesize them. Args reach `ToolCall` on some adapters and
+/// only a later `ToolCallUpdate` on others (#1091), so both arms call this.
+fn wake_tool_event(
+    profile: &'static agent_profiles::AgentProfile,
+    title: Option<&str>,
+    raw: &serde_json::Value,
+) -> Option<Event> {
+    if !profile.supports_wakeup_tools {
+        return None;
+    }
+    match title? {
+        "ScheduleWakeup" => wakeup_event_from_raw(raw),
+        "Monitor" => monitor_event_from_raw(raw),
+        _ => None,
+    }
+}
+
 /// Unmapped variants pass through as `RawAgentUpdate`. `profile` gates the
 /// claude-specific synthesis (subagent linkage, ExitPlanMode, wake tools).
 pub(super) fn map_update_to_events(
@@ -193,11 +211,7 @@ pub(super) fn map_update_to_events(
                     events.push(Event::PlanUpdated { plan });
                 }
             }
-            if profile.supports_wakeup_tools && tc.title == "ScheduleWakeup" {
-                if let Some(event) = wakeup_event_from_raw(&raw_args) {
-                    events.push(event);
-                }
-            }
+            events.extend(wake_tool_event(profile, Some(&tc.title), &raw_args));
             events
         }
         SessionUpdate::ToolCallUpdate(update) => {
@@ -205,21 +219,15 @@ pub(super) fn map_update_to_events(
             if profile.emits_heartbeat_keepalives && is_heartbeat_tool_call_id(&id) {
                 return Vec::new();
             }
-            let is_error = matches!(
-                update.fields.status,
-                Some(agent_client_protocol::schema::v1::ToolCallStatus::Failed)
-            );
-            let completed = matches!(
-                update.fields.status,
-                Some(agent_client_protocol::schema::v1::ToolCallStatus::Completed)
-                    | Some(agent_client_protocol::schema::v1::ToolCallStatus::Failed)
-            );
+            use agent_client_protocol::schema::v1::ToolCallStatus;
             // `InProgress` re-stamps `started_at` so durations measure the
             // tool, not adapter scheduling (#1060).
-            let in_progress = matches!(
-                update.fields.status,
-                Some(agent_client_protocol::schema::v1::ToolCallStatus::InProgress)
-            );
+            let (is_error, completed, in_progress) = match update.fields.status {
+                Some(ToolCallStatus::Failed) => (true, true, false),
+                Some(ToolCallStatus::Completed) => (false, true, false),
+                Some(ToolCallStatus::InProgress) => (false, false, true),
+                _ => (false, false, false),
+            };
             let content_text = update
                 .fields
                 .content
@@ -243,16 +251,16 @@ pub(super) fn map_update_to_events(
                 .as_ref()
                 .filter(|value| !value.is_null())
                 .map(preview_args);
-            let output_blocks = if completed {
-                update
-                    .fields
-                    .content
-                    .as_ref()
-                    .map(|blocks| extract_tool_output_blocks(blocks))
-                    .unwrap_or_default()
-            } else {
-                Vec::new()
-            };
+            let output_blocks = completed
+                .then(|| {
+                    update
+                        .fields
+                        .content
+                        .as_deref()
+                        .map(extract_tool_output_blocks)
+                })
+                .flatten()
+                .unwrap_or_default();
             let new_title = update.fields.title.clone();
             let mut events: Vec<Event> = Vec::new();
             if new_title.is_some()
@@ -264,11 +272,7 @@ pub(super) fn map_update_to_events(
                     tool_call_id: id.clone(),
                     title: new_title,
                     args_preview: new_args_preview,
-                    started_at: if in_progress {
-                        Some(chrono::Utc::now())
-                    } else {
-                        None
-                    },
+                    started_at: in_progress.then(chrono::Utc::now),
                     diffs: new_diffs,
                 });
             }
@@ -298,24 +302,12 @@ pub(super) fn map_update_to_events(
                     None => events.push(Event::RawAgentUpdate { payload }),
                 }
             }
-            // Wake and Monitor args only arrive on a later update (#1091).
-            if profile.supports_wakeup_tools
-                && matches!(update.fields.title.as_deref(), Some("ScheduleWakeup"))
-            {
-                if let Some(raw) = update.fields.raw_input.as_ref() {
-                    if let Some(event) = wakeup_event_from_raw(raw) {
-                        events.push(event);
-                    }
-                }
-            }
-            if profile.supports_wakeup_tools
-                && matches!(update.fields.title.as_deref(), Some("Monitor"))
-            {
-                if let Some(raw) = update.fields.raw_input.as_ref() {
-                    if let Some(event) = monitor_event_from_raw(raw) {
-                        events.push(event);
-                    }
-                }
+            if let Some(raw) = update.fields.raw_input.as_ref() {
+                events.extend(wake_tool_event(
+                    profile,
+                    update.fields.title.as_deref(),
+                    raw,
+                ));
             }
             events
         }
