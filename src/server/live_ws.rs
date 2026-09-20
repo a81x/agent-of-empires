@@ -1,4 +1,34 @@
 //! Live terminal view for the web dashboard.
+//!
+//! One WebSocket per viewer on `/sessions/{id}/live-ws`. There is no PTY and no
+//! `tmux attach`: the server publishes rendered windows and the client scrolls them.
+//!
+//! Server to client, JSON text frames, each carrying a monotonic `seq` plus the shared
+//! geometry block `rows`, `history`, `cursor` (`{"x","y"}` in window coordinates, or
+//! null), `altScreen`, `mouse`, `mouseSgr` and `pane0`
+//! (`{"cols","rows","left","top"}`, null unless the window is composited from a split):
+//!   - `{"type":"frame","content":"<ANSI text>",..}`: the whole window, history lines
+//!     first and the live screen as the last `rows` lines.
+//!   - `{"type":"patch","base":..,"shift":k,"lines":[[i,"<ANSI>"],..],..}`: sent in a
+//!     frame's place once the client advertises `caps.patch` and few rows changed. The
+//!     client drops its first `shift` rows, appends `shift` blank ones, then replaces
+//!     the listed rows. `base` names the `seq` it applies to.
+//!   - `{"type":"size_owner","is_owner":bool}`: only the owner resizes the shared tmux
+//!     window and may type; the lock lives in tmux user options, so the web view and the
+//!     native TUI honor the same owner.
+//!   - `{"type":"transport","grid":bool}`: `false` is the capture fallback, which cannot
+//!     suppress a half-drawn repaint.
+//!   - `{"type":"clipboard","text":"..."}`: an OSC 52 write by the pane.
+//!
+//! Client to server: binary frames are raw pane input (dropped for a read-only or
+//! non-owner client), and the control messages are `resize` (claim the size lock and
+//! size the window), `claim` / `claim_if_vacant` (take over from a non-owner), `window`
+//! (capture window in lines), `cadence` (fast at the live edge, idle otherwise),
+//! `resync` (lost patch continuity, send a full frame) and
+//! `{"type":"caps","deflate":bool,"patch":bool}`. With `deflate`, frame messages switch
+//! from text to binary: one connection-lifetime raw-deflate stream, sync-flushed per
+//! frame, carrying `u32-LE length || frame JSON` records, so consecutive near-identical
+//! frames compress against a shared dictionary. `size_owner` and close frames stay text.
 
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
