@@ -492,7 +492,7 @@
       "id": "telemetry.acp-seen",
       "kind": "mocked-playwright",
       "risk": "medium",
-      "specs": ["tests/acp-telemetry-seen.spec.ts"],
+      "specs": ["tests/acp-structured-view.spec.ts"],
       "components": ["web/src/App.tsx"]
     },
     {
@@ -1583,7 +1583,7 @@
       "id": "session.trash.read-only-composer",
       "kind": "mocked-playwright",
       "risk": "high",
-      "specs": ["tests/acp-trashed-composer.spec.ts"],
+      "specs": ["tests/acp-structured-view.spec.ts"],
       "components": ["web/src/components/acp/StructuredView.tsx"]
     },
     {
@@ -1874,7 +1874,7 @@
         "src/components/settings/__tests__/StructuredViewDisplaySettings.test.tsx",
         "src/components/acp/__tests__/StructuredViewRoot.test.tsx",
         "src/components/acp/Markdown.test.tsx",
-        "tests/acp-conversation-font-size.spec.ts"
+        "tests/acp-structured-view.spec.ts"
       ],
       "components": [
         "web/src/components/settings/StructuredViewDisplaySettings.tsx",
@@ -1958,7 +1958,7 @@
       "id": "acp.memory-recall",
       "kind": "live-playwright",
       "risk": "medium",
-      "specs": ["tests/live/acp-transcript.spec.ts", "tests/acp-memory-recall.spec.ts"],
+      "specs": ["tests/live/acp-transcript.spec.ts", "tests/acp-structured-view.spec.ts"],
       "components": [
         "web/src/components/acp/ToolCards.tsx",
         "web/src/components/acp/StructuredView.tsx",
@@ -2421,7 +2421,7 @@
       "id": "acp.story.composer-single-newline",
       "kind": "mocked-playwright",
       "risk": "high",
-      "specs": ["tests/acp-transcript-render.spec.ts"],
+      "specs": ["tests/acp-structured-view.spec.ts"],
       "components": ["web/src/components/acp/StructuredView.tsx", "web/src/components/acp/Markdown.tsx"]
     },
     {
@@ -3076,7 +3076,7 @@
       "id": "acp.story.composer-send-enter",
       "kind": "mocked-playwright",
       "risk": "high",
-      "specs": ["tests/acp-transcript-render.spec.ts"],
+      "specs": ["tests/acp-structured-view.spec.ts"],
       "components": ["web/src/components/acp/StructuredView.tsx", "web/src/components/acp/Composer.tsx"]
     },
     {
@@ -3097,21 +3097,21 @@
       "id": "acp.story.composer-streamed-response",
       "kind": "mocked-playwright",
       "risk": "high",
-      "specs": ["tests/acp-transcript-render.spec.ts"],
+      "specs": ["tests/acp-structured-view.spec.ts"],
       "components": ["web/src/components/acp/StructuredView.tsx", "web/src/components/acp/Markdown.tsx"]
     },
     {
       "id": "acp.story.chat-bubble-overflow",
       "kind": "mocked-playwright",
       "risk": "medium",
-      "specs": ["tests/acp-transcript-render.spec.ts"],
+      "specs": ["tests/acp-structured-view.spec.ts"],
       "components": ["web/src/components/acp/StructuredView.tsx", "web/src/components/acp/Markdown.tsx"]
     },
     {
       "id": "acp.story.composer-mobile-footer-actions",
       "kind": "mocked-playwright",
       "risk": "high",
-      "specs": ["tests/acp-composer-footer.spec.ts"],
+      "specs": ["tests/acp-structured-view.spec.ts"],
       "components": ["web/src/components/acp/Composer.tsx", "web/src/components/acp/SessionConfigControls.tsx"]
     },
     {
@@ -3210,14 +3210,14 @@
       "id": "acp.story.fold-failed-tool-card",
       "kind": "mocked-playwright",
       "risk": "medium",
-      "specs": ["tests/acp-tool-cards.spec.ts", "src/components/acp/ToolCards.render.test.tsx"],
+      "specs": ["tests/acp-structured-view.spec.ts", "src/components/acp/ToolCards.render.test.tsx"],
       "components": ["web/src/components/acp/ToolCards.tsx"]
     },
     {
       "id": "acp.story.edit-card-diff-scroll",
       "kind": "mocked-playwright",
       "risk": "medium",
-      "specs": ["tests/acp-tool-cards.spec.ts", "src/components/diff/__tests__/StringDiff.test.tsx"],
+      "specs": ["tests/acp-structured-view.spec.ts", "src/components/diff/__tests__/StringDiff.test.tsx"],
       "components": ["web/src/components/diff/StringDiff.tsx", "web/src/components/acp/ToolCards.tsx"]
     },
     {
