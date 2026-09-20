@@ -45,7 +45,7 @@ fn build(
     )
 }
 
-fn snapshot(surface: Surface, instances: &[Instance]) -> UsageSnapshot {
+fn build_snapshot(surface: Surface, instances: &[Instance]) -> UsageSnapshot {
     build(
         surface,
         instances,
@@ -185,7 +185,7 @@ fn snapshot_buckets_are_sanitized() {
     custom.tool = "/usr/local/bin/my-internal-agent".to_string();
     custom.detect_as = String::new();
 
-    let snapshot = snapshot(Surface::Tui, &[custom, Instance::new("c", "/p")]);
+    let snapshot = build_snapshot(Surface::Tui, &[custom, Instance::new("c", "/p")]);
     let serialized = serde_json::to_string(&snapshot).expect("serialize");
     for raw in ["my-internal-agent", "secret-project", "secret-session"] {
         assert!(!serialized.contains(raw), "{raw} leaked: {serialized}");
@@ -221,7 +221,7 @@ fn snapshot_buckets_are_sanitized() {
 #[serial]
 fn form_factor_maps_are_a_presence_set_on_the_wire() {
     let _tmp = opted_in();
-    let mut snapshot = snapshot(Surface::Serve, &[]);
+    let mut snapshot = build_snapshot(Surface::Serve, &[]);
     let empty_wire = serde_json::to_string(&snapshot).expect("serialize");
     for field in ["web_clients_seen", "structured_clients_seen"] {
         assert!(
@@ -262,7 +262,7 @@ fn substrate_census_partitions_sessions_into_allowlisted_buckets() {
         with_sandbox(Instance::new("e", "/p")),
     ];
     let total = instances.len() as u32;
-    let snapshot = snapshot(Surface::Serve, &instances);
+    let snapshot = build_snapshot(Surface::Serve, &instances);
 
     let sum: u32 = snapshot.sessions_by_substrate.values().sum();
     assert_eq!(
@@ -321,7 +321,7 @@ fn events_carry_create_count_and_distinct_idempotency_uuid() {
     .expect("snapshot built when opted in");
     assert_eq!(with_creates.session_creates_since_last_snapshot, 7);
 
-    let snap = snapshot(Surface::Tui, &[]);
+    let snap = build_snapshot(Surface::Tui, &[]);
     assert_eq!(snap.session_creates_since_last_snapshot, 0);
     assert!(!snap.uuid.is_empty());
     assert_ne!(snap.uuid, snap.install_id);
@@ -333,7 +333,7 @@ fn events_carry_create_count_and_distinct_idempotency_uuid() {
     );
 
     let proc = telemetry::build_process_start(Surface::Tui).expect("process_start built");
-    let snap2 = snapshot(Surface::Tui, &[]);
+    let snap2 = build_snapshot(Surface::Tui, &[]);
     assert_ne!(snap.uuid, snap2.uuid);
     assert_ne!(proc.uuid, snap.uuid);
 }
@@ -620,7 +620,7 @@ fn version_health_reports_coarse_buckets_only() {
     // Two cached releases newer than any plausible build.
     let secret_latest = "9999.1234.5678";
     write_update_cache(secret_latest, &[secret_latest, "9998.0.0"]);
-    let snapshot = snapshot(Surface::Serve, &[]);
+    let snapshot = build_snapshot(Surface::Serve, &[]);
     assert_eq!(snapshot.update_status, UpdateStatus::MajorBehind);
     assert_eq!(
         snapshot.update_releases_behind,
@@ -646,7 +646,7 @@ fn version_health_reports_coarse_buckets_only() {
 
     write_update_cache("9999.0.0", &["9999.0.0"]);
     assert_eq!(
-        snapshot(Surface::Serve, &[]).update_releases_behind,
+        build_snapshot(Surface::Serve, &[]).update_releases_behind,
         ReleasesBehind::OneBehind
     );
 }

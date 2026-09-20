@@ -140,7 +140,8 @@ fn test_cli_archive_tmux_teardown_honors_no_kill() {
                 "no_kill={no_kill}: tmux session '{name}' (#1868)"
             );
         }
-        let archived_at = h.read_sessions()[0]["archived_at"].as_str();
+        let sessions = h.read_sessions();
+        let archived_at = sessions[0]["archived_at"].as_str();
         assert!(
             archived_at.is_some_and(|at| !at.is_empty()),
             "the row must be archived on disk either way: {archived_at:?}"
