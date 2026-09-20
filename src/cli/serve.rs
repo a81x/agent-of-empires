@@ -1360,13 +1360,20 @@ mod tests {
     use super::*;
 
     #[test]
-    fn cloudflared_skipped_when_tailscale_available_and_default_flags() {
-        assert!(!cloudflared_required(false, false, true));
-    }
-
-    #[test]
-    fn cloudflared_required_when_no_tailscale_flag_set() {
-        assert!(cloudflared_required(true, false, true));
+    fn cloudflared_required_unless_tailscale_serves_the_default_flags() {
+        let cases = [
+            ("default flags with tailscale", false, false, true, false),
+            ("--no-tailscale", true, false, true, true),
+            ("named tunnel pinned", false, true, true, true),
+            ("tailscale unavailable", false, false, false, true),
+        ];
+        for (name, no_tailscale, named_tunnel, tailscale_available, expected) in cases {
+            assert_eq!(
+                cloudflared_required(no_tailscale, named_tunnel, tailscale_available),
+                expected,
+                "{name}"
+            );
+        }
     }
 
     #[test]
@@ -1439,150 +1446,79 @@ mod tests {
     }
 
     #[test]
-    fn cloudflared_required_when_named_tunnel_pinned() {
-        assert!(cloudflared_required(false, true, true));
+    fn host_is_localhost_accepts_only_loopback_forms() {
+        let cases = [
+            ("localhost", true),
+            ("127.0.0.1", true),
+            ("::1", true),
+            ("0.0.0.0", false),
+            ("192.168.1.1", false),
+            ("aoe.example.com", false),
+        ];
+        for (host, expected) in cases {
+            assert_eq!(host_is_localhost(host), expected, "{host}");
+        }
     }
 
     #[test]
-    fn cloudflared_required_when_tailscale_unavailable() {
-        assert!(cloudflared_required(false, false, false));
+    fn resolve_auth_mode_defaults_to_token_and_honors_explicit_choices() {
+        let cases = [
+            (None, false, AuthMode::Token),
+            (None, true, AuthMode::None),
+            (Some(AuthMode::Passphrase), false, AuthMode::Passphrase),
+            (Some(AuthMode::None), false, AuthMode::None),
+        ];
+        for (auth, no_auth, expected) in cases {
+            assert_eq!(resolve_auth_mode(auth, no_auth), expected, "{auth:?}");
+        }
     }
 
     #[test]
-    fn host_is_localhost_accepts_loopback_forms() {
-        assert!(host_is_localhost("localhost"));
-        assert!(host_is_localhost("127.0.0.1"));
-        assert!(host_is_localhost("::1"));
-    }
+    fn validate_auth_combination_gates_reduced_auth_modes() {
+        let err = |mode, has_passphrase, is_localhost, behind_proxy, remote, host: &str| {
+            validate_auth_combination(
+                mode,
+                has_passphrase,
+                is_localhost,
+                behind_proxy,
+                remote,
+                host,
+            )
+            .err()
+            .map(|e| e.to_string())
+            .unwrap_or_default()
+        };
+        const LOCAL: &str = "127.0.0.1";
+        const WIDE: &str = "0.0.0.0";
 
-    #[test]
-    fn host_is_localhost_rejects_routable_addresses() {
-        assert!(!host_is_localhost("0.0.0.0"));
-        assert!(!host_is_localhost("192.168.1.1"));
-        assert!(!host_is_localhost("aoe.example.com"));
-    }
-
-    #[test]
-    fn resolve_auth_mode_defaults_to_token() {
-        assert_eq!(resolve_auth_mode(None, false), AuthMode::Token);
-    }
-
-    #[test]
-    fn resolve_auth_mode_no_auth_alias_maps_to_none() {
-        assert_eq!(resolve_auth_mode(None, true), AuthMode::None);
-    }
-
-    #[test]
-    fn resolve_auth_mode_explicit_wins() {
+        assert_eq!(err(AuthMode::Token, false, true, false, false, LOCAL), "");
+        assert_eq!(err(AuthMode::Token, true, true, false, true, LOCAL), "");
         assert_eq!(
-            resolve_auth_mode(Some(AuthMode::Passphrase), false),
-            AuthMode::Passphrase
+            err(AuthMode::Passphrase, true, true, false, false, LOCAL),
+            ""
         );
+        assert_eq!(err(AuthMode::None, false, true, false, false, LOCAL), "");
         assert_eq!(
-            resolve_auth_mode(Some(AuthMode::None), false),
-            AuthMode::None
+            err(AuthMode::Passphrase, true, false, true, false, WIDE),
+            ""
         );
-    }
 
-    #[test]
-    fn validate_token_mode_loopback_ok() {
+        assert!(err(AuthMode::Passphrase, false, true, false, false, LOCAL)
+            .contains("--auth=passphrase requires"));
+        assert!(err(AuthMode::None, true, true, false, false, LOCAL)
+            .contains("--auth=none does not honor --passphrase"));
         assert!(
-            validate_auth_combination(AuthMode::Token, false, true, false, false, "127.0.0.1")
-                .is_ok()
+            err(AuthMode::Passphrase, true, false, false, false, WIDE).contains("--behind-proxy")
         );
-    }
-
-    #[test]
-    fn validate_passphrase_without_passphrase_fails() {
-        let err =
-            validate_auth_combination(AuthMode::Passphrase, false, true, false, false, "127.0.0.1")
-                .unwrap_err();
-        assert!(err.to_string().contains("--auth=passphrase requires"));
-    }
-
-    #[test]
-    fn validate_passphrase_with_passphrase_loopback_ok() {
-        assert!(validate_auth_combination(
-            AuthMode::Passphrase,
-            true,
-            true,
-            false,
-            false,
-            "127.0.0.1"
-        )
-        .is_ok());
-    }
-
-    #[test]
-    fn validate_none_with_passphrase_rejected() {
-        let err = validate_auth_combination(AuthMode::None, true, true, false, false, "127.0.0.1")
-            .unwrap_err();
-        let msg = err.to_string();
-        assert!(msg.contains("--auth=none does not honor --passphrase"));
-        assert!(msg.contains("--auth=passphrase"));
-    }
-
-    #[test]
-    fn validate_passphrase_non_loopback_needs_behind_proxy() {
-        let err =
-            validate_auth_combination(AuthMode::Passphrase, true, false, false, false, "0.0.0.0")
-                .unwrap_err();
-        assert!(err.to_string().contains("--behind-proxy"));
-    }
-
-    #[test]
-    fn validate_passphrase_non_loopback_with_behind_proxy_ok() {
-        assert!(validate_auth_combination(
-            AuthMode::Passphrase,
-            true,
-            false,
-            true,
-            false,
-            "0.0.0.0"
-        )
-        .is_ok());
-    }
-
-    #[test]
-    fn validate_none_non_loopback_needs_behind_proxy() {
-        let err = validate_auth_combination(AuthMode::None, false, false, false, false, "0.0.0.0")
-            .unwrap_err();
-        assert!(err.to_string().contains("--behind-proxy"));
-    }
-
-    #[test]
-    fn validate_none_loopback_ok() {
+        assert!(err(AuthMode::None, false, false, false, false, WIDE).contains("--behind-proxy"));
         assert!(
-            validate_auth_combination(AuthMode::None, false, true, false, false, "127.0.0.1")
-                .is_ok()
+            err(AuthMode::Passphrase, true, true, false, true, LOCAL).contains("in remote mode")
         );
+        assert!(err(AuthMode::None, false, true, false, true, LOCAL).contains("in remote mode"));
     }
 
     #[test]
-    fn validate_passphrase_with_remote_rejected() {
-        let err =
-            validate_auth_combination(AuthMode::Passphrase, true, true, false, true, "127.0.0.1")
-                .unwrap_err();
-        assert!(err.to_string().contains("in remote mode"));
-    }
-
-    #[test]
-    fn validate_none_with_remote_rejected() {
-        let err = validate_auth_combination(AuthMode::None, false, true, false, true, "127.0.0.1")
-            .unwrap_err();
-        assert!(err.to_string().contains("in remote mode"));
-    }
-
-    #[test]
-    fn validate_token_with_remote_ok() {
-        assert!(
-            validate_auth_combination(AuthMode::Token, true, true, false, true, "127.0.0.1")
-                .is_ok()
-        );
-    }
-
-    #[test]
-    fn auth_mode_cli_str_matches_clap() {
+    fn auth_mode_cli_str_matches_clap_and_serde() {
         for variant in <AuthMode as ValueEnum>::value_variants() {
             let cli_str = variant.as_cli_str();
             let parsed = AuthMode::from_str(cli_str, true).unwrap_or_else(|_| {
@@ -1593,14 +1529,9 @@ mod tests {
                 .to_possible_value()
                 .expect("non-skipped variant has a PossibleValue");
             assert_eq!(pv.get_name(), cli_str);
-        }
-    }
 
-    #[test]
-    fn auth_mode_serde_matches_cli_str() {
-        for variant in <AuthMode as ValueEnum>::value_variants() {
             let json = serde_json::to_string(variant).expect("serialize AuthMode");
-            assert_eq!(json, format!("\"{}\"", variant.as_cli_str()));
+            assert_eq!(json, format!("\"{cli_str}\""));
             let back: AuthMode = serde_json::from_str(&json).expect("deserialize AuthMode");
             assert_eq!(back, *variant);
         }

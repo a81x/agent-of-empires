@@ -1891,6 +1891,21 @@ mod rename_tests {
     use crate::session::{Instance, Status, Storage};
     use serial_test::serial;
 
+    fn args(
+        id: &str,
+        title: Option<&str>,
+        group: Option<&str>,
+        branch: Option<&str>,
+    ) -> RenameArgs {
+        RenameArgs {
+            identifier: Some(id.to_string()),
+            title: title.map(str::to_owned),
+            group: group.map(str::to_owned),
+            rename_branch: false,
+            branch: branch.map(str::to_owned),
+        }
+    }
+
     #[tokio::test]
     #[serial]
     async fn branch_rename_preserves_worktree_and_updates_metadata() {
@@ -1971,13 +1986,7 @@ mod rename_tests {
         let before = serde_json::to_value(storage.load().unwrap()).unwrap();
         let shared = rename_session(
             "branch-only",
-            RenameArgs {
-                identifier: Some(id.clone()),
-                title: Some("Must not apply".into()),
-                group: None,
-                rename_branch: false,
-                branch: Some("blocked-shared".into()),
-            },
+            args(&id, Some("Must not apply"), None, Some("blocked-shared")),
         )
         .await
         .unwrap_err();
@@ -2004,18 +2013,9 @@ mod rename_tests {
             &["worktree", "remove", "--force", external.to_str().unwrap()],
         );
         for branch in ["olof/bemlo-123-task", "olof/bemlo-123-task"] {
-            rename_session(
-                "branch-only",
-                RenameArgs {
-                    identifier: Some(id.clone()),
-                    title: Some(branch.into()),
-                    group: None,
-                    rename_branch: false,
-                    branch: Some(branch.into()),
-                },
-            )
-            .await
-            .unwrap();
+            rename_session("branch-only", args(&id, Some(branch), None, Some(branch)))
+                .await
+                .unwrap();
         }
         let target = storage.load().unwrap().pop().unwrap();
         assert_eq!(target.project_path, worktree.to_str().unwrap());
@@ -2033,13 +2033,7 @@ mod rename_tests {
         for branch in ["bad name", "-option", "bad..name", "refs/heads/"] {
             assert!(rename_session(
                 "branch-only",
-                RenameArgs {
-                    identifier: Some(id.clone()),
-                    title: Some("Must not apply".into()),
-                    group: None,
-                    rename_branch: false,
-                    branch: Some(branch.into()),
-                },
+                args(&id, Some("Must not apply"), None, Some(branch)),
             )
             .await
             .is_err());
@@ -2082,13 +2076,7 @@ mod rename_tests {
         }
         let protected = rename_session(
             "branch-only",
-            RenameArgs {
-                identifier: Some(id.clone()),
-                title: None,
-                group: None,
-                rename_branch: false,
-                branch: Some("blocked-default".into()),
-            },
+            args(&id, None, None, Some("blocked-default")),
         )
         .await
         .unwrap_err();
@@ -2112,13 +2100,7 @@ mod rename_tests {
                 .unwrap();
             let shared = rename_session(
                 "branch-only",
-                RenameArgs {
-                    identifier: Some(id.clone()),
-                    title: Some("Must not apply".into()),
-                    group: None,
-                    rename_branch: false,
-                    branch: Some("would-change-peer".into()),
-                },
+                args(&id, Some("Must not apply"), None, Some("would-change-peer")),
             )
             .await
             .unwrap_err();
@@ -2137,13 +2119,7 @@ mod rename_tests {
             .unwrap();
         let error = rename_session(
             "branch-only",
-            RenameArgs {
-                identifier: Some(id),
-                title: Some("collision".into()),
-                group: None,
-                rename_branch: false,
-                branch: Some("main".into()),
-            },
+            args(&id, Some("collision"), None, Some("main")),
         )
         .await
         .unwrap_err();
@@ -2210,13 +2186,7 @@ mod rename_tests {
 
         let error = rename_session(
             "rename-duplicate",
-            RenameArgs {
-                identifier: Some(target_id.clone()),
-                title: Some("main branch".to_string()),
-                group: None,
-                rename_branch: false,
-                branch: None,
-            },
+            args(&target_id, Some("main branch"), None, None),
         )
         .await
         .unwrap_err();
@@ -2226,13 +2196,7 @@ mod rename_tests {
 
         rename_session(
             "rename-duplicate",
-            RenameArgs {
-                identifier: Some(target_id.clone()),
-                title: None,
-                group: Some("work".to_string()),
-                rename_branch: false,
-                branch: None,
-            },
+            args(&target_id, None, Some("work"), None),
         )
         .await
         .unwrap();
@@ -2264,13 +2228,7 @@ mod rename_tests {
 
         let error = rename_session(
             "rename-duplicate",
-            RenameArgs {
-                identifier: Some(tied_id.clone()),
-                title: Some("main branch".to_string()),
-                group: None,
-                rename_branch: false,
-                branch: None,
-            },
+            args(&tied_id, Some("main branch"), None, None),
         )
         .await
         .unwrap_err();
@@ -2305,13 +2263,7 @@ mod rename_tests {
 
         rename_session(
             "rename-duplicate",
-            RenameArgs {
-                identifier: Some(active_id.clone()),
-                title: Some("Main Branch".to_string()),
-                group: None,
-                rename_branch: false,
-                branch: None,
-            },
+            args(&active_id, Some("Main Branch"), None, None),
         )
         .await
         .expect("active cwd-stable title no-op must succeed");
@@ -2934,17 +2886,26 @@ mod restart_args_tests {
     }
 
     #[test]
-    fn restart_with_identifier_still_parses() {
-        let cli = Cli::try_parse_from(["aoe", "restart", "claude-3"])
-            .expect("identifier-only must parse");
-        match cli.cmd {
-            SessionCommands::Restart(args) => {
-                assert!(!args.all);
-                assert_eq!(args.identifier.as_deref(), Some("claude-3"));
-                assert_eq!(args.parallel, 3);
-            }
-            _ => panic!("wrong subcommand"),
-        }
+    fn restart_parses_identifier_all_and_parallel() {
+        let restart = |argv: &[&str]| {
+            Cli::try_parse_from(argv).map(|cli| match cli.cmd {
+                SessionCommands::Restart(args) => (args.all, args.identifier, args.parallel),
+                _ => panic!("wrong subcommand"),
+            })
+        };
+        assert_eq!(
+            restart(&["aoe", "restart", "claude-3"]).unwrap(),
+            (false, Some("claude-3".to_string()), 3)
+        );
+        assert_eq!(
+            restart(&["aoe", "restart", "--all"]).unwrap(),
+            (true, None, 3)
+        );
+        assert_eq!(
+            restart(&["aoe", "restart", "--all", "--parallel", "5"]).unwrap(),
+            (true, None, 5)
+        );
+        assert!(restart(&["aoe", "restart", "claude-3", "--all"]).is_err());
     }
 
     #[test]
@@ -2976,75 +2937,26 @@ mod restart_args_tests {
     }
 
     #[test]
-    fn restart_all_alone_parses() {
-        let cli = Cli::try_parse_from(["aoe", "restart", "--all"]).expect("--all alone must parse");
-        match cli.cmd {
-            SessionCommands::Restart(args) => {
-                assert!(args.all);
-                assert!(args.identifier.is_none());
-                assert_eq!(args.parallel, 3);
-            }
-            _ => panic!("wrong subcommand"),
-        }
-    }
-
-    #[test]
-    fn restart_all_with_parallel_parses() {
-        let cli = Cli::try_parse_from(["aoe", "restart", "--all", "--parallel", "5"])
-            .expect("--all --parallel must parse");
-        match cli.cmd {
-            SessionCommands::Restart(args) => {
-                assert!(args.all);
-                assert_eq!(args.parallel, 5);
-            }
-            _ => panic!("wrong subcommand"),
-        }
-    }
-
-    #[test]
-    fn restart_identifier_and_all_conflicts() {
-        let result = Cli::try_parse_from(["aoe", "restart", "claude-3", "--all"]);
-        assert!(
-            result.is_err(),
-            "passing both identifier and --all should error"
+    fn set_base_parses_branch_or_clear_but_not_both() {
+        let set_base = |argv: &[&str]| {
+            Cli::try_parse_from(argv).map(|cli| match cli.cmd {
+                SessionCommands::SetBase(args) => (args.identifier, args.branch, args.clear),
+                _ => panic!("wrong subcommand"),
+            })
+        };
+        assert_eq!(
+            set_base(&["aoe", "set-base", "claude-3", "upstream/main"]).unwrap(),
+            (
+                "claude-3".to_string(),
+                Some("upstream/main".to_string()),
+                false
+            )
         );
-    }
-
-    #[test]
-    fn set_base_with_branch_parses() {
-        let cli = Cli::try_parse_from(["aoe", "set-base", "claude-3", "upstream/main"])
-            .expect("set-base with branch must parse");
-        match cli.cmd {
-            SessionCommands::SetBase(args) => {
-                assert_eq!(args.identifier, "claude-3");
-                assert_eq!(args.branch.as_deref(), Some("upstream/main"));
-                assert!(!args.clear);
-            }
-            _ => panic!("wrong subcommand"),
-        }
-    }
-
-    #[test]
-    fn set_base_with_clear_parses() {
-        let cli = Cli::try_parse_from(["aoe", "set-base", "claude-3", "--clear"])
-            .expect("set-base --clear must parse");
-        match cli.cmd {
-            SessionCommands::SetBase(args) => {
-                assert_eq!(args.identifier, "claude-3");
-                assert!(args.branch.is_none());
-                assert!(args.clear);
-            }
-            _ => panic!("wrong subcommand"),
-        }
-    }
-
-    #[test]
-    fn set_base_branch_and_clear_conflicts() {
-        let result = Cli::try_parse_from(["aoe", "set-base", "claude-3", "main", "--clear"]);
-        assert!(
-            result.is_err(),
-            "passing both branch and --clear should error"
+        assert_eq!(
+            set_base(&["aoe", "set-base", "claude-3", "--clear"]).unwrap(),
+            ("claude-3".to_string(), None, true)
         );
+        assert!(set_base(&["aoe", "set-base", "claude-3", "main", "--clear"]).is_err());
     }
 }
 
@@ -3079,16 +2991,12 @@ mod set_base_target_tests {
     }
 
     #[test]
-    fn resolves_named_repo_and_validates_against_its_own_worktree() {
+    fn workspace_requires_a_known_repo_and_targets_its_own_worktree() {
         let inst = workspace_instance();
-        let t = resolve_base_target(&inst, Some("web")).expect("named repo resolves");
-        assert_eq!(t.repo_name.as_deref(), Some("web"));
-        assert_eq!(t.validate_path, "/ws/web");
-    }
+        let target = resolve_base_target(&inst, Some("web")).expect("named repo resolves");
+        assert_eq!(target.repo_name.as_deref(), Some("web"));
+        assert_eq!(target.validate_path, "/ws/web");
 
-    #[test]
-    fn rejects_unknown_repo_and_missing_repo_on_a_workspace() {
-        let inst = workspace_instance();
         let err = resolve_base_target(&inst, Some("nope"))
             .unwrap_err()
             .to_string();
@@ -3107,9 +3015,9 @@ mod set_base_target_tests {
     #[test]
     fn single_repo_session_targets_its_own_checkout() {
         let inst = Instance::new("solo", "/tmp/solo");
-        let t = resolve_base_target(&inst, None).expect("single repo resolves");
-        assert_eq!(t.repo_name, None);
-        assert_eq!(t.validate_path, "/tmp/solo");
+        let target = resolve_base_target(&inst, None).expect("single repo resolves");
+        assert_eq!(target.repo_name, None);
+        assert_eq!(target.validate_path, "/tmp/solo");
 
         let err = resolve_base_target(&inst, Some("api"))
             .unwrap_err()
@@ -3126,113 +3034,53 @@ mod target_filter_tests {
     use super::pick_targets_for_restart_all;
     use crate::session::{Instance, Status};
 
-    fn instance_with_status(id: &str, status: Status) -> Instance {
-        let mut inst = Instance::new(id, "/tmp");
-        inst.id = id.to_string();
-        inst.status = status;
-        inst
-    }
-
     #[test]
-    fn skips_deleting_and_creating() {
+    fn restart_all_skips_deleting_and_creating() {
+        let instance = |id: &str, status: Status| {
+            let mut inst = Instance::new(id, "/tmp");
+            inst.id = id.to_string();
+            inst.status = status;
+            inst
+        };
         let instances = vec![
-            instance_with_status("running", Status::Running),
-            instance_with_status("idle", Status::Idle),
-            instance_with_status("stopped", Status::Stopped),
-            instance_with_status("error", Status::Error),
-            instance_with_status("waiting", Status::Waiting),
-            instance_with_status("starting", Status::Starting),
-            instance_with_status("unknown", Status::Unknown),
-            instance_with_status("deleting", Status::Deleting),
-            instance_with_status("creating", Status::Creating),
+            instance("running", Status::Running),
+            instance("idle", Status::Idle),
+            instance("stopped", Status::Stopped),
+            instance("error", Status::Error),
+            instance("waiting", Status::Waiting),
+            instance("starting", Status::Starting),
+            instance("unknown", Status::Unknown),
+            instance("deleting", Status::Deleting),
+            instance("creating", Status::Creating),
         ];
         let mut picked = pick_targets_for_restart_all(&instances);
         picked.sort();
-        let mut expected = vec![
-            "error".to_string(),
-            "idle".to_string(),
-            "running".to_string(),
-            "starting".to_string(),
-            "stopped".to_string(),
-            "unknown".to_string(),
-            "waiting".to_string(),
-        ];
-        expected.sort();
-        assert_eq!(picked, expected);
-    }
-
-    #[test]
-    fn empty_input_yields_empty_targets() {
+        assert_eq!(
+            picked,
+            ["error", "idle", "running", "starting", "stopped", "unknown", "waiting"]
+        );
         assert!(pick_targets_for_restart_all(&[]).is_empty());
     }
 }
 
 #[cfg(test)]
-mod set_session_id_tests {
-    use super::{set_session_id, SetSessionIdArgs};
+mod session_mutation_tests {
+    use super::{set_color_session, set_session_id, SetColorArgs, SetSessionIdArgs};
     use crate::session::{Instance, ResumeIntent, Storage};
     use serial_test::serial;
     use tempfile::tempdir;
 
-    #[tokio::test]
-    #[serial]
-    async fn set_session_id_clears_resume_probe_failed_marker() {
-        let temp = tempdir().unwrap();
-        let _home = crate::session::test_support::isolate_app_dir_at(temp.path());
+    const SID_A: &str = "11111111-1111-1111-1111-111111111111";
+    const SID_B: &str = "22222222-2222-2222-2222-222222222222";
 
-        let storage = Storage::new_unwatched("set-sid-clear-marker").unwrap();
-        let mut inst = Instance::new("marked_session", "/tmp/x");
-        inst.agent_session_id = Some("11111111-1111-1111-1111-111111111111".to_string());
-        inst.resume_probe_failed_sid = Some("11111111-1111-1111-1111-111111111111".to_string());
-        let id = inst.id.clone();
-        let on_disk = inst.clone();
-        storage
-            .update(|i, g| {
-                *i = vec![on_disk.clone()];
-                *g =
-                    crate::session::GroupTree::new_with_groups(std::slice::from_ref(&on_disk), &[])
-                        .get_all_groups();
-                Ok(())
-            })
-            .unwrap();
-
-        set_session_id(
-            "set-sid-clear-marker",
-            SetSessionIdArgs {
-                identifier: id.clone(),
-                session_id: "22222222-2222-2222-2222-222222222222".to_string(),
-            },
-        )
-        .await
-        .unwrap();
-
-        let loaded = storage.load().unwrap();
-        let inst_disk = loaded.iter().find(|i| i.id == id).unwrap();
-        assert_eq!(
-            inst_disk.resume_intent,
-            ResumeIntent::Use("22222222-2222-2222-2222-222222222222".to_string())
-        );
-        assert_eq!(inst_disk.resume_probe_failed_sid, None);
-    }
-}
-
-#[cfg(test)]
-mod set_color_tests {
-    use super::{set_color_session, SetColorArgs};
-    use crate::session::{Instance, Storage};
-    use serial_test::serial;
-    use tempfile::tempdir;
-
-    async fn seed(profile: &str) -> (Storage, String) {
+    fn seed(profile: &str, inst: Instance) -> (Storage, String) {
         let storage = Storage::new_unwatched(profile).unwrap();
-        let inst = Instance::new("color_session", "/tmp/x");
         let id = inst.id.clone();
-        let on_disk = inst.clone();
         storage
-            .update(|i, g| {
-                *i = vec![on_disk.clone()];
-                *g =
-                    crate::session::GroupTree::new_with_groups(std::slice::from_ref(&on_disk), &[])
+            .update(|rows, groups| {
+                *rows = vec![inst.clone()];
+                *groups =
+                    crate::session::GroupTree::new_with_groups(std::slice::from_ref(&inst), &[])
                         .get_all_groups();
                 Ok(())
             })
@@ -3240,61 +3088,107 @@ mod set_color_tests {
         (storage, id)
     }
 
-    #[tokio::test]
-    #[serial]
-    async fn set_color_persists_palette_value_and_clears() {
-        let temp = tempdir().unwrap();
-        let _home = crate::session::test_support::isolate_app_dir_at(temp.path());
-
-        let (storage, id) = seed("set-color-ok").await;
-
-        set_color_session(
-            "set-color-ok",
-            SetColorArgs {
-                identifier: id.clone(),
-                color: "Red".to_string(), // case-insensitive
-            },
-        )
-        .await
-        .unwrap();
-        let loaded = storage.load().unwrap();
-        assert_eq!(
-            loaded.iter().find(|i| i.id == id).unwrap().color.as_deref(),
-            Some("red")
-        );
-
-        set_color_session(
-            "set-color-ok",
-            SetColorArgs {
-                identifier: id.clone(),
-                color: "none".to_string(),
-            },
-        )
-        .await
-        .unwrap();
-        let loaded = storage.load().unwrap();
-        assert_eq!(loaded.iter().find(|i| i.id == id).unwrap().color, None);
+    fn stored(storage: &Storage, id: &str) -> Instance {
+        storage
+            .load()
+            .unwrap()
+            .into_iter()
+            .find(|row| row.id == id)
+            .unwrap()
     }
 
     #[tokio::test]
     #[serial]
-    async fn set_color_rejects_unknown_color() {
+    async fn set_session_id_replaces_intent_and_clears_the_resume_probe_marker() {
         let temp = tempdir().unwrap();
         let _home = crate::session::test_support::isolate_app_dir_at(temp.path());
 
-        let (storage, id) = seed("set-color-bad").await;
+        let mut inst = Instance::new("marked_session", "/tmp/x");
+        inst.agent_session_id = Some(SID_A.to_string());
+        inst.resume_probe_failed_sid = Some(SID_A.to_string());
+        let (storage, id) = seed("set-sid-clear-marker", inst);
 
-        let result = set_color_session(
-            "set-color-bad",
-            SetColorArgs {
+        set_session_id(
+            "set-sid-clear-marker",
+            SetSessionIdArgs {
                 identifier: id.clone(),
-                color: "chartreuse".to_string(),
+                session_id: SID_B.to_string(),
             },
         )
-        .await;
-        assert!(result.is_err(), "unknown color must error");
-        let loaded = storage.load().unwrap();
-        assert_eq!(loaded.iter().find(|i| i.id == id).unwrap().color, None);
+        .await
+        .unwrap();
+
+        let row = stored(&storage, &id);
+        assert_eq!(row.resume_intent, ResumeIntent::Use(SID_B.to_string()));
+        assert_eq!(row.resume_probe_failed_sid, None);
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn set_session_id_rejects_structured_view_session() {
+        let temp = tempdir().unwrap();
+        let _home = crate::session::test_support::isolate_app_dir_at(temp.path());
+
+        let mut inst = Instance::new("acp_session", "/tmp/x");
+        inst.view = crate::session::View::Structured;
+        let (storage, id) = seed("acp-reject", inst);
+
+        let err = set_session_id(
+            "acp-reject",
+            SetSessionIdArgs {
+                identifier: id.clone(),
+                session_id: SID_A.to_string(),
+            },
+        )
+        .await
+        .expect_err("set-session-id must reject structured view-mode sessions");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("acp"),
+            "error must mention structured view: {msg}"
+        );
+
+        let row = stored(&storage, &id);
+        assert_eq!(
+            row.resume_intent,
+            ResumeIntent::Default,
+            "rejected call must not mutate intent"
+        );
+        assert_eq!(
+            row.agent_session_id, None,
+            "rejected call must not mutate sid"
+        );
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn set_color_normalizes_clears_and_rejects_unknown_values() {
+        let temp = tempdir().unwrap();
+        let _home = crate::session::test_support::isolate_app_dir_at(temp.path());
+
+        let (storage, id) = seed("set-color", Instance::new("color_session", "/tmp/x"));
+        let set = |color: &str| {
+            set_color_session(
+                "set-color",
+                SetColorArgs {
+                    identifier: id.clone(),
+                    color: color.to_string(),
+                },
+            )
+        };
+
+        set("Red")
+            .await
+            .expect("palette names are case-insensitive");
+        assert_eq!(stored(&storage, &id).color.as_deref(), Some("red"));
+
+        set("chartreuse")
+            .await
+            .expect_err("unknown color must error");
+        assert_eq!(stored(&storage, &id).color.as_deref(), Some("red"));
+
+        set("none").await.unwrap();
+        assert_eq!(stored(&storage, &id).color, None);
     }
 
     #[tokio::test]
@@ -3304,15 +3198,16 @@ mod set_color_tests {
         let profiles = crate::session::get_app_dir().unwrap().join("profiles");
         std::fs::create_dir_all(profiles.join("real")).unwrap();
 
-        let result = set_color_session(
+        let msg = set_color_session(
             "ghost-profile",
             SetColorArgs {
                 identifier: "whatever".to_string(),
                 color: "red".to_string(),
             },
         )
-        .await;
-        let msg = result.expect_err("unknown profile must error").to_string();
+        .await
+        .expect_err("unknown profile must error")
+        .to_string();
         assert!(
             msg.contains("does not exist"),
             "expected the unknown-profile error, got: {msg}"
@@ -3320,65 +3215,6 @@ mod set_color_tests {
         assert!(
             !profiles.join("ghost-profile").exists(),
             "set-color must not mint profiles/ghost-profile"
-        );
-    }
-}
-
-#[cfg(test)]
-mod acp_reject_tests {
-    use super::{set_session_id, SetSessionIdArgs};
-    use crate::session::{Instance, Storage};
-    use serial_test::serial;
-    use tempfile::tempdir;
-
-    #[tokio::test]
-    #[serial]
-    async fn set_session_id_rejects_structured_view_session() {
-        let temp = tempdir().unwrap();
-        let _home = crate::session::test_support::isolate_app_dir_at(temp.path());
-
-        let storage = Storage::new_unwatched("acp-reject").unwrap();
-        let mut inst = Instance::new("acp_session", "/tmp/x");
-        inst.view = crate::session::View::Structured;
-        let id = inst.id.clone();
-        let on_disk = inst.clone();
-        storage
-            .update(|i, g| {
-                *i = vec![on_disk.clone()];
-                *g =
-                    crate::session::GroupTree::new_with_groups(std::slice::from_ref(&on_disk), &[])
-                        .get_all_groups();
-                Ok(())
-            })
-            .unwrap();
-
-        let result = set_session_id(
-            "acp-reject",
-            SetSessionIdArgs {
-                identifier: id.clone(),
-                session_id: "11111111-1111-1111-1111-111111111111".to_string(),
-            },
-        )
-        .await;
-
-        let err = result.expect_err("set-session-id must reject structured view-mode sessions");
-        let msg = format!("{:#}", err);
-        assert!(
-            msg.contains("acp"),
-            "error must mention structured view: {}",
-            msg
-        );
-
-        let loaded = storage.load().unwrap();
-        let inst_disk = loaded.iter().find(|i| i.id == id).unwrap();
-        assert_eq!(
-            inst_disk.resume_intent,
-            crate::session::ResumeIntent::Default,
-            "rejected call must not mutate intent",
-        );
-        assert_eq!(
-            inst_disk.agent_session_id, None,
-            "rejected call must not mutate sid",
         );
     }
 }

@@ -743,193 +743,129 @@ mod tests {
     }
 
     #[test]
-    fn scope_rules_enforced() {
+    fn set_enforces_scope_rules_and_payload_shape() {
         let s = store();
         let g = s.begin_generation("acme.kit");
-        assert!(matches!(
-            s.set(
-                "acme.kit",
-                g,
+        let composer = |draft: Value| json!({"label": "Voice", "method": "voice.start", "draft_operation": draft});
+        let cases: Vec<(&str, UiSlot, Option<&str>, Value, bool)> = vec![
+            (
+                "status bar is global only",
                 UiSlot::StatusBar,
-                "x",
                 Some("s1"),
-                &json!({"text": "hi"})
+                json!({"text": "hi"}),
+                false,
             ),
-            Err(UiError::BadRequest(_))
-        ));
-        assert!(matches!(
-            s.set(
-                "acme.kit",
-                g,
+            (
+                "row badge is session scoped",
                 UiSlot::RowBadge,
-                "x",
                 None,
-                &json!({"text": "hi"})
+                json!({"text": "hi"}),
+                false,
             ),
-            Err(UiError::BadRequest(_))
-        ));
-        assert!(matches!(
-            s.set(
-                "acme.kit",
-                g,
+            (
+                "composer action is session scoped",
                 UiSlot::ComposerAction,
-                "voice",
                 None,
-                &json!({"label": "Voice", "method": "voice.start"})
+                json!({"label": "Voice", "method": "voice.start"}),
+                false,
             ),
-            Err(UiError::BadRequest(_))
-        ));
-        assert!(matches!(
-            s.set(
-                "acme.kit",
-                g,
+            (
+                "home pane is global only",
                 UiSlot::HomePane,
-                "mem",
                 Some("s1"),
-                &json!({"title": "memory"})
+                json!({"title": "memory"}),
+                false,
             ),
-            Err(UiError::BadRequest(_))
-        ));
-        assert!(s
-            .set(
-                "acme.kit",
-                g,
+            (
+                "home pane accepts blocks",
                 UiSlot::HomePane,
-                "mem",
                 None,
-                &json!({"title": "memory", "blocks": [{"kind": "sparkline", "values": [1, 2]}]})
-            )
-            .is_ok());
-        assert!(matches!(
-            s.set(
-                "acme.kit",
-                g,
+                json!({"title": "memory", "blocks": [{"kind": "sparkline", "values": [1, 2]}]}),
+                true,
+            ),
+            (
+                "notification is not a stored slot",
                 UiSlot::Notification,
-                "x",
                 None,
-                &json!({"text": "hi"})
+                json!({"text": "hi"}),
+                false,
             ),
-            Err(UiError::BadRequest(_))
-        ));
-        assert!(matches!(
-            s.remove("acme.kit", g, UiSlot::RowBadge, "x", None),
-            Err(UiError::BadRequest(_))
-        ));
-    }
-
-    #[test]
-    fn malformed_payload_rejected() {
-        let s = store();
-        let g = s.begin_generation("acme.kit");
-        assert!(matches!(
-            s.set(
-                "acme.kit",
-                g,
+            (
+                "status bar requires text",
                 UiSlot::StatusBar,
-                "b",
                 None,
-                &json!({"tone": "info"})
+                json!({"tone": "info"}),
+                false,
             ),
-            Err(UiError::BadRequest(_))
-        ));
-        assert!(matches!(
-            s.set(
-                "acme.kit",
-                g,
+            (
+                "unknown field rejected",
                 UiSlot::RowBadge,
-                "b",
                 Some("s1"),
-                &json!({"text": "x", "bogus": 1})
+                json!({"text": "x", "bogus": 1}),
+                false,
             ),
-            Err(UiError::BadRequest(_))
-        ));
-        assert!(matches!(
-            s.set(
-                "acme.kit",
-                g,
+            (
+                "unknown tone rejected",
                 UiSlot::RowBadge,
-                "b",
                 Some("s1"),
-                &json!({"text": "x", "tone": "rainbow"})
+                json!({"text": "x", "tone": "rainbow"}),
+                false,
             ),
-            Err(UiError::BadRequest(_))
-        ));
-        assert!(matches!(
-            s.set(
-                "acme.kit",
-                g,
+            (
+                "draft operation needs an id",
                 UiSlot::ComposerAction,
-                "voice",
                 Some("s1"),
-                &json!({
+                composer(json!({"kind": "insert-text", "id": "", "text": "hello"})),
+                false,
+            ),
+            (
+                "insert-text draft accepted",
+                UiSlot::ComposerAction,
+                Some("s1"),
+                json!({
                     "label": "Voice",
                     "method": "voice.start",
-                    "draft_operation": {"kind": "insert-text", "id": "", "text": "hello"}
-                })
+                    "icon": "mic",
+                    "draft_operation": {"kind": "insert-text", "id": "op-1", "text": "hello"}
+                }),
+                true,
             ),
-            Err(UiError::BadRequest(_))
-        ));
-        s.set(
-            "acme.kit",
-            g,
-            UiSlot::ComposerAction,
-            "voice",
-            Some("s1"),
-            &json!({
-                "label": "Voice",
-                "method": "voice.start",
-                "icon": "mic",
-                "draft_operation": {"kind": "insert-text", "id": "op-1", "text": "hello"}
-            }),
-        )
-        .unwrap();
-        s.set(
-            "acme.kit",
-            g,
-            UiSlot::ComposerAction,
-            "voice",
-            Some("s1"),
-            &json!({
-                "label": "Voice",
-                "method": "voice.start",
-                "draft_operation": {"kind": "set-text", "id": "op-2", "text": ""}
-            }),
-        )
-        .unwrap();
-        s.set(
-            "acme.kit",
-            g,
-            UiSlot::ComposerAction,
-            "voice",
-            Some("s1"),
-            &json!({
-                "label": "Voice",
-                "method": "voice.start",
-                "draft_operation": {
+            (
+                "set-text draft may be empty",
+                UiSlot::ComposerAction,
+                Some("s1"),
+                composer(json!({"kind": "set-text", "id": "op-2", "text": ""})),
+                true,
+            ),
+            (
+                "draft text may exceed the slot payload cap",
+                UiSlot::ComposerAction,
+                Some("s1"),
+                composer(json!({
                     "kind": "insert-text",
                     "id": "op-3",
                     "text": "x".repeat(MAX_PAYLOAD_BYTES + 512)
-                }
-            }),
-        )
-        .unwrap();
-        assert!(matches!(
-            s.set(
-                "acme.kit",
-                g,
-                UiSlot::ComposerAction,
-                "voice",
-                Some("s1"),
-                &json!({
-                    "label": "Voice",
-                    "method": "voice.start",
-                    "draft_operation": {
-                        "kind": "insert-text",
-                        "id": "op-4",
-                        "text": "x".repeat(MAX_COMPOSER_DRAFT_TEXT_BYTES + 1)
-                    }
-                })
+                })),
+                true,
             ),
+            (
+                "draft text beyond its own cap rejected",
+                UiSlot::ComposerAction,
+                Some("s1"),
+                composer(json!({
+                    "kind": "insert-text",
+                    "id": "op-4",
+                    "text": "x".repeat(MAX_COMPOSER_DRAFT_TEXT_BYTES + 1)
+                })),
+                false,
+            ),
+        ];
+        for (name, slot, session, payload, ok) in cases {
+            let result = s.set("acme.kit", g, slot, "x", session, &payload);
+            assert_eq!(result.is_ok(), ok, "{name}: {result:?}");
+        }
+        assert!(matches!(
+            s.remove("acme.kit", g, UiSlot::RowBadge, "x", None),
             Err(UiError::BadRequest(_))
         ));
     }
