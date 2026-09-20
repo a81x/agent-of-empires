@@ -2815,18 +2815,13 @@ impl Default for TmuxConfig {
 }
 
 /// The files aoe treats as "the user's tmux config", in tmux's own search
-/// order. Shared so the existence check and the option recognizer can never
-/// drift to different locations.
+/// order, shared so the existence check and the option recognizer cannot drift.
 ///
-/// tmux reads `$XDG_CONFIG_HOME/tmux/tmux.conf` and `~/.config/tmux/tmux.conf`
-/// as separate entries, and they differ whenever `XDG_CONFIG_HOME` points
-/// somewhere other than `~/.config`; missing the first is how a user with
-/// `set -g mouse off` there stayed overridden (#3207).
-///
-/// tmux's search path also starts with `/etc/tmux.conf`, deliberately left out:
-/// it is not the user's file, and some distros ship one, so folding it in would
-/// make [`user_has_tmux_config`] true on every account of those machines and
-/// silently drop aoe's status bar for all of them.
+/// `$XDG_CONFIG_HOME/tmux/tmux.conf` and `~/.config/tmux/tmux.conf` are separate
+/// entries because they differ whenever `XDG_CONFIG_HOME` is set elsewhere
+/// (#3207). `/etc/tmux.conf` is deliberately left out: it is not the user's
+/// file, and distros that ship one would otherwise drop aoe's status bar for
+/// every account on the machine.
 fn user_tmux_config_paths() -> Vec<PathBuf> {
     let home = dirs::home_dir();
     let mut paths = Vec::with_capacity(3);
@@ -2852,37 +2847,20 @@ pub fn user_has_tmux_config() -> bool {
 }
 
 /// A tmux option group aoe manages on its own sessions, one variant per
-/// `[tmux]` setting that writes to tmux.
-///
-/// Adding a managed option is a variant plus a `TmuxSetting::row` arm and an
-/// entry in `TmuxSetting::ALL`, not a new `should_apply_*` helper plus an
-/// edit to each of the three create paths. A setting whose application is
-/// post-creation (theme painting, unsets of stale session-scoped values)
-/// also needs a change in
-/// [`crate::tmux::status_bar::apply_all_tmux_options`], which does not
-/// iterate `ALL`.
+/// `[tmux]` setting that writes to tmux. Adding one is a variant, a
+/// `TmuxSetting::row` arm and an `ALL` entry; a setting applied after creation
+/// also needs [`crate::tmux::status_bar::apply_all_tmux_options`], which does
+/// not iterate `ALL`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TmuxSetting {
     /// aoe's themed status bar, nine session options wide.
     StatusBar,
-    /// tmux's `mouse`, which is what turns a wheel scroll (or the dashboard's
-    /// touch scroll) into copy-mode scrollback.
-    ///
-    /// A session option outranks the user's `set -g mouse ...`, so applying
-    /// aoe's value unconditionally ignored the file they wrote and made
-    /// `[tmux] mouse` look like a setting that did nothing (#3207). But keying
-    /// `auto` on mere config *existence* would silently break touch scroll for
-    /// everyone who keeps a `tmux.conf` for a prefix key or a theme and never
-    /// mentions `mouse`, since tmux's own default is off. Hence the
-    /// per-option `WhenUserSets` defer rule:
-    ///
-    /// | `[tmux] mouse` | their tmux config | result |
-    /// |---|---|---|
-    /// | `auto` | sets `mouse` | leave their `mouse` in charge |
-    /// | `auto` | silent on `mouse` | `mouse on` |
-    /// | `auto` | no config at all | `mouse on` |
-    /// | `enabled` | anything | `mouse on` |
-    /// | `disabled` | anything | `mouse off` |
+    /// tmux's `mouse`, which turns a wheel or touch scroll into copy-mode
+    /// scrollback. A session option outranks `set -g mouse`, so `auto` defers
+    /// only when the user's config sets `mouse` itself (#3207): keying on mere
+    /// config existence would break touch scroll for everyone who keeps a
+    /// tmux.conf for a prefix key, since tmux's own default is off. `enabled`
+    /// and `disabled` always win.
     Mouse,
     /// OSC 52 forwarding out of the wrapped agent: `set-clipboard` plus
     /// `allow-passthrough`. Without it, "select to copy" inside the agent
@@ -2892,33 +2870,22 @@ pub enum TmuxSetting {
 
 /// What makes [`TmuxSettingMode::Auto`] step aside for a given setting.
 enum TmuxAutoDefer {
-    /// Defer only when the user's own tmux config sets one of these options.
-    /// The precise rule, and the only one that can honor the `set -g <option>`
-    /// they actually wrote while still applying aoe's value for everyone who
-    /// keeps a tmux config for unrelated reasons (#3207).
+    /// Defer only when the user's config sets one of these options, so a
+    /// `set -g <option>` they wrote wins while everyone who keeps a tmux config
+    /// for unrelated reasons still gets aoe's value (#3207).
     WhenUserSets(&'static [&'static str]),
-    /// Defer whenever the user has a tmux config at all. Coarse by design, for
-    /// a setting that paints a whole group of options rather than mirroring
-    /// one: probing nine `status*` options individually would be fuzzy, and a
-    /// user who themed their own bar wants their theme, not a partial merge of
-    /// it with aoe's.
+    /// Defer whenever the user has a tmux config at all. Coarse by design, for a
+    /// setting that paints a whole group of options: a user who themed their own
+    /// bar wants their theme, not a partial merge with aoe's.
     WhenUserHasAnyConfig,
 }
 
-/// One tmux `set-option` aoe writes on its own sessions, at creation.
-///
-/// The variant is the scope the write addresses (session `-t <target>`,
-/// server `-s`, window `-w -t <target>`), so a write's scope flags follow
-/// from its variant alone; the target of session/window writes is a runtime
-/// parameter of the emitter, not a property of the write. Scope flags are
-/// emitted explicitly (`-s`, `-w`, `-t`) rather than left to tmux's scope
-/// inference, so the write is unambiguous and resilient to future inference
-/// changes (same convention as `append_remain_on_exit_args`). `quiet` adds
-/// tmux's `-q` (ignore unknown options), which aoe needs for
-/// `allow-passthrough` on tmux < 3.3, where `allow-passthrough` does not
-/// exist and the set-option call would otherwise fail the whole
-/// `new-session` invocation; it is a per-write property, not a scope
-/// property.
+/// One tmux `set-option` aoe writes on its own sessions, at creation. The
+/// variant is the scope, and its flags (`-s`, `-w`, `-t`) are always emitted
+/// rather than left to tmux's scope inference; the target is a runtime
+/// parameter of the emitter. `quiet` adds `-q`, which `allow-passthrough` needs
+/// on tmux < 3.3, where the unknown option would otherwise fail the whole
+/// `new-session`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum TmuxOptionWrite {
     /// `set-option [-q] -t <target> <option> <value>` on the new session.
@@ -2942,11 +2909,8 @@ pub(crate) enum TmuxOptionWrite {
 }
 
 /// One row of the managed-settings table: where the mode is read from, what
-/// makes `auto` defer, and the writes aoe emits at creation (`apply`) or to
-/// turn the setting off where "off" is expressible (`force_off`).
-///
-/// The enum variant is the row's identity; there is no `key` field because
-/// nothing consumes one (the issue sketch reserved it for docs and logs).
+/// makes `auto` defer, and the writes aoe emits at creation (`apply`) or to turn
+/// the setting off where "off" is expressible (`force_off`).
 struct TmuxManagedSetting {
     mode: fn(&TmuxConfig) -> TmuxSettingMode,
     defer: TmuxAutoDefer,

