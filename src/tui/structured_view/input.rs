@@ -1,17 +1,13 @@
 //! Focus model + key dispatch for the structured view.
 //!
-//! The view is meant to feel like a native coding agent. The composer
-//! is the home base: the view lands there so you can type immediately,
-//! and reading history never requires a focus switch (the mouse wheel
-//! and `PageUp`/`PageDown` scroll the transcript from the composer).
-//! `Ctrl-Q` leaves the view, mirroring live-send's exit chord; `Esc` is
-//! an agent-style interrupt (it cancels a generating turn, and is a
-//! no-op when idle), never an exit. The transcript is a secondary focus
-//! reached with `Tab` for its power keys (scroll, mode picker, browser,
-//! elicitation answers); `Esc` there returns to the composer. The
-//! composer captures **every** typed key, including `a`/`A`/`d`, so
-//! typing "always allow" into a prompt never resolves an approval. A
-//! pending approval opens a modal shelf and then accepts `a`/`A`/`d`.
+//! The composer is the home base: the view lands there so you can type
+//! immediately, and reading history never needs a focus switch (wheel and
+//! `PageUp`/`PageDown` scroll the transcript from the composer). `Ctrl-Q`
+//! leaves, `Esc` is an agent-style interrupt rather than an exit, and `Tab`
+//! reaches the transcript for its power keys. The composer captures every typed
+//! key, including `a`/`A`/`d`, so typing "always allow" into a prompt never
+//! resolves an approval; a pending approval opens a modal shelf that does
+//! accept those keys.
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 
@@ -29,9 +25,8 @@ pub enum Focus {
     Pane,
 }
 
-/// What the input dispatcher decided to do with this key. The view
-/// layer handles the actual side-effects so input.rs stays a pure
-/// translator.
+/// What the input dispatcher decided to do with this key. The view layer runs
+/// the side effects, so input.rs stays a pure translator.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Intent {
     /// Pass the key through to the composer textarea.
@@ -52,10 +47,9 @@ pub enum Intent {
     CancelInFlight,
     /// Drop every queued (not-yet-sent) prompt.
     ClearQueue,
-    /// Browse the prompt queue from the composer (shell-history style):
-    /// negative steps toward older entries (ArrowUp), positive toward
-    /// newer (ArrowDown). The view layer loads the entry into the composer
-    /// for editing.
+    /// Browse the prompt queue shell-history style: negative toward older
+    /// entries (ArrowUp), positive toward newer. The view loads the entry into
+    /// the composer for editing.
     RecallQueued(i32),
     /// Abandon an in-progress queue browse, restoring the stashed draft to
     /// the composer (the `Esc` while browsing).
@@ -79,9 +73,8 @@ pub enum Intent {
     /// Open the permission-mode picker (transcript `m`, when the agent
     /// advertised modes).
     OpenModePicker,
-    /// Open the answer picker for the oldest pending elicitation
-    /// (transcript `a`). The view layer decides whether the form is
-    /// natively answerable or punts to the web.
+    /// Open the answer picker for the oldest pending elicitation (transcript
+    /// `a`). The view decides whether the form is natively answerable.
     AnswerElicitation,
     /// Move the open choice picker's highlight by N rows.
     ChoiceNavigate(i32),
@@ -98,23 +91,19 @@ pub enum Intent {
     Ignore,
 }
 
-/// Ambient state the dispatcher needs beyond the raw key: whether an
-/// approval is pending (gates Tab routing) and whether the slash or
-/// `@`-mention picker is currently open (each claims navigation keys in
-/// the composer). Passed as a struct instead of positional bools so call
-/// sites stay readable.
+/// Ambient state the dispatcher needs beyond the raw key: whether an approval
+/// is pending (gates Tab routing) and whether the slash or `@`-mention picker is
+/// open (each claims navigation keys in the composer).
 #[derive(Debug, Clone, Copy, Default)]
 pub struct InputContext {
     pub has_pending_approval: bool,
-    /// A pending `AskUserQuestion` elicitation exists. Gates the
-    /// transcript-focus skip/cancel keys; the answer form itself is
-    /// web-only.
+    /// A pending `AskUserQuestion` elicitation. Gates the transcript-focus
+    /// skip/cancel keys; the answer form itself is web-only.
     pub has_pending_elicitation: bool,
     pub slash_picker_open: bool,
     pub mention_picker_open: bool,
-    /// Composer caret is at row 0, col 0. Gates ArrowUp entry into
-    /// queue-recall so multi-line caret movement keeps working until the
-    /// user reaches the top-left.
+    /// Composer caret is at row 0, col 0. Gates ArrowUp entry into queue-recall
+    /// so multi-line caret movement keeps working until the top-left.
     pub caret_at_origin: bool,
     /// A queue-recall browse is already active; while browsing, ArrowUp /
     /// ArrowDown navigate the queue regardless of caret position.
@@ -125,52 +114,41 @@ pub struct InputContext {
     /// A choice picker (mode / elicitation answer) is open; it owns
     /// Up/Down/Enter/Esc from any focus until accepted or dismissed.
     pub choice_picker_open: bool,
-    /// The open choice picker is a numbered picker (the plugin-link picker), so
-    /// `1`-`9` pick and accept a row directly. Off for the mode / elicitation
-    /// pickers, where digits stay inert.
+    /// The open choice picker is numbered (the plugin-link picker), so `1`-`9`
+    /// pick and accept a row directly. Off for mode / elicitation pickers.
     pub choice_numbered: bool,
     /// The agent advertised permission modes; gates the transcript `m` key.
     pub has_modes: bool,
-    /// The agent is generating (a turn is active or a prompt is in
-    /// flight). Gates `Esc` in the composer: while busy it interrupts
-    /// the turn like a native agent, and is an inert no-op when idle.
+    /// The agent is generating. Gates `Esc` in the composer: it interrupts the
+    /// turn while busy, and is an inert no-op when idle.
     pub agent_busy: bool,
 }
 
-/// Translate a key event into an [`Intent`] based on the current
-/// focus. Pure function so the entire focus model is unit-testable
-/// without instantiating a real ratatui surface.
+/// Translate a key event into an [`Intent`] for the current focus. Pure, so the
+/// whole focus model is unit-testable without a ratatui surface.
 pub fn dispatch(focus: Focus, key: &KeyEvent, ctx: InputContext) -> Intent {
-    // Universal: Ctrl-C cancels any in-flight prompt (matches the web
-    // composer's stop button). We intentionally do NOT exit the view
-    // on Ctrl-C because the user's natural reflex from a tmux session
-    // is "stop the agent, don't quit the screen."
+    // Universal: Ctrl-C cancels any in-flight prompt. Deliberately not an exit:
+    // the reflex from a tmux session is "stop the agent, don't quit the screen".
     if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
         return Intent::CancelInFlight;
     }
-    // Universal: Ctrl-q leaves the view, mirroring live-send's exit chord
-    // so "get me out" is the same reflex whether you're driving a raw
-    // tmux agent or the structured view. Placed among the universal
-    // chords so it works from any focus (composer, transcript, approval).
+    // Universal: Ctrl-q leaves the view from any focus, mirroring live-send's
+    // exit chord.
     if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('q') {
         return Intent::Exit;
     }
-    // Universal: Ctrl-o opens the browser. `o` alone is reserved for
-    // transcript-focus so typing "no" into the composer doesn't open a
-    // browser tab.
+    // Universal: Ctrl-o opens the browser. `o` alone is transcript-only, so
+    // typing "no" into the composer doesn't open a tab.
     if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('o') {
         return Intent::OpenInBrowser;
     }
-    // Universal: Ctrl-x drops every queued prompt. Intercepted here,
-    // before the composer sees it, so it works from any focus and a
-    // queued backlog can always be abandoned without leaving the
-    // composer. A no-op when the queue is empty.
+    // Universal: Ctrl-x drops every queued prompt, intercepted before the
+    // composer sees it so a backlog can always be abandoned. No-op when empty.
     if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('x') {
         return Intent::ClearQueue;
     }
-    // An open choice picker (mode / answer) owns its navigation keys from
-    // any focus: the user deliberately opened it, and it closes on
-    // Enter/Esc, so nothing else needs those keys meanwhile.
+    // An open choice picker owns its navigation keys from any focus: the user
+    // opened it deliberately and it closes on Enter/Esc.
     if ctx.choice_picker_open {
         match (key.modifiers, key.code) {
             // Number hotkeys on a numbered picker: pick that row and accept it
@@ -206,14 +184,11 @@ const WHEEL_SCROLL_LINES: i32 = 3;
 /// transcript or the composer.
 const PAGE_SCROLL_LINES: i32 = 10;
 
-/// Translate a mouse event into an [`Intent`]. The wheel always scrolls
-/// the focused scrollback (whatever pane the pointer is over; the composer
-/// and status line have no scrollback of their own), and a left click moves
-/// focus to the pane under the pointer. `layout` is the pane geometry of
-/// the last-drawn frame; before the first draw there is nothing to
-/// hit-test, so clicks are ignored. While the plugin pane overlay is up it
-/// covers that geometry, so clicks are swallowed rather than routed to a
-/// pane the user cannot see; the overlay is modal (#2467).
+/// Translate a mouse event into an [`Intent`]. The wheel always scrolls the
+/// focused scrollback, whatever pane the pointer is over; a left click moves
+/// focus to the pane under it. `layout` is the last-drawn frame's geometry, so
+/// before the first draw clicks are ignored. While the modal plugin pane overlay
+/// is up (#2467) clicks are swallowed rather than routed to a hidden pane.
 pub fn dispatch_mouse(mouse: &MouseEvent, focus: Focus, layout: Option<&ViewLayout>) -> Intent {
     match mouse.kind {
         MouseEventKind::ScrollUp => Intent::Scroll(-WHEEL_SCROLL_LINES),
@@ -238,11 +213,9 @@ pub fn dispatch_mouse(mouse: &MouseEvent, focus: Focus, layout: Option<&ViewLayo
 fn composer_keys(key: &KeyEvent, ctx: InputContext) -> Intent {
     let slash_picker_open = ctx.slash_picker_open;
     let mention_picker_open = ctx.mention_picker_open;
-    // While browsing the queue, recall navigation owns its core keys even
-    // when the recalled text would otherwise open the slash / `@` picker
-    // (e.g. a queued "/clear"). Without this the picker would steal
-    // Up/Down/Esc/Enter and break recall navigation, restore, and save.
-    // Typed characters still fall through below to narrow the picker.
+    // While browsing the queue, recall navigation owns its core keys even when
+    // the recalled text would open the slash / `@` picker (e.g. a queued
+    // "/clear"). Typed characters still fall through to narrow the picker.
     if ctx.browsing_queue {
         match (key.modifiers, key.code) {
             (m, KeyCode::Up) if m.is_empty() => return Intent::RecallQueued(-1),
@@ -252,13 +225,9 @@ fn composer_keys(key: &KeyEvent, ctx: InputContext) -> Intent {
             _ => {}
         }
     }
-    // When a picker is open it claims navigation + accept/dismiss keys
-    // so the user can drive it without the textarea swallowing them.
-    // Everything else (typing, cursor motion the picker doesn't use)
-    // falls through to the normal composer rules below. Slash and
-    // mention pickers are mutually exclusive (a line can't both start
-    // with `/` and hold an `@`-token at the cursor), but slash wins the
-    // tie defensively.
+    // An open picker claims navigation + accept/dismiss keys; everything else
+    // falls through to the composer rules below. Slash and mention pickers are
+    // mutually exclusive, but slash wins the tie defensively.
     if slash_picker_open {
         match (key.modifiers, key.code) {
             (m, KeyCode::Down) if m.is_empty() => return Intent::SlashMove(1),
@@ -287,12 +256,9 @@ fn composer_keys(key: &KeyEvent, ctx: InputContext) -> Intent {
         }
     }
     match (key.modifiers, key.code) {
-        // Queue recall: ArrowUp browses toward older queued prompts when
-        // already browsing, or when the caret is at the top-left and the
-        // queue is non-empty; ArrowDown walks back toward newer entries
-        // (and the stashed draft) only while browsing. Outside those
-        // conditions Up / Down fall through to normal textarea caret
-        // movement so multi-line editing is unaffected.
+        // Queue recall: ArrowUp browses older entries when already browsing, or
+        // when the caret is top-left and the queue is non-empty; ArrowDown walks
+        // back only while browsing. Otherwise they are normal caret movement.
         (m, KeyCode::Up)
             if m.is_empty()
                 && (ctx.browsing_queue || (ctx.caret_at_origin && ctx.queue_len > 0)) =>
@@ -307,25 +273,19 @@ fn composer_keys(key: &KeyEvent, ctx: InputContext) -> Intent {
         (m, KeyCode::Enter) if m.is_empty() => Intent::SubmitPrompt,
         // Shift+Enter inserts a newline (passed through to textarea).
         (m, KeyCode::Enter) if m.contains(KeyModifiers::SHIFT) => Intent::Compose(*key),
-        // Ctrl+J is crossterm's raw-mode decoding of a bare line feed (\n),
-        // which some terminals send for Shift+Enter (e.g. a Ghostty
-        // `keybind = shift+enter=text:\n`). Forward a plain Enter so the
-        // textarea inserts a newline; passing the raw Ctrl+J through would hit
-        // the textarea's default delete-to-line-head binding and wipe the line.
+        // Ctrl+J is crossterm's raw-mode decoding of a bare line feed, which
+        // some terminals send for Shift+Enter. Forward a plain Enter: the raw
+        // Ctrl+J would hit the textarea's delete-to-line-head binding.
         (m, KeyCode::Char('j')) if m == KeyModifiers::CONTROL => {
             Intent::Compose(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
         }
-        // Page keys scroll the transcript without leaving the composer,
-        // so reading history never needs a focus switch (the mouse wheel
-        // does the same from any focus). PageUp/PageDown aren't textarea
-        // editing keys, so nothing is lost by claiming them here.
+        // Page keys scroll the transcript without leaving the composer. They
+        // are not textarea editing keys, so nothing is lost by claiming them.
         (m, KeyCode::PageUp) if m.is_empty() => Intent::Scroll(-PAGE_SCROLL_LINES),
         (m, KeyCode::PageDown) if m.is_empty() => Intent::Scroll(PAGE_SCROLL_LINES),
-        // Esc is native-agent behavior, not an exit (Ctrl-Q leaves the
-        // view). While the agent is generating it interrupts the turn,
-        // the same reflex as hitting Esc in a raw agent session; when
-        // idle it is an inert no-op so a stray Esc never drops you out.
-        // Pickers and queue-browse intercept Esc above.
+        // Esc is native-agent behavior, not an exit (Ctrl-Q leaves): it
+        // interrupts a generating turn and is an inert no-op when idle, so a
+        // stray Esc never drops you out. Pickers intercept Esc above.
         (m, KeyCode::Esc) if m.is_empty() => {
             if ctx.agent_busy {
                 Intent::CancelInFlight
@@ -333,16 +293,11 @@ fn composer_keys(key: &KeyEvent, ctx: InputContext) -> Intent {
                 Intent::Ignore
             }
         }
-        // Shift+Tab opens the permission-mode picker, mirroring Claude
-        // Code's mode-cycle chord. It's the one "power" control that
-        // used to live behind the transcript focus; everything else
-        // (scroll, browser, exit) is reachable from the composer now, so
-        // there is no Tab-to-the-chat toggle at all. crossterm reports
-        // Shift+Tab as BackTab. A no-op when the agent advertised no
-        // modes. Plain Tab is inert (pickers claim it above to accept).
+        // Shift+Tab (crossterm BackTab) opens the permission-mode picker,
+        // mirroring Claude Code's mode-cycle chord; a no-op when the agent
+        // advertised none. Plain Tab is inert (pickers claim it to accept).
         (_, KeyCode::BackTab) if ctx.has_modes => Intent::OpenModePicker,
-        // BackTab is never text; swallow it even with no modes so it
-        // can't leak into the composer as a stray character.
+        // BackTab is never text; swallow it so it can't leak into the composer.
         (_, KeyCode::BackTab) => Intent::Ignore,
         (m, KeyCode::Tab) if m.is_empty() => Intent::Ignore,
         // Everything else is forwarded to the textarea, including
@@ -368,9 +323,8 @@ fn transcript_keys(key: &KeyEvent, ctx: InputContext) -> Intent {
         }
         // Permission-mode picker, when the agent advertised modes.
         (m, KeyCode::Char('m')) if m.is_empty() && ctx.has_modes => Intent::OpenModePicker,
-        // Esc returns to the composer (the home base), not straight out:
-        // the transcript is a secondary focus you Tab into for its power
-        // keys, so Esc backs out one level rather than leaving the view.
+        // Esc backs out one level to the composer (the home base) rather than
+        // leaving the view.
         (m, KeyCode::Esc) if m.is_empty() => Intent::SetFocus(Focus::Composer),
         // Switch to composer.
         (m, KeyCode::Char('i')) if m.is_empty() => Intent::SetFocus(Focus::Composer),
@@ -399,10 +353,9 @@ fn transcript_keys(key: &KeyEvent, ctx: InputContext) -> Intent {
     }
 }
 
-/// Keys while the plugin pane panel is open. Scrolls with the same vocabulary
-/// as the transcript (`Intent::Scroll`, routed to the pane by the view layer);
-/// `Esc` / `p` close it, `Tab` jumps to the composer. The universal
-/// `Ctrl-c/o/x` handled at the top of `dispatch` still apply.
+/// Keys while the plugin pane panel is open. Scrolls with the transcript
+/// vocabulary; `Esc` / `p` close it, `Tab` jumps to the composer. The universal
+/// `Ctrl-c/o/x` chords still apply.
 fn pane_keys(key: &KeyEvent) -> Intent {
     match (key.modifiers, key.code) {
         (m, KeyCode::Esc) if m.is_empty() => Intent::SetFocus(Focus::Transcript),
@@ -431,10 +384,8 @@ fn approval_keys(key: &KeyEvent) -> Intent {
         (m, KeyCode::Char('d')) if m.is_empty() => {
             Intent::ResolveApproval(ApprovalDecisionWire::Deny)
         }
-        // A pending approval is modal (it grabs focus like a native
-        // permission prompt), so Esc interrupts the turn rather than
-        // trying to "leave" the prompt: cancelling clears the request
-        // and drops you back to the composer.
+        // A pending approval is modal, so Esc interrupts the turn: cancelling
+        // clears the request and drops back to the composer.
         (m, KeyCode::Esc) if m.is_empty() => Intent::CancelInFlight,
         _ => Intent::Ignore,
     }
@@ -514,9 +465,8 @@ mod tests {
 
     #[test]
     fn composer_swallows_approval_letters() {
-        // Regression test for the composer-eats-approval bug: typing
-        // "always allow" with a pending approval must NOT fire any
-        // approval intent.
+        // Regression: typing "always allow" with a pending approval must not
+        // fire any approval intent.
         for ch in "always allow deny".chars() {
             let intent = dispatch(Focus::Composer, &key(KeyCode::Char(ch)), ctx_pending());
             match intent {
@@ -738,8 +688,7 @@ mod tests {
             ),
             Intent::CancelElicitation
         );
-        // Without a pending elicitation, s / c are not elicitation intents
-        // (c falls through to Ignore, s likewise) so they stay free.
+        // Without a pending elicitation, s / c fall through to Ignore.
         assert!(!matches!(
             dispatch(Focus::Transcript, &key(KeyCode::Char('s')), ctx()),
             Intent::SkipElicitation
@@ -903,10 +852,9 @@ mod tests {
 
     #[test]
     fn ctrl_j_in_composer_inserts_newline() {
-        // A bare line feed (\n) decodes to Ctrl+J in raw mode; some terminals
-        // send it for Shift+Enter (e.g. Ghostty `shift+enter=text:\n`). It must
-        // forward a plain Enter so the textarea inserts a newline rather than
-        // running its default Ctrl+J delete-to-line-head binding.
+        // A bare line feed decodes to Ctrl+J in raw mode; some terminals send it
+        // for Shift+Enter. It must forward a plain Enter so the textarea inserts
+        // a newline instead of running delete-to-line-head.
         let intent = dispatch(
             Focus::Composer,
             &key_mod(KeyCode::Char('j'), KeyModifiers::CONTROL),
