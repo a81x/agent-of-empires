@@ -1305,12 +1305,11 @@ mod tests {
         let (elevated, remaining) = mgr.elevation_state(&id).await;
         assert!(elevated && remaining.is_some());
 
-        mgr.sessions
-            .write()
-            .await
-            .get_mut(&id)
-            .unwrap()
-            .elevated_until = Some(Instant::now() - Duration::from_secs(1));
+        {
+            let mut sessions = mgr.sessions.write().await;
+            let entry = sessions.get_mut(&id).expect("session");
+            entry.elevated_until = Some(Instant::now() - Duration::from_secs(1));
+        }
         assert!(!mgr.is_elevated(&id).await);
 
         assert!(!mgr.elevate_session("nope").await);
@@ -1370,8 +1369,11 @@ mod tests {
         let mgr = LoginManager::new(Some("test"));
         let secret = binding(0x55);
         let id = session(&mgr, &secret).await;
-        mgr.sessions.write().await.get_mut(&id).unwrap().expires_at =
-            Instant::now() - Duration::from_secs(1);
+        {
+            let mut sessions = mgr.sessions.write().await;
+            sessions.get_mut(&id).expect("session").expires_at =
+                Instant::now() - Duration::from_secs(1);
+        }
         mgr.cleanup_expired().await;
         assert!(!mgr.validate_session(&id, &secret).await);
     }
