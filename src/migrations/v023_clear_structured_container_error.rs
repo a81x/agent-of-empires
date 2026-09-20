@@ -19,38 +19,44 @@ pub fn run() -> Result<()> {
     run_in(&app_dir)
 }
 
-/// A terminal row keeps its Error: the tmux poller is a real producer for
-/// those. `view` is skipped in serialization when it holds the default
-/// `Terminal`, so an absent field means terminal, not structured.
 pub(crate) fn run_in(app_dir: &Path) -> Result<()> {
     for path in sessions_file::session_files(app_dir)? {
-        if !path.exists() {
-            continue;
+        clear_structured_error(&path)?;
+    }
+    Ok(())
+}
+
+/// Demote any structured row persisted at `status = "error"` back to Idle. A
+/// terminal row keeps its Error: the tmux poller is a real producer for those.
+/// `view` is skipped in serialization when it holds the default `Terminal`, so
+/// an absent field means terminal, not structured.
+fn clear_structured_error(path: &Path) -> Result<()> {
+    if !path.exists() {
+        return Ok(());
+    }
+    // A read failure is skipped for the same reason a parse failure is: this
+    // heal is best-effort, and a permissions hiccup or a non-UTF-8 file must
+    // not abort boot.
+    let content = match fs::read_to_string(path) {
+        Ok(content) => content,
+        Err(e) => {
+            debug!("v023: failed to read {}: {e}, skipping", path.display());
+            return Ok(());
         }
-        // A read failure is skipped for the same reason a parse failure is:
-        // this is a best-effort heal, and a permissions hiccup or a non-UTF-8
-        // file must not abort boot.
-        let content = match fs::read_to_string(&path) {
-            Ok(content) => content,
-            Err(e) => {
-                debug!("v023: failed to read {}: {e}, skipping", path.display());
-                continue;
-            }
-        };
-        let healed = sessions_file::heal_rows(&path, &content, |row| {
-            let structured = row.get("view").and_then(|v| v.as_str()) == Some("structured");
-            let spurious = structured && sessions_file::status(row) == Some("error");
-            if spurious {
-                sessions_file::settle_to_idle(row);
-            }
-            spurious
-        })?;
-        if healed > 0 {
-            info!(
-                "v023: cleared spurious container Error on {healed} structured session(s) in {}",
-                path.display()
-            );
+    };
+    let healed = sessions_file::heal_rows(path, &content, |row| {
+        let structured = row.get("view").and_then(|v| v.as_str()) == Some("structured");
+        let spurious = structured && sessions_file::status(row) == Some("error");
+        if spurious {
+            sessions_file::settle_to_idle(row);
         }
+        spurious
+    })?;
+    if healed > 0 {
+        info!(
+            "v023: cleared spurious container Error on {healed} structured session(s) in {}",
+            path.display()
+        );
     }
     Ok(())
 }

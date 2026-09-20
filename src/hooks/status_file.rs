@@ -342,7 +342,11 @@ mod tests {
             crate::util::now_secs() + 3600
         );
         let cases = [
-            ("urgent_true", Some(r#"{"urgent":true,"urgent_reason":"x"}"#), true),
+            (
+                "urgent_true",
+                Some(r#"{"urgent":true,"urgent_reason":"x"}"#),
+                true,
+            ),
             ("urgent_future", Some(future.as_str()), true),
             ("urgent_missing", Some(r#"{"tier":0}"#), false),
             ("urgent_bad_json", Some("{ this is not json"), false),

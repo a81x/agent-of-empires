@@ -20,23 +20,30 @@ pub fn run() -> Result<()> {
 
 pub(crate) fn run_in(app_dir: &Path) -> Result<()> {
     for path in sessions_file::session_files(app_dir)? {
-        if !path.exists() {
-            continue;
+        clear_archived_error(&path)?;
+    }
+    Ok(())
+}
+
+/// Demote any archived row still persisted at `status = "error"` back to Idle,
+/// leaving non-archived rows and every other status alone.
+fn clear_archived_error(path: &Path) -> Result<()> {
+    if !path.exists() {
+        return Ok(());
+    }
+    let healed = sessions_file::heal_rows(path, &fs::read_to_string(path)?, |row| {
+        let spurious =
+            sessions_file::is_archived(row) && sessions_file::status(row) == Some("error");
+        if spurious {
+            sessions_file::settle_to_idle(row);
         }
-        let healed = sessions_file::heal_rows(&path, &fs::read_to_string(&path)?, |row| {
-            let spurious =
-                sessions_file::is_archived(row) && sessions_file::status(row) == Some("error");
-            if spurious {
-                sessions_file::settle_to_idle(row);
-            }
-            spurious
-        })?;
-        if healed > 0 {
-            info!(
-                "v016: cleared spurious archived Error on {healed} session(s) in {} (#2206)",
-                path.display()
-            );
-        }
+        spurious
+    })?;
+    if healed > 0 {
+        info!(
+            "v016: cleared spurious archived Error on {healed} session(s) in {} (#2206)",
+            path.display()
+        );
     }
     Ok(())
 }

@@ -2777,7 +2777,11 @@ mod tests {
             fs::write(app.join("sessions.json"), format!("[{}]", row("one"))).unwrap();
 
             run_in(&app, &home, &|_| Ok(true)).unwrap();
-            assert_eq!(read_rows(&app)[0]["sandbox_store_generation"], 1, "{seeded}");
+            assert_eq!(
+                read_rows(&app)[0]["sandbox_store_generation"],
+                1,
+                "{seeded}"
+            );
 
             pin_agent_dir(&app, &custom_b);
             let error = run_in(&app, &home, &|_| Ok(false)).unwrap_err();
