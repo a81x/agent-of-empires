@@ -475,12 +475,7 @@ impl RenameDialog {
 
         frame.render_widget(Clear, dialog_area);
 
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .border_type(BorderType::Rounded)
-            .border_style(Style::default().fg(theme.accent))
-            .title(" Edit Session ")
-            .title_style(Style::default().fg(theme.title).bold());
+        let block = super::dialog_block(" Edit Session ", theme);
 
         let inner = block.inner(dialog_area);
         frame.render_widget(block, dialog_area);

@@ -180,12 +180,7 @@ impl ConfirmDialog {
             Tone::Destructive => theme.error,
             Tone::Neutral => theme.waiting,
         };
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .border_type(BorderType::Rounded)
-            .border_style(Style::default().fg(emphasis))
-            .title(format!(" {} ", self.title))
-            .title_style(Style::default().fg(emphasis).bold());
+        let block = super::toned_dialog_block(format!(" {} ", self.title), emphasis, emphasis);
 
         let inner = block.inner(dialog_area);
         frame.render_widget(block, dialog_area);

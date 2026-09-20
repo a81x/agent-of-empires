@@ -211,12 +211,7 @@ impl ProfilePickerDialog {
         let dialog_area = super::centered_rect(area, dialog_width, dialog_height);
         frame.render_widget(Clear, dialog_area);
 
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .border_type(BorderType::Rounded)
-            .border_style(Style::default().fg(theme.accent))
-            .title(" Profiles ")
-            .title_style(Style::default().fg(theme.title).bold());
+        let block = super::dialog_block(" Profiles ", theme);
 
         let inner = block.inner(dialog_area);
         frame.render_widget(block, dialog_area);
@@ -318,12 +313,7 @@ impl ProfilePickerDialog {
         let dialog_area = super::centered_rect(area, dialog_width, dialog_height);
         frame.render_widget(Clear, dialog_area);
 
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .border_type(BorderType::Rounded)
-            .border_style(Style::default().fg(theme.accent))
-            .title(" New Profile ")
-            .title_style(Style::default().fg(theme.title).bold());
+        let block = super::dialog_block(" New Profile ", theme);
 
         let inner = block.inner(dialog_area);
         frame.render_widget(block, dialog_area);
@@ -380,12 +370,7 @@ impl ProfilePickerDialog {
         let dialog_area = super::centered_rect(area, dialog_width, dialog_height);
         frame.render_widget(Clear, dialog_area);
 
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .border_type(BorderType::Rounded)
-            .border_style(Style::default().fg(theme.error))
-            .title(" Delete Profile ")
-            .title_style(Style::default().fg(theme.error).bold());
+        let block = super::toned_dialog_block(" Delete Profile ", theme.error, theme.error);
 
         let inner = block.inner(dialog_area);
         frame.render_widget(block, dialog_area);

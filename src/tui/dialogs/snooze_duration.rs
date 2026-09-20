@@ -83,12 +83,7 @@ impl SnoozeDurationDialog {
         let dialog_area = super::centered_rect(area, 52, 14);
         frame.render_widget(Clear, dialog_area);
 
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .border_type(BorderType::Rounded)
-            .border_style(Style::default().fg(theme.waiting))
-            .title(" Snooze ")
-            .title_style(Style::default().fg(theme.waiting).bold());
+        let block = super::toned_dialog_block(" Snooze ", theme.waiting, theme.waiting);
 
         let inner = block.inner(dialog_area);
         frame.render_widget(block, dialog_area);

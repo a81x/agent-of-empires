@@ -97,12 +97,7 @@ impl UpdateConfirmDialog {
 
         frame.render_widget(Clear, dialog_area);
 
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .border_type(BorderType::Rounded)
-            .border_style(Style::default().fg(theme.waiting))
-            .title(" Update aoe ")
-            .title_style(Style::default().fg(theme.waiting).bold());
+        let block = super::toned_dialog_block(" Update aoe ", theme.waiting, theme.waiting);
 
         let inner = block.inner(dialog_area);
         frame.render_widget(block, dialog_area);

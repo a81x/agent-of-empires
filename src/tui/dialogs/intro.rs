@@ -400,12 +400,7 @@ impl IntroDialog {
             self.page_idx + 1,
             total
         );
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .border_type(BorderType::Rounded)
-            .border_style(Style::default().fg(theme.accent))
-            .title(title)
-            .title_style(Style::default().fg(theme.accent).bold());
+        let block = super::toned_dialog_block(title, theme.accent, theme.accent);
         let inner = block.inner(dialog_area);
         frame.render_widget(block, dialog_area);
 

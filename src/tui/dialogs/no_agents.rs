@@ -80,12 +80,8 @@ impl NoAgentsDialog {
 
         frame.render_widget(Clear, dialog_area);
 
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .border_type(BorderType::Rounded)
-            .border_style(Style::default().fg(theme.accent))
-            .title(" Welcome to Agent of Empires ")
-            .title_style(Style::default().fg(theme.accent).bold());
+        let block =
+            super::toned_dialog_block(" Welcome to Agent of Empires ", theme.accent, theme.accent);
 
         let inner = block.inner(dialog_area);
         frame.render_widget(block, dialog_area);

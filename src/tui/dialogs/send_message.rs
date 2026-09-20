@@ -128,21 +128,20 @@ impl SendMessageDialog {
 
         frame.render_widget(Clear, dialog_area);
 
-        let mut block = Block::default()
-            .borders(Borders::ALL)
-            .border_type(BorderType::Rounded)
-            .border_style(Style::default().fg(theme.accent))
-            .title(format!(" > {} ", self.session_title))
-            .title_style(Style::default().fg(theme.accent).bold())
-            .title_bottom(
-                Line::from(vec![
-                    Span::styled(" Enter", Style::default().fg(theme.accent)),
-                    Span::styled(" send ", Style::default().fg(theme.dimmed)),
-                    Span::styled("Esc", Style::default().fg(theme.accent)),
-                    Span::styled(" cancel ", Style::default().fg(theme.dimmed)),
-                ])
-                .right_aligned(),
-            );
+        let mut block = super::toned_dialog_block(
+            format!(" > {} ", self.session_title),
+            theme.accent,
+            theme.accent,
+        )
+        .title_bottom(
+            Line::from(vec![
+                Span::styled(" Enter", Style::default().fg(theme.accent)),
+                Span::styled(" send ", Style::default().fg(theme.dimmed)),
+                Span::styled("Esc", Style::default().fg(theme.accent)),
+                Span::styled(" cancel ", Style::default().fg(theme.dimmed)),
+            ])
+            .right_aligned(),
+        );
 
         if self.restore_armed {
             block = block.title_bottom(

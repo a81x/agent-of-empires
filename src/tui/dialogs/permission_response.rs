@@ -143,12 +143,8 @@ impl PermissionResponseDialog {
         let dialog_area = super::centered_rect(area, 56, 9);
         frame.render_widget(Clear, dialog_area);
 
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .border_type(BorderType::Rounded)
-            .border_style(Style::default().fg(theme.accent))
-            .title(" Respond to Permission Prompt ")
-            .title_style(Style::default().fg(theme.accent).bold());
+        let block =
+            super::toned_dialog_block(" Respond to Permission Prompt ", theme.accent, theme.accent);
 
         let inner = block.inner(dialog_area);
         frame.render_widget(block, dialog_area);

@@ -120,12 +120,7 @@ impl AttachProjectDialog {
         self.dialog_area = dialog_area;
         frame.render_widget(Clear, dialog_area);
 
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .border_type(BorderType::Rounded)
-            .border_style(Style::default().fg(theme.accent))
-            .title(format!(" Add Project to {} ", self.session_title))
-            .title_style(Style::default().fg(theme.title).bold());
+        let block = super::dialog_block(format!(" Add Project to {} ", self.session_title), theme);
 
         let inner = block.inner(dialog_area);
         frame.render_widget(block, dialog_area);

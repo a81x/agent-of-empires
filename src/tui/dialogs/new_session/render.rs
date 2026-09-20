@@ -109,12 +109,7 @@ impl NewSessionDialog {
 
         frame.render_widget(Clear, dialog_area);
 
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .border_type(BorderType::Rounded)
-            .border_style(Style::default().fg(theme.accent))
-            .title(" New Session ")
-            .title_style(Style::default().fg(theme.title).bold());
+        let block = crate::tui::dialogs::dialog_block(" New Session ", theme);
 
         let inner = block.inner(dialog_area);
         frame.render_widget(block, dialog_area);
@@ -701,12 +696,7 @@ impl NewSessionDialog {
 
         frame.render_widget(Clear, dialog_area);
 
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .border_type(BorderType::Rounded)
-            .border_style(Style::default().fg(theme.accent))
-            .title(" Sandbox Configuration ")
-            .title_style(Style::default().fg(theme.title).bold());
+        let block = crate::tui::dialogs::dialog_block(" Sandbox Configuration ", theme);
 
         let inner = block.inner(dialog_area);
         frame.render_widget(block, dialog_area);
@@ -823,12 +813,7 @@ impl NewSessionDialog {
 
         frame.render_widget(Clear, dialog_area);
 
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .border_type(BorderType::Rounded)
-            .border_style(Style::default().fg(theme.accent))
-            .title(title)
-            .title_style(Style::default().fg(theme.title).bold());
+        let block = crate::tui::dialogs::dialog_block(title, theme);
 
         let inner = block.inner(dialog_area);
         frame.render_widget(block, dialog_area);
@@ -1280,12 +1265,11 @@ impl NewSessionDialog {
 
         frame.render_widget(Clear, dialog_area);
 
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .border_type(BorderType::Rounded)
-            .border_style(Style::default().fg(theme.border))
-            .title(" New Session Help ")
-            .title_style(Style::default().fg(theme.title).bold());
+        let block = crate::tui::dialogs::toned_dialog_block(
+            " New Session Help ",
+            theme.border,
+            theme.title,
+        );
 
         let inner = block.inner(dialog_area);
         frame.render_widget(block, dialog_area);
@@ -1358,12 +1342,7 @@ impl NewSessionDialog {
             " Creating Session "
         };
 
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .border_type(BorderType::Rounded)
-            .border_style(Style::default().fg(theme.accent))
-            .title(title)
-            .title_style(Style::default().fg(theme.title).bold());
+        let block = crate::tui::dialogs::dialog_block(title, theme);
 
         let inner = block.inner(dialog_area);
         frame.render_widget(block, dialog_area);

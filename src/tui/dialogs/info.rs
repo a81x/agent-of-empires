@@ -133,12 +133,8 @@ impl InfoDialog {
 
         frame.render_widget(Clear, dialog_area);
 
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .border_type(BorderType::Rounded)
-            .border_style(Style::default().fg(theme.border))
-            .title(format!(" {} ", self.title))
-            .title_style(Style::default().fg(theme.title).bold());
+        let block =
+            super::toned_dialog_block(format!(" {} ", self.title), theme.border, theme.title);
 
         let inner = block.inner(dialog_area);
         frame.render_widget(block, dialog_area);

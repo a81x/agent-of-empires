@@ -83,12 +83,7 @@ impl TelemetryConsentDialog {
         let dialog_area = super::centered_rect(area, 76, if dnt { 13 } else { 17 });
         frame.render_widget(Clear, dialog_area);
 
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .border_type(BorderType::Rounded)
-            .border_style(Style::default().fg(theme.accent))
-            .title(" Usage telemetry ")
-            .title_style(Style::default().fg(theme.accent).bold());
+        let block = super::toned_dialog_block(" Usage telemetry ", theme.accent, theme.accent);
         let inner = block.inner(dialog_area);
         frame.render_widget(block, dialog_area);
 

@@ -313,12 +313,7 @@ impl UnifiedDeleteDialog {
 
         frame.render_widget(Clear, dialog_area);
 
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .border_type(BorderType::Rounded)
-            .border_style(Style::default().fg(theme.error))
-            .title(" Delete Session ")
-            .title_style(Style::default().fg(theme.error).bold());
+        let block = super::toned_dialog_block(" Delete Session ", theme.error, theme.error);
 
         let inner = block.inner(dialog_area);
         frame.render_widget(block, dialog_area);

@@ -111,14 +111,24 @@ pub fn row_index(list: Rect, col: u16, row: u16, len: usize) -> Option<usize> {
     (idx < len).then_some(idx)
 }
 
-/// Rounded, accent-bordered dialog block with a bold title.
+/// Rounded, accent-bordered dialog block with a bold `theme.title` title.
 pub fn dialog_block<'a>(title: impl Into<Line<'a>>, theme: &Theme) -> Block<'a> {
+    toned_dialog_block(title, theme.accent, theme.title)
+}
+
+/// Rounded dialog block in an explicit tone: `border` frames it, `title_fg`
+/// colors the bold title. Destructive dialogs pass `theme.error`.
+pub fn toned_dialog_block<'a>(
+    title: impl Into<Line<'a>>,
+    border: Color,
+    title_fg: Color,
+) -> Block<'a> {
     Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(theme.accent))
+        .border_style(Style::default().fg(border))
         .title(title)
-        .title_style(Style::default().fg(theme.title).bold())
+        .title_style(Style::default().fg(title_fg).bold())
 }
 
 /// Clear a centered `width` x `height` area, draw `block` there, and return `(dialog, inner)`.

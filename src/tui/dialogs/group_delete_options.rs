@@ -229,12 +229,7 @@ impl GroupDeleteOptionsDialog {
 
         frame.render_widget(Clear, dialog_area);
 
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .border_type(BorderType::Rounded)
-            .border_style(Style::default().fg(theme.error))
-            .title(" Delete Group ")
-            .title_style(Style::default().fg(theme.error).bold());
+        let block = super::toned_dialog_block(" Delete Group ", theme.error, theme.error);
 
         let inner = block.inner(dialog_area);
         frame.render_widget(block, dialog_area);

@@ -281,12 +281,7 @@ impl ProjectsDialog {
         let dialog_area = super::centered_rect(area, dialog_width, dialog_height);
         frame.render_widget(Clear, dialog_area);
 
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .border_type(BorderType::Rounded)
-            .border_style(Style::default().fg(theme.accent))
-            .title(" Projects ")
-            .title_style(Style::default().fg(theme.title).bold());
+        let block = super::dialog_block(" Projects ", theme);
         let inner = block.inner(dialog_area);
         frame.render_widget(block, dialog_area);
 
