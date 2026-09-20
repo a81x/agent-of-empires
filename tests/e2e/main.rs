@@ -17,13 +17,7 @@
 
 mod harness;
 
-mod acp_focus_isolation_e2e;
-mod acp_home_approval_e2e;
-mod acp_host_environment_e2e;
-mod acp_option_list_approval_e2e;
-mod acp_orphan_runner_recovery_e2e;
-mod acp_session_log_tee_e2e;
-mod acp_tool_cards_e2e;
+mod acp_live_e2e;
 mod add_project_cli;
 mod archive_restore;
 mod archive_structured;
@@ -45,7 +39,6 @@ mod force_remove_tmux_teardown_e2e;
 mod fork_cli;
 mod fork_structured_e2e;
 mod hermes_shared_project_correlation_e2e;
-mod host_before_session_e2e;
 mod intro;
 mod kiro_launch;
 mod live_send_paste_e2e;
@@ -69,7 +62,6 @@ mod sandbox;
 mod serve;
 mod settings;
 mod skills_tui;
-mod structured_tui_flows_e2e;
 mod tool_sessions;
 mod tui_launch;
 mod unified_view;
