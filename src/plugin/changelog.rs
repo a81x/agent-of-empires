@@ -238,23 +238,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn subject_takes_first_line() {
+    fn subject_and_body_are_trimmed_to_one_line_within_the_cap() {
         assert_eq!(subject("feat: add thing\n\nlong body"), "feat: add thing");
         assert_eq!(subject("  trimmed  "), "trimmed");
         assert_eq!(subject(""), "");
-    }
 
-    #[test]
-    fn cap_body_truncates_on_char_boundary() {
-        let body = "é".repeat(BODY_CAP); // each 'é' is 2 bytes, so this exceeds the cap
-        let capped = cap_body(body);
+        assert_eq!(cap_body("short".to_string()), "short");
+        // Each 'é' is two bytes, so this exceeds the cap.
+        let capped = cap_body("é".repeat(BODY_CAP));
         assert!(capped.ends_with('…'));
         assert!(capped.len() <= BODY_CAP + "…".len());
-    }
-
-    #[test]
-    fn cap_body_keeps_short_bodies() {
-        assert_eq!(cap_body("short".to_string()), "short");
     }
 
     fn release(tag: &str, body: Option<&str>, prerelease: bool, draft: bool) -> GitHubRelease {
@@ -283,35 +276,27 @@ mod tests {
         let releases = vec![
             release("v1.3.0", Some("newer, excluded"), false, false),
             release("v1.2.0", Some("target notes"), false, false),
+            release("v1.2.0-rc1", Some("rc"), true, false),
+            release("v1.1.5-draft", Some("draft"), false, true),
             release("v1.1.0", Some("middle notes"), false, false),
             release("v1.0.0", Some("prior, excluded"), false, false),
         ];
         let (entries, truncated) = bracket_releases(&releases, "v1.0.0", "v1.2.0").unwrap();
-        assert_eq!(release_tags(&entries), vec!["v1.2.0", "v1.1.0"]);
+        assert_eq!(
+            release_tags(&entries),
+            vec!["v1.2.0", "v1.1.0"],
+            "drafts and prereleases are filtered out of the bracket"
+        );
         assert!(!truncated, "prior tag was found in the page");
+
+        assert!(
+            bracket_releases(&releases, "v1.0.0", "v9.9.9").is_none(),
+            "an absent target has no bracket"
+        );
     }
 
     #[test]
-    fn bracket_filters_drafts_and_prereleases() {
-        let releases = vec![
-            release("v1.2.0", Some("target"), false, false),
-            release("v1.2.0-rc1", Some("rc"), true, false),
-            release("v1.1.5-draft", Some("draft"), false, true),
-            release("v1.1.0", Some("middle"), false, false),
-            release("v1.0.0", None, false, false),
-        ];
-        let (entries, _) = bracket_releases(&releases, "v1.0.0", "v1.2.0").unwrap();
-        assert_eq!(release_tags(&entries), vec!["v1.2.0", "v1.1.0"]);
-    }
-
-    #[test]
-    fn bracket_returns_none_when_target_absent() {
-        let releases = vec![release("v1.1.0", None, false, false)];
-        assert!(bracket_releases(&releases, "v1.0.0", "v9.9.9").is_none());
-    }
-
-    #[test]
-    fn bracket_truncates_when_prior_older_than_page() {
+    fn bracket_truncates_when_prior_is_older_than_the_page() {
         let releases = vec![
             release("v2.0.0", Some("a"), false, false),
             release("v1.9.0", Some("b"), false, false),

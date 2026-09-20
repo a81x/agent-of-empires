@@ -252,63 +252,38 @@ mod tests {
     }
 
     #[test]
-    fn classification_table() {
+    fn mode_classification_table() {
         use ApprovalClass::*;
         use ModeDecision::*;
         let catalog = catalog_with_modes(&["default", "plan", "acceptEdits", "customMode"]);
 
-        assert_eq!(classify_mode("claude", None, None), Class(Interactive));
-        assert_eq!(
-            classify_mode("claude", Some("bypassPermissions"), None),
-            Class(Unattended)
-        );
-        assert_eq!(
-            classify_mode("codex", Some("agent-full-access"), None),
-            Class(Unattended)
-        );
-        assert_eq!(classify_mode("claude", Some("plan"), None), Class(Guarded));
-        assert_eq!(
-            classify_mode("claude", Some("default"), None),
-            Class(Interactive)
-        );
-        assert_eq!(
-            classify_mode("claude", Some("acceptEdits"), Some(&catalog)),
-            Class(Unattended)
-        );
-        assert_eq!(
-            classify_mode("claude", Some("customMode"), Some(&catalog)),
-            Class(Unattended)
-        );
-        assert_eq!(
-            classify_mode("claude", Some("nope"), Some(&catalog)),
-            UnknownMode
-        );
-        assert_eq!(
-            classify_mode("claude", Some("customMode"), None),
-            CatalogNotDiscovered
-        );
+        // agent, mode, catalog discovered, decision
+        let cases = [
+            ("claude", None, false, Class(Interactive)),
+            ("claude", Some("default"), false, Class(Interactive)),
+            ("claude", Some("plan"), false, Class(Guarded)),
+            (
+                "claude",
+                Some("bypassPermissions"),
+                false,
+                Class(Unattended),
+            ),
+            ("codex", Some("agent-full-access"), false, Class(Unattended)),
+            ("claude", Some("acceptEdits"), true, Class(Unattended)),
+            ("claude", Some("customMode"), true, Class(Unattended)),
+            ("claude", Some("nope"), true, UnknownMode),
+            ("claude", Some("customMode"), false, CatalogNotDiscovered),
+            // An agent nobody reviewed fails closed in every mode.
+            ("shady-agent", None, false, Class(Unattended)),
+            ("shady-agent", Some("default"), false, Class(Unattended)),
+            ("shady-agent", Some("plan"), false, Class(Unattended)),
+            ("shady-agent", Some("acceptEdits"), false, Class(Unattended)),
+        ];
+        for (agent, mode, discovered, expected) in cases {
+            let seen = classify_mode(agent, mode, discovered.then_some(&catalog));
+            assert_eq!(seen, expected, "{agent} {mode:?} discovered={discovered}");
+        }
     }
-
-    #[test]
-    fn unreviewed_agent_fails_closed() {
-        use ApprovalClass::*;
-        use ModeDecision::*;
-
-        assert_eq!(classify_mode("shady-agent", None, None), Class(Unattended));
-        assert_eq!(
-            classify_mode("shady-agent", Some("default"), None),
-            Class(Unattended)
-        );
-        assert_eq!(
-            classify_mode("shady-agent", Some("plan"), None),
-            Class(Unattended)
-        );
-        assert_eq!(
-            classify_mode("shady-agent", Some("acceptEdits"), None),
-            Class(Unattended)
-        );
-    }
-
     #[test]
     fn limits_and_reservations() {
         let dir = tempfile::tempdir().expect("tempdir");
