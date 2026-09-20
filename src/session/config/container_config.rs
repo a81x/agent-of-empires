@@ -2876,27 +2876,11 @@ mod tests {
 
         let project_dir = TempDir::new().unwrap();
         git2::Repository::init(project_dir.path()).unwrap();
-        let sandbox_info = crate::session::instance::SandboxInfo {
-            enabled: true,
-            container_id: None,
-            image: "test:latest".to_string(),
-            container_name: "test-container".to_string(),
-            extra_env: None,
-            custom_instruction: None,
-            before_start_env: Vec::new(),
-            container_workdir: None,
-        };
         let instance_id = "pisandboxbind001";
-        let config = build_container_config(
-            project_dir.path().to_str().unwrap(),
-            &sandbox_info,
-            ContainerAgentSelection::new("pi", None),
-            false,
-            instance_id,
-            None,
-            "",
-        )
-        .unwrap();
+        let config = Build::new("pi")
+            .instance(instance_id)
+            .run(project_dir.path())
+            .unwrap();
 
         let bind = config
             .volumes
@@ -2938,6 +2922,76 @@ mod tests {
     use crate::hooks::test_support::BaseGuard;
     use std::fs;
     use tempfile::TempDir;
+
+    /// `build_container_config` with the arguments these tests rarely vary.
+    struct Build<'a> {
+        selection: ContainerAgentSelection<'a>,
+        info: crate::session::instance::SandboxInfo,
+        yolo: bool,
+        instance: &'a str,
+        profile: &'a str,
+    }
+
+    impl<'a> Build<'a> {
+        fn select(selection: ContainerAgentSelection<'a>) -> Self {
+            Self {
+                selection,
+                info: test_sandbox_info(),
+                yolo: false,
+                instance: "test-instance-id",
+                profile: "",
+            }
+        }
+
+        fn new(tool: &'a str) -> Self {
+            Self::select(ContainerAgentSelection::new(tool, None))
+        }
+
+        fn info(mut self, info: crate::session::instance::SandboxInfo) -> Self {
+            self.info = info;
+            self
+        }
+
+        fn yolo(mut self, yolo: bool) -> Self {
+            self.yolo = yolo;
+            self
+        }
+
+        fn instance(mut self, instance: &'a str) -> Self {
+            self.instance = instance;
+            self
+        }
+
+        fn profile(mut self, profile: &'a str) -> Self {
+            self.profile = profile;
+            self
+        }
+
+        fn run(self, project: &Path) -> Result<ContainerConfig> {
+            build_container_config(
+                project.to_str().unwrap(),
+                &self.info,
+                self.selection,
+                self.yolo,
+                self.instance,
+                None,
+                self.profile,
+            )
+        }
+    }
+
+    fn test_sandbox_info() -> crate::session::instance::SandboxInfo {
+        crate::session::instance::SandboxInfo {
+            enabled: true,
+            container_id: None,
+            image: "test:latest".to_string(),
+            container_name: "test-container".to_string(),
+            extra_env: None,
+            custom_instruction: None,
+            before_start_env: Vec::new(),
+            container_workdir: None,
+        }
+    }
 
     /// The extension read must go through the anchored walk, not a stat of the
     /// pathname followed by a second open of it. With `agent/extensions`
@@ -4649,16 +4703,6 @@ mod tests {
 
         let project_dir = TempDir::new().unwrap();
         git2::Repository::init(project_dir.path()).unwrap();
-        let sandbox_info = crate::session::instance::SandboxInfo {
-            enabled: true,
-            container_id: None,
-            image: "test:latest".to_string(),
-            container_name: "test-container".to_string(),
-            extra_env: None,
-            custom_instruction: None,
-            before_start_env: Vec::new(),
-            container_workdir: None,
-        };
         let shared = host.join(SANDBOX_PRIVATE_SUBDIR).join(".credentials.json");
         // A store the v027 move left a copy in, and a fresh one with none: both
         // end up with the empty mountpoint the nested file mount needs (#3845).
@@ -4668,16 +4712,10 @@ mod tests {
             if stale_copy {
                 fs::write(store.join(".credentials.json"), credential(1)).unwrap();
             }
-            let config = build_container_config(
-                project_dir.path().to_str().unwrap(),
-                &sandbox_info,
-                ContainerAgentSelection::new("claude", None),
-                false,
-                instance_id,
-                None,
-                "",
-            )
-            .unwrap();
+            let config = Build::new("claude")
+                .instance(instance_id)
+                .run(project_dir.path())
+                .unwrap();
             let mount = config
                 .volumes
                 .iter()
@@ -4805,28 +4843,10 @@ mount_ssh = true
         // Initialize a git repo so compute_volume_paths works
         git2::Repository::init(project_dir.path()).unwrap();
 
-        let sandbox_info = crate::session::instance::SandboxInfo {
-            enabled: true,
-            container_id: None,
-            image: "test:latest".to_string(),
-            container_name: "test-container".to_string(),
-            extra_env: None,
-            custom_instruction: None,
-            before_start_env: Vec::new(),
-            container_workdir: None,
-        };
-
         let project_path_str = project_dir.path().to_str().unwrap();
-        let config = build_container_config(
-            project_path_str,
-            &sandbox_info,
-            ContainerAgentSelection::new("claude", None),
-            false,
-            "test-instance-id",
-            None,
-            "",
-        )
-        .unwrap();
+        let config = Build::new("claude")
+            .run(Path::new(project_path_str))
+            .unwrap();
 
         // A repo cannot set container env (#3710).
         let env_keys: Vec<&str> = config.environment.iter().map(|e| e.key()).collect();
@@ -4928,28 +4948,10 @@ extra_run_args = ["--privileged"]
 
         git2::Repository::init(project_dir.path()).unwrap();
 
-        let sandbox_info = crate::session::instance::SandboxInfo {
-            enabled: true,
-            container_id: None,
-            image: "test:latest".to_string(),
-            container_name: "test-container".to_string(),
-            extra_env: None,
-            custom_instruction: None,
-            before_start_env: Vec::new(),
-            container_workdir: None,
-        };
-
         let project_path_str = project_dir.path().to_str().unwrap();
-        let config = build_container_config(
-            project_path_str,
-            &sandbox_info,
-            ContainerAgentSelection::new("claude", None),
-            false,
-            "test-instance-id",
-            None,
-            "",
-        )
-        .unwrap();
+        let config = Build::new("claude")
+            .run(Path::new(project_path_str))
+            .unwrap();
 
         assert_eq!(config.run_policy.cap_add, vec!["SYS_ADMIN"]);
         assert_eq!(config.run_policy.cap_drop, vec!["ALL"]);
@@ -4985,27 +4987,7 @@ extra_run_args = ["--privileged"]
 
             git2::Repository::init(project_dir.path()).unwrap();
 
-            let sandbox_info = crate::session::instance::SandboxInfo {
-                enabled: true,
-                container_id: None,
-                image: "test:latest".to_string(),
-                container_name: "test-container".to_string(),
-                extra_env: None,
-                custom_instruction: None,
-                before_start_env: Vec::new(),
-                container_workdir: None,
-            };
-
-            let config = build_container_config(
-                project_dir.path().to_str().unwrap(),
-                &sandbox_info,
-                ContainerAgentSelection::new("claude", None),
-                false,
-                "test-instance-id",
-                None,
-                "",
-            )
-            .unwrap();
+            let config = Build::new("claude").run(project_dir.path()).unwrap();
 
             assert_eq!(
                 config.network, None,
@@ -5060,28 +5042,10 @@ volume_ignores = ["**/bin", "**/obj", "target"]
 
         git2::Repository::init(project_dir.path()).unwrap();
 
-        let sandbox_info = crate::session::instance::SandboxInfo {
-            enabled: true,
-            container_id: None,
-            image: "test:latest".to_string(),
-            container_name: "test-container".to_string(),
-            extra_env: None,
-            custom_instruction: None,
-            before_start_env: Vec::new(),
-            container_workdir: None,
-        };
-
         let project_path_str = project_dir.path().to_str().unwrap();
-        let config = build_container_config(
-            project_path_str,
-            &sandbox_info,
-            ContainerAgentSelection::new("claude", None),
-            false,
-            "test-instance-id",
-            None,
-            "",
-        )
-        .unwrap();
+        let config = Build::new("claude")
+            .run(Path::new(project_path_str))
+            .unwrap();
 
         let dir_name = project_dir.path().file_name().unwrap().to_string_lossy();
         let expect = |p: &str| format!("/workspace/{}/{}", dir_name, p);
@@ -5150,26 +5114,7 @@ volume_ignores_strategy = "named"
 "#,
             )
             .unwrap();
-            let sandbox_info = crate::session::instance::SandboxInfo {
-                enabled: true,
-                container_id: None,
-                image: "test:latest".to_string(),
-                container_name: "test-container".to_string(),
-                extra_env: None,
-                custom_instruction: None,
-                before_start_env: Vec::new(),
-                container_workdir: None,
-            };
-            build_container_config(
-                project.to_str().unwrap(),
-                &sandbox_info,
-                ContainerAgentSelection::new("claude", None),
-                false,
-                "test-instance-id",
-                None,
-                "",
-            )
-            .unwrap()
+            Build::new("claude").run(project).unwrap()
         };
 
         let healthy = build(&worktree_path);
@@ -5292,27 +5237,7 @@ volume_ignores = ["node_modules"]
             return;
         }
 
-        let sandbox_info = crate::session::instance::SandboxInfo {
-            enabled: true,
-            container_id: None,
-            image: "test:latest".to_string(),
-            container_name: "test-container".to_string(),
-            extra_env: None,
-            custom_instruction: None,
-            before_start_env: Vec::new(),
-            container_workdir: None,
-        };
-
-        let config = build_container_config(
-            worktree_path.to_str().unwrap(),
-            &sandbox_info,
-            ContainerAgentSelection::new("claude", None),
-            false,
-            "test-instance-id",
-            None,
-            "",
-        )
-        .unwrap();
+        let config = Build::new("claude").run(&worktree_path).unwrap();
 
         assert!(
             config
@@ -5342,27 +5267,11 @@ volume_ignores = ["node_modules"]
         let project_dir = TempDir::new().unwrap();
         git2::Repository::init(project_dir.path()).unwrap();
 
-        let sandbox_info = crate::session::instance::SandboxInfo {
-            enabled: true,
-            container_id: None,
-            image: "test:latest".to_string(),
-            container_name: "test-container".to_string(),
-            extra_env: None,
-            custom_instruction: None,
-            before_start_env: Vec::new(),
-            container_workdir: None,
-        };
         let instance_id = "codex-sandbox-hooks-test";
-        let config = build_container_config(
-            project_dir.path().to_str().unwrap(),
-            &sandbox_info,
-            ContainerAgentSelection::new("codex", None),
-            false,
-            instance_id,
-            None,
-            "",
-        )
-        .unwrap();
+        let config = Build::new("codex")
+            .instance(instance_id)
+            .run(project_dir.path())
+            .unwrap();
 
         let codex_sandbox = temp_home
             .path()
@@ -5419,21 +5328,14 @@ volume_ignores = ["node_modules"]
         fs::create_dir_all(&legacy_sandbox).unwrap();
         fs::write(legacy_sandbox.join("auth.json"), "legacy-auth").unwrap();
         fs::write(legacy_sandbox.join("state_5.sqlite"), "legacy-state").unwrap();
-        let sandbox_info = build_minimal_sandbox_info();
         let instance_ids = ["codex-isolated-home-one", "codex-isolated-home-two"];
         let configs: Vec<_> = instance_ids
             .iter()
             .map(|instance_id| {
-                build_container_config(
-                    project_dir.path().to_str().unwrap(),
-                    &sandbox_info,
-                    ContainerAgentSelection::new("codex", None),
-                    false,
-                    instance_id,
-                    None,
-                    "",
-                )
-                .unwrap()
+                Build::new("codex")
+                    .instance(instance_id)
+                    .run(project_dir.path())
+                    .unwrap()
             })
             .collect();
 
@@ -5491,27 +5393,12 @@ volume_ignores = ["node_modules"]
         let project_dir = TempDir::new().unwrap();
         git2::Repository::init(project_dir.path()).unwrap();
 
-        let sandbox_info = crate::session::instance::SandboxInfo {
-            enabled: true,
-            container_id: None,
-            image: "test:latest".to_string(),
-            container_name: "test-container".to_string(),
-            extra_env: None,
-            custom_instruction: None,
-            before_start_env: Vec::new(),
-            container_workdir: None,
-        };
         let instance_id = "codex-yolo-trust-test";
-        let config = build_container_config(
-            project_dir.path().to_str().unwrap(),
-            &sandbox_info,
-            ContainerAgentSelection::new("codex", None),
-            true,
-            instance_id,
-            None,
-            "",
-        )
-        .unwrap();
+        let config = Build::new("codex")
+            .yolo(true)
+            .instance(instance_id)
+            .run(project_dir.path())
+            .unwrap();
 
         let codex_config = temp_home
             .path()
@@ -5551,27 +5438,12 @@ volume_ignores = ["node_modules"]
             let project_dir = TempDir::new().unwrap();
             git2::Repository::init(project_dir.path()).unwrap();
 
-            let sandbox_info = crate::session::instance::SandboxInfo {
-                enabled: true,
-                container_id: None,
-                image: "test:latest".to_string(),
-                container_name: "test-container".to_string(),
-                extra_env: None,
-                custom_instruction: None,
-                before_start_env: Vec::new(),
-                container_workdir: None,
-            };
             let instance_id = format!("claude-trust-test-{is_yolo}");
-            let config = build_container_config(
-                project_dir.path().to_str().unwrap(),
-                &sandbox_info,
-                ContainerAgentSelection::new("claude", None),
-                is_yolo,
-                &instance_id,
-                None,
-                "",
-            )
-            .unwrap();
+            let config = Build::new("claude")
+                .yolo(is_yolo)
+                .instance(&instance_id)
+                .run(project_dir.path())
+                .unwrap();
 
             let seeded = temp_home
                 .path()
@@ -5630,26 +5502,13 @@ claude-personal = "~/.claude-personal"
         let project_dir = TempDir::new().unwrap();
         git2::Repository::init(project_dir.path()).unwrap();
 
-        let sandbox_info = crate::session::instance::SandboxInfo {
-            enabled: true,
-            container_id: None,
-            image: "test:latest".to_string(),
-            container_name: "test-container".to_string(),
-            extra_env: None,
-            custom_instruction: None,
-            before_start_env: Vec::new(),
-            container_workdir: None,
-        };
         let instance_id = "declared-config-dir-test";
-        let config = build_container_config(
-            project_dir.path().to_str().unwrap(),
-            &sandbox_info,
-            ContainerAgentSelection::new("claude-personal", Some("claude")),
-            false,
-            instance_id,
-            None,
-            "",
-        )
+        let config = Build::select(ContainerAgentSelection::new(
+            "claude-personal",
+            Some("claude"),
+        ))
+        .instance(instance_id)
+        .run(project_dir.path())
         .unwrap();
         let staged = declared.join(SANDBOX_PRIVATE_SUBDIR).join(instance_id);
         assert!(config.volumes.iter().any(|volume| {
@@ -5722,27 +5581,12 @@ codex-work = "{}"
         let project_dir = TempDir::new().unwrap();
         git2::Repository::init(project_dir.path()).unwrap();
 
-        let sandbox_info = crate::session::instance::SandboxInfo {
-            enabled: true,
-            container_id: None,
-            image: "test:latest".to_string(),
-            container_name: "test-container".to_string(),
-            extra_env: None,
-            custom_instruction: None,
-            before_start_env: Vec::new(),
-            container_workdir: None,
-        };
         let instance_id = "declared-codex-dir-test";
-        let config = build_container_config(
-            project_dir.path().to_str().unwrap(),
-            &sandbox_info,
-            ContainerAgentSelection::new("codex-work", Some("codex")),
-            true,
-            instance_id,
-            None,
-            "",
-        )
-        .unwrap();
+        let config = Build::select(ContainerAgentSelection::new("codex-work", Some("codex")))
+            .yolo(true)
+            .instance(instance_id)
+            .run(project_dir.path())
+            .unwrap();
         let codex_home = config
             .environment
             .iter()
@@ -5814,26 +5658,11 @@ codex-work = "{}"
         let project_dir = TempDir::new().unwrap();
         git2::Repository::init(project_dir.path()).unwrap();
 
-        let sandbox_info = crate::session::instance::SandboxInfo {
-            enabled: true,
-            container_id: None,
-            image: "test:latest".to_string(),
-            container_name: "test-container".to_string(),
-            extra_env: None,
-            custom_instruction: None,
-            before_start_env: Vec::new(),
-            container_workdir: None,
-        };
-        build_container_config(
-            project_dir.path().to_str().unwrap(),
-            &sandbox_info,
-            ContainerAgentSelection::new("gemini", None),
-            true,
-            "gemini-yolo-trust-test",
-            None,
-            "",
-        )
-        .unwrap();
+        Build::new("gemini")
+            .yolo(true)
+            .instance("gemini-yolo-trust-test")
+            .run(project_dir.path())
+            .unwrap();
 
         let gemini_settings = temp_home
             .path()
@@ -5973,27 +5802,11 @@ trust_level = "trusted"
         .unwrap();
         let project_dir = TempDir::new().unwrap();
         git2::Repository::init(project_dir.path()).unwrap();
-        let sandbox_info = crate::session::SandboxInfo {
-            enabled: true,
-            container_id: None,
-            image: "test:latest".to_string(),
-            container_name: "test-container".to_string(),
-            extra_env: None,
-            custom_instruction: None,
-            before_start_env: Vec::new(),
-            container_workdir: None,
-        };
 
-        let config = build_container_config(
-            project_dir.path().to_str().unwrap(),
-            &sandbox_info,
-            ContainerAgentSelection::new("cursor", None),
-            false,
-            "cursor-shadow-test",
-            None,
-            "",
-        )
-        .unwrap();
+        let config = Build::new("cursor")
+            .instance("cursor-shadow-test")
+            .run(project_dir.path())
+            .unwrap();
 
         assert!(!config.identity_publisher_installed);
 
@@ -6007,16 +5820,10 @@ trust_level = "trusted"
             )];
         })
         .unwrap();
-        let config = build_container_config(
-            project_dir.path().to_str().unwrap(),
-            &sandbox_info,
-            ContainerAgentSelection::new("cursor", None),
-            false,
-            "cursor-output-shadow",
-            None,
-            "",
-        )
-        .unwrap();
+        let config = Build::new("cursor")
+            .instance("cursor-output-shadow")
+            .run(project_dir.path())
+            .unwrap();
         assert!(!config.identity_publisher_installed);
 
         let hook_dir = crate::hooks::ensure_instance_dir_path("cursor-readonly").unwrap();
@@ -6028,16 +5835,10 @@ trust_level = "trusted"
             )];
         })
         .unwrap();
-        let config = build_container_config(
-            project_dir.path().to_str().unwrap(),
-            &sandbox_info,
-            ContainerAgentSelection::new("cursor", None),
-            false,
-            "cursor-readonly",
-            None,
-            "",
-        )
-        .unwrap();
+        let config = Build::new("cursor")
+            .instance("cursor-readonly")
+            .run(project_dir.path())
+            .unwrap();
         assert!(!config.identity_publisher_installed);
 
         crate::session::config::update_config(|config| {
@@ -6045,17 +5846,11 @@ trust_level = "trusted"
             config.sandbox.environment = vec!["HOME=/alternate-home".to_string()];
         })
         .unwrap();
-        let error = build_container_config(
-            project_dir.path().to_str().unwrap(),
-            &sandbox_info,
-            ContainerAgentSelection::new("cursor", None),
-            false,
-            "cursor-home-override",
-            None,
-            "",
-        )
-        .err()
-        .expect("conflicting HOME must be rejected");
+        let error = Build::new("cursor")
+            .instance("cursor-home-override")
+            .run(project_dir.path())
+            .err()
+            .expect("conflicting HOME must be rejected");
         assert!(error.to_string().contains("HOME=/alternate-home"));
         assert!(error
             .to_string()
@@ -6101,27 +5896,11 @@ trust_level = "trusted"
                 agent.name
             );
 
-            let sandbox_info = crate::session::instance::SandboxInfo {
-                enabled: true,
-                container_id: None,
-                image: "test:latest".to_string(),
-                container_name: "test-container".to_string(),
-                extra_env: None,
-                custom_instruction: None,
-                before_start_env: Vec::new(),
-                container_workdir: None,
-            };
             let instance_id = format!("{}-sidecar-sandbox-test", agent.name);
-            let config = build_container_config(
-                project_dir.path().to_str().unwrap(),
-                &sandbox_info,
-                ContainerAgentSelection::new(agent.name, None),
-                false,
-                &instance_id,
-                None,
-                "",
-            )
-            .unwrap();
+            let config = Build::new(agent.name)
+                .instance(&instance_id)
+                .run(project_dir.path())
+                .unwrap();
 
             let expects_identity = crate::agents::resolved_sidecar_hook_events(
                 agent,
@@ -6191,25 +5970,11 @@ trust_level = "trusted"
         let project_dir = TempDir::new().unwrap();
         git2::Repository::init(project_dir.path()).unwrap();
         let instance_id = "cursor-identity-only-sandbox-test";
-        build_container_config(
-            project_dir.path().to_str().unwrap(),
-            &crate::session::SandboxInfo {
-                enabled: true,
-                container_id: None,
-                image: "test:latest".to_string(),
-                container_name: "test-container".to_string(),
-                extra_env: None,
-                custom_instruction: None,
-                before_start_env: Vec::new(),
-                container_workdir: None,
-            },
-            ContainerAgentSelection::new("cursor", None),
-            false,
-            instance_id,
-            None,
-            profile,
-        )
-        .unwrap();
+        Build::new("cursor")
+            .instance(instance_id)
+            .profile(profile)
+            .run(project_dir.path())
+            .unwrap();
 
         let hooks: serde_json::Value = serde_json::from_str(
             &fs::read_to_string(
@@ -6249,26 +6014,12 @@ trust_level = "trusted"
 
         let kiro = crate::agents::get_agent("kiro").unwrap();
         let sidecar = kiro.sidecar_hooks.as_ref().unwrap();
-        let sandbox_info = crate::session::instance::SandboxInfo {
-            enabled: true,
-            container_id: None,
-            image: "test:latest".to_string(),
-            container_name: "test-container".to_string(),
-            extra_env: None,
-            custom_instruction: None,
-            before_start_env: Vec::new(),
-            container_workdir: None,
-        };
         let instance_id = "kiro-selected-agent-sandbox-test";
-        build_container_config(
-            project_dir.path().to_str().unwrap(),
-            &sandbox_info,
+        Build::select(
             ContainerAgentSelection::new("kiro", None).with_selected_agent(Some("custom-agent")),
-            false,
-            instance_id,
-            None,
-            "",
         )
+        .instance(instance_id)
+        .run(project_dir.path())
         .unwrap();
 
         // Hooks land in the selected agent's staged sandbox config...
@@ -6319,24 +6070,11 @@ trust_level = "trusted"
         git2::Repository::init(project_dir.path()).unwrap();
 
         let instance_id = "kiro-managed-agent-sandbox-test";
-        build_container_config(
-            project_dir.path().to_str().unwrap(),
-            &crate::session::instance::SandboxInfo {
-                enabled: true,
-                container_id: None,
-                image: "test:latest".to_string(),
-                container_name: "test-container".to_string(),
-                extra_env: None,
-                custom_instruction: None,
-                before_start_env: Vec::new(),
-                container_workdir: None,
-            },
+        Build::select(
             ContainerAgentSelection::new("kiro", None).with_selected_agent(Some("custom-agent")),
-            false,
-            instance_id,
-            None,
-            "",
         )
+        .instance(instance_id)
+        .run(project_dir.path())
         .unwrap();
 
         let matched = temp_home
@@ -6383,26 +6121,9 @@ trust_level = "trusted"
         let project_dir = TempDir::new().unwrap();
         git2::Repository::init(project_dir.path()).unwrap();
 
-        let sandbox_info = crate::session::instance::SandboxInfo {
-            enabled: true,
-            container_id: None,
-            image: "test:latest".to_string(),
-            container_name: "test-container".to_string(),
-            extra_env: None,
-            custom_instruction: None,
-            before_start_env: Vec::new(),
-            container_workdir: None,
-        };
-
-        let result = build_container_config(
-            project_dir.path().to_str().unwrap(),
-            &sandbox_info,
-            ContainerAgentSelection::new("codex", None),
-            false,
-            "../etc",
-            None,
-            "",
-        );
+        let result = Build::new("codex")
+            .instance("../etc")
+            .run(project_dir.path());
 
         let err = match result {
             Ok(_) => panic!("must refuse unsafe instance id"),
@@ -6431,27 +6152,12 @@ trust_level = "trusted"
         let project_dir = TempDir::new().unwrap();
         git2::Repository::init(project_dir.path()).unwrap();
 
-        let sandbox_info = crate::session::instance::SandboxInfo {
-            enabled: true,
-            container_id: None,
-            image: "test:latest".to_string(),
-            container_name: "test-container".to_string(),
-            extra_env: None,
-            custom_instruction: None,
-            before_start_env: Vec::new(),
-            container_workdir: None,
-        };
         let instance_id = "codex-sandbox-hooks-disabled-test";
-        let config = build_container_config(
-            project_dir.path().to_str().unwrap(),
-            &sandbox_info,
-            ContainerAgentSelection::new("codex", None),
-            false,
-            instance_id,
-            None,
-            "sandbox-hooks-disabled",
-        )
-        .unwrap();
+        let config = Build::new("codex")
+            .instance(instance_id)
+            .profile("sandbox-hooks-disabled")
+            .run(project_dir.path())
+            .unwrap();
 
         let codex_sandbox = temp_home
             .path()
@@ -6499,32 +6205,17 @@ agent_detect_as = { "wrapped-codex" = "codex" }
         let project_dir = TempDir::new().unwrap();
         git2::Repository::init(project_dir.path()).unwrap();
 
-        let sandbox_info = crate::session::instance::SandboxInfo {
-            enabled: true,
-            container_id: None,
-            image: "test:latest".to_string(),
-            container_name: "test-container".to_string(),
-            extra_env: None,
-            custom_instruction: None,
-            before_start_env: Vec::new(),
-            container_workdir: None,
-        };
         let instance_id = "wrapped-codex-sandbox-hooks-test";
         // resolve_config_or_warn inside build_container_config installs the
         // profile overlay's agent_detect_as into the process-global
         // registry; restore the prior entries afterwards.
         let _registry =
             crate::tmux::status_rules::ProfileRegistryGuard::take("sandbox-wrapped-codex");
-        let config = build_container_config(
-            project_dir.path().to_str().unwrap(),
-            &sandbox_info,
-            ContainerAgentSelection::new("wrapped-codex", None),
-            false,
-            instance_id,
-            None,
-            "sandbox-wrapped-codex",
-        )
-        .unwrap();
+        let config = Build::new("wrapped-codex")
+            .instance(instance_id)
+            .profile("sandbox-wrapped-codex")
+            .run(project_dir.path())
+            .unwrap();
 
         let codex_sandbox = temp_home
             .path()
@@ -6570,27 +6261,11 @@ agent_detect_as = { "wrapped-codex" = "codex" }
         let project_dir = TempDir::new().unwrap();
         git2::Repository::init(project_dir.path()).unwrap();
 
-        let sandbox_info = crate::session::instance::SandboxInfo {
-            enabled: true,
-            container_id: None,
-            image: "test:latest".to_string(),
-            container_name: "test-container".to_string(),
-            extra_env: None,
-            custom_instruction: None,
-            before_start_env: Vec::new(),
-            container_workdir: None,
-        };
         let instance_id = "codex-sandbox-refresh-hooks-test";
-        build_container_config(
-            project_dir.path().to_str().unwrap(),
-            &sandbox_info,
-            ContainerAgentSelection::new("codex", None),
-            false,
-            instance_id,
-            None,
-            "",
-        )
-        .unwrap();
+        Build::new("codex")
+            .instance(instance_id)
+            .run(project_dir.path())
+            .unwrap();
 
         let codex_sandbox = codex_dir.join(SANDBOX_PRIVATE_SUBDIR).join(instance_id);
         let sandbox_config_path = codex_sandbox.join("config.toml");
@@ -6698,16 +6373,6 @@ trusted_hash = "keep"
         let project_dir = TempDir::new().unwrap();
         git2::Repository::init(project_dir.path()).unwrap();
 
-        let sandbox_info = crate::session::instance::SandboxInfo {
-            enabled: true,
-            container_id: None,
-            image: "test:latest".to_string(),
-            container_name: "test-container".to_string(),
-            extra_env: None,
-            custom_instruction: None,
-            before_start_env: Vec::new(),
-            container_workdir: None,
-        };
         let instances = [
             ("codex-work-status-map-refresh-test", "work", "waiting"),
             (
@@ -6717,16 +6382,11 @@ trusted_hash = "keep"
             ),
         ];
         for (instance_id, profile, _) in instances {
-            build_container_config(
-                project_dir.path().to_str().unwrap(),
-                &sandbox_info,
-                ContainerAgentSelection::new("codex", None),
-                false,
-                instance_id,
-                None,
-                profile,
-            )
-            .unwrap();
+            Build::new("codex")
+                .instance(instance_id)
+                .profile(profile)
+                .run(project_dir.path())
+                .unwrap();
             refresh_agent_configs_for_instance(
                 profile,
                 instance_id,
@@ -6764,27 +6424,16 @@ trusted_hash = "keep"
         let project_dir = TempDir::new().unwrap();
         git2::Repository::init(project_dir.path()).unwrap();
 
-        let sandbox_info = crate::session::instance::SandboxInfo {
-            enabled: true,
-            container_id: None,
-            image: "test:latest".to_string(),
-            container_name: "test-container".to_string(),
+        let codex_home_info = crate::session::instance::SandboxInfo {
             extra_env: Some(vec!["CODEX_HOME=/root/custom-codex".to_string()]),
-            custom_instruction: None,
-            before_start_env: Vec::new(),
-            container_workdir: None,
+            ..test_sandbox_info()
         };
         let instance_id = "codex-sandbox-extra-env-hooks-test";
-        let config = build_container_config(
-            project_dir.path().to_str().unwrap(),
-            &sandbox_info,
-            ContainerAgentSelection::new("codex", None),
-            false,
-            instance_id,
-            None,
-            "",
-        )
-        .unwrap();
+        let config = Build::new("codex")
+            .info(codex_home_info)
+            .instance(instance_id)
+            .run(project_dir.path())
+            .unwrap();
 
         let codex_sandbox = temp_home
             .path()
@@ -6821,27 +6470,11 @@ environment = ["CODEX_HOME=/root/profile-codex"]
         let project_dir = TempDir::new().unwrap();
         git2::Repository::init(project_dir.path()).unwrap();
 
-        let sandbox_info = crate::session::instance::SandboxInfo {
-            enabled: true,
-            container_id: None,
-            image: "test:latest".to_string(),
-            container_name: "test-container".to_string(),
-            extra_env: None,
-            custom_instruction: None,
-            before_start_env: Vec::new(),
-            container_workdir: None,
-        };
         let instance_id = "codex-sandbox-config-env-hooks-test";
-        let config = build_container_config(
-            project_dir.path().to_str().unwrap(),
-            &sandbox_info,
-            ContainerAgentSelection::new("codex", None),
-            false,
-            instance_id,
-            None,
-            "",
-        )
-        .unwrap();
+        let config = Build::new("codex")
+            .instance(instance_id)
+            .run(project_dir.path())
+            .unwrap();
 
         let codex_sandbox = temp_home
             .path()
@@ -6913,17 +6546,6 @@ extra_volumes = ["/host/personal-only:/container/personal-only:ro"]
         git2::Repository::init(project_dir.path()).unwrap();
         let project_path_str = project_dir.path().to_str().unwrap();
 
-        let sandbox_info = crate::session::instance::SandboxInfo {
-            enabled: true,
-            container_id: None,
-            image: "test:latest".to_string(),
-            container_name: "test-container".to_string(),
-            extra_env: None,
-            custom_instruction: None,
-            before_start_env: Vec::new(),
-            container_workdir: None,
-        };
-
         let has_volume = |config: &crate::containers::container_interface::ContainerConfig,
                           host: &str,
                           container: &str|
@@ -6936,16 +6558,10 @@ extra_volumes = ["/host/personal-only:/container/personal-only:ro"]
 
         // Passing "personal" must resolve the personal profile's extra_volumes
         // and NOT the default profile's.
-        let cfg_personal = build_container_config(
-            project_path_str,
-            &sandbox_info,
-            ContainerAgentSelection::new("claude", None),
-            false,
-            "test-instance-id",
-            None,
-            "personal",
-        )
-        .unwrap();
+        let cfg_personal = Build::new("claude")
+            .profile("personal")
+            .run(Path::new(project_path_str))
+            .unwrap();
         assert!(
             has_volume(
                 &cfg_personal,
@@ -6974,16 +6590,10 @@ extra_volumes = ["/host/personal-only:/container/personal-only:ro"]
         );
 
         // Passing "default" must resolve the default profile's extra_volumes.
-        let cfg_default = build_container_config(
-            project_path_str,
-            &sandbox_info,
-            ContainerAgentSelection::new("claude", None),
-            false,
-            "test-instance-id",
-            None,
-            "default",
-        )
-        .unwrap();
+        let cfg_default = Build::new("claude")
+            .profile("default")
+            .run(Path::new(project_path_str))
+            .unwrap();
         assert!(
             has_volume(
                 &cfg_default,
@@ -6995,16 +6605,9 @@ extra_volumes = ["/host/personal-only:/container/personal-only:ro"]
 
         // Empty profile must fall back to the user's globally configured default,
         // preserving prior behavior for callers without a profile in hand.
-        let cfg_empty = build_container_config(
-            project_path_str,
-            &sandbox_info,
-            ContainerAgentSelection::new("claude", None),
-            false,
-            "test-instance-id",
-            None,
-            "",
-        )
-        .unwrap();
+        let cfg_empty = Build::new("claude")
+            .run(Path::new(project_path_str))
+            .unwrap();
         assert!(
             has_volume(&cfg_empty, "/host/default-only", "/container/default-only"),
             "empty profile must fall back to global default",
@@ -7063,28 +6666,10 @@ volume_ignores = ["target", "node_modules"]
         )
         .unwrap();
 
-        let sandbox_info = crate::session::instance::SandboxInfo {
-            enabled: true,
-            container_id: None,
-            image: "test:latest".to_string(),
-            container_name: "test-container".to_string(),
-            extra_env: None,
-            custom_instruction: None,
-            before_start_env: Vec::new(),
-            container_workdir: None,
-        };
-
         let project_path_str = worktree_path.to_str().unwrap();
-        let config = build_container_config(
-            project_path_str,
-            &sandbox_info,
-            ContainerAgentSelection::new("claude", None),
-            false,
-            "test-instance-id",
-            None,
-            "",
-        )
-        .unwrap();
+        let config = Build::new("claude")
+            .run(Path::new(project_path_str))
+            .unwrap();
 
         // Verify volume_ignores are applied to the worktree mount
         assert!(
@@ -7156,28 +6741,10 @@ volume_ignores = ["target"]
         )
         .unwrap();
 
-        let sandbox_info = crate::session::instance::SandboxInfo {
-            enabled: true,
-            container_id: None,
-            image: "test:latest".to_string(),
-            container_name: "test-container".to_string(),
-            extra_env: None,
-            custom_instruction: None,
-            before_start_env: Vec::new(),
-            container_workdir: None,
-        };
-
         let project_path_str = worktree_path.to_str().unwrap();
-        let config = build_container_config(
-            project_path_str,
-            &sandbox_info,
-            ContainerAgentSelection::new("claude", None),
-            false,
-            "test-instance-id",
-            None,
-            "",
-        )
-        .unwrap();
+        let config = Build::new("claude")
+            .run(Path::new(project_path_str))
+            .unwrap();
 
         // In bare-repo layout, workspace_path is a subdirectory of the single mount.
         // volume_ignores must apply to the workspace_path (where builds run), not
@@ -7314,19 +6881,6 @@ volume_ignores = ["target"]
     // They use `serial_test::serial` because they mutate process-wide env vars,
     // and isolate `HOME`/`XDG_CONFIG_HOME` so global config doesn't bleed in.
 
-    fn build_minimal_sandbox_info() -> crate::session::instance::SandboxInfo {
-        crate::session::instance::SandboxInfo {
-            enabled: true,
-            container_id: None,
-            image: "test:latest".to_string(),
-            container_name: "test-container".to_string(),
-            extra_env: None,
-            custom_instruction: None,
-            before_start_env: Vec::new(),
-            container_workdir: None,
-        }
-    }
-
     fn write_adc_at(home: &std::path::Path) -> std::path::PathBuf {
         let adc_dir = home.join(".config").join("gcloud");
         fs::create_dir_all(&adc_dir).unwrap();
@@ -7337,17 +6891,7 @@ volume_ignores = ["target"]
 
     fn run_build_for_vertex_test(tool: &str, project_dir: &std::path::Path) -> ContainerConfig {
         git2::Repository::init(project_dir).unwrap();
-        let info = build_minimal_sandbox_info();
-        build_container_config(
-            project_dir.to_str().unwrap(),
-            &info,
-            ContainerAgentSelection::new(tool, None),
-            false,
-            "test-instance-id",
-            None,
-            "",
-        )
-        .unwrap()
+        Build::new(tool).run(project_dir).unwrap()
     }
 
     /// The ADC mount is Claude-only, needs a non-empty `CLAUDE_CODE_USE_VERTEX`
@@ -7767,26 +7311,11 @@ agent_status_hooks = false
 
         let project_dir = TempDir::new().unwrap();
         git2::Repository::init(project_dir.path()).unwrap();
-        let sandbox_info = crate::session::SandboxInfo {
-            enabled: true,
-            container_id: None,
-            image: "test:latest".to_string(),
-            container_name: "test-container".to_string(),
-            extra_env: None,
-            custom_instruction: None,
-            before_start_env: Vec::new(),
-            container_workdir: None,
-        };
-        build_container_config(
-            project_dir.path().to_str().unwrap(),
-            &sandbox_info,
-            ContainerAgentSelection::new("gemini", None),
-            false,
-            instance_id,
-            None,
-            profile,
-        )
-        .unwrap();
+        Build::new("gemini")
+            .instance(instance_id)
+            .profile(profile)
+            .run(project_dir.path())
+            .unwrap();
 
         let content = fs::read_to_string(settings_path).unwrap();
         assert!(content.contains("printf foreign"));
