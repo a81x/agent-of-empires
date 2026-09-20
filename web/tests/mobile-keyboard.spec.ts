@@ -1,4 +1,5 @@
 import { test, expect, observeFor } from "./helpers/mockedTest";
+import { openLiveSession } from "./helpers/liveTerminal";
 import { devices, type Page } from "@playwright/test";
 import { clickSidebarSession, openMobileSidebar } from "./helpers/sidebar";
 import { mockTerminalApis, seedSettings, type MockHandle } from "./helpers/terminal-mocks";
@@ -56,12 +57,7 @@ async function simulateKeyboardClose(page: Page) {
   });
 }
 
-async function openSession(page: Page, handle: MockHandle) {
-  await openMobileSidebar(page);
-  await clickSidebarSession(page, "pinch-test");
-  await page.locator("[data-live-terminal]").waitFor({ state: "visible", timeout: 10_000 });
-  await handle.waitForLiveReady();
-}
+const openSession = (page: Page, handle: MockHandle) => openLiveSession(page, handle, { mobile: true, settings: null });
 
 async function getKeyboardState(page: Page) {
   return page.evaluate(() => {

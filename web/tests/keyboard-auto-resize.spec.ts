@@ -1,4 +1,5 @@
 import { test, expect, observeFor } from "./helpers/mockedTest";
+import { openLiveSession } from "./helpers/liveTerminal";
 import { devices, type Page } from "@playwright/test";
 import { clickSidebarSession, openMobileSidebar } from "./helpers/sidebar";
 import { mockTerminalApis, type MockHandle } from "./helpers/terminal-mocks";
@@ -75,12 +76,7 @@ async function paneHeight(page: Page): Promise<number> {
   });
 }
 
-async function openSession(page: Page, handle: MockHandle) {
-  await openMobileSidebar(page);
-  await clickSidebarSession(page, "pinch-test");
-  await page.locator('[data-term="agent"] [data-live-terminal]').waitFor({ state: "visible", timeout: 10_000 });
-  await handle.waitForLiveReady();
-}
+const openSession = (page: Page, handle: MockHandle) => openLiveSession(page, handle, { mobile: true, settings: null });
 
 test.describe("Keyboard auto-resize (#1432)", () => {
   test("Safari mode: keyboard insets the pane but never resizes tmux", async ({ page }) => {

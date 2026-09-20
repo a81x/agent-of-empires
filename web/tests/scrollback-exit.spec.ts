@@ -1,4 +1,5 @@
 import { test, expect } from "./helpers/mockedTest";
+import { openLiveSession, scroller } from "./helpers/liveTerminal";
 import { devices, type Page } from "@playwright/test";
 import { clickSidebarSession, openMobileSidebar } from "./helpers/sidebar";
 import {
@@ -12,16 +13,7 @@ import {
 // Mobile scrollback on the live view is native scrolling over rendered history, never tmux copy-mode.
 test.use({ ...devices["iPhone 13"] });
 
-async function openSession(page: Page, handle: MockHandle) {
-  await openMobileSidebar(page);
-  await clickSidebarSession(page, "pinch-test");
-  await page.locator("[data-live-terminal]").waitFor({ state: "visible", timeout: 10_000 });
-  await handle.waitForLiveReady();
-}
-
-function scroller(page: Page) {
-  return page.locator("[data-live-terminal] > div").first();
-}
+const openSession = (page: Page, handle: MockHandle) => openLiveSession(page, handle, { mobile: true, settings: null });
 
 async function liveLineHeight(page: Page) {
   return scroller(page).evaluate((el) => {
