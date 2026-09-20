@@ -443,25 +443,57 @@ mod artifact_route {
     use axum::http::header;
     use serial_test::serial;
 
+    /// #2587: a type that can execute script as a top-level document must
+    /// download rather than render inline, because the frontend opens artifacts
+    /// via a same-origin blob URL. Passive types stay inline with `nosniff`.
     #[tokio::test]
     #[serial]
-    async fn serves_image_with_nosniff() {
+    async fn serves_passive_types_inline_and_scriptable_ones_as_attachments() {
         let _tmp = isolate_app_dir();
         let id = format!("art-{}", uuid::Uuid::new_v4());
         let dir = crate::session::artifacts::session_artifact_dir(&id).unwrap();
-        std::fs::write(dir.join("shot.png"), b"\x89PNG\r\n").unwrap();
-        let resp = serve_session_artifact(AxumPath((id, "shot.png".to_string())))
-            .await
-            .into_response();
-        assert_eq!(resp.status(), StatusCode::OK);
-        assert_eq!(
-            resp.headers().get(header::X_CONTENT_TYPE_OPTIONS).unwrap(),
-            "nosniff"
-        );
-        assert_eq!(
-            resp.headers().get(header::CONTENT_TYPE).unwrap(),
-            "image/png"
-        );
+
+        // (file name, bytes, content type, expected Content-Disposition)
+        let cases: [(&str, &[u8], &str, Option<&str>); 3] = [
+            ("shot.png", b"\x89PNG\r\n", "image/png", None),
+            (
+                "d.svg",
+                b"<svg xmlns='http://www.w3.org/2000/svg'></svg>",
+                "application/octet-stream",
+                Some("attachment"),
+            ),
+            (
+                "status.html",
+                b"<h1>hi</h1>",
+                "application/octet-stream",
+                Some("attachment"),
+            ),
+        ];
+
+        for (name, bytes, content_type, disposition) in cases {
+            std::fs::write(dir.join(name), bytes).unwrap();
+            let resp = serve_session_artifact(AxumPath((id.clone(), name.to_string())))
+                .await
+                .into_response();
+            assert_eq!(resp.status(), StatusCode::OK, "{name}");
+            assert_eq!(
+                resp.headers().get(header::CONTENT_TYPE).unwrap(),
+                content_type,
+                "{name}"
+            );
+            assert_eq!(
+                resp.headers().get(header::X_CONTENT_TYPE_OPTIONS).unwrap(),
+                "nosniff",
+                "{name}"
+            );
+            assert_eq!(
+                resp.headers()
+                    .get(header::CONTENT_DISPOSITION)
+                    .map(|v| v.to_str().unwrap()),
+                disposition,
+                "{name}"
+            );
+        }
     }
 
     #[tokio::test]
@@ -476,55 +508,6 @@ mod artifact_route {
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
         let body = to_bytes(resp.into_body(), 1024).await.unwrap();
         assert!(body.is_empty(), "unexpected body: {body:?}");
-    }
-
-    #[tokio::test]
-    #[serial]
-    async fn serves_svg_as_attachment() {
-        // #2587: SVG can execute script as a top-level document, and the
-        // frontend opens artifacts via a same-origin blob URL, so SVG must
-        // download rather than render inline.
-        let _tmp = isolate_app_dir();
-        let id = format!("art-{}", uuid::Uuid::new_v4());
-        let dir = crate::session::artifacts::session_artifact_dir(&id).unwrap();
-        std::fs::write(
-            dir.join("d.svg"),
-            b"<svg xmlns='http://www.w3.org/2000/svg'></svg>",
-        )
-        .unwrap();
-        let resp = serve_session_artifact(AxumPath((id, "d.svg".to_string())))
-            .await
-            .into_response();
-        assert_eq!(resp.status(), StatusCode::OK);
-        assert_eq!(
-            resp.headers().get(header::CONTENT_TYPE).unwrap(),
-            "application/octet-stream"
-        );
-        assert_eq!(
-            resp.headers().get(header::CONTENT_DISPOSITION).unwrap(),
-            "attachment"
-        );
-    }
-
-    #[tokio::test]
-    #[serial]
-    async fn serves_html_as_attachment() {
-        let _tmp = isolate_app_dir();
-        let id = format!("art-{}", uuid::Uuid::new_v4());
-        let dir = crate::session::artifacts::session_artifact_dir(&id).unwrap();
-        std::fs::write(dir.join("status.html"), b"<h1>hi</h1>").unwrap();
-        let resp = serve_session_artifact(AxumPath((id, "status.html".to_string())))
-            .await
-            .into_response();
-        assert_eq!(resp.status(), StatusCode::OK);
-        assert_eq!(
-            resp.headers().get(header::CONTENT_TYPE).unwrap(),
-            "application/octet-stream"
-        );
-        assert_eq!(
-            resp.headers().get(header::CONTENT_DISPOSITION).unwrap(),
-            "attachment"
-        );
     }
 }
 
@@ -3023,68 +3006,53 @@ fn changed(paths: &[&str]) -> Vec<DiffFile> {
 }
 
 #[test]
-fn validate_diff_path_rejects_absolute() {
+fn validate_diff_path_rejects_unsafe_shapes() {
     let dir = TempDir::new().unwrap();
-    let err = validate_diff_path(
-        dir.path(),
-        std::path::Path::new("/etc/passwd"),
-        &changed(&["src/main.rs"]),
-    )
-    .unwrap_err();
-    assert_eq!(err.0, StatusCode::BAD_REQUEST);
+    for path in [
+        "/etc/passwd",
+        "../../etc/passwd",
+        "src/../../etc/passwd",
+        "",
+    ] {
+        let err = validate_diff_path(
+            dir.path(),
+            std::path::Path::new(path),
+            &changed(&["src/main.rs"]),
+        )
+        .unwrap_err();
+        assert_eq!(err.0, StatusCode::BAD_REQUEST, "path={path:?}");
+    }
 }
 
+/// An in-repo file that exists but is not in the changed set is accepted for the
+/// full-file fallback (#1810), flagged `is_changed = false`. A changed file
+/// deleted from disk stays diffable, so the validator falls back to the
+/// non-canonical path when `canonicalize()` fails.
 #[test]
-fn validate_diff_path_rejects_parent_dir() {
-    let dir = TempDir::new().unwrap();
-    let err = validate_diff_path(
-        dir.path(),
-        std::path::Path::new("../../etc/passwd"),
-        &changed(&["src/main.rs"]),
-    )
-    .unwrap_err();
-    assert_eq!(err.0, StatusCode::BAD_REQUEST);
-}
-
-#[test]
-fn validate_diff_path_rejects_parent_dir_in_middle() {
-    let dir = TempDir::new().unwrap();
-    let err = validate_diff_path(
-        dir.path(),
-        std::path::Path::new("src/../../etc/passwd"),
-        &changed(&["src/main.rs"]),
-    )
-    .unwrap_err();
-    assert_eq!(err.0, StatusCode::BAD_REQUEST);
-}
-
-#[test]
-fn validate_diff_path_rejects_empty() {
-    let dir = TempDir::new().unwrap();
-    let err = validate_diff_path(dir.path(), std::path::Path::new(""), &[]).unwrap_err();
-    assert_eq!(err.0, StatusCode::BAD_REQUEST);
-}
-
-#[test]
-fn validate_diff_path_accepts_unchanged_existing_file() {
-    // An in-repo file that exists on disk but is not in the changed set is
-    // now accepted for the full-file fallback (#1810), flagged
-    // `is_changed = false`. The tracked-blob gate that blocks `.git/` and
-    // gitignored secrets lives in compute_unchanged_file_contents, not here.
+fn validate_diff_path_accepts_in_repo_and_changed_files() {
     let dir = TempDir::new().unwrap();
     std::fs::write(dir.path().join("existing.txt"), "hello").unwrap();
-    let (_, is_changed) = validate_diff_path(
-        dir.path(),
-        std::path::Path::new("existing.txt"),
-        &changed(&["src/main.rs"]),
-    )
-    .unwrap();
-    assert!(!is_changed);
+    std::fs::write(dir.path().join("changed.txt"), "hello").unwrap();
+
+    // (requested path, changed set, expected is_changed)
+    for (path, changed_set, expected) in [
+        ("existing.txt", &["src/main.rs"][..], false),
+        ("changed.txt", &["changed.txt"][..], true),
+        ("deleted.txt", &["deleted.txt"][..], true),
+    ] {
+        let (_, is_changed) = validate_diff_path(
+            dir.path(),
+            std::path::Path::new(path),
+            &changed(changed_set),
+        )
+        .unwrap_or_else(|e| panic!("{path} should validate, got {:?}", e.0));
+        assert_eq!(is_changed, expected, "path={path}");
+    }
 }
 
+/// Not in the changed set and not on disk: nothing to show.
 #[test]
 fn validate_diff_path_rejects_nonexistent_unchanged_file() {
-    // Not in the changed set and not on disk: nothing to show.
     let dir = TempDir::new().unwrap();
     let err = validate_diff_path(
         dir.path(),
@@ -3096,60 +3064,24 @@ fn validate_diff_path_rejects_nonexistent_unchanged_file() {
 }
 
 #[test]
-fn validate_diff_path_accepts_changed_file() {
-    let dir = TempDir::new().unwrap();
-    std::fs::write(dir.path().join("changed.txt"), "hello").unwrap();
-    let (_, is_changed) = validate_diff_path(
-        dir.path(),
-        std::path::Path::new("changed.txt"),
-        &changed(&["changed.txt"]),
-    )
-    .unwrap();
-    assert!(is_changed);
+fn truncate_title_truncates_on_character_boundaries() {
+    // (input, limit, expected)
+    for (input, limit, expected) in [
+        ("hello", 10, "hello"),
+        ("hello", 5, "hello"),
+        ("abcdefghij", 5, "abcd\u{2026}"),
+        // Each snowman is 3 bytes and 1 char, so the split must be by character.
+        (
+            "\u{2603}\u{2603}\u{2603}\u{2603}\u{2603}",
+            3,
+            "\u{2603}\u{2603}\u{2026}",
+        ),
+    ] {
+        let out = truncate_title(input, limit);
+        assert_eq!(out, expected, "input={input} limit={limit}");
+        assert!(out.chars().count() <= limit);
+    }
 }
-
-#[test]
-fn validate_diff_path_accepts_deleted_file() {
-    // A file that has been deleted on disk but is in the changed set
-    // (status: Deleted) should still be diffable so the user can see
-    // what was removed. canonicalize() on the joined path will fail,
-    // so the validator must fall back to the non-canonical path.
-    let dir = TempDir::new().unwrap();
-    let (_, is_changed) = validate_diff_path(
-        dir.path(),
-        std::path::Path::new("deleted.txt"),
-        &changed(&["deleted.txt"]),
-    )
-    .unwrap();
-    assert!(is_changed);
-}
-
-#[test]
-fn truncate_title_returns_unchanged_under_limit() {
-    assert_eq!(truncate_title("hello", 10), "hello");
-}
-
-#[test]
-fn truncate_title_returns_unchanged_at_exact_limit() {
-    assert_eq!(truncate_title("hello", 5), "hello");
-}
-
-#[test]
-fn truncate_title_appends_ellipsis_when_over_limit() {
-    let out = truncate_title("abcdefghij", 5);
-    assert_eq!(out, "abcd…");
-    assert_eq!(out.chars().count(), 5);
-}
-
-#[test]
-fn truncate_title_counts_characters_not_bytes() {
-    // Multi-byte input: each ☃ is 3 bytes, 1 char. Truncating to 3
-    // chars must split on character boundary, not byte offset.
-    let out = truncate_title("☃☃☃☃☃", 3);
-    assert_eq!(out, "☃☃…");
-    assert_eq!(out.chars().count(), 3);
-}
-
 #[test]
 fn session_response_serializes_unread_marker() {
     use crate::session::Instance;
@@ -3177,82 +3109,67 @@ fn step(
 }
 
 #[test]
-fn plan_summary_counts_done_steps_only() {
+fn plan_summary_counts_done_and_picks_the_first_non_done_step() {
     use crate::acp::state::PlanStepStatus::*;
-    let plan = crate::acp::state::Plan {
-        plan_id: "p1".into(),
-        version: 1,
-        steps: vec![
-            step("a", "alpha", Done),
-            step("b", "beta", Done),
-            step("c", "gamma", InProgress),
-            step("d", "delta", Pending),
-        ],
-    };
-    let s = plan_summary_from_plan(plan);
-    assert_eq!(s.total, 4);
-    assert_eq!(s.completed, 2);
-    assert_eq!(s.current_step_title.as_deref(), Some("gamma"));
+
+    // (steps, expected total, completed, current step title)
+    let cases: Vec<(Vec<_>, usize, usize, Option<&str>)> = vec![
+        (
+            vec![
+                step("a", "alpha", Done),
+                step("b", "beta", Done),
+                step("c", "gamma", InProgress),
+                step("d", "delta", Pending),
+            ],
+            4,
+            2,
+            Some("gamma"),
+        ),
+        // The first non-Done wins even when a later step is InProgress,
+        // matching the helper's `find(..)`.
+        (
+            vec![
+                step("a", "alpha", Done),
+                step("b", "beta", Pending),
+                step("c", "gamma", InProgress),
+            ],
+            3,
+            1,
+            Some("beta"),
+        ),
+        (
+            vec![step("a", "alpha", Done), step("b", "beta", Done)],
+            2,
+            2,
+            None,
+        ),
+        (vec![], 0, 0, None),
+    ];
+
+    for (steps, total, completed, current) in cases {
+        let plan = crate::acp::state::Plan {
+            plan_id: "p1".into(),
+            version: 1,
+            steps,
+        };
+        let s = plan_summary_from_plan(plan);
+        assert_eq!(s.total, total);
+        assert_eq!(s.completed, completed);
+        assert_eq!(s.current_step_title.as_deref(), current);
+    }
 }
 
 #[test]
-fn plan_summary_current_step_skips_done_picks_first_non_done() {
-    use crate::acp::state::PlanStepStatus::*;
-    // First non-Done is the first Pending; InProgress later doesn't
-    // override (matches the helper's `find(..)` semantics).
+fn plan_summary_truncates_a_long_current_step_title() {
+    use crate::acp::state::PlanStepStatus::Pending;
     let plan = crate::acp::state::Plan {
         plan_id: "p1".into(),
         version: 1,
-        steps: vec![
-            step("a", "alpha", Done),
-            step("b", "beta", Pending),
-            step("c", "gamma", InProgress),
-        ],
+        steps: vec![step("a", &"x".repeat(120), Pending)],
     };
-    let s = plan_summary_from_plan(plan);
-    assert_eq!(s.current_step_title.as_deref(), Some("beta"));
-}
-
-#[test]
-fn plan_summary_none_when_all_done() {
-    use crate::acp::state::PlanStepStatus::*;
-    let plan = crate::acp::state::Plan {
-        plan_id: "p1".into(),
-        version: 1,
-        steps: vec![step("a", "alpha", Done), step("b", "beta", Done)],
-    };
-    let s = plan_summary_from_plan(plan);
-    assert_eq!(s.completed, 2);
-    assert_eq!(s.total, 2);
-    assert!(s.current_step_title.is_none());
-}
-
-#[test]
-fn plan_summary_truncates_long_current_step_title() {
-    use crate::acp::state::PlanStepStatus::*;
-    let long_title: String = "x".repeat(120);
-    let plan = crate::acp::state::Plan {
-        plan_id: "p1".into(),
-        version: 1,
-        steps: vec![step("a", &long_title, Pending)],
-    };
-    let s = plan_summary_from_plan(plan);
-    let t = s.current_step_title.unwrap();
-    assert_eq!(t.chars().count(), 80);
-    assert!(t.ends_with('…'));
-}
-
-#[test]
-fn plan_summary_empty_steps_yields_zero_total() {
-    let plan = crate::acp::state::Plan {
-        plan_id: "p1".into(),
-        version: 1,
-        steps: vec![],
-    };
-    let s = plan_summary_from_plan(plan);
-    assert_eq!(s.total, 0);
-    assert_eq!(s.completed, 0);
-    assert!(s.current_step_title.is_none());
+    let title = plan_summary_from_plan(plan).current_step_title.unwrap();
+    assert_eq!(title.chars().count(), 80);
+    assert!(title.ends_with('\u{2026}'));
 }
 
 // --- persist_session_update (the persist-first contract from #1589) ---
