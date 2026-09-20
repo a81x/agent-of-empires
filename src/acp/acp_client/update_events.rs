@@ -211,7 +211,7 @@ pub(super) fn map_update_to_events(
                     events.push(Event::PlanUpdated { plan });
                 }
             }
-            events.extend(wake_tool_event(profile, Some(&tc.title), &raw_args));
+            events.extend(wake_tool_event(profile, Some(tc.title.as_str()), &raw_args));
             events
         }
         SessionUpdate::ToolCallUpdate(update) => {

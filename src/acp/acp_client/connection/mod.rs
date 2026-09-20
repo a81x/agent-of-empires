@@ -94,7 +94,7 @@ fn reply<T: agent_client_protocol::JsonRpcResponse>(
 /// Register request handlers that each answer from a `SessionResources` clone.
 /// The builder is typestate, so each registration shadows the last.
 macro_rules! resource_requests {
-    ($builder:expr, $resources:expr, $($req:ty => $resp:ty = $handler:path),+ $(,)?) => {{
+    ($builder:expr, $resources:expr, $(($req:ty, $resp:ty, $handler:path)),+ $(,)?) => {{
         let builder = $builder;
         $(
             let builder = {
@@ -222,13 +222,41 @@ pub(super) async fn run_connection_task<W, R>(
     let builder = resource_requests!(
         builder,
         resources,
-        ReadTextFileRequest => ReadTextFileResponse = handle_read_text_file,
-        WriteTextFileRequest => WriteTextFileResponse = handle_write_text_file,
-        CreateTerminalRequest => CreateTerminalResponse = handle_create_terminal,
-        TerminalOutputRequest => TerminalOutputResponse = handle_terminal_output,
-        WaitForTerminalExitRequest => WaitForTerminalExitResponse = handle_wait_for_terminal_exit,
-        KillTerminalRequest => KillTerminalResponse = handle_kill_terminal,
-        ReleaseTerminalRequest => ReleaseTerminalResponse = handle_release_terminal,
+        (
+            ReadTextFileRequest,
+            ReadTextFileResponse,
+            handle_read_text_file
+        ),
+        (
+            WriteTextFileRequest,
+            WriteTextFileResponse,
+            handle_write_text_file
+        ),
+        (
+            CreateTerminalRequest,
+            CreateTerminalResponse,
+            handle_create_terminal
+        ),
+        (
+            TerminalOutputRequest,
+            TerminalOutputResponse,
+            handle_terminal_output
+        ),
+        (
+            WaitForTerminalExitRequest,
+            WaitForTerminalExitResponse,
+            handle_wait_for_terminal_exit
+        ),
+        (
+            KillTerminalRequest,
+            KillTerminalResponse,
+            handle_kill_terminal
+        ),
+        (
+            ReleaseTerminalRequest,
+            ReleaseTerminalResponse,
+            handle_release_terminal
+        ),
     );
 
     let establish_ctx = establish::EstablishCtx {
