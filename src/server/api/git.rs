@@ -20,10 +20,9 @@ pub struct CloneRepoBody {
     pub bare: bool,
 }
 
-/// Returns true if `url` looks like a git clone URL accepted by this
-/// endpoint. Recognised forms: https, http, git, ssh, file schemes, and
-/// scp-style (`user@host:path`). Anything else is rejected with a 400
-/// before reaching `git clone`.
+/// Returns true if `url` looks like a git clone URL this endpoint accepts:
+/// https, http, git, ssh or file schemes, or scp-style (`user@host:path`).
+/// Anything else is rejected with a 400 before reaching `git clone`.
 fn looks_like_git_url(url: &str) -> bool {
     url.starts_with("https://")
         || url.starts_with("http://")
@@ -33,8 +32,8 @@ fn looks_like_git_url(url: &str) -> bool {
         || (url.contains('@') && url.contains(':') && !url.contains(' '))
 }
 
-/// Expand a leading `~` or `~/` to the user's home directory.
-/// Leaves the path unchanged when no home dir is available.
+/// Expand a leading `~` to the user's home directory, or leave the path alone
+/// when no home dir is available.
 fn expand_tilde(path: &str) -> std::path::PathBuf {
     if let Some(rest) = path.strip_prefix("~/") {
         if let Some(home) = dirs::home_dir() {
@@ -48,16 +47,10 @@ fn expand_tilde(path: &str) -> std::path::PathBuf {
     std::path::PathBuf::from(path)
 }
 
-/// Extract a repository name from a git URL.
-///
-/// Handles HTTPS, SSH, and scp-style URLs:
-///   https://github.com/user/repo.git       -> repo
-///   git@github.com:user/repo.git           -> repo
-///   ssh://git@host/user/repo               -> repo
-///   ssh://git@host:2222/user/repo.git      -> repo
+/// Extract a repository name from an HTTPS, SSH or scp-style git URL.
 fn repo_name_from_url(url: &str) -> Option<String> {
-    // For scheme-based URLs (https://, ssh://, git://), take the last path segment.
-    // For scp-style (git@host:path), split on ':' and take the last segment of the path.
+    // Scheme-based URLs take the last path segment; scp-style splits on ':'
+    // and takes the last segment of the path.
     let last_segment = if url.contains("://") {
         url.rsplit_once('/')?.1
     } else if let Some((_host, path)) = url.split_once(':') {
@@ -81,8 +74,8 @@ pub async fn clone_repo(
     if state.read_only {
         return read_only_response();
     }
-    // Cloning writes to $HOME and fetches from the network; the CityHall "Clone
-    // URL" action is hidden in the UI, so close the endpoint too.
+    // Cloning writes to $HOME and fetches from the network; the CityHall
+    // "Clone URL" action is hidden, so close the endpoint too.
     if let Some(resp) = super::cityhall_block(&state) {
         return resp;
     }
@@ -118,7 +111,6 @@ pub async fn clone_repo(
         );
     }
 
-    // Resolve destination path
     let destination = if let Some(ref dest) = body.destination {
         let dest = dest.trim();
         if dest.is_empty() {
@@ -139,10 +131,10 @@ pub async fn clone_repo(
         }
     };
 
-    // Security: destination must be within the home directory
+    // Destination must be within the home directory.
     if let Some(home) = dirs::home_dir() {
         let canonical_home = home.canonicalize().unwrap_or(home);
-        // For new paths that don't exist yet, check the parent
+        // A path that does not exist yet is checked via its parent.
         let check_path = if destination.exists() {
             destination.canonicalize().unwrap_or(destination.clone())
         } else {
@@ -163,8 +155,8 @@ pub async fn clone_repo(
 
     let dest_display = destination.display().to_string();
 
-    // Return an actionable error if the destination already exists, before
-    // spawning the blocking task, so the user knows to pick a different name.
+    // Report an existing destination before spawning the blocking task, so the
+    // user knows to pick a different name.
     if destination.exists() {
         return (
             StatusCode::CONFLICT,
@@ -215,9 +207,8 @@ pub async fn clone_repo(
 #[derive(Deserialize)]
 pub struct BranchesQuery {
     pub path: String,
-    /// Include remote-only branches alongside local ones. Used by the
-    /// new-session wizard's base-branch picker so users can base a new
-    /// worktree off a teammate's not-yet-fetched branch. See #948.
+    /// Include remote-only branches, so the wizard's base-branch picker can
+    /// base a worktree off a teammate's not-yet-fetched branch (#948).
     #[serde(default)]
     pub include_remote: bool,
 }
@@ -226,8 +217,8 @@ pub struct BranchesQuery {
 pub struct BranchInfo {
     pub name: String,
     pub is_current: bool,
-    /// Set when the branch only exists on the remote (no local copy).
-    /// Omitted on responses where every branch is local.
+    /// Set when the branch only exists on the remote. Omitted on responses
+    /// where every branch is local.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub remote_only: bool,
 }
@@ -236,8 +227,8 @@ pub async fn list_branches(
     State(state): State<Arc<AppState>>,
     axum::extract::Query(query): axum::extract::Query<BranchesQuery>,
 ) -> impl IntoResponse {
-    // Probes an arbitrary filesystem path for git branches; not reachable from
-    // the CityHall name-only wizard, so close it to crafted requests too.
+    // Probes an arbitrary filesystem path for git branches, and is not
+    // reachable from the CityHall name-only wizard.
     if let Some(resp) = super::cityhall_block(&state) {
         return resp;
     }
@@ -304,17 +295,16 @@ pub struct IsRepoQuery {
 }
 
 /// Reports whether `path` is a git repository, using the same
-/// `GitWorktree::is_git_repo` gate the session builder enforces (`builder.rs`
-/// single-worktree path). The new-session wizard probes this to disable the
-/// worktree toggle for a plain folder. Returns 200 `{ "is_git_repo": bool }`;
-/// a transient failure surfaces as a non-200 so the client can stay optimistic
-/// rather than misreport a real repo as a non-repo.
+/// `GitWorktree::is_git_repo` gate the session builder enforces, so the wizard
+/// can disable the worktree toggle for a plain folder. A transient failure
+/// surfaces as a non-200, so the client can stay optimistic rather than
+/// misreport a real repo.
 pub async fn is_git_repo(
     State(state): State<Arc<AppState>>,
     axum::extract::Query(query): axum::extract::Query<IsRepoQuery>,
 ) -> impl IntoResponse {
-    // Probes an arbitrary filesystem path; not reachable from the CityHall
-    // name-only wizard, so close it to crafted requests too.
+    // Probes an arbitrary filesystem path, and is not reachable from the
+    // CityHall name-only wizard.
     if let Some(resp) = super::cityhall_block(&state) {
         return resp;
     }
@@ -425,10 +415,10 @@ mod tests {
         assert!(!looks_like_git_url("git@host: /path"));
     }
 
-    /// Pins `$HOME` so the read inside `expand_tilde` cannot see a value another
-    /// test set. `isolate_home` holds the process-global env lock for the guard's
-    /// lifetime and restores `$HOME` on Drop, before the tempdir is deleted;
-    /// `#[serial]` alone does not exclude the writers that go through the guard.
+    /// Pins `$HOME` so the read inside `expand_tilde` cannot see a value
+    /// another test set. `isolate_home` holds the process-global env lock for
+    /// the guard's lifetime; `#[serial]` alone does not exclude the writers that
+    /// go through the guard.
     #[test]
     #[serial_test::serial]
     fn expand_tilde_expands_home() {

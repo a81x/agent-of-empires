@@ -1,10 +1,8 @@
 //! Telemetry consent endpoints.
 //!
-//! The browser never posts to the telemetry backend (that would leak its IP /
-//! User-Agent and create a second identity surface). Instead it manages the
-//! opt-in state through the local daemon, which owns the install id and does
-//! all sending. `seen` lets the web UI report that the dashboard / acp was
-//! opened so the daemon's next snapshot can carry the `usage_seen` map.
+//! The browser never posts to the telemetry backend, which would leak its IP
+//! and User-Agent and create a second identity surface. It manages opt-in state
+//! through the local daemon, which owns the install id and does all sending.
 
 use std::sync::Arc;
 
@@ -18,8 +16,8 @@ use super::{api_error, read_only_response};
 pub struct TelemetryStatus {
     /// `config.telemetry.enabled`.
     enabled: bool,
-    /// Whether the user has answered the opt-in prompt (drives whether the
-    /// web consent modal should show).
+    /// Whether the user has answered the opt-in prompt, which drives the web
+    /// consent modal.
     responded: bool,
     /// `DO_NOT_TRACK` is set; the toggle is forced off and nothing is sent.
     do_not_track: bool,
@@ -85,17 +83,15 @@ pub async fn set_telemetry_consent(
 pub struct SeenRequest {
     /// `"web"` or `"structured_view"`.
     surface: String,
-    /// Optional coarse client form-factor (`"desktop"` / `"desktop_pwa"` /
-    /// `"mobile"` / `"mobile_pwa"`). Absent on older clients; any value outside
-    /// the closed allowlist is rejected, never stored. See
-    /// `telemetry::form_factor` and #1883.
+    /// Optional coarse client form-factor. Absent on older clients; any value
+    /// outside the closed allowlist is rejected, never stored (#1883).
     #[serde(default)]
     form_factor: Option<String>,
 }
 
-/// Record that the web dashboard / acp web UI was opened. Folded into the
-/// daemon's next opt-in snapshot. Returns 204 on success; the client need not
-/// branch on consent state (the daemon only sends the flag when opted in).
+/// Record that the web dashboard or acp web UI was opened, folded into the
+/// daemon's next opt-in snapshot. Returns 204; the client need not branch on
+/// consent state, since the daemon only sends the flag when opted in.
 pub async fn post_telemetry_seen(
     State(state): State<Arc<AppState>>,
     body: Result<Json<SeenRequest>, axum::extract::rejection::JsonRejection>,
@@ -107,9 +103,8 @@ pub async fn post_telemetry_seen(
         Ok(b) => b,
         Err(rej) => return rej.into_response(),
     };
-    // Validate an optional form-factor up front so a non-allowlisted value (a
-    // user-agent string, a screen size, a typo) is rejected before any counter
-    // moves, the way an unknown surface is. Absent on older clients.
+    // Validate an optional form-factor up front, so a non-allowlisted value is
+    // rejected before any counter moves, the way an unknown surface is.
     let form_factor = match req.form_factor.as_deref() {
         Some(value) => match crate::telemetry::form_factor::parse(value) {
             Some(ff) => Some(ff),
@@ -124,9 +119,8 @@ pub async fn post_telemetry_seen(
         None => None,
     };
 
-    // Validate + count the surface against the allowlisted registry; an off-list
-    // name is rejected and never creates a counter, so it can never reach a
-    // snapshot. This is the open count for the surface.
+    // Validate and count the surface against the allowlisted registry; an
+    // off-list name never creates a counter, so it can never reach a snapshot.
     if !state.telemetry_usage_seen.record(&req.surface) {
         return api_error(
             StatusCode::BAD_REQUEST,
@@ -135,8 +129,8 @@ pub async fn post_telemetry_seen(
         );
     }
 
-    // Layer the per-form-factor class onto the browser surfaces. The registry
-    // already counted the open; this records which client class it came from.
+    // Layer the per-form-factor class onto the browser surfaces: the registry
+    // already counted the open, this records which client class it came from.
     if let Some(ff) = form_factor {
         match req.surface.as_str() {
             "web" => state.telemetry_web_clients.increment(ff),
@@ -149,18 +143,14 @@ pub async fn post_telemetry_seen(
 
 #[derive(Deserialize)]
 pub struct StructuredInteractionRequest {
-    /// Allowlisted interaction kind. Only `"prompt_queued"` today; the field
-    /// is an open string so adding a kind is a one-line match arm here.
+    /// Allowlisted interaction kind. Only `"prompt_queued"` today; an open
+    /// string, so adding a kind is a one-line match arm here.
     kind: String,
 }
 
-/// Report a browser acp interaction so the daemon can fold it into its next
-/// opt-in snapshot. The four other
-/// interaction signals (approvals, agent switch, substrate toggle, plan mode)
-/// are tallied daemon-side in their REST handlers and never come through here;
-/// queued prompts are reported here. Returns 204 on success; the client need
-/// not branch on consent state because the daemon only sends counts when opted
-/// in.
+/// Report a browser acp interaction for the daemon's next opt-in snapshot.
+/// Only queued prompts come through here; the other interaction signals are
+/// tallied daemon-side in their REST handlers. Returns 204.
 pub async fn post_telemetry_structured_interaction(
     State(state): State<Arc<AppState>>,
     body: Result<Json<StructuredInteractionRequest>, axum::extract::rejection::JsonRejection>,
