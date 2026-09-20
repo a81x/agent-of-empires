@@ -436,27 +436,40 @@ mod tests {
         inst
     }
 
+    /// The other half of #2690 / #2697: for a structured row the live ACP status is
+    /// authoritative, so the tmux decision is skipped, the baseline stays in step with
+    /// the carried status, and a tmux error left over from a converted terminal session
+    /// is cleared. A tmux-backed row keeps every field for the poller instead.
     #[test]
-    fn skip_tmux_decision_for_structured_suppresses_the_phantom_transition() {
-        // The other half of #2690 / #2697.
-        let mut inst = phantom_structured_row("acp-session");
-        inst.live_status_baseline = Some(Status::Error);
+    fn skip_tmux_decision_for_structured_carries_the_live_status() {
+        let mut carried = phantom_structured_row("acp-session");
+        carried.live_status_baseline = Some(Status::Error);
+        assert!(skip_tmux_decision_for_structured(&mut carried));
+        assert_eq!(carried.status, Status::Error);
+        assert_eq!(carried.live_status_baseline, Some(carried.status));
 
-        assert!(
-            skip_tmux_decision_for_structured(&mut inst),
-            "a structured row must skip the tmux status decision"
-        );
+        // A row created since the last tick has no live value yet.
+        let mut fresh = phantom_structured_row("acp-session");
+        fresh.status = Status::Running;
+        assert!(skip_tmux_decision_for_structured(&mut fresh));
+        assert_eq!(fresh.status, Status::Running);
+        assert_eq!(fresh.live_status_baseline, None);
 
-        // Nothing downstream sees a transition.
+        let mut converted = phantom_structured_row("acp-session");
+        converted.last_error = Some(crate::session::TMUX_SESSION_GONE_ERROR.to_string());
+        assert!(skip_tmux_decision_for_structured(&mut converted));
+        assert_eq!(converted.last_error, None);
+
+        let mut tmux = Instance::new("tmux-session", "/tmp/test");
+        tmux.status = Status::Idle;
+        tmux.live_status_baseline = Some(Status::Error);
+        tmux.last_error = Some(crate::session::TMUX_SESSION_GONE_ERROR.to_string());
+        assert!(!skip_tmux_decision_for_structured(&mut tmux));
+        assert_eq!(tmux.status, Status::Idle, "disk status is untouched");
         assert_eq!(
-            inst.status,
-            Status::Error,
-            "the live acp status is authoritative, not the disk value"
-        );
-        assert_eq!(
-            inst.live_status_baseline,
-            Some(inst.status),
-            "baseline must stay in step with the carried status"
+            tmux.last_error.as_deref(),
+            Some(crate::session::TMUX_SESSION_GONE_ERROR),
+            "the poller still needs the tmux error"
         );
     }
 
@@ -548,52 +561,6 @@ mod tests {
             assert_eq!(instances[0].status, live, "disk status was {disk:?}");
             assert_eq!(observed_transitions(&instances, &prev), vec![]);
         }
-    }
-
-    #[test]
-    fn skip_tmux_decision_for_structured_keeps_disk_status_without_a_baseline() {
-        // A row created since the last tick has no live value yet.
-        let mut inst = phantom_structured_row("acp-session");
-        inst.status = Status::Running;
-
-        assert!(skip_tmux_decision_for_structured(&mut inst));
-
-        assert_eq!(inst.status, Status::Running);
-        assert_eq!(inst.live_status_baseline, None);
-    }
-
-    #[test]
-    fn skip_tmux_decision_for_structured_clears_a_stale_tmux_error() {
-        // Shares `Instance::clear_stale_tmux_error` with the structured short-circuit in
-        // `update_status_with_metadata_inner`, for a row converted from a terminal session.
-        let mut inst = phantom_structured_row("acp-session");
-        inst.last_error = Some(crate::session::TMUX_SESSION_GONE_ERROR.to_string());
-
-        assert!(skip_tmux_decision_for_structured(&mut inst));
-
-        assert_eq!(inst.last_error, None);
-    }
-
-    #[test]
-    fn skip_tmux_decision_for_structured_leaves_tmux_sessions_to_the_poller() {
-        // A terminal session has a real pane; the poller is authoritative and
-        // must still run its tmux decision against the disk-loaded row.
-        let mut inst = Instance::new("tmux-session", "/tmp/test");
-        inst.status = Status::Idle;
-        inst.live_status_baseline = Some(Status::Error);
-        inst.last_error = Some(crate::session::TMUX_SESSION_GONE_ERROR.to_string());
-
-        assert!(
-            !skip_tmux_decision_for_structured(&mut inst),
-            "a tmux-backed session must not skip the tmux status decision"
-        );
-
-        assert_eq!(inst.status, Status::Idle, "disk status must be untouched");
-        assert_eq!(
-            inst.last_error.as_deref(),
-            Some(crate::session::TMUX_SESSION_GONE_ERROR),
-            "a tmux-backed session's tmux error must survive for the poller"
-        );
     }
 
     #[test]
@@ -769,49 +736,25 @@ mod tests {
         );
     }
 
+    /// #1271: a cascade error string is carried only while the row is still in Error;
+    /// any healthy fresh status drops it rather than propagating a stale message.
     #[test]
-    fn merge_runtime_fields_preserves_last_error_while_still_in_error() {
-        // Cascade-Err preservation.
-        let mut prior = Instance::new("seed", "/tmp/seed");
-        prior.status = Status::Error;
-        prior.last_error = Some("recovery cascade: foo".to_string());
-
-        let mut fresh = Instance::new("seed", "/tmp/seed");
-        fresh.status = Status::Error;
-        fresh.last_error = None;
-
-        let merged = merge_runtime_fields(prior, fresh);
-        assert_eq!(merged.last_error.as_deref(), Some("recovery cascade: foo"));
-    }
-
-    #[test]
-    fn merge_runtime_fields_drops_stale_last_error_on_healthy_transition() {
-        // Issue #1271.
-        let mut prior = Instance::new("seed", "/tmp/seed");
-        prior.status = Status::Error;
-        prior.last_error = Some("recovery cascade: foo".to_string());
-
-        let mut fresh = Instance::new("seed", "/tmp/seed");
-        fresh.status = Status::Idle;
-        fresh.last_error = None;
-
-        let merged = merge_runtime_fields(prior, fresh);
-        assert_eq!(merged.last_error, None);
-    }
-
-    #[test]
-    fn merge_runtime_fields_drops_stale_last_error_idle_to_idle() {
-        // Both ends healthy but prior still carried a stale string: don't propagate.
-        let mut prior = Instance::new("seed", "/tmp/seed");
-        prior.status = Status::Idle;
-        prior.last_error = Some("stale".to_string());
-
-        let mut fresh = Instance::new("seed", "/tmp/seed");
-        fresh.status = Status::Idle;
-        fresh.last_error = None;
-
-        let merged = merge_runtime_fields(prior, fresh);
-        assert_eq!(merged.last_error, None);
+    fn merge_runtime_fields_carries_last_error_only_while_still_in_error() {
+        let merged = |prior_status, fresh_status| {
+            let mut prior = Instance::new("seed", "/tmp/seed");
+            prior.status = prior_status;
+            prior.last_error = Some("recovery cascade: foo".to_string());
+            let mut fresh = Instance::new("seed", "/tmp/seed");
+            fresh.status = fresh_status;
+            fresh.last_error = None;
+            merge_runtime_fields(prior, fresh).last_error
+        };
+        assert_eq!(
+            merged(Status::Error, Status::Error).as_deref(),
+            Some("recovery cascade: foo")
+        );
+        assert_eq!(merged(Status::Error, Status::Idle), None);
+        assert_eq!(merged(Status::Idle, Status::Idle), None);
     }
 
     #[test]
