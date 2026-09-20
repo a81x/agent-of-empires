@@ -542,14 +542,11 @@ pub async fn delete_session(
         Err(e) => {
             tracing::error!(target: "http.api.sessions",
                 "Deletion task panicked or was cancelled: {e}");
-            (
+            api_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({
-                    "error": "internal",
-                    "message": "Deletion task failed",
-                })),
+                "internal",
+                "Deletion task failed",
             )
-                .into_response()
         }
     }
 }
@@ -798,14 +795,11 @@ pub async fn delete_workspace(
     // sibling flags and then skipped (#2536 review).
     let session_ids = dedupe_session_ids(&body.session_ids);
     let Some(owner_id) = session_ids.first().cloned() else {
-        return (
+        return api_error(
             StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({
-                "error": "invalid_request",
-                "message": "session_ids must not be empty",
-            })),
-        )
-            .into_response();
+            "invalid_request",
+            "session_ids must not be empty",
+        );
     };
 
     // CityHall: `purge_workspace_artifacts` tears down EVERY id in the list, not
@@ -830,14 +824,7 @@ pub async fn delete_workspace(
         };
         if let Some(owner) = owner {
             if let Some(msg) = workspace_dirty_message(&owner) {
-                return (
-                    StatusCode::CONFLICT,
-                    Json(serde_json::json!({
-                        "error": "dirty_worktree",
-                        "message": msg,
-                    })),
-                )
-                    .into_response();
+                return api_error(StatusCode::CONFLICT, "dirty_worktree", msg);
             }
         }
     }
@@ -883,14 +870,11 @@ pub async fn delete_workspace(
         Err(e) => {
             tracing::error!(target: "http.api.sessions",
                 "Workspace deletion task panicked or was cancelled: {e}");
-            (
+            api_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({
-                    "error": "internal",
-                    "message": "Workspace deletion task failed",
-                })),
+                "internal",
+                "Workspace deletion task failed",
             )
-                .into_response()
         }
     }
 }

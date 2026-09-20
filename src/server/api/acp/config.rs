@@ -80,7 +80,12 @@ impl PersistedSelector {
 }
 
 /// Write a picked value into memory (read by the reconciler) and to disk.
-async fn persist_selector(state: &Arc<AppState>, id: &str, selector: PersistedSelector, value: &str) {
+async fn persist_selector(
+    state: &Arc<AppState>,
+    id: &str,
+    selector: PersistedSelector,
+    value: &str,
+) {
     let profile = {
         let mut instances = state.instances.write().await;
         let Some(inst) = instances.iter_mut().find(|i| i.id == id) else {
@@ -243,14 +248,15 @@ mod tests {
         inst.agent_name = Some("codex".to_string());
         let id = inst.id.clone();
 
-        let option = |id: &str, category, choices: Vec<ConfigOptionChoice>| ConfigOptionDescriptor {
-            id: id.to_string(),
-            name: id.to_string(),
-            description: None,
-            category,
-            current_value: String::new(),
-            options: choices,
-        };
+        let option =
+            |id: &str, category, choices: Vec<ConfigOptionChoice>| ConfigOptionDescriptor {
+                id: id.to_string(),
+                name: id.to_string(),
+                description: None,
+                category,
+                current_value: String::new(),
+                options: choices,
+            };
         let choice = |value: &str| ConfigOptionChoice {
             value: value.to_string(),
             name: value.to_string(),

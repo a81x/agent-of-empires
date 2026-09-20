@@ -328,11 +328,11 @@ pub async fn session_diff_files(
             .into_response(),
         Err(e) => {
             tracing::error!(target: "http.api.sessions", "Diff files panicked: {}", e);
-            (
+            api_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": "internal", "message": "Internal server error"})),
+                "internal",
+                "Internal server error",
             )
-                .into_response()
         }
     }
 }
@@ -378,14 +378,11 @@ pub async fn session_diff_file(
         Some(name) => match ctx.repos.iter().find(|r| r.name.as_deref() == Some(name)) {
             Some(r) => r.clone(),
             None => {
-                return (
+                return api_error(
                     StatusCode::BAD_REQUEST,
-                    Json(serde_json::json!({
-                        "error": "bad_request",
-                        "message": "unknown workspace repo"
-                    })),
-                )
-                    .into_response();
+                    "bad_request",
+                    "unknown workspace repo",
+                );
             }
         },
         // A workspace row can persist with `repos: []`; without this arm
@@ -393,14 +390,11 @@ pub async fn session_diff_file(
         None => match ctx.repos.first() {
             Some(r) => r.clone(),
             None => {
-                return (
+                return api_error(
                     StatusCode::BAD_REQUEST,
-                    Json(serde_json::json!({
-                        "error": "bad_request",
-                        "message": "workspace has no repos"
-                    })),
-                )
-                    .into_response();
+                    "bad_request",
+                    "workspace has no repos",
+                );
             }
         },
     };
@@ -541,31 +535,25 @@ pub async fn session_diff_file(
 
     match result {
         Ok(Ok(value)) => (StatusCode::OK, Json(value)).into_response(),
-        Ok(Err(DiffFileError::BadRequest(msg))) => (
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({"error": "bad_request", "message": msg})),
-        )
-            .into_response(),
-        Ok(Err(DiffFileError::NotFound(msg))) => (
-            StatusCode::NOT_FOUND,
-            Json(serde_json::json!({"error": "not_found", "message": msg})),
-        )
-            .into_response(),
+        Ok(Err(DiffFileError::BadRequest(msg))) => {
+            api_error(StatusCode::BAD_REQUEST, "bad_request", msg)
+        }
+        Ok(Err(DiffFileError::NotFound(msg))) => api_error(StatusCode::NOT_FOUND, "not_found", msg),
         Ok(Err(DiffFileError::Internal(e))) => {
             tracing::error!(target: "http.api.sessions", "File diff failed: {}", e);
-            (
+            api_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": "diff_failed", "message": "Failed to compute file diff"})),
+                "diff_failed",
+                "Failed to compute file diff",
             )
-                .into_response()
         }
         Err(e) => {
             tracing::error!(target: "http.api.sessions", "File diff panicked: {}", e);
-            (
+            api_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": "internal", "message": "Internal server error"})),
+                "internal",
+                "Internal server error",
             )
-                .into_response()
         }
     }
 }
@@ -668,11 +656,11 @@ pub async fn session_file(
             .into_response(),
         Err(e) => {
             tracing::error!(target: "http.api.sessions", "session_file panicked: {}", e);
-            (
+            api_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": "internal", "message": "Internal server error"})),
+                "internal",
+                "Internal server error",
             )
-                .into_response()
         }
     }
 }
@@ -750,19 +738,19 @@ pub async fn preview_volume_ignores_globs(
         }
         Ok(Err(e)) => {
             tracing::warn!(target: "http.api.sessions", "volume_ignores glob preview failed: {}", e);
-            (
+            api_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": "preview_failed", "message": "Failed to preview volume_ignores"})),
+                "preview_failed",
+                "Failed to preview volume_ignores",
             )
-                .into_response()
         }
         Err(e) => {
             tracing::error!(target: "http.api.sessions", "volume_ignores glob preview panicked: {}", e);
-            (
+            api_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": "internal", "message": "Internal server error"})),
+                "internal",
+                "Internal server error",
             )
-                .into_response()
         }
     }
 }

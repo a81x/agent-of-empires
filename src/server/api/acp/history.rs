@@ -21,11 +21,7 @@ const WORKER_LOG_MAX_READ_BYTES: u64 = 4 * 1024 * 1024;
 const MAX_LISTED_FILES: usize = 5000;
 
 fn blocking_failed(context: &str, e: impl std::fmt::Display) -> Response {
-    (
-        StatusCode::INTERNAL_SERVER_ERROR,
-        format!("{context}: {e}"),
-    )
-        .into_response()
+    (StatusCode::INTERNAL_SERVER_ERROR, format!("{context}: {e}")).into_response()
 }
 
 /// Workspace files for the @-mention picker.
@@ -341,7 +337,8 @@ mod tests {
     fn read_log_tail_windows_and_partial_lines() {
         let dir = tempfile::tempdir().unwrap();
 
-        let (lines, truncated, exists) = read_log_tail(&dir.path().join("missing.log"), 100).unwrap();
+        let (lines, truncated, exists) =
+            read_log_tail(&dir.path().join("missing.log"), 100).unwrap();
         assert!(lines.is_empty() && !truncated && !exists);
 
         let path = dir.path().join("a.log");

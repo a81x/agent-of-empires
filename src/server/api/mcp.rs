@@ -17,6 +17,7 @@ use axum::{
 };
 use serde::Deserialize;
 
+use super::api_error;
 use super::AppState;
 use crate::session::config::profile_config;
 use crate::session::mcp::mcp_model;
@@ -221,11 +222,11 @@ pub async fn drop_mcp_server(
 }
 
 fn read_only_response() -> axum::response::Response {
-    (
+    api_error(
         StatusCode::FORBIDDEN,
-        Json(serde_json::json!({"error": "read_only", "message": "Server is in read-only mode"})),
+        "read_only",
+        "Server is in read-only mode",
     )
-        .into_response()
 }
 
 fn bad_body() -> axum::response::Response {

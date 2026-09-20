@@ -5,6 +5,7 @@ use std::sync::Arc;
 use axum::{extract::State, http::StatusCode, response::IntoResponse, Json};
 use serde::{Deserialize, Serialize};
 
+use super::api_error;
 use super::AppState;
 
 // --- Clone repository ---
@@ -108,19 +109,19 @@ pub async fn clone_repo(
     }
 
     if !looks_like_git_url(&url) {
-        return (
+        return api_error(
             StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({"error": "validation_failed", "message": "URL does not look like a git repository URL"})),
-        )
-            .into_response();
+            "validation_failed",
+            "URL does not look like a git repository URL",
+        );
     }
 
     if body.bare && body.shallow {
-        return (
+        return api_error(
             StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({"error": "validation_failed", "message": "Cannot use both bare and shallow options"})),
-        )
-            .into_response();
+            "validation_failed",
+            "Cannot use both bare and shallow options",
+        );
     }
 
     // Resolve destination path
@@ -158,11 +159,11 @@ pub async fn clone_repo(
                 .unwrap_or(destination.clone())
         };
         if !check_path.starts_with(&canonical_home) {
-            return (
+            return api_error(
                 StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({"error": "validation_failed", "message": "Destination must be within the home directory"})),
-            )
-                .into_response();
+                "validation_failed",
+                "Destination must be within the home directory",
+            );
         }
     }
 
@@ -204,19 +205,15 @@ pub async fn clone_repo(
         Ok(Err(e)) => {
             let msg = e.to_string();
             tracing::warn!(target: "http.api.git", "Clone failed for {dest_display}: {msg}");
-            (
-                StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({"error": "clone_failed", "message": msg})),
-            )
-                .into_response()
+            api_error(StatusCode::BAD_REQUEST, "clone_failed", msg)
         }
         Err(e) => {
             tracing::error!(target: "http.api.git", "Clone task panicked: {e}");
-            (
+            api_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": "internal", "message": "Internal server error"})),
+                "internal",
+                "Internal server error",
             )
-                .into_response()
         }
     }
 }
@@ -302,16 +299,8 @@ pub async fn list_branches(
             Json(serde_json::to_value(branches).unwrap()),
         )
             .into_response(),
-        Ok(Err(msg)) => (
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({"error": "not_a_repo", "message": msg})),
-        )
-            .into_response(),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({"error": "internal", "message": e.to_string()})),
-        )
-            .into_response(),
+        Ok(Err(msg)) => api_error(StatusCode::BAD_REQUEST, "not_a_repo", msg),
+        Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, "internal", e.to_string()),
     }
 }
 
@@ -346,11 +335,7 @@ pub async fn is_git_repo(
             Json(serde_json::json!({ "is_git_repo": is_git_repo })),
         )
             .into_response(),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({"error": "internal", "message": e.to_string()})),
-        )
-            .into_response(),
+        Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, "internal", e.to_string()),
     }
 }
 

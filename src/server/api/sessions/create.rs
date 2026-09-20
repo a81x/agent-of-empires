@@ -637,14 +637,11 @@ pub async fn create_session(
         // below) is neutralized so a crafted request cannot escape it. See #7.
         let projects = crate::session::projects::load_merged(&state.profile).unwrap_or_default();
         if projects.is_empty() {
-            return (
+            return api_error(
                 StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({
-                    "error": "cityhall_no_projects",
-                    "message": "CityHall mode requires at least one configured project"
-                })),
-            )
-                .into_response();
+                "cityhall_no_projects",
+                "CityHall mode requires at least one configured project",
+            );
         }
         body.scratch = false;
         // Reset every client-controllable spawn / branch field to its default.
@@ -693,14 +690,11 @@ pub async fn create_session(
             &body.tool,
             body.agent_name.as_deref(),
         ) {
-            return (
+            return api_error(
                 StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({
-                    "error": "cityhall_agent_not_acp",
-                    "message": "CityHall mode requires an ACP-capable agent"
-                })),
-            )
-                .into_response();
+                "cityhall_agent_not_acp",
+                "CityHall mode requires an ACP-capable agent",
+            );
         }
     }
 
@@ -709,38 +703,29 @@ pub async fn create_session(
     // builder so misbehaving clients get a clear 400 instead of a
     // less-specific builder bail surfaced as 500.
     if create_body_combines_scratch_and_worktree(&body) {
-        return (
+        return api_error(
             StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({
-                "error": "validation_failed",
-                "message": "Cannot combine scratch with worktree mode"
-            })),
-        )
-            .into_response();
+            "validation_failed",
+            "Cannot combine scratch with worktree mode",
+        );
     }
     if body.scratch && !body.extra_repo_paths.is_empty() {
-        return (
+        return api_error(
             StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({
-                "error": "validation_failed",
-                "message": "Cannot combine scratch with extra_repo_paths"
-            })),
-        )
-            .into_response();
+            "validation_failed",
+            "Cannot combine scratch with extra_repo_paths",
+        );
     }
     // The builder ignores `path` in scratch mode (provisions its own
     // directory), but accepting both silently is a surprising contract
     // for API callers and can make repo-aware tool validation consult
     // config from a repo the session will never use. Fail loudly.
     if body.scratch && !body.path.trim().is_empty() {
-        return (
+        return api_error(
             StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({
-                "error": "validation_failed",
-                "message": "Cannot combine scratch with path"
-            })),
-        )
-            .into_response();
+            "validation_failed",
+            "Cannot combine scratch with path",
+        );
     }
 
     // Validate user inputs for shell injection. For scratch sessions the
@@ -752,11 +737,7 @@ pub async fn create_session(
     }
     for (value, name) in shell_checks {
         if let Err(msg) = validate_no_shell_injection(value, name) {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({"error": "validation_failed", "message": msg})),
-            )
-                .into_response();
+            return api_error(StatusCode::BAD_REQUEST, "validation_failed", msg);
         }
     }
     // #2624: `title`/`group` are display labels, not shell input, so they
@@ -767,19 +748,11 @@ pub async fn create_session(
     // `list_profiles()` right below. None of the four ever reach a shell,
     // so `validate_no_shell_injection` no longer runs on them.
     if let Err(msg) = validate_display_label(&body.group, "group") {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({"error": "validation_failed", "message": msg})),
-        )
-            .into_response();
+        return api_error(StatusCode::BAD_REQUEST, "validation_failed", msg);
     }
     if let Some(ref title) = body.title {
         if let Err(msg) = validate_display_label(title, "title") {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({"error": "validation_failed", "message": msg})),
-            )
-                .into_response();
+            return api_error(StatusCode::BAD_REQUEST, "validation_failed", msg);
         }
     }
     if let Some(ref profile_name) = body.profile {
@@ -794,25 +767,19 @@ pub async fn create_session(
                     target: "server.sessions",
                     "failed to enumerate profiles while validating create_session: {e:#}"
                 );
-                return (
+                return api_error(
                     StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(serde_json::json!({
-                        "error": "internal_error",
-                        "message": format!("Failed to enumerate profiles: {e}"),
-                    })),
-                )
-                    .into_response();
+                    "internal_error",
+                    format!("Failed to enumerate profiles: {e}"),
+                );
             }
         };
         if !known.contains(profile_name) {
-            return (
+            return api_error(
                 StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({
-                    "error": "profile_not_found",
-                    "message": format!("Profile '{}' does not exist", profile_name)
-                })),
-            )
-                .into_response();
+                "profile_not_found",
+                format!("Profile '{}' does not exist", profile_name),
+            );
         }
     }
 
@@ -822,14 +789,11 @@ pub async fn create_session(
         validation_profile,
         std::path::Path::new(&body.path),
     ) {
-        return (
+        return api_error(
             StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({
-                "error": "validation_failed",
-                "message": format!("Unknown agent '{}'", body.tool),
-            })),
-        )
-            .into_response();
+            "validation_failed",
+            format!("Unknown agent '{}'", body.tool),
+        );
     }
 
     // Operator agent allowlist (#3241). Answer here rather than letting the
@@ -858,17 +822,12 @@ pub async fn create_session(
         .await
         .unwrap_or(false);
         if acp_capable && !crate::server::api::agent_policy().await.allows(agent_key) {
-            return (
+            return api_error(
                 StatusCode::FORBIDDEN,
-                Json(serde_json::json!({
-                    "error": "agent_not_allowed",
-                    "message": crate::acp::supervisor::SupervisorError::AgentNotAllowed(
-                        agent_key.to_string(),
-                    )
+                "agent_not_allowed",
+                crate::acp::supervisor::SupervisorError::AgentNotAllowed(agent_key.to_string())
                     .to_string(),
-                })),
-            )
-                .into_response();
+            );
         }
     }
 
@@ -877,14 +836,11 @@ pub async fn create_session(
     // parent's captured id), and honoring both would leave the session in a
     // contradictory half-imported, half-forked state. Reject up front.
     if both_import_and_fork_set(&body) {
-        return (
+        return api_error(
             StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({
-                "error": "invalid_request",
-                "message": "Cannot set both import_acp_session_id and fork_from",
-            })),
-        )
-            .into_response();
+            "invalid_request",
+            "Cannot set both import_acp_session_id and fork_from",
+        );
     }
 
     let worktree_enabled = create_body_uses_worktree(&body);
@@ -902,13 +858,7 @@ pub async fn create_session(
         .map(str::trim)
         .filter(|s| !s.is_empty())
     {
-        let bad = |msg: &str| {
-            (
-                StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({"error": "validation_failed", "message": msg})),
-            )
-                .into_response()
-        };
+        let bad = |msg: &str| api_error(StatusCode::BAD_REQUEST, "validation_failed", msg);
         if body.tool != "claude"
             || body
                 .agent_name
@@ -956,14 +906,11 @@ pub async fn create_session(
             // closed on an invalid id (no fork flags), which would otherwise
             // start a fresh, non-forked session with no error to the caller.
             if !crate::session::capture::is_valid_session_id(parent_id) {
-                return (
+                return api_error(
                     StatusCode::BAD_REQUEST,
-                    Json(serde_json::json!({
-                        "error": "fork_invalid",
-                        "message": "fork_from is not a valid session id",
-                    })),
-                )
-                    .into_response();
+                    "fork_invalid",
+                    "fork_from is not a valid session id",
+                );
             }
             let structured = body.view == crate::session::View::Structured;
             // A structured fork only runs over a live ACP connection. Reject it
@@ -973,26 +920,20 @@ pub async fn create_session(
             if structured
                 && !agent_is_structured_fork_capable(&body.tool, body.agent_name.as_deref())
             {
-                return (
+                return api_error(
                     StatusCode::BAD_REQUEST,
-                    Json(serde_json::json!({
-                        "error": "fork_unsupported",
-                        "message": "A structured fork requires an ACP agent that supports forking",
-                    })),
-                )
-                    .into_response();
+                    "fork_unsupported",
+                    "A structured fork requires an ACP agent that supports forking",
+                );
             }
             match resolve_create_fork_seed(&body.tool, parent_id, structured) {
                 Ok(seed) => Some(seed),
                 Err(_) => {
-                    return (
+                    return api_error(
                         StatusCode::BAD_REQUEST,
-                        Json(serde_json::json!({
-                            "error": "fork_unsupported",
-                            "message": "This agent or session cannot be forked",
-                        })),
-                    )
-                        .into_response();
+                        "fork_unsupported",
+                        "This agent or session cannot be forked",
+                    );
                 }
             }
         }
@@ -1001,26 +942,17 @@ pub async fn create_session(
 
     if let Some(url) = body.callback_url.as_deref() {
         if let Err(msg) = crate::server::callback::validate_callback_url(url) {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({"error": "validation_failed", "message": msg})),
-            )
-                .into_response();
+            return api_error(StatusCode::BAD_REQUEST, "validation_failed", msg);
         }
     }
 
     if let Some(key) = body.idempotency_key.as_deref() {
         if key.is_empty() || key.len() > IDEMPOTENCY_KEY_MAX_LEN {
-            return (
+            return api_error(
                 StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({
-                    "error": "validation_failed",
-                    "message": format!(
-                        "idempotency_key must be 1-{IDEMPOTENCY_KEY_MAX_LEN} characters"
-                    ),
-                })),
-            )
-                .into_response();
+                "validation_failed",
+                format!("idempotency_key must be 1-{IDEMPOTENCY_KEY_MAX_LEN} characters"),
+            );
         }
     }
 
@@ -1143,11 +1075,11 @@ pub async fn create_session(
                 e.downcast_ref::<crate::server::session_spawn::SessionBuildPanicked>()
             {
                 tracing::error!(target: "http.api.sessions", "Session creation panicked: {}", panicked.0);
-                return (
+                return api_error(
                     StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(serde_json::json!({"error": "internal", "message": "Internal server error"})),
-                )
-                    .into_response();
+                    "internal",
+                    "Internal server error",
+                );
             }
             // A repo whose hooks need approval gets a distinct, structured
             // response so the caller can surface the commands and resubmit with
@@ -1167,11 +1099,11 @@ pub async fn create_session(
                     .into_response();
             }
             tracing::warn!(target: "http.api.sessions", "Session creation failed: {}", e);
-            (
+            api_error(
                 StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({"error": "create_failed", "message": public_create_session_error(&e)})),
+                "create_failed",
+                public_create_session_error(&e),
             )
-                .into_response()
         }
     }
 }

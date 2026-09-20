@@ -445,14 +445,7 @@ pub async fn trash_session(
         Ok(Ok(reserved)) => reserved,
         Ok(Err(error)) => {
             tracing::warn!(target: "http.api.sessions", session = %id, "trash reservation failed: {error}");
-            return (
-                StatusCode::CONFLICT,
-                Json(serde_json::json!({
-                    "error": "lifecycle_busy",
-                    "message": error.to_string()
-                })),
-            )
-                .into_response();
+            return api_error(StatusCode::CONFLICT, "lifecycle_busy", error.to_string());
         }
         Err(error) => {
             tracing::error!(target: "http.api.sessions", session = %id, "trash reservation join failed: {error}");
@@ -685,28 +678,20 @@ pub async fn restore_session(
 
     let restored = match restored {
         Ok(Ok(instance)) => instance,
-        Ok(Err(RestoreTransitionError::NotFound)) => {
-            return session_not_found()
-        }
+        Ok(Err(RestoreTransitionError::NotFound)) => return session_not_found(),
         Ok(Err(RestoreTransitionError::Busy(holder))) => {
-            return (
+            return api_error(
                 StatusCode::CONFLICT,
-                Json(serde_json::json!({
-                    "error": "lifecycle_busy",
-                    "message": format!("Session is {holder}, so it was not restored")
-                })),
-            )
-                .into_response();
+                "lifecycle_busy",
+                format!("Session is {holder}, so it was not restored"),
+            );
         }
         Ok(Err(RestoreTransitionError::Worktree(reason))) => {
-            return (
+            return api_error(
                 StatusCode::CONFLICT,
-                Json(serde_json::json!({
-                    "error": "worktree_restore_failed",
-                    "message": format!("Could not restore the worktree: {reason}")
-                })),
-            )
-                .into_response();
+                "worktree_restore_failed",
+                format!("Could not restore the worktree: {reason}"),
+            );
         }
         Ok(Err(RestoreTransitionError::Persist(error))) => {
             tracing::warn!(target: "http.api.sessions", session = %id, "restore transition failed: {error}");
@@ -833,27 +818,13 @@ pub async fn force_smart_rename(
         let unknown = match probe {
             Ok(Probe::Running) => None,
             Ok(Probe::NotRunning) => {
-                return (
-                    StatusCode::CONFLICT,
-                    Json(serde_json::json!({
-                        "error": "container_not_running",
-                        "message": "The session's sandbox container is not running, so its agent cannot be asked for a name. Open the session to start it, then try again.",
-                    })),
-                )
-                    .into_response();
+                return api_error(StatusCode::CONFLICT, "container_not_running", "The session's sandbox container is not running, so its agent cannot be asked for a name. Open the session to start it, then try again.");
             }
             Ok(Probe::Unknown(e)) => Some(e.to_string()),
             Err(e) => Some(e.to_string()),
         };
         if let Some(err) = unknown {
-            return (
-                StatusCode::SERVICE_UNAVAILABLE,
-                Json(serde_json::json!({
-                    "error": "container_state_unknown",
-                    "message": format!("Couldn't check the session's sandbox container, so its agent cannot be asked for a name: {err}"),
-                })),
-            )
-                .into_response();
+            return api_error(StatusCode::SERVICE_UNAVAILABLE, "container_state_unknown", format!("Couldn't check the session's sandbox container, so its agent cannot be asked for a name: {err}"));
         }
     }
 
@@ -1323,11 +1294,7 @@ pub async fn start_session(
                     inst.last_error = Some(msg.clone());
                 }
             }
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": "restart_failed", "message": msg})),
-            )
-                .into_response()
+            api_error(StatusCode::INTERNAL_SERVER_ERROR, "restart_failed", msg)
         }
         Err(e) => {
             tracing::error!(target: "http.api.sessions", "start_session panicked for {id}: {e}");
@@ -1364,14 +1331,7 @@ pub async fn update_session_snooze(
     // `crate::session::config::validate_snooze_duration`.
     if let Some(minutes) = body.minutes {
         if let Err(msg) = crate::session::validate_snooze_duration(minutes as u64) {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({
-                    "error": "validation_failed",
-                    "message": msg,
-                })),
-            )
-                .into_response();
+            return api_error(StatusCode::BAD_REQUEST, "validation_failed", msg);
         }
     }
 

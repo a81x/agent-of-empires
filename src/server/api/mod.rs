@@ -461,11 +461,20 @@ mod tests {
             assert!(validate_display_label(value, "title").is_ok(), "{value:?}");
         }
         let bidi = BIDI_CONTROL_CHARS.iter().map(|c| format!("bad{c}name"));
-        let control = ["bad\nname", "bad\rname", "bad\tname", "bad\u{1b}name", "bad\0name"]
-            .into_iter()
-            .map(String::from);
+        let control = [
+            "bad\nname",
+            "bad\rname",
+            "bad\tname",
+            "bad\u{1b}name",
+            "bad\0name",
+        ]
+        .into_iter()
+        .map(String::from);
         for value in control.chain(bidi) {
-            assert!(validate_display_label(&value, "title").is_err(), "{value:?}");
+            assert!(
+                validate_display_label(&value, "title").is_err(),
+                "{value:?}"
+            );
         }
     }
 

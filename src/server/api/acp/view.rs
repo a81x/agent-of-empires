@@ -167,11 +167,15 @@ async fn commit_structured_view(state: &AppState, instance: &mut Instance) -> Re
         Ok(Ok(generation)) => generation,
         Ok(Err(error)) => {
             tracing::error!(target: "acp.switch", session = %id, "terminal-to-ACP transition failed: {error:#}");
-            return Err(internal_error("failed to switch session to structured view"));
+            return Err(internal_error(
+                "failed to switch session to structured view",
+            ));
         }
         Err(join_error) => {
             tracing::error!(target: "acp.switch", session = %id, "terminal-to-ACP transition task panicked: {join_error}");
-            return Err(internal_error("failed to switch session to structured view"));
+            return Err(internal_error(
+                "failed to switch session to structured view",
+            ));
         }
     };
     let apply = |inst: &mut Instance| {
@@ -249,7 +253,8 @@ fn spawn_enabled_worker(
             Ok(info) => info,
             Err(e) => {
                 tracing::warn!(target: "acp.switch", session = %session_id, "container ensure failed: {e}");
-                supervisor.publish_startup_error(&session_id, format!("container start failed: {e}"));
+                supervisor
+                    .publish_startup_error(&session_id, format!("container start failed: {e}"));
                 return;
             }
         };
@@ -449,14 +454,68 @@ mod tests {
     fn resolve_structured_seed_covers_import_direction_b_and_fresh() {
         // (tool, agent, acp id, agent id, import_pending, transcript, expected id, replay)
         let cases = [
-            ("claude", "claude", Some("acp-1"), Some("agent-1"), true, true, Some("acp-1"), true),
-            ("claude", "claude", Some("acp-1"), None, false, true, Some("acp-1"), false),
-            ("claude", "claude", None, Some("agent-1"), false, true, Some("agent-1"), true),
+            (
+                "claude",
+                "claude",
+                Some("acp-1"),
+                Some("agent-1"),
+                true,
+                true,
+                Some("acp-1"),
+                true,
+            ),
+            (
+                "claude",
+                "claude",
+                Some("acp-1"),
+                None,
+                false,
+                true,
+                Some("acp-1"),
+                false,
+            ),
+            (
+                "claude",
+                "claude",
+                None,
+                Some("agent-1"),
+                false,
+                true,
+                Some("agent-1"),
+                true,
+            ),
             // Transcript confirmed absent.
-            ("claude", "claude", None, Some("agent-1"), false, false, None, false),
+            (
+                "claude",
+                "claude",
+                None,
+                Some("agent-1"),
+                false,
+                false,
+                None,
+                false,
+            ),
             // Non-resumable pairings.
-            ("claude", "codex", None, Some("agent-1"), false, true, None, false),
-            ("codex", "codex", None, Some("agent-1"), false, true, None, false),
+            (
+                "claude",
+                "codex",
+                None,
+                Some("agent-1"),
+                false,
+                true,
+                None,
+                false,
+            ),
+            (
+                "codex",
+                "codex",
+                None,
+                Some("agent-1"),
+                false,
+                true,
+                None,
+                false,
+            ),
             ("claude", "claude", None, None, false, true, None, false),
         ];
         for (tool, agent, acp, agent_sid, import, present, expected, replay) in cases {

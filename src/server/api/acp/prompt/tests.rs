@@ -203,7 +203,9 @@ async fn exhausted_rate_limit_park_is_sendable_at_the_shared_decision_point() {
             .admit_prompt_submission(&SessionCaller::User, id_ref)
             .await
             .expect("session exists");
-        service.prompt_dispatch_under_submission(id_ref, false).await
+        service
+            .prompt_dispatch_under_submission(id_ref, false)
+            .await
     };
     assert_eq!(
         decide().await,

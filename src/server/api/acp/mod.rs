@@ -125,7 +125,11 @@ fn spawn_request_for(
     }
 }
 
-async fn pick_agent(state: &AppState, instance: &crate::session::Instance, explicit: Option<&str>) -> String {
+async fn pick_agent(
+    state: &AppState,
+    instance: &crate::session::Instance,
+    explicit: Option<&str>,
+) -> String {
     state
         .acp_supervisor
         .pick_agent_for_tool(

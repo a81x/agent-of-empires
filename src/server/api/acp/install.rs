@@ -76,7 +76,10 @@ async fn install_on_host(package: &str) -> Result<std::process::Output, Response
     command.arg("install").arg("-g").arg(package);
     run_install(
         command,
-        ("npm_start_failed", "npm install failed to start".to_string()),
+        (
+            "npm_start_failed",
+            "npm install failed to start".to_string(),
+        ),
         "`npm install -g` did not finish within 180s.",
     )
     .await

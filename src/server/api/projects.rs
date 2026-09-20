@@ -14,6 +14,7 @@ use serde::{Deserialize, Serialize};
 use crate::session::projects::{self, RegistryError};
 use crate::session::{Project, ProjectScope};
 
+use super::api_error;
 use super::AppState;
 
 #[derive(Serialize)]
@@ -57,14 +58,14 @@ pub async fn list_projects(
         Some("profile") => projects::load_profile(&state.profile),
         Some(other) => {
             tracing::warn!(target: "http.api.projects", scope = other, "rejected bad scope");
-            return (
+            return api_error(
                 StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({
-                    "error": "bad_scope",
-                    "message": format!("Unknown scope '{}'. Use 'global', 'profile', or omit.", other),
-                })),
-            )
-                .into_response();
+                "bad_scope",
+                format!(
+                    "Unknown scope '{}'. Use 'global', 'profile', or omit.",
+                    other
+                ),
+            );
         }
         None => projects::load_merged(&state.profile),
     };
@@ -81,11 +82,11 @@ pub async fn list_projects(
         }
         Err(e) => {
             tracing::error!(target: "http.api.projects", error = %e, "load_failed");
-            (
+            api_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": "load_failed", "message": e.to_string()})),
+                "load_failed",
+                e.to_string(),
             )
-                .into_response()
         }
     }
 }
@@ -156,14 +157,11 @@ pub async fn create_project(
         Some("global") | None => ProjectScope::Global,
         Some(other) => {
             tracing::warn!(target: "http.api.projects", scope = other, "rejected bad scope");
-            return (
+            return api_error(
                 StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({
-                    "error": "bad_scope",
-                    "message": format!("Unknown scope '{}'. Use 'global' or 'profile'.", other),
-                })),
-            )
-                .into_response();
+                "bad_scope",
+                format!("Unknown scope '{}'. Use 'global' or 'profile'.", other),
+            );
         }
     };
 
@@ -182,14 +180,14 @@ pub async fn create_project(
     // directory, which the previous git-repo gate rejected implicitly.
     if !canonical.is_dir() {
         tracing::warn!(target: "http.api.projects", path = %canonical.display(), "rejected non-directory path");
-        return (
+        return api_error(
             StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({
-                "error": "not_a_directory",
-                "message": format!("Path does not exist or is not a directory: {}", canonical.display()),
-            })),
-        )
-            .into_response();
+            "not_a_directory",
+            format!(
+                "Path does not exist or is not a directory: {}",
+                canonical.display()
+            ),
+        );
     }
 
     let project = Project::new(name, canonical.to_string_lossy(), scope)
@@ -202,27 +200,19 @@ pub async fn create_project(
         }
         Err(RegistryError::Conflict(msg)) => {
             tracing::warn!(target: "http.api.projects", reason = "conflict", message = %msg, "rejected create");
-            (
-                StatusCode::CONFLICT,
-                Json(serde_json::json!({"error": "conflict", "message": msg})),
-            )
-                .into_response()
+            api_error(StatusCode::CONFLICT, "conflict", msg)
         }
         Err(RegistryError::NotFound(msg)) => {
             tracing::warn!(target: "http.api.projects", reason = "not_found", message = %msg, "rejected create");
-            (
-                StatusCode::NOT_FOUND,
-                Json(serde_json::json!({"error": "not_found", "message": msg})),
-            )
-                .into_response()
+            api_error(StatusCode::NOT_FOUND, "not_found", msg)
         }
         Err(RegistryError::Other(e)) => {
             tracing::error!(target: "http.api.projects", error = %e, "add_failed");
-            (
+            api_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": "add_failed", "message": e.to_string()})),
+                "add_failed",
+                e.to_string(),
             )
-                .into_response()
         }
     }
 }
@@ -260,14 +250,11 @@ pub async fn delete_project(
         Some("global") | None => ProjectScope::Global,
         Some(other) => {
             tracing::warn!(target: "http.api.projects", scope = other, "rejected bad scope");
-            return (
+            return api_error(
                 StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({
-                    "error": "bad_scope",
-                    "message": format!("Unknown scope '{}'. Use 'global' or 'profile'.", other),
-                })),
-            )
-                .into_response();
+                "bad_scope",
+                format!("Unknown scope '{}'. Use 'global' or 'profile'.", other),
+            );
         }
     };
 
@@ -278,27 +265,19 @@ pub async fn delete_project(
         }
         Err(RegistryError::NotFound(msg)) => {
             tracing::warn!(target: "http.api.projects", reason = "not_found", message = %msg, "rejected delete");
-            (
-                StatusCode::NOT_FOUND,
-                Json(serde_json::json!({"error": "not_found", "message": msg})),
-            )
-                .into_response()
+            api_error(StatusCode::NOT_FOUND, "not_found", msg)
         }
         Err(RegistryError::Conflict(msg)) => {
             tracing::warn!(target: "http.api.projects", reason = "conflict", message = %msg, "rejected delete");
-            (
-                StatusCode::CONFLICT,
-                Json(serde_json::json!({"error": "conflict", "message": msg})),
-            )
-                .into_response()
+            api_error(StatusCode::CONFLICT, "conflict", msg)
         }
         Err(RegistryError::Other(e)) => {
             tracing::error!(target: "http.api.projects", error = %e, "remove_failed");
-            (
+            api_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": "remove_failed", "message": e.to_string()})),
+                "remove_failed",
+                e.to_string(),
             )
-                .into_response()
         }
     }
 }
@@ -376,14 +355,11 @@ pub async fn update_project(
         Some("global") | None => ProjectScope::Global,
         Some(other) => {
             tracing::warn!(target: "http.api.projects", scope = other, "rejected bad scope");
-            return (
+            return api_error(
                 StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({
-                    "error": "bad_scope",
-                    "message": format!("Unknown scope '{}'. Use 'global' or 'profile'.", other),
-                })),
-            )
-                .into_response();
+                "bad_scope",
+                format!("Unknown scope '{}'. Use 'global' or 'profile'.", other),
+            );
         }
     };
 
@@ -391,11 +367,7 @@ pub async fn update_project(
         Ok(patch) => patch,
         Err((err, msg)) => {
             tracing::warn!(target: "http.api.projects", reason = err, "rejected update");
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({ "error": err, "message": msg })),
-            )
-                .into_response();
+            return api_error(StatusCode::BAD_REQUEST, err, msg);
         }
     };
 
@@ -426,27 +398,19 @@ pub async fn update_project(
         }
         Err(RegistryError::NotFound(msg)) => {
             tracing::warn!(target: "http.api.projects", reason = "not_found", message = %msg, "rejected update");
-            (
-                StatusCode::NOT_FOUND,
-                Json(serde_json::json!({"error": "not_found", "message": msg})),
-            )
-                .into_response()
+            api_error(StatusCode::NOT_FOUND, "not_found", msg)
         }
         Err(RegistryError::Conflict(msg)) => {
             tracing::warn!(target: "http.api.projects", reason = "conflict", message = %msg, "rejected update");
-            (
-                StatusCode::CONFLICT,
-                Json(serde_json::json!({"error": "conflict", "message": msg})),
-            )
-                .into_response()
+            api_error(StatusCode::CONFLICT, "conflict", msg)
         }
         Err(RegistryError::Other(e)) => {
             tracing::error!(target: "http.api.projects", error = %e, "update_failed");
-            (
+            api_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": "update_failed", "message": e.to_string()})),
+                "update_failed",
+                e.to_string(),
             )
-                .into_response()
         }
     }
 }

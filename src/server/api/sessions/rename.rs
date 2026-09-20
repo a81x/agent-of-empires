@@ -116,14 +116,11 @@ async fn quiesce_structured_worker_for_worktree_move(
                 session = %id,
                 "could not stop structured-view worker before worktree move: {e}"
             );
-            Err((
+            Err(api_error(
                 StatusCode::CONFLICT,
-                Json(serde_json::json!({
-                    "error": "worker_shutdown_failed",
-                    "message": "Could not stop the structured view worker before renaming; retry in a moment"
-                })),
-            )
-                .into_response())
+                "worker_shutdown_failed",
+                "Could not stop the structured view worker before renaming; retry in a moment",
+            ))
         }
     }
 }
@@ -287,25 +284,19 @@ pub async fn rename_session(
             Ok(Ok(locks)) => locks,
             Ok(Err(error)) => {
                 tracing::error!(target: "http.api.sessions", session = %id, "failed to acquire rename locks or load authoritative state: {error}");
-                return (
+                return api_error(
                     StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(serde_json::json!({
-                        "error": "title_lock_failed",
-                        "message": "Could not serialize the session rename"
-                    })),
-                )
-                    .into_response();
+                    "title_lock_failed",
+                    "Could not serialize the session rename",
+                );
             }
             Err(error) => {
                 tracing::error!(target: "http.api.sessions", session = %id, "rename lock task failed: {error}");
-                return (
+                return api_error(
                     StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(serde_json::json!({
-                        "error": "title_lock_failed",
-                        "message": "Could not serialize the session rename"
-                    })),
-                )
-                    .into_response();
+                    "title_lock_failed",
+                    "Could not serialize the session rename",
+                );
             }
         };
     let Some(mut fresh) = disk_instances
@@ -348,14 +339,7 @@ pub async fn rename_session(
         && is_duplicate_session(disk_instances.iter(), &title, &duplicate_path, Some(&id))
     {
         let message = duplicate_session_error(&title).to_string();
-        return (
-            StatusCode::CONFLICT,
-            Json(serde_json::json!({
-                "error": "duplicate_session",
-                "message": message,
-            })),
-        )
-            .into_response();
+        return api_error(StatusCode::CONFLICT, "duplicate_session", message);
     }
 
     // What to write to disk + memory once any git side effect has landed.
@@ -395,14 +379,7 @@ pub async fn rename_session(
             && ensure_sandbox_container_released_blocking(&id, is_sandboxed).await;
         if (moves_worktree || renames_branch) && (status.blocks_worktree_edit() || container_holds)
         {
-            return (
-                StatusCode::CONFLICT,
-                Json(serde_json::json!({
-                    "error": "session_running",
-                    "message": "Stop the session before renaming its worktree directory or branch. Disable \"Tie Worktree Directory to Session Name\" to relabel a running session."
-                })),
-            )
-                .into_response();
+            return api_error(StatusCode::CONFLICT, "session_running", "Stop the session before renaming its worktree directory or branch. Disable \"Tie Worktree Directory to Session Name\" to relabel a running session.");
         }
 
         // Stop a live structured-view worker only when its cwd will move. A
@@ -518,11 +495,7 @@ pub async fn rename_session(
             } else {
                 "Persisting the renamed session failed"
             };
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({ "error": "persist_failed", "message": message })),
-            )
-                .into_response();
+            return api_error(StatusCode::INTERNAL_SERVER_ERROR, "persist_failed", message);
         }
     };
 
@@ -786,14 +759,7 @@ pub async fn set_worktree_name(
             .session
             .tie_workdir_to_name
     {
-        return (
-            StatusCode::CONFLICT,
-            Json(serde_json::json!({
-                "error": "tied",
-                "message": "Renaming is unified while \"Tie Worktree Directory to Session Name\" is on; rename the session instead, and its directory follows."
-            })),
-        )
-            .into_response();
+        return api_error(StatusCode::CONFLICT, "tied", "Renaming is unified while \"Tie Worktree Directory to Session Name\" is on; rename the session instead, and its directory follows.");
     }
     let duplicate_path = crate::session::worktree_edit::target_worktree_path(
         std::path::Path::new(&current_path),
@@ -811,14 +777,7 @@ pub async fn set_worktree_name(
         )
     {
         let message = duplicate_session_error(&fresh.title).to_string();
-        return (
-            StatusCode::CONFLICT,
-            Json(serde_json::json!({
-                "error": "duplicate_session",
-                "message": message,
-            })),
-        )
-            .into_response();
+        return api_error(StatusCode::CONFLICT, "duplicate_session", message);
     }
     // A sandbox container keeps the worktree dir mounted even while the agent
     // is Idle, so the move would fail. The helper drops a merely-stopped
@@ -916,14 +875,11 @@ pub async fn set_worktree_name(
     // metadata that points at the old (now-moved) path after a daemon
     // restart, so any failure returns 500 instead of a misleading 200.
     let persist_failed = || {
-        (
+        api_error(
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({
-                "error": "persist_failed",
-                "message": "Worktree was moved on disk, but persisting the new session metadata failed"
-            })),
+            "persist_failed",
+            "Worktree was moved on disk, but persisting the new session metadata failed",
         )
-            .into_response()
     };
 
     let id_clone = id.clone();

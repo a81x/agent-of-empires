@@ -109,14 +109,11 @@ pub async fn ensure_session(
         // Read-only viewers must not kill + respawn a dead session. Signal
         // the frontend so it can show "session is stopped; ask an owner to
         // reattach" instead of silently replacing the agent process.
-        return (
+        return api_error(
             StatusCode::FORBIDDEN,
-            Json(serde_json::json!({
-                "error": "read_only",
-                "message": "Session is stopped or errored. Restart requires write access.",
-            })),
-        )
-            .into_response();
+            "read_only",
+            "Session is stopped or errored. Restart requires write access.",
+        );
     }
 
     {
@@ -197,14 +194,7 @@ pub async fn ensure_session(
                     inst.last_error = Some(msg.clone());
                 }
             }
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({
-                    "error": "restart_failed",
-                    "message": msg,
-                })),
-            )
-                .into_response()
+            api_error(StatusCode::INTERNAL_SERVER_ERROR, "restart_failed", msg)
         }
         Err(e) => {
             tracing::error!(target: "http.api.sessions", "ensure_session panicked for {id}: {e}");
@@ -307,19 +297,19 @@ pub async fn ensure_terminal(
         }
         Ok(Err(e)) => {
             tracing::error!(target: "http.api.sessions", "Terminal creation failed: {}", e);
-            (
+            api_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": "create_failed", "message": "Failed to create terminal"})),
+                "create_failed",
+                "Failed to create terminal",
             )
-                .into_response()
         }
         Err(e) => {
             tracing::error!(target: "http.api.sessions", "Terminal creation panicked: {}", e);
-            (
+            api_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": "internal", "message": "Internal server error"})),
+                "internal",
+                "Internal server error",
             )
-                .into_response()
         }
     }
 }
@@ -392,19 +382,19 @@ pub async fn ensure_container_terminal(
             .into_response(),
         Ok(Err(e)) => {
             tracing::error!(target: "http.api.sessions", "Container terminal creation failed: {}", e);
-            (
+            api_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": "create_failed", "message": "Failed to create container terminal"})),
+                "create_failed",
+                "Failed to create container terminal",
             )
-                .into_response()
         }
         Err(e) => {
             tracing::error!(target: "http.api.sessions", "Container terminal creation panicked: {}", e);
-            (
+            api_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": "internal", "message": "Internal server error"})),
+                "internal",
+                "Internal server error",
             )
-                .into_response()
         }
     }
 }
@@ -459,19 +449,19 @@ pub async fn kill_terminal(
             .into_response(),
         Ok(Err(e)) => {
             tracing::error!(target: "http.api.sessions", "Terminal kill failed: {}", e);
-            (
+            api_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": "kill_failed", "message": "Failed to kill terminal"})),
+                "kill_failed",
+                "Failed to kill terminal",
             )
-                .into_response()
         }
         Err(e) => {
             tracing::error!(target: "http.api.sessions", "Terminal kill panicked: {}", e);
-            (
+            api_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": "internal", "message": "Internal server error"})),
+                "internal",
+                "Internal server error",
             )
-                .into_response()
         }
     }
 }

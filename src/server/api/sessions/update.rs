@@ -208,14 +208,11 @@ where
 /// responses in this module so the dashboard's `!res.ok` handling reads the
 /// same keys it already does elsewhere.
 pub(super) fn persist_failed_response() -> axum::response::Response {
-    (
+    api_error(
         StatusCode::INTERNAL_SERVER_ERROR,
-        Json(serde_json::json!({
-            "error": "persist_failed",
-            "message": "Failed to persist session update"
-        })),
+        "persist_failed",
+        "Failed to persist session update",
     )
-        .into_response()
 }
 
 pub async fn update_session_notifications(
@@ -378,31 +375,21 @@ pub async fn update_session_diff_base(
         match body.repo.as_deref() {
             Some(name) => {
                 if !inst.all_repos().iter().any(|r| r.name == name) {
-                    return (
+                    return api_error(
                         StatusCode::BAD_REQUEST,
-                        Json(serde_json::json!({
-                            "error": "bad_request",
-                            "message": "unknown workspace repo"
-                        })),
-                    )
-                        .into_response();
+                        "bad_request",
+                        "unknown workspace repo",
+                    );
                 }
             }
             None => {
                 if inst.workspace_info.is_some() {
                     let names: Vec<&str> =
                         inst.all_repos().iter().map(|r| r.name.as_str()).collect();
-                    return (
-                        StatusCode::BAD_REQUEST,
-                        Json(serde_json::json!({
-                            "error": "bad_request",
-                            "message": format!(
+                    return api_error(StatusCode::BAD_REQUEST, "bad_request", format!(
                                 "this session is a multi-repo workspace; name the repo to set a diff base for ({})",
                                 names.join(", ")
-                            )
-                        })),
-                    )
-                        .into_response();
+                            ));
                 }
             }
         }

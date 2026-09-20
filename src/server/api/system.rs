@@ -12,6 +12,7 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 
+use super::api_error;
 use super::validate_profile_name;
 use super::AppState;
 use crate::server::auth::AuthenticatedTokenHash;
@@ -246,20 +247,20 @@ pub async fn get_settings(
             Ok(val) => (StatusCode::OK, Json(val)).into_response(),
             Err(e) => {
                 tracing::error!(target: "http.api.system", "Settings serialization failed: {}", e);
-                (
+                api_error(
                     StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(serde_json::json!({"error": "serialize_failed", "message": "Failed to serialize settings"})),
+                    "serialize_failed",
+                    "Failed to serialize settings",
                 )
-                    .into_response()
             }
         },
         Err(e) => {
             tracing::error!(target: "http.api.system", "Settings load failed: {}", e);
-            (
+            api_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": "load_failed", "message": "Failed to load settings"})),
+                "load_failed",
+                "Failed to load settings",
             )
-                .into_response()
         }
     }
 }
@@ -369,29 +370,29 @@ pub async fn update_settings(
                 Ok(val) => (StatusCode::OK, Json(val)).into_response(),
                 Err(e) => {
                     tracing::error!(target: "http.api.system", "Settings serialization failed: {}", e);
-                    (
+                    api_error(
                         StatusCode::INTERNAL_SERVER_ERROR,
-                        Json(serde_json::json!({"error": "serialize_failed", "message": "Failed to serialize settings"})),
+                        "serialize_failed",
+                        "Failed to serialize settings",
                     )
-                        .into_response()
                 }
             }
         }
         Ok(Err(e)) => {
             tracing::warn!(target: "http.api.system", "Settings update failed: {}", e);
-            (
+            api_error(
                 StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({"error": "update_failed", "message": "Failed to update settings"})),
+                "update_failed",
+                "Failed to update settings",
             )
-                .into_response()
         }
         Err(e) => {
             tracing::error!(target: "http.api.system", "Settings update panicked: {}", e);
-            (
+            api_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": "internal", "message": "Internal server error"})),
+                "internal",
+                "Internal server error",
             )
-                .into_response()
         }
     }
 }
@@ -422,19 +423,19 @@ pub async fn get_cityhall_bundle(
             .into_response(),
         Ok(Err(e)) => {
             tracing::error!(target: "http.api.system", "CityHall bundle export failed: {e}");
-            (
+            api_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": "export_failed", "message": e.to_string()})),
+                "export_failed",
+                e.to_string(),
             )
-                .into_response()
         }
         Err(e) => {
             tracing::error!(target: "http.api.system", "CityHall bundle export panicked: {e}");
-            (
+            api_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": "internal", "message": "Internal server error"})),
+                "internal",
+                "Internal server error",
             )
-                .into_response()
         }
     }
 }
@@ -514,14 +515,11 @@ pub async fn update_theme(
                 .iter()
                 .any(|t| t == name)
         {
-            return (
+            return api_error(
                 StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({
-                    "error": "unknown_theme",
-                    "message": format!("Unknown theme '{name}'"),
-                })),
-            )
-                .into_response();
+                "unknown_theme",
+                format!("Unknown theme '{name}'"),
+            );
         }
     }
     let result = tokio::task::spawn_blocking(move || {
@@ -547,28 +545,28 @@ pub async fn update_theme(
             Ok(val) => (StatusCode::OK, Json(val)).into_response(),
             Err(e) => {
                 tracing::error!(target: "http.api.system", "theme serialization failed: {}", e);
-                (
+                api_error(
                     StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(serde_json::json!({"error": "serialize_failed", "message": "Failed to serialize theme"})),
+                    "serialize_failed",
+                    "Failed to serialize theme",
                 )
-                    .into_response()
             }
         },
         Ok(Err(e)) => {
             tracing::warn!(target: "http.api.system", "theme update failed: {}", e);
-            (
+            api_error(
                 StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({"error": "update_failed", "message": "Failed to update theme"})),
+                "update_failed",
+                "Failed to update theme",
             )
-                .into_response()
         }
         Err(e) => {
             tracing::error!(target: "http.api.system", "theme update panicked: {}", e);
-            (
+            api_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": "internal", "message": "Internal server error"})),
+                "internal",
+                "Internal server error",
             )
-                .into_response()
         }
     }
 }
@@ -608,19 +606,19 @@ pub async fn mark_web_tour_seen(State(state): State<Arc<AppState>>) -> impl Into
             .into_response(),
         Ok(Err(e)) => {
             tracing::warn!(target: "http.api.system", "Marking web tour seen failed: {}", e);
-            (
+            api_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": "save_failed", "message": "Failed to persist tour state"})),
+                "save_failed",
+                "Failed to persist tour state",
             )
-                .into_response()
         }
         Err(e) => {
             tracing::error!(target: "http.api.system", "Marking web tour seen panicked: {}", e);
-            (
+            api_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": "internal", "message": "Internal server error"})),
+                "internal",
+                "Internal server error",
             )
-                .into_response()
         }
     }
 }
@@ -720,11 +718,11 @@ pub async fn mark_tip_seen(
         Err(rej) => return rej.into_response(),
     };
     if !crate::tips::id_in_catalog(&id) {
-        return (
+        return api_error(
             StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({"error": "unknown_tip", "message": format!("Unknown tip id '{id}'")})),
-        )
-            .into_response();
+            "unknown_tip",
+            format!("Unknown tip id '{id}'"),
+        );
     }
 
     let result = tokio::task::spawn_blocking(move || {
@@ -740,19 +738,19 @@ pub async fn mark_tip_seen(
         Ok(Ok(())) => (StatusCode::OK, Json(serde_json::json!({"ok": true}))).into_response(),
         Ok(Err(e)) => {
             tracing::warn!(target: "http.api.system", "Marking tip seen failed: {}", e);
-            (
+            api_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": "save_failed", "message": "Failed to persist tip state"})),
+                "save_failed",
+                "Failed to persist tip state",
             )
-                .into_response()
         }
         Err(e) => {
             tracing::error!(target: "http.api.system", "Marking tip seen panicked: {}", e);
-            (
+            api_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": "internal", "message": "Internal server error"})),
+                "internal",
+                "Internal server error",
             )
-                .into_response()
         }
     }
 }
@@ -802,19 +800,19 @@ pub async fn set_show_tips(
             .into_response(),
         Ok(Err(e)) => {
             tracing::warn!(target: "http.api.system", "Setting show_tips failed: {}", e);
-            (
+            api_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": "save_failed", "message": "Failed to persist tips state"})),
+                "save_failed",
+                "Failed to persist tips state",
             )
-                .into_response()
         }
         Err(e) => {
             tracing::error!(target: "http.api.system", "Setting show_tips panicked: {}", e);
-            (
+            api_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": "internal", "message": "Internal server error"})),
+                "internal",
+                "Internal server error",
             )
-                .into_response()
         }
     }
 }
@@ -865,19 +863,19 @@ pub async fn dismiss_update(
             .into_response(),
         Ok(Err(e)) => {
             tracing::warn!(target: "http.api.system", "Dismissing update failed: {}", e);
-            (
+            api_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": "save_failed", "message": "Failed to persist dismissal"})),
+                "save_failed",
+                "Failed to persist dismissal",
             )
-                .into_response()
         }
         Err(e) => {
             tracing::error!(target: "http.api.system", "Dismissing update panicked: {}", e);
-            (
+            api_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": "internal", "message": "Internal server error"})),
+                "internal",
+                "Internal server error",
             )
-                .into_response()
         }
     }
 }
@@ -970,19 +968,19 @@ pub async fn patch_web_ui_state(
         Ok(Ok(())) => (StatusCode::OK, Json(serde_json::json!({"ok": true}))).into_response(),
         Ok(Err(e)) => {
             tracing::warn!(target: "http.api.system", "Persisting web UI state failed: {}", e);
-            (
+            api_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": "save_failed", "message": "Failed to persist UI state"})),
+                "save_failed",
+                "Failed to persist UI state",
             )
-                .into_response()
         }
         Err(e) => {
             tracing::error!(target: "http.api.system", "Persisting web UI state panicked: {}", e);
-            (
+            api_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": "internal", "message": "Internal server error"})),
+                "internal",
+                "Internal server error",
             )
-                .into_response()
         }
     }
 }
@@ -1020,19 +1018,19 @@ pub async fn mark_volume_ignores_globs_acknowledged(
             .into_response(),
         Ok(Err(e)) => {
             tracing::warn!(target: "http.api.system", "Marking volume_ignores globs acknowledged failed: {}", e);
-            (
+            api_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": "save_failed", "message": "Failed to persist acknowledgment"})),
+                "save_failed",
+                "Failed to persist acknowledgment",
             )
-                .into_response()
         }
         Err(e) => {
             tracing::error!(target: "http.api.system", "Marking volume_ignores globs acknowledged panicked: {}", e);
-            (
+            api_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": "internal", "message": "Internal server error"})),
+                "internal",
+                "Internal server error",
             )
-                .into_response()
         }
     }
 }
@@ -1302,16 +1300,8 @@ pub async fn browse_filesystem(
 
     match result {
         Ok(Ok(resp)) => (StatusCode::OK, Json(serde_json::to_value(resp).unwrap())).into_response(),
-        Ok(Err(msg)) => (
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({"error": "browse_failed", "message": msg})),
-        )
-            .into_response(),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({"error": "internal", "message": e.to_string()})),
-        )
-            .into_response(),
+        Ok(Err(msg)) => api_error(StatusCode::BAD_REQUEST, "browse_failed", msg),
+        Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, "internal", e.to_string()),
     }
 }
 
@@ -1617,11 +1607,7 @@ pub async fn create_profile(
         Err(rej) => return rej.into_response(),
     };
     if let Err(e) = validate_profile_name(&body.name) {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({"error": "validation_failed", "message": e})),
-        )
-            .into_response();
+        return api_error(StatusCode::BAD_REQUEST, "validation_failed", e);
     }
     let name_for_create = body.name.clone();
     match tokio::task::spawn_blocking(move || crate::session::create_profile(&name_for_create))
@@ -1631,16 +1617,8 @@ pub async fn create_profile(
             crate::server::add_profile_disk_watch(&state, &body.name).await;
             (StatusCode::CREATED, Json(serde_json::json!({"ok": true}))).into_response()
         }
-        Ok(Err(e)) => (
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({"error": "create_failed", "message": e.to_string()})),
-        )
-            .into_response(),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({"error": "internal", "message": e.to_string()})),
-        )
-            .into_response(),
+        Ok(Err(e)) => api_error(StatusCode::BAD_REQUEST, "create_failed", e.to_string()),
+        Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, "internal", e.to_string()),
     }
 }
 
@@ -1662,18 +1640,14 @@ pub async fn delete_profile(
         return resp;
     }
     if let Err(e) = validate_profile_name(&name) {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({"error": "validation_failed", "message": e})),
-        )
-            .into_response();
+        return api_error(StatusCode::BAD_REQUEST, "validation_failed", e);
     }
     if name == state.profile {
-        return (
+        return api_error(
             StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({"error": "active_profile", "message": "Cannot delete the active profile"})),
-        )
-            .into_response();
+            "active_profile",
+            "Cannot delete the active profile",
+        );
     }
     let name_for_delete = name.clone();
     match tokio::task::spawn_blocking(move || crate::session::delete_profile(&name_for_delete))
@@ -1683,16 +1657,8 @@ pub async fn delete_profile(
             crate::server::remove_profile_disk_watch(&state, &name).await;
             (StatusCode::OK, Json(serde_json::json!({"ok": true}))).into_response()
         }
-        Ok(Err(e)) => (
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({"error": "delete_failed", "message": e.to_string()})),
-        )
-            .into_response(),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({"error": "internal", "message": e.to_string()})),
-        )
-            .into_response(),
+        Ok(Err(e)) => api_error(StatusCode::BAD_REQUEST, "delete_failed", e.to_string()),
+        Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, "internal", e.to_string()),
     }
 }
 
@@ -1724,18 +1690,10 @@ pub async fn rename_profile(
         Err(rej) => return rej.into_response(),
     };
     if let Err(e) = validate_profile_name(&name) {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({"error": "validation_failed", "message": e})),
-        )
-            .into_response();
+        return api_error(StatusCode::BAD_REQUEST, "validation_failed", e);
     }
     if let Err(e) = validate_profile_name(&body.new_name) {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({"error": "validation_failed", "message": e})),
-        )
-            .into_response();
+        return api_error(StatusCode::BAD_REQUEST, "validation_failed", e);
     }
     let old = name;
     let new = body.new_name;
@@ -1747,16 +1705,8 @@ pub async fn rename_profile(
                 .await;
             (StatusCode::OK, Json(serde_json::json!({"ok": true}))).into_response()
         }
-        Ok(Err(e)) => (
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({"error": "rename_failed", "message": e.to_string()})),
-        )
-            .into_response(),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({"error": "internal", "message": e.to_string()})),
-        )
-            .into_response(),
+        Ok(Err(e)) => api_error(StatusCode::BAD_REQUEST, "rename_failed", e.to_string()),
+        Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, "internal", e.to_string()),
     }
 }
 
@@ -1787,25 +1737,13 @@ pub async fn default_profile(
         Err(rej) => return rej.into_response(),
     };
     if let Err(e) = validate_profile_name(&body.name) {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({"error": "validation_failed", "message": e})),
-        )
-            .into_response();
+        return api_error(StatusCode::BAD_REQUEST, "validation_failed", e);
     }
     let name = body.name;
     match tokio::task::spawn_blocking(move || crate::session::set_default_profile(&name)).await {
         Ok(Ok(())) => (StatusCode::OK, Json(serde_json::json!({"ok": true}))).into_response(),
-        Ok(Err(e)) => (
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({"error": "update_failed", "message": e.to_string()})),
-        )
-            .into_response(),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({"error": "internal", "message": e.to_string()})),
-        )
-            .into_response(),
+        Ok(Err(e)) => api_error(StatusCode::BAD_REQUEST, "update_failed", e.to_string()),
+        Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, "internal", e.to_string()),
     }
 }
 
@@ -1813,11 +1751,7 @@ pub async fn get_profile_settings(
     axum::extract::Path(name): axum::extract::Path<String>,
 ) -> impl IntoResponse {
     if let Err(e) = validate_profile_name(&name) {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({"error": "validation_failed", "message": e})),
-        )
-            .into_response();
+        return api_error(StatusCode::BAD_REQUEST, "validation_failed", e);
     }
     let result = tokio::task::spawn_blocking(move || {
         let profile = crate::session::load_profile_config(&name)?;
@@ -1847,16 +1781,12 @@ pub async fn get_profile_settings(
     .await;
     match result {
         Ok(Ok(val)) => (StatusCode::OK, Json(val)).into_response(),
-        Ok(Err(e)) => (
+        Ok(Err(e)) => api_error(
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({"error": "load_failed", "message": e.to_string()})),
-        )
-            .into_response(),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({"error": "internal", "message": e.to_string()})),
-        )
-            .into_response(),
+            "load_failed",
+            e.to_string(),
+        ),
+        Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, "internal", e.to_string()),
     }
 }
 
@@ -1916,11 +1846,7 @@ pub async fn update_profile_settings(
         Err(rej) => return rej.into_response(),
     };
     if let Err(e) = validate_profile_name(&name) {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({"error": "validation_failed", "message": e})),
-        )
-            .into_response();
+        return api_error(StatusCode::BAD_REQUEST, "validation_failed", e);
     }
     // Strip host-execution surfaces (`local_only`) before validation + merge,
     // so a bundled patch keeps its safe leaves and silently drops the
@@ -1931,14 +1857,11 @@ pub async fn update_profile_settings(
     // open endpoint cannot double as an arbitrary profile-override writer (#7).
     if state.cityhall_mode {
         if let Some(bad) = first_non_cityhall_profile_leaf(&body) {
-            return (
+            return api_error(
                 StatusCode::FORBIDDEN,
-                Json(serde_json::json!({
-                    "error": "cityhall_mode",
-                    "message": format!("Field '{bad}' is not writable in CityHall mode"),
-                })),
-            )
-                .into_response();
+                "cityhall_mode",
+                format!("Field '{bad}' is not writable in CityHall mode"),
+            );
         }
     }
     // Resolve elevation up front via the shared resolver: login disabled
@@ -2043,22 +1966,14 @@ pub async fn update_profile_settings(
     match result {
         Ok(Ok(config)) => match serde_json::to_value(&config) {
             Ok(val) => (StatusCode::OK, Json(val)).into_response(),
-            Err(e) => (
+            Err(e) => api_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": "serialize_failed", "message": e.to_string()})),
-            )
-                .into_response(),
+                "serialize_failed",
+                e.to_string(),
+            ),
         },
-        Ok(Err(e)) => (
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({"error": "update_failed", "message": e.to_string()})),
-        )
-            .into_response(),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({"error": "internal", "message": e.to_string()})),
-        )
-            .into_response(),
+        Ok(Err(e)) => api_error(StatusCode::BAD_REQUEST, "update_failed", e.to_string()),
+        Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, "internal", e.to_string()),
     }
 }
 
