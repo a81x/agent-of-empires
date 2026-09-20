@@ -1242,186 +1242,111 @@ pub fn build_login_cookie(session_id: &str, secure: bool) -> String {
 mod tests {
     use super::*;
 
-    #[test]
-    fn login_manager_disabled_when_no_passphrase() {
-        let mgr = LoginManager::new(None);
-        assert!(!mgr.is_enabled());
+    fn binding(byte: u8) -> Vec<u8> {
+        vec![byte; BINDING_SECRET_BYTES]
+    }
+
+    async fn session(mgr: &LoginManager, secret: &[u8]) -> String {
+        mgr.create_session(secret, "127.0.0.1", "test-agent").await
     }
 
     #[test]
-    fn login_manager_enabled_when_passphrase_set() {
-        let mgr = LoginManager::new(Some("test123"));
+    fn passphrase_verification_is_all_or_nothing() {
+        let mgr = LoginManager::new(Some("my_secret"));
         assert!(mgr.is_enabled());
-    }
-
-    #[test]
-    fn verify_correct_passphrase() {
-        let mgr = LoginManager::new(Some("my_secret"));
         assert!(mgr.verify_passphrase("my_secret"));
-    }
+        for wrong in ["wrong", "", "my_secre"] {
+            assert!(!mgr.verify_passphrase(wrong), "{wrong:?}");
+        }
 
-    #[test]
-    fn verify_incorrect_passphrase() {
-        let mgr = LoginManager::new(Some("my_secret"));
-        assert!(!mgr.verify_passphrase("wrong"));
-    }
+        let disabled = LoginManager::new(None);
+        assert!(!disabled.is_enabled());
+        assert!(!disabled.verify_passphrase("anything"));
 
-    #[test]
-    fn verify_empty_passphrase() {
-        let mgr = LoginManager::new(Some("my_secret"));
-        assert!(!mgr.verify_passphrase(""));
-    }
-
-    #[test]
-    fn verify_accepts_hash_from_argon2_0_5() {
-        // Produced by argon2 0.5.3; persisted session stores hold hashes in this form.
+        // Persisted stores hold hashes produced by argon2 0.5.3.
         let hash = "$argon2id$v=19$m=19456,t=2,p=1$YW9lLWZpeGVkLXNhbHQxNg$DsLn90oHo6VdenuubImBcuPgEWcMMEPqYxc8jPxJZcY";
         assert!(argon2_verify("hunter2", hash));
         assert!(!argon2_verify("hunter3", hash));
     }
 
-    #[test]
-    fn verify_fails_when_disabled() {
-        let mgr = LoginManager::new(None);
-        assert!(!mgr.verify_passphrase("anything"));
-    }
-
-    fn binding(byte: u8) -> Vec<u8> {
-        vec![byte; BINDING_SECRET_BYTES]
-    }
-
+    /// A session is keyed by its binding secret, not its IP (#1131), and the secret must
+    /// match in full: a prefix of the right bytes is still a different device.
     #[tokio::test]
-    async fn create_and_validate_session() {
+    async fn validate_session_matches_on_the_whole_binding_secret() {
         let mgr = LoginManager::new(Some("test"));
         let secret = binding(0xAA);
-        let session_id = mgr.create_session(&secret, "127.0.0.1", "test-agent").await;
-        assert!(mgr.validate_session(&session_id, &secret).await);
-    }
+        let id = session(&mgr, &secret).await;
 
-    #[tokio::test]
-    async fn validate_rejects_wrong_binding() {
-        let mgr = LoginManager::new(Some("test"));
-        let secret = binding(0xAA);
-        let other = binding(0xBB);
-        let session_id = mgr.create_session(&secret, "127.0.0.1", "test-agent").await;
-        assert!(!mgr.validate_session(&session_id, &other).await);
-    }
+        assert!(mgr.validate_session(&id, &secret).await);
+        assert!(mgr.validate_session(&id, &secret).await, "IP is not bound");
+        assert!(!mgr.validate_session(&id, &binding(0xBB)).await);
+        assert!(
+            !mgr.validate_session(&id, &vec![0xAA; BINDING_SECRET_BYTES - 1])
+                .await,
+            "a truncated secret must not match on its prefix"
+        );
+        for unknown in ["nonexistent", ""] {
+            assert!(!mgr.validate_session(unknown, &secret).await, "{unknown:?}");
+        }
 
-    #[tokio::test]
-    async fn validate_accepts_after_ip_change_when_binding_matches() {
-        // Regression for #1131.
-        let mgr = LoginManager::new(Some("test"));
-        let secret = binding(0xCC);
-        let session_id = mgr.create_session(&secret, "127.0.0.1", "test-agent").await;
-        assert!(mgr.validate_session(&session_id, &secret).await);
-        assert!(mgr.validate_session(&session_id, &secret).await);
-    }
-
-    #[tokio::test]
-    async fn validate_rejects_missing_or_empty() {
-        let mgr = LoginManager::new(Some("test"));
-        let secret = binding(0xDD);
-        let _session_id = mgr.create_session(&secret, "127.0.0.1", "test-agent").await;
-        assert!(!mgr.validate_session("nonexistent", &secret).await);
-        assert!(!mgr.validate_session("", &secret).await);
-    }
-
-    #[tokio::test]
-    async fn validate_rejects_wrong_length_binding() {
-        let mgr = LoginManager::new(Some("test"));
-        let secret = binding(0xEE);
-        let session_id = mgr.create_session(&secret, "127.0.0.1", "test-agent").await;
-        // 31 bytes -> rejected even though the prefix matches.
-        let short = vec![0xEE; BINDING_SECRET_BYTES - 1];
-        assert!(!mgr.validate_session(&session_id, &short).await);
-    }
-
-    #[tokio::test]
-    async fn invalidate_session_removes_it() {
-        let mgr = LoginManager::new(Some("test"));
-        let secret = binding(0x11);
-        let session_id = mgr.create_session(&secret, "127.0.0.1", "test-agent").await;
-        mgr.invalidate_session(&session_id).await;
-        assert!(!mgr.validate_session(&session_id, &secret).await);
-    }
-
-    #[tokio::test]
-    async fn invalidate_unknown_session_is_noop() {
-        let mgr = LoginManager::new(Some("test"));
+        mgr.invalidate_session(&id).await;
+        assert!(!mgr.validate_session(&id, &secret).await);
         mgr.invalidate_session("nonexistent").await;
     }
 
     #[tokio::test]
-    async fn elevation_starts_false_and_can_be_set() {
+    async fn elevation_starts_false_and_expires() {
         let mgr = LoginManager::new(Some("test"));
         let secret = binding(0x22);
-        let session_id = mgr.create_session(&secret, "127.0.0.1", "test-agent").await;
-        assert!(!mgr.is_elevated(&session_id).await);
-        assert!(mgr.elevate_session(&session_id).await);
-        let (elevated, remaining) = mgr.elevation_state(&session_id).await;
-        assert!(elevated);
-        assert!(remaining.is_some());
-    }
+        let id = session(&mgr, &secret).await;
 
-    #[tokio::test]
-    async fn elevation_rejects_unknown_session() {
-        let mgr = LoginManager::new(Some("test"));
+        assert!(!mgr.is_elevated(&id).await);
+        assert!(mgr.elevate_session(&id).await);
+        let (elevated, remaining) = mgr.elevation_state(&id).await;
+        assert!(elevated && remaining.is_some());
+
+        mgr.sessions
+            .write()
+            .await
+            .get_mut(&id)
+            .unwrap()
+            .elevated_until = Some(Instant::now() - Duration::from_secs(1));
+        assert!(!mgr.is_elevated(&id).await);
+
         assert!(!mgr.elevate_session("nope").await);
         assert!(!mgr.is_elevated("nope").await);
     }
 
+    /// #1131 follow-up: the failure budget arms a lockout once, a success resets it,
+    /// and an unknown session never arms anything.
     #[tokio::test]
-    async fn elevation_lockout_arms_after_threshold() {
-        // Regression for #1131 follow-up.
+    async fn elevation_lockout_arms_once_per_failure_budget() {
         let mgr = LoginManager::new(Some("test"));
         let secret = binding(0x77);
-        let session_id = mgr.create_session(&secret, "127.0.0.1", "test-agent").await;
-        assert!(mgr.elevation_lockout_remaining(&session_id).await.is_none());
-        for _ in 0..(MAX_ELEVATION_FAILURES - 1) {
-            assert!(!mgr.record_elevation_failure(&session_id).await);
-        }
-        // Threshold-crossing failure arms the lockout.
-        assert!(mgr.record_elevation_failure(&session_id).await);
-        assert!(mgr.elevation_lockout_remaining(&session_id).await.is_some());
-        // Additional failures while locked don't extend the window.
-        assert!(!mgr.record_elevation_failure(&session_id).await);
-    }
+        let id = session(&mgr, &secret).await;
 
-    #[tokio::test]
-    async fn elevation_success_clears_failure_counter() {
-        let mgr = LoginManager::new(Some("test"));
-        let secret = binding(0x88);
-        let session_id = mgr.create_session(&secret, "127.0.0.1", "test-agent").await;
-        assert!(!mgr.record_elevation_failure(&session_id).await);
-        assert!(mgr.elevate_session(&session_id).await);
-        // Counter reset; the next failure budget starts fresh.
+        assert!(mgr.elevation_lockout_remaining(&id).await.is_none());
         for _ in 0..(MAX_ELEVATION_FAILURES - 1) {
-            assert!(!mgr.record_elevation_failure(&session_id).await);
+            assert!(!mgr.record_elevation_failure(&id).await);
         }
-        assert!(mgr.elevation_lockout_remaining(&session_id).await.is_none());
-    }
+        assert!(mgr.record_elevation_failure(&id).await, "threshold crossed");
+        assert!(mgr.elevation_lockout_remaining(&id).await.is_some());
+        assert!(
+            !mgr.record_elevation_failure(&id).await,
+            "failures while locked do not extend the window"
+        );
 
-    #[tokio::test]
-    async fn elevation_failure_unknown_session_is_noop() {
-        let mgr = LoginManager::new(Some("test"));
+        assert!(mgr.elevate_session(&id).await);
+        for _ in 0..(MAX_ELEVATION_FAILURES - 1) {
+            assert!(!mgr.record_elevation_failure(&id).await);
+        }
+        assert!(
+            mgr.elevation_lockout_remaining(&id).await.is_none(),
+            "a success starts a fresh budget"
+        );
+
         assert!(!mgr.record_elevation_failure("nope").await);
         assert!(mgr.elevation_lockout_remaining("nope").await.is_none());
-    }
-
-    #[tokio::test]
-    async fn elevation_expires() {
-        let mgr = LoginManager::new(Some("test"));
-        let secret = binding(0x33);
-        let session_id = mgr.create_session(&secret, "127.0.0.1", "test-agent").await;
-        assert!(mgr.elevate_session(&session_id).await);
-        // Manually rewind the deadline into the past.
-        {
-            let mut sessions = mgr.sessions.write().await;
-            if let Some(s) = sessions.get_mut(&session_id) {
-                s.elevated_until = Some(Instant::now() - Duration::from_secs(1));
-            }
-        }
-        assert!(!mgr.is_elevated(&session_id).await);
     }
 
     #[tokio::test]
@@ -1430,228 +1355,38 @@ mod tests {
         let secret = binding(0x44);
         let mut first_id = String::new();
         for i in 0..MAX_SESSIONS {
-            let id = mgr.create_session(&secret, "127.0.0.1", "test-agent").await;
+            let id = session(&mgr, &secret).await;
             if i == 0 {
                 first_id = id;
             }
         }
         assert!(mgr.validate_session(&first_id, &secret).await);
-        let _new_id = mgr.create_session(&secret, "127.0.0.1", "test-agent").await;
-        let sessions = mgr.sessions.read().await;
-        assert_eq!(sessions.len(), MAX_SESSIONS);
+        session(&mgr, &secret).await;
+        assert_eq!(mgr.sessions.read().await.len(), MAX_SESSIONS);
     }
 
     #[tokio::test]
     async fn cleanup_expired_removes_stale() {
         let mgr = LoginManager::new(Some("test"));
         let secret = binding(0x55);
-        let session_id = mgr.create_session(&secret, "127.0.0.1", "test-agent").await;
-        {
-            let mut sessions = mgr.sessions.write().await;
-            if let Some(s) = sessions.get_mut(&session_id) {
-                s.expires_at = Instant::now() - Duration::from_secs(1);
-            }
-        }
+        let id = session(&mgr, &secret).await;
+        mgr.sessions.write().await.get_mut(&id).unwrap().expires_at =
+            Instant::now() - Duration::from_secs(1);
         mgr.cleanup_expired().await;
-        assert!(!mgr.validate_session(&session_id, &secret).await);
-    }
-
-    #[test]
-    fn decode_binding_secret_accepts_url_safe_no_pad() {
-        use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-        use base64::Engine;
-        let raw = [0xAB; BINDING_SECRET_BYTES];
-        let encoded = URL_SAFE_NO_PAD.encode(raw);
-        let decoded = decode_binding_secret(&encoded).expect("decodes");
-        assert_eq!(decoded, raw);
-    }
-
-    #[test]
-    fn decode_binding_secret_rejects_wrong_length() {
-        use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-        use base64::Engine;
-        let too_short = URL_SAFE_NO_PAD.encode([0xAB; 16]);
-        assert!(decode_binding_secret(&too_short).is_none());
-        let too_long = URL_SAFE_NO_PAD.encode([0xAB; 64]);
-        assert!(decode_binding_secret(&too_long).is_none());
-    }
-
-    #[test]
-    fn decode_binding_secret_rejects_garbage() {
-        assert!(decode_binding_secret("").is_none());
-        assert!(decode_binding_secret("!@#$%^&*()").is_none());
-    }
-
-    #[test]
-    fn passphrase_strength_short() {
-        assert!(check_passphrase_strength("short").is_some());
-    }
-
-    #[test]
-    fn passphrase_strength_adequate() {
-        assert!(check_passphrase_strength("longenough").is_none());
-    }
-
-    #[test]
-    fn build_cookie_without_secure() {
-        let cookie = build_login_cookie("abc123", false);
-        assert!(cookie.contains("aoe_session=abc123"));
-        assert!(cookie.contains("HttpOnly"));
-        assert!(cookie.contains("SameSite=Strict"));
-        assert!(cookie.contains("Max-Age=2592000"));
-        assert!(!cookie.contains("Secure"));
-    }
-
-    #[test]
-    fn build_cookie_with_secure() {
-        let cookie = build_login_cookie("abc123", true);
-        assert!(cookie.contains("Secure"));
-    }
-
-    #[test]
-    fn extract_session_from_cookie_header() {
-        let request = axum::http::Request::builder()
-            .header(header::COOKIE, "aoe_token=foo; aoe_session=bar123")
-            .body(axum::body::Body::empty())
-            .unwrap();
-
-        assert_eq!(extract_login_session(&request), Some("bar123".to_string()));
-    }
-
-    #[test]
-    fn extract_session_missing_cookie() {
-        let request = axum::http::Request::builder()
-            .header(header::COOKIE, "aoe_token=foo")
-            .body(axum::body::Body::empty())
-            .unwrap();
-
-        assert_eq!(extract_login_session(&request), None);
-    }
-
-    #[test]
-    fn extract_session_no_cookie_header() {
-        let request = axum::http::Request::builder()
-            .body(axum::body::Body::empty())
-            .unwrap();
-
-        assert_eq!(extract_login_session(&request), None);
-    }
-
-    // ── Persistence (#1235) ─────────────────────────────────────────────────
-
-    #[tokio::test]
-    async fn persisted_session_survives_restart() {
-        // Regression for #1235.
-        let dir = tempfile::tempdir().unwrap();
-        let secret = binding(0xA1);
-
-        let session_id = {
-            let mgr = LoginManager::with_persistence(Some("hunter2"), dir.path());
-            let id = mgr.create_session(&secret, "127.0.0.1", "test-agent").await;
-            assert!(mgr.validate_session(&id, &secret).await);
-            id
-        };
-
-        // Simulate a daemon restart.
-        let mgr2 = LoginManager::with_persistence(Some("hunter2"), dir.path());
-        assert!(
-            mgr2.validate_session(&session_id, &secret).await,
-            "session should rehydrate across restart"
-        );
-    }
-
-    #[tokio::test]
-    async fn passphrase_change_drops_persisted_sessions() {
-        let dir = tempfile::tempdir().unwrap();
-        let secret = binding(0xB2);
-
-        let session_id = {
-            let mgr = LoginManager::with_persistence(Some("first-pass"), dir.path());
-            mgr.create_session(&secret, "127.0.0.1", "test-agent").await
-        };
-
-        // Restart with a different passphrase.
-        let mgr2 = LoginManager::with_persistence(Some("second-pass"), dir.path());
-        assert!(
-            !mgr2.validate_session(&session_id, &secret).await,
-            "changing the passphrase must drop persisted sessions"
-        );
-    }
-
-    #[tokio::test]
-    async fn elevation_does_not_survive_restart() {
-        // A daemon restart is a legitimate step-up recency break.
-        let dir = tempfile::tempdir().unwrap();
-        let secret = binding(0xC3);
-
-        let session_id = {
-            let mgr = LoginManager::with_persistence(Some("pass"), dir.path());
-            let id = mgr.create_session(&secret, "127.0.0.1", "test-agent").await;
-            assert!(mgr.elevate_session(&id).await);
-            assert!(mgr.is_elevated(&id).await);
-            id
-        };
-
-        let mgr2 = LoginManager::with_persistence(Some("pass"), dir.path());
-        assert!(mgr2.validate_session(&session_id, &secret).await);
-        assert!(
-            !mgr2.is_elevated(&session_id).await,
-            "elevation must not persist across restart"
-        );
-    }
-
-    #[tokio::test]
-    async fn lockout_state_survives_restart() {
-        // A restart must not reset an attacker's elevation failure budget.
-        let dir = tempfile::tempdir().unwrap();
-        let secret = binding(0xD4);
-
-        let session_id = {
-            let mgr = LoginManager::with_persistence(Some("pass"), dir.path());
-            let id = mgr.create_session(&secret, "127.0.0.1", "test-agent").await;
-            for _ in 0..MAX_ELEVATION_FAILURES {
-                mgr.record_elevation_failure(&id).await;
-            }
-            assert!(mgr.elevation_lockout_remaining(&id).await.is_some());
-            id
-        };
-
-        let mgr2 = LoginManager::with_persistence(Some("pass"), dir.path());
-        assert!(
-            mgr2.elevation_lockout_remaining(&session_id)
-                .await
-                .is_some(),
-            "an armed lockout must survive a restart"
-        );
-    }
-
-    #[tokio::test]
-    async fn logout_all_clears_and_persists() {
-        let dir = tempfile::tempdir().unwrap();
-        let secret = binding(0xE5);
-
-        let session_id = {
-            let mgr = LoginManager::with_persistence(Some("pass"), dir.path());
-            let id = mgr.create_session(&secret, "127.0.0.1", "test-agent").await;
-            assert_eq!(mgr.logout_all().await, 1);
-            assert!(!mgr.validate_session(&id, &secret).await);
-            id
-        };
-
-        // The cleared state must also be persisted, not just in memory.
-        let mgr2 = LoginManager::with_persistence(Some("pass"), dir.path());
-        assert!(!mgr2.validate_session(&session_id, &secret).await);
+        assert!(!mgr.validate_session(&id, &secret).await);
     }
 
     #[tokio::test]
     async fn revoke_session_removes_one() {
         let mgr = LoginManager::new(Some("pass"));
         let secret = binding(0xF6);
-        let id = mgr.create_session(&secret, "127.0.0.1", "test-agent").await;
+        let id = session(&mgr, &secret).await;
         assert!(mgr.revoke_session(&id).await);
         assert!(!mgr.validate_session(&id, &secret).await);
-        // Revoking a gone session reports false.
-        assert!(!mgr.revoke_session(&id).await);
+        assert!(
+            !mgr.revoke_session(&id).await,
+            "a gone session reports false"
+        );
     }
 
     #[tokio::test]
@@ -1664,20 +1399,127 @@ mod tests {
 
         let devices = mgr.device_snapshot(Some(&id)).await;
         assert_eq!(devices.len(), 1);
-        let d = &devices[0];
-        assert_eq!(d.session_id, id);
-        assert_eq!(d.created_ip, "10.0.0.9");
-        assert_eq!(d.user_agent, "Mozilla/5.0 Firefox/123");
-        assert!(d.current, "the requesting session is flagged current");
+        assert_eq!(devices[0].session_id, id);
+        assert_eq!(devices[0].created_ip, "10.0.0.9");
+        assert_eq!(devices[0].user_agent, "Mozilla/5.0 Firefox/123");
+        assert!(devices[0].current, "the requesting session is flagged");
+        assert!(!mgr.device_snapshot(Some("someone-else")).await[0].current);
+    }
 
-        let others = mgr.device_snapshot(Some("someone-else")).await;
-        assert!(!others[0].current);
+    #[test]
+    fn decode_binding_secret_accepts_only_a_full_url_safe_secret() {
+        use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+        use base64::Engine;
+
+        let raw = [0xAB; BINDING_SECRET_BYTES];
+        assert_eq!(
+            decode_binding_secret(&URL_SAFE_NO_PAD.encode(raw)).as_deref(),
+            Some(&raw[..])
+        );
+        for wrong_length in [
+            URL_SAFE_NO_PAD.encode([0xAB; 16]),
+            URL_SAFE_NO_PAD.encode([0xAB; 64]),
+        ] {
+            assert!(decode_binding_secret(&wrong_length).is_none());
+        }
+        for garbage in ["", "!@#$%^&*()"] {
+            assert!(decode_binding_secret(garbage).is_none());
+        }
+    }
+
+    #[test]
+    fn passphrase_strength_rejects_short_secrets() {
+        assert!(check_passphrase_strength("short").is_some());
+        assert!(check_passphrase_strength("longenough").is_none());
+    }
+
+    #[test]
+    fn build_login_cookie_carries_secure_only_over_tls() {
+        let insecure = build_login_cookie("abc123", false);
+        for needle in [
+            "aoe_session=abc123",
+            "HttpOnly",
+            "SameSite=Strict",
+            "Max-Age=2592000",
+        ] {
+            assert!(insecure.contains(needle), "{insecure:?} lacks {needle}");
+        }
+        assert!(!insecure.contains("Secure"));
+        assert!(build_login_cookie("abc123", true).contains("Secure"));
+    }
+
+    #[test]
+    fn extract_login_session_reads_only_the_session_cookie() {
+        let request = |cookie: Option<&str>| {
+            let mut builder = axum::http::Request::builder();
+            if let Some(cookie) = cookie {
+                builder = builder.header(header::COOKIE, cookie);
+            }
+            builder.body(axum::body::Body::empty()).unwrap()
+        };
+        assert_eq!(
+            extract_login_session(&request(Some("aoe_token=foo; aoe_session=bar123"))),
+            Some("bar123".to_string())
+        );
+        assert_eq!(extract_login_session(&request(Some("aoe_token=foo"))), None);
+        assert_eq!(extract_login_session(&request(None)), None);
+    }
+
+    /// #1235: a session survives a restart, but only while the passphrase that minted
+    /// it does. Elevation is a recency claim, so a restart breaks it; an armed lockout
+    /// is an attacker's budget, so a restart must not reset it.
+    #[tokio::test]
+    async fn persisted_sessions_rehydrate_but_elevation_does_not() {
+        let dir = tempfile::tempdir().unwrap();
+        let secret = binding(0xA1);
+
+        let id = {
+            let mgr = LoginManager::with_persistence(Some("hunter2"), dir.path());
+            let id = session(&mgr, &secret).await;
+            assert!(mgr.elevate_session(&id).await);
+            for _ in 0..MAX_ELEVATION_FAILURES {
+                mgr.record_elevation_failure(&id).await;
+            }
+            id
+        };
+
+        let restarted = LoginManager::with_persistence(Some("hunter2"), dir.path());
+        assert!(restarted.validate_session(&id, &secret).await);
+        assert!(
+            !restarted.is_elevated(&id).await,
+            "elevation is not persisted"
+        );
+        assert!(
+            restarted.elevation_lockout_remaining(&id).await.is_some(),
+            "an armed lockout must survive a restart"
+        );
+
+        let rekeyed = LoginManager::with_persistence(Some("second-pass"), dir.path());
+        assert!(
+            !rekeyed.validate_session(&id, &secret).await,
+            "changing the passphrase must drop persisted sessions"
+        );
+    }
+
+    #[tokio::test]
+    async fn logout_all_clears_and_persists() {
+        let dir = tempfile::tempdir().unwrap();
+        let secret = binding(0xE5);
+
+        let id = {
+            let mgr = LoginManager::with_persistence(Some("pass"), dir.path());
+            let id = session(&mgr, &secret).await;
+            assert_eq!(mgr.logout_all().await, 1);
+            assert!(!mgr.validate_session(&id, &secret).await);
+            id
+        };
+
+        let restarted = LoginManager::with_persistence(Some("pass"), dir.path());
+        assert!(!restarted.validate_session(&id, &secret).await);
     }
 
     #[tokio::test]
     async fn load_drops_expired_entries() {
-        // Hand-craft a store whose single session has a past deadline; it
-        // must be dropped on load while the file itself stays valid.
         use base64::engine::general_purpose::URL_SAFE_NO_PAD;
         use base64::Engine;
 
@@ -1705,93 +1547,48 @@ mod tests {
 
     #[tokio::test]
     async fn persistence_disabled_writes_no_file() {
-        // `new` (no persistence) must never touch disk.
         let dir = tempfile::tempdir().unwrap();
         let mgr = LoginManager::new(Some("pass"));
-        let secret = binding(0x19);
-        mgr.create_session(&secret, "127.0.0.1", "ua").await;
-        assert!(
-            !dir.path().join(SESSIONS_FILE).exists(),
-            "no persistence path means no file"
-        );
+        mgr.create_session(&binding(0x19), "127.0.0.1", "ua").await;
+        assert!(!dir.path().join(SESSIONS_FILE).exists());
     }
 
-    /// The write path enforces the same no-symlink invariant the load path does.
-    #[cfg(unix)]
-    #[test]
-    fn write_sessions_refuses_symlinked_path() {
-        let dir = tempfile::tempdir().unwrap();
-        let target = dir.path().join("planted.toml");
-        std::fs::write(&target, "untouched").unwrap();
-        let link = dir.path().join(SESSIONS_FILE);
-        std::os::unix::fs::symlink(&target, &link).unwrap();
-
-        let file = PersistedFile {
-            schema_version: SESSIONS_SCHEMA_VERSION,
-            passphrase_hash: Some(hash_passphrase("pass")),
-            sessions: vec![],
-        };
-        assert!(
-            !write_sessions(&link, &file),
-            "a symlinked sessions path must be refused, not followed"
-        );
-        assert_eq!(
-            std::fs::read_to_string(&target).unwrap(),
-            "untouched",
-            "the symlink target must never receive the session store"
-        );
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn check_path_security_rejects_symlink_and_loose_perms() {
-        use std::os::unix::fs::PermissionsExt;
-
-        let dir = tempfile::tempdir().unwrap();
-
-        // A symlink at the sessions path is rejected (no following).
-        let target = dir.path().join("real.toml");
-        std::fs::write(&target, "x").unwrap();
-        let link = dir.path().join("link.toml");
-        std::os::unix::fs::symlink(&target, &link).unwrap();
-        assert!(
-            check_path_security(&link).is_err(),
-            "symlink must be rejected"
-        );
-
-        // A world/group-accessible file is rejected.
-        let loose = dir.path().join("loose.toml");
-        std::fs::write(&loose, "x").unwrap();
-        std::fs::set_permissions(&loose, std::fs::Permissions::from_mode(0o644)).unwrap();
-        assert!(
-            check_path_security(&loose).is_err(),
-            "0644 file must be rejected"
-        );
-
-        // A 0600 file under a private dir passes.
-        let ok = dir.path().join("ok.toml");
-        std::fs::write(&ok, "x").unwrap();
-        std::fs::set_permissions(&ok, std::fs::Permissions::from_mode(0o600)).unwrap();
-        // tempfile dirs are 0700, so the parent check passes too.
-        assert!(check_path_security(&ok).is_ok(), "0600 file should pass");
-
-        // A missing file (not yet created) passes: the parent is fine.
-        assert!(check_path_security(&dir.path().join("missing.toml")).is_ok());
-    }
-
+    /// The store is fail-closed on a planted symlink: neither the write path nor the
+    /// startup rewrite may follow one, and a loose-permission file is refused too.
     #[cfg(unix)]
     #[tokio::test]
-    async fn with_persistence_skips_rewrite_on_symlinked_path() {
-        // Regression for the fail-closed contract.
+    async fn a_symlinked_session_store_is_refused_not_followed() {
+        use std::os::unix::fs::PermissionsExt;
+
         let dir = tempfile::tempdir().unwrap();
         let target = dir.path().join("outside.toml");
         std::fs::write(&target, "original").unwrap();
         let store = dir.path().join(SESSIONS_FILE);
         std::os::unix::fs::symlink(&target, &store).unwrap();
 
-        let _mgr = LoginManager::with_persistence(Some("pass"), dir.path());
+        let file = PersistedFile {
+            schema_version: SESSIONS_SCHEMA_VERSION,
+            passphrase_hash: Some(hash_passphrase("pass")),
+            sessions: vec![],
+        };
+        assert!(!write_sessions(&store, &file));
+        assert!(check_path_security(&store).is_err());
 
-        // The symlink target is untouched: the startup rewrite was skipped.
-        assert_eq!(std::fs::read_to_string(&target).unwrap(), "original");
+        let _mgr = LoginManager::with_persistence(Some("pass"), dir.path());
+        assert_eq!(
+            std::fs::read_to_string(&target).unwrap(),
+            "original",
+            "the symlink target must never receive the session store"
+        );
+
+        // Permissions: only a 0600 file (under the 0700 tempdir) is accepted, and a
+        // path that does not exist yet is fine.
+        for (mode, ok) in [(0o644, false), (0o600, true)] {
+            let path = dir.path().join(format!("perm{mode:o}.toml"));
+            std::fs::write(&path, "x").unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode)).unwrap();
+            assert_eq!(check_path_security(&path).is_ok(), ok, "mode {mode:o}");
+        }
+        assert!(check_path_security(&dir.path().join("missing.toml")).is_ok());
     }
 }
