@@ -978,8 +978,33 @@ fn replace_if_some<T>(slot: &mut Option<T>, value: Option<T>) {
     }
 }
 
+/// Event fixtures shared by every module that folds the log.
+#[cfg(test)]
+pub(crate) mod test_support {
+    use super::Event;
+
+    pub(crate) fn prompt(text: &str) -> Event {
+        Event::UserPromptSent {
+            prompt_id: None,
+            text: text.into(),
+            attachments: Vec::new(),
+        }
+    }
+
+    pub(crate) fn chunk(text: &str) -> Event {
+        Event::AgentMessageChunk { text: text.into() }
+    }
+
+    pub(crate) fn stopped(reason: &str) -> Event {
+        Event::Stopped {
+            reason: reason.into(),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use super::test_support::{prompt, stopped};
     use super::*;
 
     fn fresh_state() -> AcpState {
@@ -996,20 +1021,6 @@ mod tests {
             s.apply_event(event).unwrap();
         }
         s
-    }
-
-    fn prompt(text: &str) -> Event {
-        Event::UserPromptSent {
-            prompt_id: None,
-            text: text.into(),
-            attachments: Vec::new(),
-        }
-    }
-
-    fn stopped(reason: &str) -> Event {
-        Event::Stopped {
-            reason: reason.into(),
-        }
     }
 
     fn caps(steering: bool) -> Event {

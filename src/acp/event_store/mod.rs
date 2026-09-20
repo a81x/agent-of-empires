@@ -236,23 +236,9 @@ pub(super) mod test_support {
         events.iter().map(|(seq, _)| *seq).collect()
     }
 
-    pub(in crate::acp::event_store) fn user_prompt(text: &str) -> Event {
-        Event::UserPromptSent {
-            prompt_id: None,
-            text: text.into(),
-            attachments: vec![],
-        }
-    }
-
-    pub(in crate::acp::event_store) fn agent_chunk(text: &str) -> Event {
-        Event::AgentMessageChunk { text: text.into() }
-    }
-
-    pub(in crate::acp::event_store) fn stopped(reason: &str) -> Event {
-        Event::Stopped {
-            reason: reason.into(),
-        }
-    }
+    pub(in crate::acp::event_store) use crate::acp::state::test_support::{
+        chunk as agent_chunk, prompt as user_prompt, stopped,
+    };
 
     pub(in crate::acp::event_store) fn tool_call(id: &str) -> crate::acp::state::ToolCall {
         crate::acp::state::ToolCall {

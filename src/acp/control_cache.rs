@@ -101,30 +101,17 @@ impl ControlStateCache {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::acp::state::test_support::{prompt, stopped};
     use crate::acp::state::{AcpSessionId, AgentName};
 
     fn seed() -> AcpState {
         AcpState::new(AcpSessionId("s-1".into()), AgentName("claude".into()), None)
     }
 
-    fn prompt() -> Event {
-        Event::UserPromptSent {
-            text: "go".into(),
-            attachments: Vec::new(),
-            prompt_id: None,
-        }
-    }
-
-    fn stopped() -> Event {
-        Event::Stopped {
-            reason: "end_turn".into(),
-        }
-    }
-
     #[test]
     fn a_session_nothing_hydrated_stays_uncached() {
         let cache = ControlStateCache::new();
-        cache.apply_if_cached("s-1", 42, &prompt());
+        cache.apply_if_cached("s-1", 42, &prompt("go"));
         assert!(!cache.is_cached("s-1"));
 
         let mut hydrated = 0;
@@ -147,14 +134,14 @@ mod tests {
             hydrate_count();
             (seed(), 0)
         });
-        cache.apply_if_cached("s-1", 1, &prompt());
+        cache.apply_if_cached("s-1", 1, &prompt("go"));
         let state = cache.get_or_hydrate("s-1", || {
             hydrate_count();
             (seed(), 0)
         });
         assert!(state.turn_active, "the live fold reached the reader");
 
-        cache.apply_if_cached("s-1", 2, &stopped());
+        cache.apply_if_cached("s-1", 2, &stopped("end_turn"));
         let state = cache.get_or_hydrate("s-1", || {
             hydrate_count();
             (seed(), 0)
@@ -181,8 +168,8 @@ mod tests {
         for (name, first, second, still_cached) in cases {
             let cache = ControlStateCache::new();
             cache.get_or_hydrate("s-1", || (seed(), first - 1));
-            cache.apply_if_cached("s-1", first, &prompt());
-            cache.apply_if_cached("s-1", second, &stopped());
+            cache.apply_if_cached("s-1", first, &prompt("go"));
+            cache.apply_if_cached("s-1", second, &stopped("end_turn"));
             assert_eq!(cache.is_cached("s-1"), still_cached, "{name}");
         }
     }
@@ -223,7 +210,7 @@ mod tests {
     fn forget_drops_the_fold_so_a_reused_id_starts_clean() {
         let cache = ControlStateCache::new();
         cache.get_or_hydrate("s-1", || (seed(), 0));
-        cache.apply_if_cached("s-1", 1, &prompt());
+        cache.apply_if_cached("s-1", 1, &prompt("go"));
         assert!(cache.get_or_hydrate("s-1", || (seed(), 0)).turn_active);
 
         cache.forget("s-1");

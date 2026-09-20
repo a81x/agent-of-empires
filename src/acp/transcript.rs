@@ -664,6 +664,7 @@ mod tests {
     use super::*;
     use crate::acp::approvals::Nonce;
     use crate::acp::elicitations::{Elicitation, ElicitationOutcome};
+    use crate::acp::state::test_support::{chunk, prompt, stopped};
     use crate::acp::state::MemoryRecall;
     use crate::daemon::PromptAttachmentKind;
     use chrono::TimeZone;
@@ -719,24 +720,6 @@ mod tests {
         Event::ToolCallContent {
             tool_call_id: id.into(),
             content: text.into(),
-        }
-    }
-
-    fn prompt(text: &str) -> Event {
-        Event::UserPromptSent {
-            text: text.into(),
-            attachments: Vec::new(),
-            prompt_id: None,
-        }
-    }
-
-    fn chunk(text: &str) -> Event {
-        Event::AgentMessageChunk { text: text.into() }
-    }
-
-    fn stopped(reason: &str) -> Event {
-        Event::Stopped {
-            reason: reason.into(),
         }
     }
 

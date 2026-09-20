@@ -452,28 +452,9 @@ fn truncate_turn_body(body: &str, budget: usize) -> String {
 mod tests {
     use super::*;
     use crate::acp::approvals::{Approval, Nonce};
+    use crate::acp::state::test_support::{chunk as assistant, prompt as user, stopped};
     use crate::acp::state::{Plan, PlanStep};
     use chrono::Utc;
-
-    fn user(text: &str) -> Event {
-        Event::UserPromptSent {
-            prompt_id: None,
-            text: text.to_string(),
-            attachments: Vec::new(),
-        }
-    }
-
-    fn assistant(text: &str) -> Event {
-        Event::AgentMessageChunk {
-            text: text.to_string(),
-        }
-    }
-
-    fn stopped(reason: &str) -> Event {
-        Event::Stopped {
-            reason: reason.into(),
-        }
-    }
 
     fn done() -> Event {
         stopped("prompt_complete")
