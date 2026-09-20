@@ -6,6 +6,7 @@ import { OFFLINE_TITLE } from "../../lib/connectionState";
 import { SidebarSortPicker } from "../SidebarSortPicker";
 import { Tooltip } from "../Tooltip";
 import { DISABLED_ICON_BUTTON, TOOLBAR_BUTTON, TOOLBAR_TINT } from "./styles";
+import { StrokeIcon } from "../icons";
 
 type PluginSortRef = { pluginId: string; entryId: string };
 
@@ -31,14 +32,6 @@ const AXES: Record<SidebarAxis, { next: SidebarAxis; heading: string; tooltip: s
     aria: "Group sessions by repository, then user group",
   },
 };
-
-const svgProps = {
-  viewBox: "0 0 24 24",
-  fill: "none",
-  stroke: "currentColor",
-  strokeLinecap: "round",
-  strokeLinejoin: "round",
-} as const;
 
 export function SidebarToolbar({
   compact,
@@ -131,9 +124,9 @@ export function SidebarToolbar({
               className={`${TOOLBAR_BUTTON} ${TOOLBAR_TINT(filterOpen, "text-text-secondary")}`}
               aria-label="Filter sessions"
             >
-              <svg width="14" height="14" strokeWidth="2" {...svgProps}>
+              <StrokeIcon size={14} strokeWidth="2">
                 <polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3" />
-              </svg>
+              </StrokeIcon>
             </button>
           </Tooltip>
           <Tooltip text={offline ? OFFLINE_TITLE : "New project session"}>
@@ -143,11 +136,11 @@ export function SidebarToolbar({
               className={`w-8 h-8 flex items-center justify-center text-text-muted hover:text-text-secondary hover:bg-surface-800 cursor-pointer rounded-md transition-colors ${DISABLED_ICON_BUTTON}`}
               aria-label="New project session"
             >
-              <svg width="16" height="16" strokeWidth="1.5" {...svgProps}>
+              <StrokeIcon size={16} strokeWidth="1.5">
                 <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
                 <line x1="12" y1="11" x2="12" y2="17" />
                 <line x1="9" y1="14" x2="15" y2="14" />
-              </svg>
+              </StrokeIcon>
             </button>
           </Tooltip>
         </>
@@ -160,10 +153,10 @@ export function SidebarToolbar({
           data-testid="sidebar-compact-toggle"
           className={`${TOOLBAR_BUTTON} ${TOOLBAR_TINT(compact)}`}
         >
-          <svg width="14" height="14" strokeWidth="2" {...svgProps}>
+          <StrokeIcon size={14} strokeWidth="2">
             <rect x="3" y="3" width="18" height="18" rx="2" />
             <line x1="9" y1="3" x2="9" y2="21" />
-          </svg>
+          </StrokeIcon>
         </button>
       </Tooltip>
       <button

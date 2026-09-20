@@ -1,4 +1,36 @@
-import type { SVGProps } from "react";
+import type { ReactNode, SVGProps } from "react";
+
+/** The stroke-icon `<svg>` shell: callers set the size and stroke width and supply the paths. */
+export function StrokeIcon({
+  size,
+  strokeWidth,
+  className,
+  hidden = false,
+  children,
+}: {
+  size: number;
+  strokeWidth: string;
+  className?: string;
+  hidden?: boolean;
+  children: ReactNode;
+}) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={strokeWidth}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className}
+      aria-hidden={hidden ? "true" : undefined}
+    >
+      {children}
+    </svg>
+  );
+}
 
 export function FoldChevron(props: SVGProps<SVGSVGElement>) {
   return (

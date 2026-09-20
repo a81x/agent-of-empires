@@ -15,7 +15,7 @@ import { ContextMenu, MenuHeading, MenuItem, MenuSeparator } from "../ContextMen
 import { OwnerAvatar } from "../OwnerAvatar";
 import { Tooltip } from "../Tooltip";
 import { useContextMenu } from "../useContextMenu";
-import { FoldChevron, PlusIcon } from "../sidebarIcons";
+import { FoldChevron, PlusIcon } from "../icons";
 import { DISABLED_ICON_BUTTON } from "./styles";
 import type { DragHandleProps } from "./types";
 

@@ -3,7 +3,7 @@ import type { ProjectInfo, RepoGroup } from "../lib/types";
 import { repoColorStyle } from "../lib/repoAppearance";
 import { useSidebarCompact } from "../lib/sidebarCompact";
 import { ContextMenu, MenuItem, MenuSeparator } from "./ContextMenu";
-import { FoldChevron, PlusIcon } from "./sidebarIcons";
+import { FoldChevron, PlusIcon } from "./icons";
 import { useContextMenu } from "./useContextMenu";
 import { usePersistedFlag } from "./usePersistedFlag";
 

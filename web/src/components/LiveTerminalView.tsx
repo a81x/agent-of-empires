@@ -16,6 +16,7 @@ import {
   setPendingTerminalFocus,
   type FocusTerminalDetail,
 } from "../lib/terminalFocus";
+import { StrokeIcon } from "./icons";
 
 interface Props {
   session: SessionResponse;
@@ -235,19 +236,9 @@ export function LiveTerminalView({ session, active = true, surface = "agent", te
             data-live-takeover
             className="flex items-center gap-1.5 text-xs font-semibold text-white bg-brand-600 hover:bg-brand-500 active:bg-brand-700 border border-brand-400/50 rounded-full px-4 py-2 shadow-lg cursor-pointer animate-fade-in"
           >
-            <svg
-              width="13"
-              height="13"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="2.5"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              aria-hidden="true"
-            >
+            <StrokeIcon size={13} strokeWidth="2.5" hidden>
               <path d="M9 18l6-6-6-6" />
-            </svg>
+            </StrokeIcon>
             Live on another device. Take over
           </button>
         </div>

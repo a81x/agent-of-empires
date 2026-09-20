@@ -7,6 +7,7 @@ import { PluginStatusBarSegments } from "./plugin/PluginSlots";
 import { ActivityBar } from "./ActivityBar";
 import type { PaneDisplay } from "./Dock";
 import { useWebSettings } from "../hooks/useWebSettings";
+import { StrokeIcon } from "./icons";
 
 interface Props {
   activeWorkspace: Workspace | undefined;
@@ -98,19 +99,10 @@ export function TopBar({
           title="Toggle sidebar"
           aria-label="Toggle sidebar"
         >
-          <svg
-            width="16"
-            height="16"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="1.5"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          >
+          <StrokeIcon size={16} strokeWidth="1.5">
             <rect x="3" y="3" width="18" height="18" rx="2" />
             <line x1="9" y1="3" x2="9" y2="21" />
-          </svg>
+          </StrokeIcon>
         </button>
 
         <button
@@ -170,19 +162,10 @@ export function TopBar({
               title="Toggle panels"
               aria-label="Toggle panels"
             >
-              <svg
-                width="16"
-                height="16"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="1.5"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-              >
+              <StrokeIcon size={16} strokeWidth="1.5">
                 <rect x="3" y="3" width="18" height="18" rx="2" />
                 <line x1="15" y1="3" x2="15" y2="21" />
-              </svg>
+              </StrokeIcon>
             </button>
           </>
         )}
