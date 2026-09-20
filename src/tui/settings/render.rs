@@ -1409,95 +1409,52 @@ impl SettingsView {
 mod tests {
     use super::{wrap_description_height, wrap_description_lines};
 
-    #[test]
-    fn wrap_description_lines_returns_empty_for_empty_input() {
-        assert!(wrap_description_lines("", 40).is_empty());
-    }
+    /// Approximates the Interaction tab's description, which is long enough
+    /// to wrap at any panel width.
+    const LONG: &str = "What Enter (and double-click) does on a session row in \
+                        the Structured view: attach to tmux (default, historical \
+                        behavior) or enter live-send mode so the home list stays \
+                        visible and keystrokes pipe through to the agent.";
 
     #[test]
-    fn wrap_description_lines_fits_short_text_on_one_line() {
-        let lines = wrap_description_lines("short text", 40);
-        assert_eq!(lines, vec!["short text".to_string()]);
-    }
+    fn descriptions_wrap_on_word_boundaries_and_collapse_whitespace() {
+        // (text, width, wrapped lines)
+        let cases: &[(&str, u16, &[&str])] = &[
+            ("", 40, &[]),
+            ("short text", 40, &["short text"]),
+            ("one two three four", 8, &["one two", "three", "four"]),
+            // The `\`-continued descriptions in fields.rs carry their source
+            // indentation, so runs of spaces collapse.
+            ("hello      world      again", 40, &["hello world again"]),
+            ("anything", 0, &["anything"]),
+        ];
+        for (text, width, want) in cases {
+            assert_eq!(wrap_description_lines(text, *width), *want, "{text:?}");
+        }
 
-    #[test]
-    fn wrap_description_lines_breaks_at_word_boundaries() {
-        let lines = wrap_description_lines("one two three four", 8);
-        // "one two" fits (7 chars), "three" needs new line, "four" fits with "three"
-        assert_eq!(
-            lines,
-            vec![
-                "one two".to_string(),
-                "three".to_string(),
-                "four".to_string(),
-            ]
-        );
-    }
-
-    #[test]
-    fn wrap_description_lines_collapses_runs_of_whitespace() {
-        // Mimics the multi-line `\`-continued descriptions in fields.rs
-        // where the continuation indentation produces runs of spaces.
-        let text = "hello      world      again";
-        let lines = wrap_description_lines(text, 40);
-        assert_eq!(lines, vec!["hello world again".to_string()]);
-    }
-
-    #[test]
-    fn wrap_description_lines_handles_long_setting_description() {
-        // Approximation of the Interaction tab description that
-        // triggered the cutoff bug at narrow widths (issue #1551).
-        let text = "What Enter (and double-click) does on a session row in \
-                    the Structured view: attach to tmux (default, historical \
-                    behavior) or enter live-send mode so the home list stays \
-                    visible and keystrokes pipe through to the agent. \
-                    Terminal/Tool views and structured-view sessions ignore this \
-                    setting.";
-        // At a 120-col-wide settings panel none of the wrapped lines
-        // should exceed the available width.
-        let lines = wrap_description_lines(text, 120);
-        assert!(lines.len() > 1, "long text should wrap to multiple lines");
+        let lines = wrap_description_lines(LONG, 120);
+        assert!(lines.len() > 1, "long text should wrap");
         for line in &lines {
-            assert!(
-                line.chars().count() <= 120,
-                "wrapped line {line:?} exceeds width"
-            );
+            assert!(line.chars().count() <= 120, "{line:?} exceeds the width");
         }
     }
 
+    /// The two must agree for every input, or `field_height` paints values
+    /// over the description in a real render.
     #[test]
-    fn wrap_description_lines_zero_width_returns_single_line() {
-        let lines = wrap_description_lines("anything", 0);
-        assert_eq!(lines, vec!["anything".to_string()]);
-    }
-
-    /// `wrap_description_height` must agree with `wrap_description_lines().len()`
-    /// for every input; it now delegates to `wrap_description_lines`, so this
-    /// guards against the delegation regressing. If they ever drift,
-    /// `field_height` will paint values on top of (or below) the description
-    /// in real renders.
-    #[test]
-    fn wrap_description_height_matches_wrap_description_lines() {
-        let cases: &[(&str, u16)] = &[
+    fn wrap_description_height_matches_the_line_count() {
+        for (text, width) in [
             ("", 40),
             ("short text", 40),
             ("one two three four", 8),
             ("hello      world      again", 40),
             ("anything", 0),
-            (
-                "What Enter (and double-click) does on a session row in \
-                 the Structured view: attach to tmux (default, historical \
-                 behavior) or enter live-send mode so the home list stays \
-                 visible and keystrokes pipe through to the agent.",
-                40,
-            ),
-        ];
-        for (text, width) in cases {
-            let expected = wrap_description_lines(text, *width).len() as u16;
-            let actual = wrap_description_height(text, *width);
+            (LONG, 40),
+        ] {
             assert_eq!(
-                actual, expected,
-                "height mismatch for text {text:?} width {width}"
+                wrap_description_height(text, width),
+                wrap_description_lines(text, width).len() as u16,
+                "{text:?} at width {width}"
             );
         }
     }
@@ -1510,11 +1467,8 @@ mod field_height_tests {
     use super::super::{FieldValue, SettingField, SettingsCategory};
     use serial_test::serial;
 
-    /// At a normal panel width, a short description fits on one row, so
-    /// `field_height` returns the historical `1 + 1 + 1`. At a width
-    /// narrow enough to force two wrap lines, the height grows by exactly
-    /// the extra row. Locks the contract between `description_height`
-    /// (consumed by the scroll math) and what the render pass paints.
+    /// Locks the contract between the height the scroll math uses and what
+    /// the render pass paints: a narrower panel grows it by the extra rows.
     #[test]
     #[serial]
     fn field_height_grows_with_wrapped_description() {
@@ -1537,8 +1491,7 @@ mod field_height_tests {
             "wide panel: label + 1-line desc + value"
         );
 
-        // Width that fits "alpha beta" (10) but not "alpha beta gamma" (16),
-        // forcing two wrap lines.
+        // Fits "alpha beta" but not "alpha beta gamma", so it wraps twice.
         view.fields_content_width = 12;
         assert_eq!(
             view.field_height(&field, 0),
@@ -1547,9 +1500,8 @@ mod field_height_tests {
         );
     }
 
-    /// Section headers have no value row. When the subtitle wraps, the
-    /// reported height must still match `1 + wrapped_subtitle_lines` so
-    /// the surrounding scroll math doesn't drift.
+    /// A section header has no value row, so its height is the label plus
+    /// the wrapped subtitle.
     #[test]
     #[serial]
     fn field_height_section_header_tracks_wrapped_subtitle() {
@@ -1613,21 +1565,16 @@ mod status_message_tests {
         }
     }
 
-    /// A field clipped to a partial row at the bottom of the fields panel must
-    /// not paint its description or value past the panel, over its bottom
-    /// border or into the footer below it (issue #2083). The status message no
-    /// longer lives in the panel, so the only thing that can spill is field
-    /// content, and the clamps must stop it.
+    /// A field clipped to a partial row at the bottom of the panel must not
+    /// paint past it, over the border or into the footer.
     #[test]
     #[serial]
     fn clipped_bottom_field_does_not_spill_below_panel() {
         let (_temp, _guard, mut view) = fresh_view();
         let theme = load_theme("empire");
 
-        // FieldA fits fully; FieldB lands at the bottom clipped to ~2 rows even
-        // though its wrapped description plus value need five. Its value
-        // ("SPILLVALUE") and the lower description lines would, before the fix,
-        // paint over the panel's bottom border and onto the blank rows beneath.
+        // FieldB lands at the bottom clipped to about two rows, though its
+        // wrapped description plus value need five.
         view.fields = vec![
             bool_field("FieldA", "alpha"),
             SettingField {
@@ -1640,8 +1587,7 @@ mod status_message_tests {
         ];
         view.fields_scroll_offset = 0;
 
-        // 8-row panel inside a 12-row buffer: rows 8..11 sit below the panel, so
-        // any spill is visible (not clipped off-screen) and readable.
+        // An 8-row panel in a 12-row buffer, so a spill is visible below it.
         let area = Rect::new(0, 0, 30, 8);
         let mut terminal = Terminal::new(TestBackend::new(30, 12)).unwrap();
         terminal
@@ -1658,8 +1604,7 @@ mod status_message_tests {
             !all.contains("SPILLVALUE"),
             "the clipped field's value must not render past its slice, got:\n{all}"
         );
-        // The panel's bottom border row (y = 7) must stay border-only; before
-        // the fix a wrapped description line painted letters over it.
+        // The panel's bottom border row must stay border-only.
         let border_row = row_text(&buf, 7);
         assert!(
             !border_row.chars().any(|c| c.is_ascii_alphabetic()),
@@ -1667,9 +1612,8 @@ mod status_message_tests {
         );
     }
 
-    /// The save/error status renders on its own footer row beneath the key
-    /// hints, colouring only its text, so it never collides with field content
-    /// (issue #2083).
+    /// The status has its own footer row beneath the key hints, so it can
+    /// never collide with field content.
     #[test]
     #[serial]
     fn footer_shows_status_below_hints() {
@@ -1677,7 +1621,6 @@ mod status_message_tests {
         let theme = load_theme("empire");
         let area = Rect::new(0, 0, 100, 3);
 
-        // Success toast: green, on the second inner row (y = 2), hints on y = 1.
         view.success_message = Some("Settings saved".to_string());
         let mut terminal = Terminal::new(TestBackend::new(100, 3)).unwrap();
         terminal
@@ -1699,7 +1642,6 @@ mod status_message_tests {
             "the success toast should use the running (green) colour"
         );
 
-        // Error: red, same row, sticky.
         view.success_message = None;
         view.error_message = Some("Memory Limit: expected a string".to_string());
         let mut terminal = Terminal::new(TestBackend::new(100, 3)).unwrap();
@@ -1719,14 +1661,12 @@ mod status_message_tests {
         );
     }
 
-    /// The "Settings saved" toast auto-dismisses once its window passes, while
-    /// a sticky error is left untouched (issue #2083).
+    /// The toast auto-dismisses once its window passes; an error is sticky.
     #[test]
     #[serial]
     fn tick_status_expires_success_but_keeps_error() {
         let (_temp, _guard, mut view) = fresh_view();
 
-        // Expired success toast: cleared, and the tick reports a redraw.
         view.success_message = Some("Settings saved".to_string());
         view.success_message_expires_at = Instant::now().checked_sub(Duration::from_secs(1));
         assert!(
@@ -1738,13 +1678,11 @@ mod status_message_tests {
             "the toast should be cleared"
         );
 
-        // Sticky error with no expiry: untouched.
         view.error_message = Some("Memory Limit: expected a string".to_string());
         view.success_message_expires_at = None;
         assert!(!view.tick_status(), "a sticky error should not tick away");
         assert!(view.error_message.is_some(), "the error should persist");
 
-        // Unexpired toast: left in place.
         view.success_message = Some("Settings saved".to_string());
         view.success_message_expires_at = Some(Instant::now() + Duration::from_secs(60));
         assert!(!view.tick_status(), "an unexpired toast should stay");
@@ -1759,8 +1697,8 @@ mod status_message_tests {
     #[serial]
     fn save_arms_the_success_toast_timer() {
         let (_temp, _guard, mut view) = fresh_view();
-        // Profile scope avoids the Global telemetry side effect; no fields means
-        // validation passes straight through to a real write.
+        // Profile scope avoids the Global telemetry side effect, and no fields
+        // means validation passes straight through to a real write.
         view.scope = SettingsScope::Profile;
         view.fields = Vec::new();
 
@@ -1773,9 +1711,8 @@ mod status_message_tests {
         );
     }
 
-    /// The `/` search is the fastest way around a settings surface with this
-    /// many fields, so normal mode must advertise it in the footer instead of
-    /// hiding it in the `?` help overlay (issue #2932).
+    /// Search is the fastest way around this many fields, so the footer
+    /// advertises it rather than the `?` overlay hiding it.
     #[test]
     #[serial]
     fn footer_advertises_search_in_normal_mode() {
@@ -1794,10 +1731,8 @@ mod status_message_tests {
         );
     }
 
-    /// While a list item is being typed, Enter confirms the item and Esc
-    /// cancels it. The footer must say so; the old hints (add / delete /
-    /// close list) described keys that do something else entirely in that
-    /// sub-mode (issue #2932).
+    /// While an item is being typed, Enter confirms and Esc cancels, so the
+    /// footer must not keep advertising the list-navigation keys.
     #[test]
     #[serial]
     fn footer_shows_item_edit_hints_while_typing_a_list_item() {
@@ -1805,7 +1740,6 @@ mod status_message_tests {
         let theme = load_theme("empire");
         let area = Rect::new(0, 0, 100, 3);
 
-        // Adding a new item: Enter adds, Esc cancels.
         view.list_edit_state = Some(super::super::ListEditState {
             selected_index: 0,
             editing_item: Some(tui_input::Input::new("FOO=bar".to_string())),
@@ -1825,7 +1759,6 @@ mod status_message_tests {
             "add-item footer must not show list-navigation hints, got {hints:?}"
         );
 
-        // Editing an existing item: Enter confirms the edit.
         view.list_edit_state = Some(super::super::ListEditState {
             selected_index: 0,
             editing_item: Some(tui_input::Input::new("FOO=bar".to_string())),
@@ -1841,8 +1774,7 @@ mod status_message_tests {
             "edit-item footer should show confirm/cancel hints, got {hints:?}"
         );
 
-        // Navigating the expanded list (no item being typed): the
-        // list-navigation hints remain.
+        // With no item being typed, the list-navigation hints remain.
         view.list_edit_state = Some(super::super::ListEditState::default());
         let mut terminal = Terminal::new(TestBackend::new(100, 3)).unwrap();
         terminal
@@ -1855,8 +1787,7 @@ mod status_message_tests {
         );
     }
 
-    /// An expanded empty list must tell the user how to add the first item
-    /// instead of rendering blank rows (issue #2932).
+    /// An expanded empty list says how to add the first item.
     #[test]
     #[serial]
     fn expanded_empty_list_shows_add_hint() {
@@ -1887,10 +1818,8 @@ mod status_message_tests {
         );
     }
 
-    /// With search active, the full render shows the bar as the query
-    /// input with the hit count, and the jump popup drops below it
-    /// listing `[Category] Label  value` rows with long values
-    /// truncated (issue #2932).
+    /// With search active the bar is the query input with a hit count, and
+    /// the popup below lists `[Category] Label  value` rows, truncated.
     #[test]
     #[serial]
     fn search_popup_renders_hits_with_values() {
@@ -1952,8 +1881,7 @@ mod status_message_tests {
         );
     }
 
-    /// The search bar is permanent: idle it advertises `/` with a
-    /// placeholder instead of disappearing (issue #2932 review).
+    /// The bar is permanent: idle, it advertises `/`.
     #[test]
     #[serial]
     fn idle_search_bar_shows_placeholder() {
@@ -1970,9 +1898,8 @@ mod status_message_tests {
         );
     }
 
-    /// While the add prompt is open, the previously selected list item
-    /// must not keep its `>` marker; two cursors at once made the add
-    /// flow read as messy (issue #2932).
+    /// The add prompt owns the only cursor, so the previously selected item
+    /// drops its `>` marker.
     #[test]
     #[serial]
     fn add_prompt_suppresses_the_item_cursor() {
@@ -2021,16 +1948,13 @@ mod status_message_tests {
         );
     }
 
-    /// A validation failure on save names the offending field so the user can
-    /// find it, instead of surfacing a bare reason like "expected a string"
-    /// (issue #2083).
+    /// A validation failure names the offending field, not just the reason.
     #[test]
     #[serial]
     fn save_error_names_the_field() {
         let (_temp, _guard, mut view) = fresh_view();
 
-        // A set-but-invalid value (not a cleared one, which now validates as
-        // unset) so validation genuinely fails and we can check the prefix.
+        // Set-but-invalid, since a cleared value validates as unset.
         view.fields = vec![SettingField {
             kind: FieldKind::Schema {
                 section: "sandbox".to_string(),
