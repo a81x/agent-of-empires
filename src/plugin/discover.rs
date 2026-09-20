@@ -462,55 +462,78 @@ mod tests {
         .unwrap()
     }
 
+    fn manifest(api_version: u32, extra: &str) -> RawManifest {
+        toml::from_str(&format!(
+            "id = \"acme.widget\"\nname = \"Widget\"\nversion = \"1.0.0\"\n\
+             api_version = {api_version}\n{extra}"
+        ))
+        .expect("lenient parse")
+    }
+
     #[test]
-    fn badges_installed_featured_unvetted() {
-        let repos = vec![
-            repo("acme/installed", 5),
-            repo("acme/vetted", 10),
-            repo("acme/random", 100),
-        ];
+    fn badges_and_ranking_put_featured_ahead_of_stars() {
         let index = featured("gh:acme/vetted");
         let installed = vec!["gh:acme/installed".to_string()];
-        let out = badge_repos(repos, &index, &installed);
+        let out = badge_repos(
+            vec![
+                repo("acme/installed", 5),
+                repo("acme/vetted", 10),
+                repo("acme/random", 100),
+            ],
+            &index,
+            &installed,
+        );
         let by_slug = |slug: &str| out.iter().find(|r| r.slug == slug).unwrap().badge;
         assert_eq!(by_slug("gh:acme/installed"), DiscoveryBadge::Installed);
         assert_eq!(by_slug("gh:acme/vetted"), DiscoveryBadge::Featured);
         assert_eq!(by_slug("gh:acme/random"), DiscoveryBadge::Unvetted);
-    }
 
-    #[test]
-    fn installed_match_is_case_insensitive() {
-        let repos = vec![repo("Acme/Widget", 1)];
-        let installed = vec!["gh:acme/widget".to_string()];
-        let out = badge_repos(repos, &FeaturedIndex::default(), &installed);
-        assert_eq!(out[0].badge, DiscoveryBadge::Installed);
-    }
-
-    #[test]
-    fn ranks_featured_first_then_stars() {
-        let repos = vec![repo("acme/popular", 999), repo("acme/vetted", 1)];
-        let index = featured("gh:acme/vetted");
-        let out = rank(badge_repos(repos, &index, &[]));
+        let ranked = |installed: &[String]| {
+            rank(badge_repos(
+                vec![repo("acme/popular", 999), repo("acme/vetted", 1)],
+                &index,
+                installed,
+            ))
+        };
+        let out = ranked(&[]);
         assert_eq!(out[0].slug, "gh:acme/vetted");
         assert_eq!(out[1].slug, "gh:acme/popular");
-    }
 
-    #[test]
-    fn installed_and_featured_still_ranks_featured() {
-        let repos = vec![repo("acme/popular", 999), repo("acme/vetted", 1)];
-        let index = featured("gh:acme/vetted");
-        let installed = vec!["gh:acme/vetted".to_string()];
-        let out = rank(badge_repos(repos, &index, &installed));
+        let out = ranked(&["gh:acme/vetted".to_string()]);
         assert_eq!(out[0].slug, "gh:acme/vetted");
         assert_eq!(out[0].badge, DiscoveryBadge::Installed);
-        assert!(out[0].featured);
+        assert!(
+            out[0].featured,
+            "an installed plugin keeps its featured mark"
+        );
     }
 
     #[test]
-    fn drops_non_owner_repo_results() {
-        let repos = vec![repo("not-a-slug", 1), repo("a/b/c", 1)];
-        let out = badge_repos(repos, &FeaturedIndex::default(), &[]);
-        assert!(out.is_empty());
+    fn a_result_row_carries_its_install_command_avatar_and_owner_repo_slug() {
+        let out = badge_repos(vec![repo("acme/widget", 1)], &FeaturedIndex::default(), &[]);
+        assert_eq!(out[0].install_command, "aoe plugin install gh:acme/widget");
+        assert_eq!(
+            out[0].source_avatar_url,
+            "https://github.com/acme.png?size=64"
+        );
+
+        let cased = badge_repos(
+            vec![repo("Acme/Widget", 1)],
+            &FeaturedIndex::default(),
+            &["gh:acme/widget".to_string()],
+        );
+        assert_eq!(
+            cased[0].badge,
+            DiscoveryBadge::Installed,
+            "the installed match is case-insensitive"
+        );
+
+        let dropped = badge_repos(
+            vec![repo("not-a-slug", 1), repo("a/b/c", 1)],
+            &FeaturedIndex::default(),
+            &[],
+        );
+        assert!(dropped.is_empty(), "a non owner/repo result is dropped");
     }
 
     #[test]
@@ -532,18 +555,21 @@ mod tests {
     }
 
     #[test]
-    fn drops_only_the_results_a_probe_proved_missing() {
-        let repos = vec![
-            repo("acme/missing", 1),
-            repo("acme/present", 1),
-            repo("acme/unknown", 1),
-            repo("acme/unprobed", 1),
-            repo("acme/installed", 1),
-            repo("acme/vetted", 1),
-        ];
+    fn drop_missing_removes_only_what_a_probe_proved_missing() {
         let index = featured("gh:acme/vetted");
         let installed = vec!["gh:acme/installed".to_string()];
-        let badged = badge_repos(repos, &index, &installed);
+        let badged = badge_repos(
+            vec![
+                repo("acme/missing", 1),
+                repo("acme/present", 1),
+                repo("acme/unknown", 1),
+                repo("acme/unprobed", 1),
+                repo("acme/installed", 1),
+                repo("acme/vetted", 1),
+            ],
+            &index,
+            &installed,
+        );
         let probes = HashMap::from([
             ("gh:acme/missing".to_string(), ManifestProbe::Missing),
             ("gh:acme/present".to_string(), ManifestProbe::Present),
@@ -558,10 +584,7 @@ mod tests {
             "a confirmed-missing manifest must drop the result: {kept:?}"
         );
         assert_eq!(kept.len(), 5, "everything else fails open: {kept:?}");
-    }
 
-    #[test]
-    fn a_page_of_missing_manifests_yields_the_empty_state() {
         let badged = badge_repos(
             vec![repo("acme/a", 1), repo("acme/b", 1)],
             &FeaturedIndex::default(),
@@ -571,17 +594,24 @@ mod tests {
             ("gh:acme/a".to_string(), ManifestProbe::Missing),
             ("gh:acme/b".to_string(), ManifestProbe::Missing),
         ]);
-        assert!(drop_missing(badged, &probes).is_empty());
+        assert!(
+            drop_missing(badged, &probes).is_empty(),
+            "a page of missing manifests yields the empty state"
+        );
     }
 
     #[test]
-    fn the_manifest_probe_targets_the_raw_cdn_not_the_api() {
+    fn raw_url_targets_the_cdn_defaults_to_head_and_encodes_the_path() {
         let url = raw_url("acme", "widget", None, "aoe-plugin.toml");
         assert_eq!(
             url,
             "https://raw.githubusercontent.com/acme/widget/HEAD/aoe-plugin.toml"
         );
         assert!(!url.starts_with(&api_base()), "{url}");
+        assert_eq!(
+            raw_url("acme", "widget", Some("v1.2.0"), "media/cool demo.gif"),
+            "https://raw.githubusercontent.com/acme/widget/v1.2.0/media/cool%20demo.gif"
+        );
     }
 
     #[test]
@@ -608,157 +638,50 @@ id = "s"
     }
 
     #[test]
-    fn raw_url_defaults_to_head_and_encodes_path() {
-        assert_eq!(
-            raw_url("acme", "widget", None, "docs/shots/a.png"),
-            "https://raw.githubusercontent.com/acme/widget/HEAD/docs/shots/a.png"
-        );
-        assert_eq!(
-            raw_url("acme", "widget", Some("v1.2.0"), "media/cool demo.gif"),
-            "https://raw.githubusercontent.com/acme/widget/v1.2.0/media/cool%20demo.gif"
-        );
-    }
+    fn screenshots_need_api_version_5_and_drop_bad_entries() {
+        const SHOTS: &str = "[[screenshots]]\npath = \"docs/a.png\"\nalt = \"good\"\n\n\
+             [[screenshots]]\npath = \"https://tracker.example.com/x.png\"\nalt = \"bad url\"\n\n\
+             [[screenshots]]\npath = \"docs/b.png\"\nalt = \"   \"\n";
+        let resolve = |api| {
+            let m = manifest(api, SHOTS);
+            resolve_screenshots(m.api_version, m.screenshots, "acme", "widget", None)
+        };
 
-    #[test]
-    fn detail_manifest_parses_screenshots_and_drops_bad_entries() {
-        let toml = r#"
-id = "acme.widget"
-name = "Widget"
-version = "1.0.0"
-api_version = 5
-
-[[screenshots]]
-path = "docs/a.png"
-alt = "good"
-
-[[screenshots]]
-path = "https://tracker.example.com/x.png"
-alt = "bad url"
-
-[[screenshots]]
-path = "docs/b.png"
-alt = "   "
-"#;
-        let m: RawManifest = toml::from_str(toml).expect("lenient parse");
-        let kept = resolve_screenshots(m.api_version, m.screenshots, "acme", "widget", None);
+        let kept = resolve(5);
         assert_eq!(kept.len(), 1);
         assert_eq!(
             kept[0].src,
             "https://raw.githubusercontent.com/acme/widget/HEAD/docs/a.png"
         );
+        assert!(resolve(4).is_empty(), "v4 must not expose screenshots");
     }
 
     #[test]
-    fn screenshots_gated_out_below_api_version_5() {
-        let toml = r#"
-id = "acme.widget"
-name = "Widget"
-version = "1.0.0"
-api_version = 4
+    fn icon_name_and_asset_need_api_version_7_and_are_validated() {
+        let icon = |api, extra: &str| {
+            let m = manifest(api, extra);
+            (
+                resolve_icon_name(m.api_version, m.icon),
+                resolve_icon_asset(m.api_version, m.icon_asset, "acme", "widget", None),
+            )
+        };
+        const GOOD: &str = "icon = \"git-branch\"\nicon_asset = \"assets/icon.png\"\n";
 
-[[screenshots]]
-path = "docs/a.png"
-alt = "good"
-"#;
-        let m: RawManifest = toml::from_str(toml).expect("lenient parse");
-        let kept = resolve_screenshots(m.api_version, m.screenshots, "acme", "widget", None);
-        assert!(kept.is_empty(), "v4 must not expose screenshots");
-    }
-
-    #[test]
-    fn install_command_uses_the_slug() {
-        let out = badge_repos(vec![repo("acme/widget", 1)], &FeaturedIndex::default(), &[]);
-        assert_eq!(out[0].install_command, "aoe plugin install gh:acme/widget");
-    }
-
-    #[test]
-    fn source_avatar_url_derives_from_the_owner_with_no_extra_request() {
-        let out = badge_repos(vec![repo("acme/widget", 1)], &FeaturedIndex::default(), &[]);
+        let (name, asset) = icon(7, GOOD);
+        assert_eq!(name.as_deref(), Some("git-branch"));
         assert_eq!(
-            out[0].source_avatar_url,
-            "https://github.com/acme.png?size=64"
-        );
-    }
-
-    #[test]
-    fn detail_manifest_parses_icon_and_resolves_icon_asset() {
-        let toml = r#"
-id = "acme.widget"
-name = "Widget"
-version = "1.0.0"
-api_version = 7
-icon = "git-branch"
-icon_asset = "assets/icon.png"
-"#;
-        let m: RawManifest = toml::from_str(toml).expect("lenient parse");
-        assert_eq!(
-            resolve_icon_name(m.api_version, m.icon.clone()).as_deref(),
-            Some("git-branch")
-        );
-        let url = resolve_icon_asset(m.api_version, m.icon_asset, "acme", "widget", None);
-        assert_eq!(
-            url.as_deref(),
+            asset.as_deref(),
             Some("https://raw.githubusercontent.com/acme/widget/HEAD/assets/icon.png")
         );
-    }
 
-    #[test]
-    fn icon_name_gated_out_below_api_version_7() {
-        let toml = r#"
-id = "acme.widget"
-name = "Widget"
-version = "1.0.0"
-api_version = 6
-icon = "git-branch"
-"#;
-        let m: RawManifest = toml::from_str(toml).expect("lenient parse");
-        assert!(
-            resolve_icon_name(m.api_version, m.icon).is_none(),
-            "v6 must not expose icon"
+        let (name, asset) = icon(6, GOOD);
+        assert!(name.is_none() && asset.is_none(), "v6 exposes neither");
+
+        let (name, asset) = icon(
+            7,
+            "icon = \"GitHub\"\nicon_asset = \"https://tracker.example.com/x.png\"\n",
         );
-    }
-
-    #[test]
-    fn icon_name_drops_an_invalid_name() {
-        let toml = r#"
-id = "acme.widget"
-name = "Widget"
-version = "1.0.0"
-api_version = 7
-icon = "GitHub"
-"#;
-        let m: RawManifest = toml::from_str(toml).expect("lenient parse");
-        assert!(
-            resolve_icon_name(m.api_version, m.icon).is_none(),
-            "a non-kebab-case name must be dropped, not surfaced to the client"
-        );
-    }
-
-    #[test]
-    fn icon_asset_gated_out_below_api_version_7() {
-        let toml = r#"
-id = "acme.widget"
-name = "Widget"
-version = "1.0.0"
-api_version = 6
-icon_asset = "assets/icon.png"
-"#;
-        let m: RawManifest = toml::from_str(toml).expect("lenient parse");
-        let url = resolve_icon_asset(m.api_version, m.icon_asset, "acme", "widget", None);
-        assert!(url.is_none(), "v6 must not expose icon_asset");
-    }
-
-    #[test]
-    fn icon_asset_drops_an_invalid_path() {
-        let toml = r#"
-id = "acme.widget"
-name = "Widget"
-version = "1.0.0"
-api_version = 7
-icon_asset = "https://tracker.example.com/x.png"
-"#;
-        let m: RawManifest = toml::from_str(toml).expect("lenient parse");
-        let url = resolve_icon_asset(m.api_version, m.icon_asset, "acme", "widget", None);
-        assert!(url.is_none(), "an absolute URL path must be dropped");
+        assert!(name.is_none(), "a non-kebab-case icon name is dropped");
+        assert!(asset.is_none(), "an absolute icon_asset URL is dropped");
     }
 }
