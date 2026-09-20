@@ -263,7 +263,7 @@ const PAGES = [
     dest: "docs/structured-view/troubleshooting.md",
     title: "Structured View Troubleshooting",
     description:
-      "The structured view security model plus a field guide to every failure mode: doctor errors, spawn failures, rate limits, stuck turns, and the watchdog.",
+      "A field guide to every structured view failure mode: doctor errors, spawn failures, rate limits, stuck turns, and the watchdog.",
   },
   {
     source: "docs/guides/tool-sessions.md",
