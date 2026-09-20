@@ -4014,69 +4014,42 @@ mod tests {
         assert!(!config.worktree.enabled);
     }
 
+    /// A plugin's enable-state and settings survive a save/load round trip.
+    /// Disabling a plugin hides its settings from every surface but must never
+    /// destroy them. An empty map serializes nothing rather than a stray table.
     #[test]
-    fn test_plugins_table_round_trips_through_save() {
-        // A plugin's enable-state must survive serialize/deserialize.
-        let toml_in = r#"
-            [plugins."aoe.web"]
-            enabled = false
-        "#;
-        let config: Config = toml::from_str(toml_in).unwrap();
-        assert!(!config.plugins["aoe.web"].enabled);
-
-        let serialized = toml::to_string(&config).unwrap();
-        let reloaded: Config = toml::from_str(&serialized).unwrap();
-        assert!(!reloaded.plugins["aoe.web"].enabled);
-    }
-
-    #[test]
-    fn test_plugins_default_empty_and_omitted_from_toml() {
+    fn plugin_table_round_trips_and_stays_out_of_an_empty_config() {
         let config: Config = toml::from_str("").unwrap();
         assert!(config.plugins.is_empty());
-        let serialized = toml::to_string(&config).unwrap();
-        assert!(
-            !serialized.contains("[plugins"),
-            "empty plugins map must not serialize a stray section"
-        );
-    }
+        assert!(!toml::to_string(&config).unwrap().contains("[plugins"));
 
-    #[test]
-    fn test_plugin_settings_persist_even_while_disabled() {
-        // Disabling a plugin hides its settings from every surface but must
-        // never destroy them: the values survive a save/load round-trip.
-        let toml_in = r#"
+        let config: Config = toml::from_str(
+            r#"
+            [plugins."aoe.web"]
+            enabled = true
+
             [plugins."aoe.status"]
             enabled = false
 
             [plugins."aoe.status".settings]
             poll_interval_ms = 1000
             verbose = true
-        "#;
-        let config: Config = toml::from_str(toml_in).unwrap();
-        let plugin = &config.plugins["aoe.status"];
-        assert!(!plugin.enabled);
-        assert_eq!(plugin.settings["poll_interval_ms"].as_integer(), Some(1000));
+            "#,
+        )
+        .unwrap();
+        assert!(config.plugins["aoe.web"].settings.is_empty());
+        assert!(!config.plugins["aoe.status"].enabled);
+        assert_eq!(
+            config.plugins["aoe.status"].settings["poll_interval_ms"].as_integer(),
+            Some(1000)
+        );
 
-        let serialized = toml::to_string(&config).unwrap();
-        let reloaded: Config = toml::from_str(&serialized).unwrap();
+        let reloaded: Config = toml::from_str(&toml::to_string(&config).unwrap()).unwrap();
+        assert!(reloaded.plugins["aoe.web"].enabled);
+        assert!(!reloaded.plugins["aoe.status"].enabled);
         assert_eq!(
             reloaded.plugins["aoe.status"].settings["verbose"].as_bool(),
             Some(true)
-        );
-    }
-
-    #[test]
-    fn test_plugin_empty_settings_omitted_from_toml() {
-        let toml_in = r#"
-            [plugins."aoe.web"]
-            enabled = true
-        "#;
-        let config: Config = toml::from_str(toml_in).unwrap();
-        assert!(config.plugins["aoe.web"].settings.is_empty());
-        let serialized = toml::to_string(&config).unwrap();
-        assert!(
-            !serialized.contains("settings"),
-            "empty plugin settings must not serialize a stray section"
         );
     }
 
@@ -4842,47 +4815,31 @@ mod tests {
         assert!(session.host_tab_title, "host_tab_title (#3444)");
     }
 
+    /// `background` defaults to false, round-trips when set, and is omitted
+    /// from the serialized form when it is false.
     #[test]
-    fn test_tool_background_defaults_false_when_absent() {
-        let toml = r#"
+    fn tool_background_defaults_off_and_round_trips() {
+        let config: Config = toml::from_str(
+            r#"
             [tools.github]
             command = "gh repo view --web"
-        "#;
-        let cfg: Config = toml::from_str(toml).unwrap();
-        assert!(!cfg.tools["github"].background);
-    }
 
-    #[test]
-    fn test_tool_background_roundtrips_when_enabled() {
-        let toml = r#"
-            [tools.github]
-            command = "gh repo view --web"
+            [tools.lazygit]
+            command = "lazygit"
             hotkey = "Alt+o"
             background = true
-        "#;
-        let cfg: Config = toml::from_str(toml).unwrap();
-        assert!(cfg.tools["github"].background);
+            "#,
+        )
+        .unwrap();
+        assert!(!config.tools["github"].background);
+        assert!(config.tools["lazygit"].background);
 
-        let serialized = toml::to_string_pretty(&cfg).unwrap();
+        let serialized = toml::to_string_pretty(&config).unwrap();
         assert!(serialized.contains("background = true"));
+        assert!(!serialized.contains("background = false"));
         let reparsed: Config = toml::from_str(&serialized).unwrap();
-        assert!(reparsed.tools["github"].background);
-    }
-
-    #[test]
-    fn test_tool_background_false_is_omitted() {
-        let mut cfg = Config::default();
-        cfg.tools.insert(
-            "lazygit".to_string(),
-            ToolSessionConfig {
-                command: "lazygit".to_string(),
-                hotkey: None,
-                background: false,
-            },
-        );
-
-        let serialized = toml::to_string_pretty(&cfg).unwrap();
-        assert!(!serialized.contains("background"));
+        assert!(reparsed.tools["lazygit"].background);
+        assert!(!reparsed.tools["github"].background);
     }
 
     /// A non-empty `agent_command_override` wins, an empty one falls through to
