@@ -370,6 +370,14 @@ impl Instance {
 mod tests {
     use super::*;
 
+    fn held(op: LifecycleOperation, at: DateTime<Utc>) -> Option<LifecycleReservation> {
+        Some(LifecycleReservation {
+            op,
+            generation: 1,
+            at,
+        })
+    }
+
     #[test]
     #[serial_test::serial]
     fn lifecycle_status_commit_releases_the_acquired_generation() {
@@ -430,77 +438,49 @@ mod tests {
             (
                 "leased_peer",
                 Status::Starting,
-                Some(LifecycleReservation {
-                    op: LifecycleOperation::Launch,
-                    generation: 1,
-                    at: now,
-                }),
+                held(LifecycleOperation::Launch, now),
                 1,
                 false,
             ),
             (
                 "superseded",
                 Status::Idle,
-                Some(LifecycleReservation {
-                    op: LifecycleOperation::Launch,
-                    generation: 1,
-                    at: now,
-                }),
+                held(LifecycleOperation::Launch, now),
                 2,
                 true,
             ),
             (
                 "expired",
                 Status::Idle,
-                Some(LifecycleReservation {
-                    op: LifecycleOperation::Launch,
-                    generation: 1,
-                    at: stale,
-                }),
+                held(LifecycleOperation::Launch, stale),
                 1,
                 true,
             ),
             (
                 "purge",
                 Status::Idle,
-                Some(LifecycleReservation {
-                    op: LifecycleOperation::Purge,
-                    generation: 1,
-                    at: now,
-                }),
+                held(LifecycleOperation::Purge, now),
                 1,
                 false,
             ),
             (
                 "restore",
                 Status::Stopped,
-                Some(LifecycleReservation {
-                    op: LifecycleOperation::Restore,
-                    generation: 1,
-                    at: now,
-                }),
+                held(LifecycleOperation::Restore, now),
                 1,
                 false,
             ),
             (
                 "trash",
                 Status::Idle,
-                Some(LifecycleReservation {
-                    op: LifecycleOperation::Trash,
-                    generation: 1,
-                    at: now,
-                }),
+                held(LifecycleOperation::Trash, now),
                 1,
                 false,
             ),
             (
                 "capture",
                 Status::Running,
-                Some(LifecycleReservation {
-                    op: LifecycleOperation::Capture,
-                    generation: 1,
-                    at: now,
-                }),
+                held(LifecycleOperation::Capture, now),
                 1,
                 false,
             ),
@@ -553,11 +533,7 @@ mod tests {
         busy.source_profile = profile.to_string();
         busy.status = Status::Starting;
         busy.lifecycle_generation = 1;
-        busy.lifecycle_reservation = Some(LifecycleReservation {
-            op: LifecycleOperation::Launch,
-            generation: 1,
-            at: Utc::now(),
-        });
+        busy.lifecycle_reservation = held(LifecycleOperation::Launch, Utc::now());
         storage
             .update(|instances, _groups| {
                 instances.push(busy.clone());

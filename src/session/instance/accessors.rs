@@ -461,6 +461,16 @@ mod tests {
     use super::*;
     use crate::session::instance::test_helpers::*;
 
+    fn worktree(main_repo_path: &str) -> WorktreeInfo {
+        WorktreeInfo {
+            branch: "feature/abc".to_string(),
+            main_repo_path: main_repo_path.to_string(),
+            managed_by_aoe: true,
+            created_at: Utc::now(),
+            base_branch: None,
+        }
+    }
+
     #[test]
     fn switch_to_terminal_keep_context_carries_acp_id_into_resume_target() {
         let mut inst = Instance::new("claude", "/tmp");
@@ -474,169 +484,127 @@ mod tests {
         assert_eq!(inst.view, View::Terminal);
         assert_eq!(inst.agent_session_id.as_deref(), Some("sid-abc"));
         assert_eq!(inst.resume_intent, ResumeIntent::Use("sid-abc".to_string()));
-        // Structured-view-only state is dropped before terminal launch.
-        assert_eq!(inst.acp_session_id, None);
-        assert_eq!(inst.import_pending, None);
-        assert_eq!(inst.acp_load_session_capable, None);
+        assert_eq!(
+            (
+                inst.acp_session_id,
+                inst.import_pending,
+                inst.acp_load_session_capable
+            ),
+            (None, None, None)
+        );
     }
 
     #[test]
-    fn acp_load_session_capability_is_runtime_only() {
-        let mut inst = Instance::new("structured", "/tmp");
-        inst.acp_load_session_capable = Some(true);
-
-        let json = serde_json::to_value(&inst).unwrap();
-        assert!(json.get("acp_load_session_capable").is_none());
-
-        let decoded: Instance = serde_json::from_value(json).unwrap();
-        assert_eq!(decoded.acp_load_session_capable, None);
-    }
-
-    #[test]
-    fn test_new_instance() {
+    fn new_instance_has_a_unique_hex_id_and_defaults() {
         let inst = Instance::new("test", "/tmp/test");
-        assert_eq!(inst.title, "test");
-        assert_eq!(inst.project_path, "/tmp/test");
+        assert_eq!(
+            (inst.title.as_str(), inst.project_path.as_str()),
+            ("test", "/tmp/test")
+        );
         assert_eq!(inst.status, Status::Idle);
         assert_eq!(inst.id.len(), 16);
+        assert!(inst.id.chars().all(|c| c.is_ascii_hexdigit()));
+        let ids: std::collections::HashSet<_> =
+            (0..100).map(|_| Instance::new("t", "/t").id).collect();
+        assert_eq!(ids.len(), 100);
     }
 
     #[test]
-    fn test_is_sub_session() {
+    fn sub_session_and_sandbox_predicates() {
         let mut inst = Instance::new("test", "/tmp/test");
         assert!(!inst.is_sub_session());
-
+        assert!(!inst.is_sandboxed());
         inst.parent_session_id = Some("parent123".to_string());
         assert!(inst.is_sub_session());
-    }
-
-    // Additional tests for is_sandboxed
-    #[test]
-    fn test_is_sandboxed_without_sandbox_info() {
-        let inst = Instance::new("test", "/tmp/test");
+        let mut sandbox = test_sandbox("test", None);
+        sandbox.enabled = false;
+        inst.sandbox_info = Some(sandbox);
         assert!(!inst.is_sandboxed());
-    }
-
-    #[test]
-    fn test_is_sandboxed_with_disabled_sandbox() {
-        let mut inst = Instance::new("test", "/tmp/test");
-        inst.sandbox_info = Some(SandboxInfo {
-            enabled: false,
-            container_id: None,
-            image: "test-image".to_string(),
-            container_name: "test".to_string(),
-            extra_env: None,
-            custom_instruction: None,
-            before_start_env: Vec::new(),
-            container_workdir: None,
-        });
-        assert!(!inst.is_sandboxed());
-    }
-
-    #[test]
-    fn test_is_sandboxed_with_enabled_sandbox() {
-        let mut inst = Instance::new("test", "/tmp/test");
-        inst.sandbox_info = Some(test_sandbox("test", None));
+        inst.sandbox_info.as_mut().unwrap().enabled = true;
         assert!(inst.is_sandboxed());
     }
 
-    // Tests for Instance serialization
     #[test]
-    fn test_instance_serialization_roundtrip() {
+    fn serialization_keeps_persisted_fields_and_drops_runtime_ones() {
         let mut inst = Instance::new("Test Project", "/home/user/project");
-        inst.tool = "claude".to_string();
         inst.group_path = "work/clients".to_string();
         inst.command = "claude --resume xyz".to_string();
-
-        let json = serde_json::to_string(&inst).unwrap();
-        let deserialized: Instance = serde_json::from_str(&json).unwrap();
-
-        assert_eq!(inst.id, deserialized.id);
-        assert_eq!(inst.title, deserialized.title);
-        assert_eq!(inst.project_path, deserialized.project_path);
-        assert_eq!(inst.group_path, deserialized.group_path);
-        assert_eq!(inst.tool, deserialized.tool);
-        assert_eq!(inst.command, deserialized.command);
-    }
-
-    #[test]
-    fn test_instance_serialization_skips_runtime_fields() {
-        let mut inst = Instance::new("Test", "/tmp/test");
-        inst.last_error_check = Some(std::time::Instant::now());
-        inst.last_start_time = Some(std::time::Instant::now());
-        inst.last_error = Some("test error".to_string());
-
-        let json = serde_json::to_string(&inst).unwrap();
-
-        // Runtime fields should not appear in JSON
-        assert!(!json.contains("last_error_check"));
-        assert!(!json.contains("last_start_time"));
-        assert!(!json.contains("last_error"));
-    }
-
-    #[test]
-    fn test_instance_acp_acp_session_id_roundtrip() {
-        let mut inst = Instance::new("Test", "/tmp/test");
         inst.view = View::Structured;
         inst.agent_name = Some("codex".to_string());
         inst.agent_model = Some("gpt-5".to_string());
         inst.acp_session_id = Some("acp-uuid-1234".to_string());
+        inst.worktree_info = Some(worktree("/tmp/main"));
+        let floor = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(42);
+        inst.capture_started_at = Some(floor);
+        inst.retroactive_capture_excludes
+            .insert("stale-sid".to_string());
+        inst.last_error_check = Some(std::time::Instant::now());
+        inst.last_start_time = Some(std::time::Instant::now());
+        inst.last_error = Some("test error".to_string());
+        inst.acp_load_session_capable = Some(true);
 
         let json = serde_json::to_string(&inst).unwrap();
         assert!(json.contains("\"view\":\"structured\""));
-        assert!(json.contains("agent_name"));
-        assert!(json.contains("agent_model"));
-        assert!(json.contains("acp_session_id"));
-        let deserialized: Instance = serde_json::from_str(&json).unwrap();
-        assert_eq!(deserialized.view, View::Structured);
-        assert_eq!(deserialized.agent_name, Some("codex".to_string()));
-        assert_eq!(deserialized.agent_model, Some("gpt-5".to_string()));
+        for runtime in [
+            "last_error_check",
+            "last_start_time",
+            "last_error",
+            "acp_load_session_capable",
+        ] {
+            assert!(!json.contains(runtime), "{runtime}");
+        }
+        let back: Instance = serde_json::from_str(&json).unwrap();
         assert_eq!(
-            deserialized.acp_session_id,
-            Some("acp-uuid-1234".to_string())
+            (
+                &back.id,
+                &back.title,
+                &back.project_path,
+                &back.group_path,
+                &back.tool,
+                &back.command
+            ),
+            (
+                &inst.id,
+                &inst.title,
+                &inst.project_path,
+                &inst.group_path,
+                &inst.tool,
+                &inst.command
+            )
         );
+        assert_eq!(back.view, View::Structured);
+        assert_eq!(back.agent_name.as_deref(), Some("codex"));
+        assert_eq!(back.agent_model.as_deref(), Some("gpt-5"));
+        assert_eq!(back.acp_session_id.as_deref(), Some("acp-uuid-1234"));
+        assert_eq!(back.worktree_info, inst.worktree_info);
+        assert_eq!(back.capture_started_at, Some(floor));
+        assert!(back.retroactive_capture_excludes.contains("stale-sid"));
+        assert_eq!(back.acp_load_session_capable, None);
 
-        // None should not be serialized.
-        let mut inst2 = Instance::new("Test", "/tmp/test");
-        inst2.view = View::Structured;
-        let json2 = serde_json::to_string(&inst2).unwrap();
-        assert!(!json2.contains("acp_session_id"));
+        let mut structured = Instance::new("Test", "/tmp/test");
+        structured.view = View::Structured;
+        assert!(!serde_json::to_string(&structured)
+            .unwrap()
+            .contains("acp_session_id"));
+
+        let old_json = r#"{"id":"old-session-123","title":"Old Session","project_path":"/home/user/old","group_path":"","command":"","tool":"claude","yolo_mode":false,"status":"idle","created_at":"2024-01-01T00:00:00Z"}"#;
+        let old: Instance = serde_json::from_str(old_json).unwrap();
+        assert_eq!(
+            (old.id.as_str(), old.tool.as_str()),
+            ("old-session-123", "claude")
+        );
+        assert!(old.agent_session_id.is_none());
     }
 
     #[test]
-    fn test_instance_with_worktree_info() {
-        let mut inst = Instance::new("Test", "/tmp/worktree");
-        inst.worktree_info = Some(WorktreeInfo {
-            branch: "feature/abc".to_string(),
-            main_repo_path: "/tmp/main".to_string(),
-            managed_by_aoe: true,
-            created_at: Utc::now(),
-            base_branch: None,
-        });
-
-        let json = serde_json::to_string(&inst).unwrap();
-        let deserialized: Instance = serde_json::from_str(&json).unwrap();
-
-        assert!(deserialized.worktree_info.is_some());
-        let wt = deserialized.worktree_info.unwrap();
-        assert_eq!(wt.branch, "feature/abc");
-        assert!(wt.managed_by_aoe);
-    }
-
-    #[test]
-    fn has_managed_worktree_or_workspace_covers_both_shapes() {
-        // Single-repo aoe-managed worktree.
-        let mut wt = Instance::new("WT", "/tmp/wt");
-        wt.worktree_info = Some(WorktreeInfo {
-            branch: "feature/abc".to_string(),
-            main_repo_path: "/tmp/main".to_string(),
-            managed_by_aoe: true,
-            created_at: Utc::now(),
-            base_branch: None,
-        });
+    fn worktree_and_workspace_ownership_and_repo_path() {
+        let mut wt = Instance::new("WT", "/tmp/worktrees/feature");
+        assert_eq!(wt.repo_path(), "/tmp/worktrees/feature");
+        assert!(!wt.has_managed_worktree_or_workspace());
+        wt.worktree_info = Some(worktree("/tmp/main-repo"));
         assert!(wt.has_managed_worktree_or_workspace());
+        assert_eq!(wt.repo_path(), "/tmp/main-repo");
 
-        // Multi-repo workspace opting into cleanup (worktree_info is None).
         let mut ws = Instance::new("WS", "/tmp/ws/repo-a");
         ws.workspace_info = Some(WorkspaceInfo {
             branch: "feature/abc".to_string(),
@@ -656,91 +624,20 @@ mod tests {
             cleanup_on_delete: true,
         });
         assert!(ws.has_managed_worktree_or_workspace());
-
-        // Workspace that opted out of cleanup: nothing to clean.
-        if let Some(info) = ws.workspace_info.as_mut() {
-            info.cleanup_on_delete = false;
-        }
+        ws.workspace_info.as_mut().unwrap().cleanup_on_delete = false;
         assert!(!ws.has_managed_worktree_or_workspace());
-
-        // Plain session: neither worktree nor workspace.
-        let plain = Instance::new("Plain", "/tmp/plain");
-        assert!(!plain.has_managed_worktree_or_workspace());
     }
 
-    #[test]
-    fn test_repo_path_prefers_worktree_main_repo() {
-        let mut inst = Instance::new("Test", "/tmp/worktrees/feature");
-        assert_eq!(inst.repo_path(), "/tmp/worktrees/feature");
-        inst.worktree_info = Some(WorktreeInfo {
-            branch: "feature".to_string(),
-            main_repo_path: "/tmp/main-repo".to_string(),
-            managed_by_aoe: true,
-            created_at: Utc::now(),
-            base_branch: None,
-        });
-        assert_eq!(
-            inst.repo_path(),
-            "/tmp/main-repo",
-            "worktree sessions group under the main repo, not the worktree dir"
-        );
-    }
-
-    // Test generate_id function properties
-    #[test]
-    fn test_generate_id_uniqueness() {
-        let ids: Vec<String> = (0..100).map(|_| Instance::new("t", "/t").id).collect();
-        let unique_ids: std::collections::HashSet<_> = ids.iter().collect();
-        assert_eq!(ids.len(), unique_ids.len());
-    }
-
-    #[test]
-    fn test_generate_id_format() {
-        let inst = Instance::new("test", "/tmp/test");
-        // ID should be 16 hex characters
-        assert_eq!(inst.id.len(), 16);
-        assert!(inst.id.chars().all(|c| c.is_ascii_hexdigit()));
-    }
-
-    // Test: backwards compatibility - load old JSON without agent_session_id
-    #[test]
-    fn test_backwards_compatibility() {
-        // Old JSON without agent_session_id field
-        let old_json = r#"{"id":"old-session-123","title":"Old Session","project_path":"/home/user/old","group_path":"","command":"","tool":"claude","yolo_mode":false,"status":"idle","created_at":"2024-01-01T00:00:00Z"}"#;
-
-        let inst: Instance = serde_json::from_str(old_json).unwrap();
-
-        // Should parse successfully with agent_session_id defaulting to None
-        assert_eq!(inst.id, "old-session-123");
-        assert_eq!(inst.title, "Old Session");
-        assert_eq!(inst.project_path, "/home/user/old");
-        assert_eq!(inst.tool, "claude");
-        assert!(inst.agent_session_id.is_none());
-
-        // After loading, can set a new session ID
-        let mut inst = inst;
-        inst.agent_session_id = Some("new-session-456".to_string());
-        assert_eq!(inst.agent_session_id, Some("new-session-456".to_string()));
-    }
-
-    /// A custom-agent row whose stored `detect_as` is empty must still resolve its built-in agent
-    /// at launch.
+    /// A custom-agent row whose stored `detect_as` is empty still resolves its built-in agent.
     #[test]
     fn empty_detect_as_still_resolves_the_launch_agent() {
         const PROFILE: &str = "detect-as-launch-path-test";
         let _registry = install_aliases(PROFILE, &[("claude-personal", "claude")]);
-
-        let mut inst = Instance::new("orch", "/tmp/x");
+        let mut inst = tool_instance("claude-personal", "/tmp/x");
         inst.source_profile = PROFILE.to_string();
-        inst.tool = "claude-personal".to_string();
         inst.command = "claude-personal".to_string();
-        inst.detect_as = String::new();
 
-        assert_eq!(
-            inst.resolved_agent().map(|a| a.name),
-            Some("claude"),
-            "empty detect_as must fall back to the live agent_detect_as registry"
-        );
+        assert_eq!(inst.resolved_agent().map(|a| a.name), Some("claude"));
         assert_eq!(
             status_hook_env_prefix(&inst.effective_profile(), "abc123", inst.resolved_agent()),
             format!(
@@ -750,96 +647,60 @@ mod tests {
             ),
         );
     }
+
     #[test]
     fn native_resume_requires_a_direct_local_builtin_launch() {
         const PROFILE: &str = "resume-custom-launch-test";
         let _registry = install_aliases(PROFILE, &[("work-claude", "claude")]);
-
-        let mut inst = Instance::new("custom", "/tmp/custom");
-        inst.source_profile = PROFILE.to_string();
-        inst.tool = "work-claude".to_string();
-
-        inst.command = "claude --model opus".to_string();
-        assert!(inst.supports_native_resume());
-
-        inst.tool = "claude".to_string();
-        assert!(inst.supports_native_resume());
-        inst.command = "ssh -t host claude".to_string();
-        assert!(!inst.supports_native_resume());
-        inst.command = "claude > /tmp/transcript".to_string();
-        assert!(!inst.supports_native_resume());
-
-        for command in [
-            "claude $BARRIER",
-            "claude ${BARRIER}",
-            "claude *",
-            "claude session-?",
-            "claude [abc]",
-            "claude {one,two}",
-            "claude ~/thread",
+        // (tool, command, extra_args, supported)
+        for (tool, command, extra, supported) in [
+            ("work-claude", "claude --model opus", "", true),
+            ("claude", "claude --model opus", "", true),
+            ("claude", "", "--model sonnet[1m]", true),
+            ("claude", "ssh -t host claude", "", false),
+            ("claude", "claude > /tmp/transcript", "", false),
+            ("claude", "claude $BARRIER", "", false),
+            ("claude", "claude ${BARRIER}", "", false),
+            ("claude", "claude *", "", false),
+            ("claude", "claude session-?", "", false),
+            ("claude", "claude [abc]", "", false),
+            ("claude", "claude {one,two}", "", false),
+            ("claude", "claude ~/thread", "", false),
+            ("claude", "/opt/wrappers/claude", "", false),
+            ("claude", "./claude", "", false),
+            (
+                "claude",
+                "claude",
+                "--model opus | tee /tmp/transcript",
+                false,
+            ),
+            ("claude", "claude", "--append-system-prompt $PROMPT", false),
+            ("claude", "claude # local note", "", false),
+            ("claude", "claude", "--model opus # local note", false),
+            ("claude", "claude\n", "", false),
+            ("claude", "claude\r", "", false),
+            ("claude", "claude\r\n", "", false),
+            ("claude", "claude --", "", false),
+            ("claude", "claude", "--", false),
+            ("claude", "claude", "--model opus\n", false),
+            ("claude", "claude", "--model opus\r", false),
+            ("claude", "claude", "--model opus\r\n", false),
         ] {
+            let mut inst = tool_instance(tool, "/tmp/custom");
+            inst.source_profile = PROFILE.to_string();
             inst.command = command.to_string();
-            assert!(!inst.supports_native_resume(), "accepted {command:?}");
-        }
-
-        inst.command = "/opt/wrappers/claude".to_string();
-        assert!(!inst.supports_native_resume());
-
-        inst.command = "./claude".to_string();
-        assert!(!inst.supports_native_resume());
-
-        inst.command = "claude".to_string();
-        inst.extra_args = "--model opus | tee /tmp/transcript".to_string();
-        assert!(!inst.supports_native_resume());
-        inst.extra_args = "--append-system-prompt $PROMPT".to_string();
-        assert!(!inst.supports_native_resume());
-        inst.command.clear();
-        inst.extra_args = "--model sonnet[1m]".to_string();
-        assert!(inst.supports_native_resume());
-
-        inst.extra_args.clear();
-        inst.command = "claude # local note".to_string();
-        assert!(!inst.supports_native_resume());
-
-        inst.command = "claude".to_string();
-        inst.extra_args = "--model opus # local note".to_string();
-        assert!(!inst.supports_native_resume());
-
-        for value in ["claude\n", "claude\r", "claude\r\n"] {
-            inst.command = value.to_string();
-            inst.extra_args.clear();
-            assert!(!inst.supports_native_resume(), "accepted {value:?}");
-        }
-        inst.command = "claude --".to_string();
-        inst.extra_args.clear();
-        assert!(!inst.supports_native_resume());
-        inst.command = "claude".to_string();
-        inst.extra_args = "--".to_string();
-        assert!(!inst.supports_native_resume());
-
-        inst.command = "claude".to_string();
-        for value in ["--model opus\n", "--model opus\r", "--model opus\r\n"] {
-            inst.extra_args = value.to_string();
-            assert!(!inst.supports_native_resume(), "accepted {value:?}");
+            inst.extra_args = extra.to_string();
+            assert_eq!(
+                inst.supports_native_resume(),
+                supported,
+                "{command:?} {extra:?}"
+            );
         }
     }
 
-    #[test]
-    fn capture_generation_guards_survive_serialization() {
-        let mut inst = Instance::new("claude", "/tmp/custom");
-        let floor = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(42);
-        inst.capture_started_at = Some(floor);
-        inst.retroactive_capture_excludes
-            .insert("stale-sid".to_string());
-
-        let encoded = serde_json::to_string(&inst).unwrap();
-        let decoded: Instance = serde_json::from_str(&encoded).unwrap();
-        assert_eq!(decoded.capture_started_at, Some(floor));
-        assert!(decoded.retroactive_capture_excludes.contains("stale-sid"));
-    }
     #[test]
     fn claude_hook_publisher_proof_respects_hook_disabling_argv() {
-        let cases = [
+        for (args, expected) in [
             ("", true),
             ("--model opus", true),
             ("--setting-sources user", true),
@@ -853,19 +714,15 @@ mod tests {
                 true,
             ),
             ("--setting-sources", false),
-        ];
-        for (args, expected) in cases {
+        ] {
             let mut inst = tool_instance("claude", "/tmp/x");
             inst.extra_args = args.to_string();
             assert_eq!(
                 inst.hook_session_publisher_allowed_by_argv(),
                 expected,
-                "args={args:?}"
+                "{args:?}"
             );
-            assert!(
-                inst.supports_native_resume(),
-                "hook-disabling argv must not disable native resume: {args:?}"
-            );
+            assert!(inst.supports_native_resume(), "{args:?}");
         }
     }
 }

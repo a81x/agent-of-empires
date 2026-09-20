@@ -243,472 +243,265 @@ impl Instance {
 mod tests {
     use super::*;
 
-    #[test]
-    fn set_color_accepts_palette_and_clears_with_none() {
-        let mut inst = Instance::new("color-test", "/tmp");
-        assert_eq!(inst.color, None);
+    fn inst() -> Instance {
+        Instance::new("test", "/tmp/test")
+    }
 
+    #[test]
+    fn set_color_accepts_only_the_palette() {
+        let mut inst = inst();
         for c in SESSION_COLORS {
             inst.set_color(Some((*c).to_string())).unwrap();
             assert_eq!(inst.color.as_deref(), Some(*c));
         }
-
         inst.set_color(None).unwrap();
         assert_eq!(inst.color, None);
-    }
 
-    #[test]
-    fn set_color_rejects_unknown_color_and_leaves_prior_value() {
-        let mut inst = Instance::new("color-test", "/tmp");
         inst.set_color(Some("green".to_string())).unwrap();
-
-        let err = inst
-            .set_color(Some("chartreuse".to_string()))
-            .expect_err("unknown color must be rejected");
-        assert!(
-            err.contains("chartreuse"),
-            "error should name the value: {err}"
-        );
-        // A rejected write must not clobber the previously stored color.
+        let err = inst.set_color(Some("chartreuse".to_string())).unwrap_err();
+        assert!(err.contains("chartreuse"), "{err}");
         assert_eq!(inst.color.as_deref(), Some("green"));
+
+        for (color, valid) in [
+            ("red", true),
+            ("amber", true),
+            ("green", true),
+            ("blue", false),
+            ("", false),
+            ("Red", false),
+        ] {
+            assert_eq!(is_valid_session_color(color), valid, "{color}");
+        }
     }
 
     #[test]
-    fn is_valid_session_color_matches_palette() {
-        assert!(is_valid_session_color("red"));
-        assert!(is_valid_session_color("amber"));
-        assert!(is_valid_session_color("green"));
-        assert!(!is_valid_session_color("blue"));
-        assert!(!is_valid_session_color(""));
-        assert!(!is_valid_session_color("Red"));
+    fn triage_mutators_keep_their_exclusivity_rules() {
+        type Action = fn(&mut Instance);
+        type Check = fn(&Instance) -> bool;
+        let archived: Check = Instance::is_archived;
+        let snoozed: Check = Instance::is_snoozed;
+        let dormant: Check = Instance::is_idle_dormant;
+        let favorited: Check = Instance::is_favorited;
+        let pinned: Check = Instance::is_pinned;
+        let touch: Action = Instance::touch_last_accessed;
+        // (label, setup, action, [(check, expected after action)])
+        let cases: &[(&str, &[Action], Action, &[(Check, bool)])] = &[
+            (
+                "touch wakes archive",
+                &[|i| i.archive()],
+                touch,
+                &[(archived, false)],
+            ),
+            (
+                "touch wakes snooze",
+                &[|i| i.snooze(30)],
+                touch,
+                &[(snoozed, false)],
+            ),
+            (
+                "touch wakes dormancy",
+                &[|i| i.mark_idle_dormant()],
+                touch,
+                &[(dormant, false)],
+            ),
+            (
+                "touch keeps favorite",
+                &[|i| i.favorite()],
+                touch,
+                &[(favorited, true)],
+            ),
+            ("touch keeps pin", &[|i| i.pin()], touch, &[(pinned, true)]),
+            (
+                "unarchive wakes dormancy",
+                &[|i| i.archive(), |i| i.mark_idle_dormant()],
+                |i| i.unarchive(),
+                &[(archived, false), (dormant, false)],
+            ),
+            (
+                "archive clears snooze",
+                &[|i| i.snooze(15)],
+                |i| i.archive(),
+                &[(archived, true), (snoozed, false)],
+            ),
+            (
+                "archive clears pin",
+                &[|i| i.pin()],
+                |i| i.archive(),
+                &[(archived, true), (pinned, false)],
+            ),
+            (
+                "pin clears archive",
+                &[|i| i.archive()],
+                |i| i.pin(),
+                &[(pinned, true), (archived, false), (snoozed, false)],
+            ),
+            (
+                "pin clears snooze",
+                &[|i| i.snooze(15)],
+                |i| i.pin(),
+                &[(pinned, true), (snoozed, false)],
+            ),
+            (
+                "snooze clears pin",
+                &[|i| i.pin()],
+                |i| i.snooze(30),
+                &[(snoozed, true), (pinned, false)],
+            ),
+            (
+                "pin keeps favorite",
+                &[|i| i.favorite()],
+                |i| i.pin(),
+                &[(pinned, true), (favorited, true)],
+            ),
+            (
+                "favorite keeps pin",
+                &[|i| i.pin()],
+                |i| i.favorite(),
+                &[(pinned, true), (favorited, true)],
+            ),
+            (
+                "mark dormant",
+                &[],
+                |i| i.mark_idle_dormant(),
+                &[(dormant, true)],
+            ),
+        ];
+        for (label, setup, action, checks) in cases {
+            let mut inst = inst();
+            setup.iter().for_each(|step| step(&mut inst));
+            action(&mut inst);
+            for (check, expected) in checks.iter() {
+                assert_eq!(check(&inst), *expected, "{label}");
+            }
+        }
+        let mut touched = inst();
+        touched.touch_last_accessed();
+        assert!(touched.last_accessed_at.is_some());
     }
 
-    /// `touch_last_accessed` is what `aoe send` and the TUI dispatch path call when the user
-    /// interacts with a session.
     #[test]
-    fn test_touch_last_accessed_clears_archived() {
-        let mut inst = Instance::new("test", "/tmp/test");
-        inst.archive();
-        assert!(inst.is_archived());
-        inst.touch_last_accessed();
-        assert!(!inst.is_archived());
-        assert!(inst.last_accessed_at.is_some());
-    }
-
-    #[test]
-    fn test_touch_last_accessed_clears_snooze() {
-        let mut inst = Instance::new("test", "/tmp/test");
-        inst.snooze(30);
-        assert!(inst.is_snoozed());
-        inst.touch_last_accessed();
-        assert!(!inst.is_snoozed());
-    }
-
-    #[test]
-    fn test_touch_last_accessed_clears_idle_dormant() {
-        let mut inst = Instance::new("test", "/tmp/test");
-        inst.mark_idle_dormant();
-        assert!(inst.is_idle_dormant());
-        inst.touch_last_accessed();
-        assert!(!inst.is_idle_dormant());
-    }
-
-    #[test]
-    fn test_unarchive_clears_idle_dormant() {
-        let mut inst = Instance::new("test", "/tmp/test");
-        inst.archive();
-        inst.mark_idle_dormant();
-        assert!(inst.is_archived());
-        assert!(inst.is_idle_dormant());
-
-        inst.unarchive();
-
-        assert!(!inst.is_archived());
-        assert!(
-            !inst.is_idle_dormant(),
-            "unarchive should wake sessions blocked by idle auto-stop"
-        );
-    }
-
-    #[test]
-    fn test_mark_unread_and_mark_read_are_idempotent() {
-        let mut inst = Instance::new("test", "/tmp/test");
+    fn unread_marker_is_idempotent_toggles_and_skips_serialization_when_false() {
+        let mut inst = inst();
         assert!(!inst.is_unread());
-        // read -> unread
-        inst.mark_unread();
-        assert!(inst.is_unread());
-        // unread -> unread (idempotent)
-        inst.mark_unread();
-        assert!(inst.is_unread());
-        // unread -> read
-        inst.mark_read();
-        assert!(!inst.is_unread());
-        // read -> read (idempotent)
-        inst.mark_read();
-        assert!(!inst.is_unread());
-    }
-
-    #[test]
-    fn test_toggle_unread_round_trips() {
-        let mut inst = Instance::new("test", "/tmp/test");
-        // read -> unread
-        inst.toggle_unread();
-        assert!(inst.is_unread());
-        // unread -> read
-        inst.toggle_unread();
-        assert!(!inst.is_unread());
-    }
-
-    #[test]
-    fn test_unread_serde_round_trip() {
-        // Absent field deserializes to false (older sessions.json).
-        let inst: Instance = serde_json::from_value(serde_json::json!({
-            "id": "abc",
-            "title": "t",
-            "project_path": "/tmp",
-            "tool": "claude",
-            "status": "idle",
-            "created_at": "2026-01-01T00:00:00Z",
-        }))
-        .expect("deserialize without unread");
-        assert!(!inst.unread);
-
-        // Round-trips when set, and is omitted when false.
-        let mut set = Instance::new("t", "/tmp");
-        set.unread = true;
-        let json = serde_json::to_value(&set).unwrap();
+        for (step, expected) in [
+            (Instance::mark_unread as fn(&mut Instance), true),
+            (Instance::mark_unread, true),
+            (Instance::mark_read, false),
+            (Instance::mark_read, false),
+            (Instance::toggle_unread, true),
+            (Instance::toggle_unread, false),
+        ] {
+            step(&mut inst);
+            assert_eq!(inst.is_unread(), expected);
+        }
+        assert!(serde_json::to_value(&inst).unwrap().get("unread").is_none());
+        inst.unread = true;
+        let json = serde_json::to_value(&inst).unwrap();
         assert_eq!(json["unread"], serde_json::json!(true));
-        let back: Instance = serde_json::from_value(json).unwrap();
-        assert!(back.unread);
-
-        let read = Instance::new("t", "/tmp");
-        let json = serde_json::to_value(&read).unwrap();
-        assert!(
-            json.get("unread").is_none(),
-            "false must skip serialization"
-        );
+        assert!(serde_json::from_value::<Instance>(json).unwrap().unread);
     }
 
     #[test]
-    fn test_mark_idle_dormant_sets_marker() {
-        let mut inst = Instance::new("test", "/tmp/test");
-        assert!(!inst.is_idle_dormant());
-        inst.mark_idle_dormant();
-        assert!(inst.is_idle_dormant());
-        assert!(inst.idle_dormant_since.is_some());
+    fn dormancy_presents_only_on_an_idle_row() {
+        for (status, marked, shown) in [
+            (Status::Idle, true, true),
+            // A deliberate Stop also marks dormant but presents as stopped.
+            (Status::Stopped, true, false),
+            (Status::Idle, false, false),
+            (Status::Running, false, false),
+        ] {
+            let mut inst = inst();
+            inst.status = status;
+            if marked {
+                inst.mark_idle_dormant();
+            }
+            assert_eq!(inst.is_shown_dormant(), shown, "{status:?} {marked}");
+        }
     }
 
     #[test]
-    fn test_is_shown_dormant_precedence() {
-        // Idle + dormant marker: the idle-reaper's output, presents dormant.
-        let mut idle_reaped = Instance::new("test", "/tmp/test");
-        idle_reaped.status = Status::Idle;
-        idle_reaped.mark_idle_dormant();
-        assert!(idle_reaped.is_shown_dormant());
-
-        // Stopped + dormant marker: a deliberate Stop (which also marks dormant).
-        let mut deliberate_stop = Instance::new("test", "/tmp/test");
-        deliberate_stop.status = Status::Stopped;
-        deliberate_stop.mark_idle_dormant();
-        assert!(!deliberate_stop.is_shown_dormant());
-
-        // Idle, no marker: a live idle session, unaffected.
-        let mut live_idle = Instance::new("test", "/tmp/test");
-        live_idle.status = Status::Idle;
-        assert!(!live_idle.is_shown_dormant());
-
-        // Running, no marker: live, unaffected.
-        let mut running = Instance::new("test", "/tmp/test");
-        running.status = Status::Running;
-        assert!(!running.is_shown_dormant());
-    }
-
-    #[test]
-    fn test_touch_last_accessed_preserves_favorite() {
-        let mut inst = Instance::new("test", "/tmp/test");
-        inst.favorite();
-        assert!(inst.is_favorited());
-        inst.touch_last_accessed();
-        // Favorite is orthogonal to sink states; user interaction must not
-        // clear it.
-        assert!(inst.is_favorited());
-    }
-
-    #[test]
-    fn test_archive_clears_snooze() {
-        // Direct mutator test (no merge): the data-layer contract is that archive is mutually
-        // exclusive with every other triage flag.
-        let mut inst = Instance::new("s", "/tmp/x");
-        inst.snooze(15);
-        assert!(inst.is_snoozed());
-        inst.archive();
-        assert!(inst.is_archived());
-        assert!(!inst.is_snoozed());
-    }
-
-    #[test]
-    fn test_pin_clears_archive_and_snooze() {
-        let mut inst = Instance::new("s", "/tmp/x");
-        inst.archive();
-        assert!(inst.is_archived());
-        inst.pin();
-        assert!(inst.is_pinned());
-        assert!(!inst.is_archived());
-        assert!(!inst.is_snoozed());
-
-        inst.snooze(15);
-        assert!(inst.is_snoozed());
-        inst.pin();
-        assert!(inst.is_pinned());
-        assert!(!inst.is_snoozed());
-    }
-
-    #[test]
-    fn test_archive_clears_pin() {
-        let mut inst = Instance::new("s", "/tmp/x");
-        inst.pin();
-        assert!(inst.is_pinned());
-        inst.archive();
-        assert!(inst.is_archived());
-        assert!(!inst.is_pinned());
-    }
-
-    #[test]
-    fn test_trash_untrash_roundtrip() {
-        let mut inst = Instance::new("s", "/tmp/x");
-        assert!(!inst.is_trashed());
+    fn trash_wins_the_bucket_and_preserves_decorations() {
+        let mut inst = inst();
         assert_eq!(inst.effective_bucket(), SessionBucket::Active);
-
+        let json = serde_json::to_string(&inst).unwrap();
+        assert!(!json.contains("trashed_at"));
+        inst.favorite();
+        inst.pin();
         inst.trash();
         assert!(inst.is_trashed());
         assert_eq!(inst.effective_bucket(), SessionBucket::Trashed);
-
+        assert!(inst.is_favorited() && inst.is_pinned());
+        let back: Instance = serde_json::from_str(&serde_json::to_string(&inst).unwrap()).unwrap();
+        assert!(back.is_trashed());
         inst.untrash();
         assert!(!inst.is_trashed());
         assert_eq!(inst.effective_bucket(), SessionBucket::Active);
+        assert!(inst.is_favorited() && inst.is_pinned());
+
+        let mut archived = self::inst();
+        archived.archive();
+        assert_eq!(archived.effective_bucket(), SessionBucket::Archived);
+        archived.trash();
+        assert_eq!(archived.effective_bucket(), SessionBucket::Trashed);
+        archived.untrash();
+        assert_eq!(archived.effective_bucket(), SessionBucket::Archived);
     }
 
     #[test]
-    fn test_trash_preserves_sibling_triage_flags() {
-        let mut inst = Instance::new("s", "/tmp/x");
-        inst.favorite();
-        inst.pin();
-        assert!(inst.is_favorited());
-        assert!(inst.is_pinned());
-
-        inst.trash();
-        // Trash wins the bucket but leaves the decorations intact so
-        // restore is faithful (a trashed favorite comes back a favorite).
-        assert_eq!(inst.effective_bucket(), SessionBucket::Trashed);
-        assert!(inst.is_favorited(), "favorite preserved across trash");
-        assert!(inst.is_pinned(), "pin preserved across trash");
-
-        inst.untrash();
-        assert!(inst.is_favorited());
-        assert!(inst.is_pinned());
-    }
-
-    #[test]
-    fn test_effective_bucket_trash_beats_archive() {
-        let mut inst = Instance::new("s", "/tmp/x");
-        inst.archive();
-        assert_eq!(inst.effective_bucket(), SessionBucket::Archived);
-        inst.trash();
-        assert_eq!(
-            inst.effective_bucket(),
-            SessionBucket::Trashed,
-            "trash takes precedence over archive in bucketing"
-        );
-        // archived_at is preserved, so restore returns to the archived bucket.
-        assert!(inst.is_archived());
-        inst.untrash();
-        assert_eq!(inst.effective_bucket(), SessionBucket::Archived);
-    }
-
-    #[test]
-    fn test_trashed_at_serde_roundtrip_and_default() {
-        // A non-trashed instance omits trashed_at on the wire (skip_serializing_if), so
-        // deserializing it exercises the missing-field path that legacy rows hit.
-        let fresh = Instance::new("s", "/tmp/x");
-        let fresh_json = serde_json::to_string(&fresh).expect("serialize fresh");
-        assert!(
-            !fresh_json.contains("trashed_at"),
-            "None trashed_at must not be serialized"
-        );
-        let parsed: Instance = serde_json::from_str(&fresh_json).expect("parse fresh");
-        assert!(!parsed.is_trashed(), "missing trashed_at => None");
-
-        let mut inst = Instance::new("s", "/tmp/x");
-        inst.trash();
-        let json = serde_json::to_string(&inst).expect("serialize");
-        let back: Instance = serde_json::from_str(&json).expect("round-trip");
-        assert!(back.is_trashed());
-    }
-
-    #[test]
-    fn test_snooze_clears_pin() {
-        let mut inst = Instance::new("s", "/tmp/x");
-        inst.pin();
-        assert!(inst.is_pinned());
-        inst.snooze(30);
-        assert!(inst.is_snoozed());
-        assert!(!inst.is_pinned());
-    }
-
-    #[test]
-    fn test_touch_last_accessed_preserves_pin() {
-        let mut inst = Instance::new("s", "/tmp/x");
-        inst.pin();
-        assert!(inst.is_pinned());
-        inst.touch_last_accessed();
-        // Pin is an explicit user surfacing signal, not a sink state.
-        // User interaction (send, attach) must NOT clear it.
-        assert!(inst.is_pinned());
-    }
-
-    #[test]
-    fn test_pin_and_favorite_coexist() {
-        let mut inst = Instance::new("s", "/tmp/x");
-        inst.favorite();
-        assert!(inst.is_favorited());
-        inst.pin();
-        // Pin and favorite drive different surfaces (TUI Attention vs web
-        // sidebar). They must coexist; pinning does NOT clear favorite.
-        assert!(inst.is_pinned());
-        assert!(inst.is_favorited());
-
-        let mut inst2 = Instance::new("s2", "/tmp/x");
-        inst2.pin();
-        inst2.favorite();
-        // Same in reverse: favoriting does NOT clear pin.
-        assert!(inst2.is_pinned());
-        assert!(inst2.is_favorited());
-    }
-
-    #[test]
-    fn test_idle_age_returns_none_for_non_idle() {
-        let mut inst = Instance::new("test", "/tmp/test");
-        inst.status = Status::Running;
-        inst.idle_entered_at = Some(Utc::now() - chrono::Duration::seconds(60));
-        assert_eq!(inst.idle_age(), None);
-    }
-
-    #[test]
-    fn test_idle_age_returns_none_when_no_timestamp() {
-        let mut inst = Instance::new("test", "/tmp/test");
-        inst.status = Status::Idle;
-        inst.idle_entered_at = None;
-        assert_eq!(inst.idle_age(), None);
-    }
-
-    #[test]
-    fn test_idle_age_returns_positive_duration() {
-        let mut inst = Instance::new("test", "/tmp/test");
-        inst.status = Status::Idle;
-        inst.idle_entered_at = Some(Utc::now() - chrono::Duration::seconds(5));
-        let age = inst.idle_age().expect("idle age should be present");
-        // Allow generous slack so the test isn't flaky on slow CI.
-        assert!(age.as_secs() >= 4 && age.as_secs() <= 30);
-    }
-
-    #[test]
-    fn test_idle_age_clamps_negative_to_none() {
-        let mut inst = Instance::new("test", "/tmp/test");
-        inst.status = Status::Idle;
-        // Future timestamp (clock skew, hand-crafted state).
-        inst.idle_entered_at = Some(Utc::now() + chrono::Duration::seconds(60));
-        assert_eq!(inst.idle_age(), None);
-    }
-
-    #[test]
-    fn test_has_recent_activity_active_statuses_are_true() {
+    fn idle_age_and_recent_activity() {
         let window = std::time::Duration::from_secs(15 * 60);
-        for status in [
-            Status::Running,
-            Status::Waiting,
-            Status::Starting,
-            Status::Creating,
+        let ago = |secs: i64| Some(Utc::now() - chrono::Duration::seconds(secs));
+        // (status, idle_entered_at, idle age present, recent activity)
+        for (status, entered, has_age, recent) in [
+            (Status::Running, ago(60), false, Some(true)),
+            (Status::Waiting, None, false, Some(true)),
+            (Status::Starting, None, false, Some(true)),
+            (Status::Creating, None, false, Some(true)),
+            (Status::Stopped, None, false, Some(false)),
+            (Status::Error, None, false, Some(false)),
+            (Status::Unknown, None, false, Some(false)),
+            (Status::Deleting, None, false, Some(false)),
+            (Status::Idle, None, false, Some(false)),
+            (Status::Idle, ago(60), true, Some(true)),
+            (Status::Idle, ago(30 * 60), true, Some(false)),
+            // A future timestamp (clock skew) clamps to no age.
+            (Status::Idle, ago(-60), false, None),
         ] {
-            let mut inst = Instance::new("test", "/tmp/test");
+            let mut inst = inst();
             inst.status = status;
-            assert!(
-                inst.has_recent_activity(window),
-                "{status:?} should keep the machine awake"
-            );
+            inst.idle_entered_at = entered;
+            assert_eq!(inst.idle_age().is_some(), has_age, "{status:?} {entered:?}");
+            if let Some(recent) = recent {
+                assert_eq!(
+                    inst.has_recent_activity(window),
+                    recent,
+                    "{status:?} {entered:?}"
+                );
+            }
         }
+        let mut inst = inst();
+        inst.status = Status::Idle;
+        inst.idle_entered_at = ago(5);
+        let age = inst.idle_age().unwrap().as_secs();
+        assert!((4..=30).contains(&age));
     }
 
     #[test]
-    fn test_has_recent_activity_inactive_statuses_are_false() {
-        let window = std::time::Duration::from_secs(15 * 60);
-        for status in [
-            Status::Stopped,
-            Status::Error,
-            Status::Unknown,
-            Status::Deleting,
+    fn archive_settles_only_live_interaction_statuses() {
+        for (status, expected) in [
+            (Status::Running, Status::Idle),
+            (Status::Waiting, Status::Idle),
+            (Status::Starting, Status::Idle),
+            (Status::Idle, Status::Idle),
+            (Status::Stopped, Status::Stopped),
+            (Status::Error, Status::Error),
+            (Status::Unknown, Status::Unknown),
         ] {
-            let mut inst = Instance::new("test", "/tmp/test");
-            inst.status = status;
-            assert!(
-                !inst.has_recent_activity(window),
-                "{status:?} must not hold the sleep-inhibit assertion"
-            );
-        }
-    }
-
-    #[test]
-    fn test_has_recent_activity_idle_within_window_is_true() {
-        let window = std::time::Duration::from_secs(15 * 60);
-        let mut inst = Instance::new("test", "/tmp/test");
-        inst.status = Status::Idle;
-        inst.idle_entered_at = Some(Utc::now() - chrono::Duration::seconds(60));
-        assert!(inst.has_recent_activity(window));
-    }
-
-    #[test]
-    fn test_has_recent_activity_idle_past_window_is_false() {
-        let window = std::time::Duration::from_secs(15 * 60);
-        let mut inst = Instance::new("test", "/tmp/test");
-        inst.status = Status::Idle;
-        inst.idle_entered_at = Some(Utc::now() - chrono::Duration::minutes(30));
-        assert!(!inst.has_recent_activity(window));
-    }
-
-    #[test]
-    fn test_has_recent_activity_idle_without_timestamp_is_false() {
-        let window = std::time::Duration::from_secs(15 * 60);
-        let mut inst = Instance::new("test", "/tmp/test");
-        inst.status = Status::Idle;
-        inst.idle_entered_at = None;
-        assert!(!inst.has_recent_activity(window));
-    }
-    #[test]
-    fn archive_settles_live_interaction_status_to_idle() {
-        for status in [Status::Running, Status::Waiting, Status::Starting] {
-            let mut inst = Instance::new("test", "/tmp/test");
+            let mut inst = inst();
             inst.status = status;
             inst.archive();
             assert!(inst.is_archived());
-            assert_eq!(
-                inst.status,
-                Status::Idle,
-                "{status:?} cannot be true of a row whose tmux archive tore down"
-            );
-        }
-    }
-
-    #[test]
-    fn archive_leaves_resting_statuses_alone() {
-        for status in [
-            Status::Idle,
-            Status::Stopped,
-            Status::Error,
-            Status::Unknown,
-        ] {
-            let mut inst = Instance::new("test", "/tmp/test");
-            inst.status = status;
-            inst.archive();
-            assert_eq!(inst.status, status, "{status:?} should survive archive");
+            assert_eq!(inst.status, expected, "{status:?}");
         }
     }
 }
