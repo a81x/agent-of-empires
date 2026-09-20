@@ -4467,8 +4467,11 @@ mod tests {
         );
     }
 
+    /// The `[agents.*]` status map and rules keep their on-disk shape through a
+    /// round trip, and an unknown status name fails the parse loudly rather
+    /// than silently dropping the entry.
     #[test]
-    fn agent_status_map_roundtrips() {
+    fn agent_status_map_and_rules_round_trip() {
         let mut config = Config::default();
         config
             .agents
@@ -4476,32 +4479,17 @@ mod tests {
             .or_default()
             .status_map
             .insert("Stop".to_string(), crate::agents::HookStatus::Error);
-
         let serialized = toml::to_string_pretty(&config).unwrap();
         assert!(serialized.contains("[agents.claude.status_map]"));
-        assert!(serialized.contains("Stop = \"error\""));
-
-        let deserialized: Config = toml::from_str(&serialized).unwrap();
+        assert!(serialized.contains(r#"Stop = "error""#));
+        let reparsed: Config = toml::from_str(&serialized).unwrap();
         assert_eq!(
-            deserialized.agents["claude"].status_map.get("Stop"),
+            reparsed.agents["claude"].status_map.get("Stop"),
             Some(&crate::agents::HookStatus::Error)
         );
-    }
 
-    #[test]
-    fn agent_status_map_rejects_invalid_status() {
-        let toml = r#"
-            [agents.claude.status_map]
-            Stop = "stopped"
-        "#;
-
-        let err = toml::from_str::<Config>(toml).unwrap_err();
-        assert!(err.to_string().contains("stopped"));
-    }
-
-    #[test]
-    fn agent_status_rules_roundtrip() {
-        let toml = r#"
+        let config: Config = toml::from_str(
+            r#"
             [[agents.gjc.status_rules]]
             status = "running"
             contains = "esc to interrupt"
@@ -4509,9 +4497,9 @@ mod tests {
             [[agents.gjc.status_rules]]
             status = "waiting"
             regex = "\\(y/n\\)"
-        "#;
-
-        let config: Config = toml::from_str(toml).unwrap();
+            "#,
+        )
+        .unwrap();
         let rules = &config.agents["gjc"].status_rules;
         assert_eq!(rules.len(), 2);
         assert_eq!(rules[0].status, crate::agents::HookStatus::Running);
@@ -4519,23 +4507,18 @@ mod tests {
         assert!(rules[0].regex.is_none());
         assert_eq!(rules[1].status, crate::agents::HookStatus::Waiting);
         assert_eq!(rules[1].regex.as_deref(), Some(r"\(y/n\)"));
-
         let serialized = toml::to_string_pretty(&config).unwrap();
         assert!(serialized.contains("[[agents.gjc.status_rules]]"));
         let reparsed: Config = toml::from_str(&serialized).unwrap();
         assert_eq!(reparsed.agents["gjc"].status_rules, *rules);
-    }
 
-    #[test]
-    fn agent_status_rules_reject_invalid_status() {
-        let toml = r#"
-            [[agents.gjc.status_rules]]
-            status = "stopped"
-            contains = "x"
-        "#;
-
-        let err = toml::from_str::<Config>(toml).unwrap_err();
-        assert!(err.to_string().contains("stopped"));
+        for source in [
+            "[agents.claude.status_map]\nStop = \"stopped\"\n",
+            "[[agents.gjc.status_rules]]\nstatus = \"stopped\"\ncontains = \"x\"\n",
+        ] {
+            let err = toml::from_str::<Config>(source).unwrap_err();
+            assert!(err.to_string().contains("stopped"), "{source}");
+        }
     }
 
     /// Every accessor on `AcpAgentDefaults` treats a blank string as unset, and
