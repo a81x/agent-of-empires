@@ -1147,68 +1147,45 @@ mod tests {
     }
 
     #[test]
-    fn doctor_fix_hints_missing_and_stale_gated_agents() {
-        let claude = crate::acp::agent_compat::version_gate_for(
-            crate::acp::agent_compat::ExpectedAgent::ClaudeAgentAcp,
-        );
-        assert!(matches!(
-            doctor_fix_action(claude, &crate::acp::version_probe::ProbeStatus::Missing),
-            DoctorFixAction::PrintHint { .. }
-        ));
-        assert!(matches!(
-            doctor_fix_action(
-                claude,
-                &crate::acp::version_probe::ProbeStatus::Version {
-                    raw: "0.0.1".to_string(),
-                    parsed: semver::Version::parse("0.0.1").unwrap(),
-                    stdout_raw: "0.0.1".to_string(),
-                },
-            ),
-            DoctorFixAction::PrintHint { .. }
-        ));
-    }
+    fn doctor_fix_hints_only_for_a_gated_adapter_off_its_floor() {
+        use crate::acp::agent_compat::{
+            version_gate_for, ExpectedAgent, CLAUDE_AGENT_ACP_MIN_VERSION,
+        };
+        use crate::acp::version_probe::ProbeStatus;
 
-    #[test]
-    fn doctor_fix_skips_current_and_ungated_agents() {
-        let claude = crate::acp::agent_compat::version_gate_for(
-            crate::acp::agent_compat::ExpectedAgent::ClaudeAgentAcp,
-        );
-        assert_eq!(
-            doctor_fix_action(
+        let ver = |v: &str| ProbeStatus::Version {
+            raw: v.to_string(),
+            parsed: semver::Version::parse(v).unwrap(),
+            stdout_raw: v.to_string(),
+        };
+        let unparseable = || ProbeStatus::Unparseable {
+            raw: "weird".to_string(),
+        };
+        let claude = version_gate_for(ExpectedAgent::ClaudeAgentAcp);
+        let opencode = version_gate_for(ExpectedAgent::OpenCode);
+
+        let cases = [
+            ("missing gated adapter", claude, ProbeStatus::Missing, true),
+            ("stale gated adapter", claude, ver("0.0.1"), true),
+            ("unparseable gated adapter", claude, unparseable(), true),
+            ("stale non-npm adapter", opencode, ver("1.15.0"), true),
+            (
+                "gated adapter at its floor",
                 claude,
-                &crate::acp::version_probe::ProbeStatus::Version {
-                    raw: crate::acp::agent_compat::CLAUDE_AGENT_ACP_MIN_VERSION.to_string(),
-                    parsed: semver::Version::parse(
-                        crate::acp::agent_compat::CLAUDE_AGENT_ACP_MIN_VERSION,
-                    )
-                    .unwrap(),
-                    stdout_raw: crate::acp::agent_compat::CLAUDE_AGENT_ACP_MIN_VERSION.to_string(),
-                },
+                ver(CLAUDE_AGENT_ACP_MIN_VERSION),
+                false,
             ),
-            DoctorFixAction::Skip,
-        );
-        assert!(matches!(
-            doctor_fix_action(
-                claude,
-                &crate::acp::version_probe::ProbeStatus::Unparseable {
-                    raw: "weird".to_string(),
-                },
-            ),
-            DoctorFixAction::PrintHint { .. }
-        ));
-        assert_eq!(
-            doctor_fix_action(
-                None,
-                &crate::acp::version_probe::ProbeStatus::Unparseable {
-                    raw: "weird".to_string(),
-                },
-            ),
-            DoctorFixAction::Skip,
-        );
-        assert_eq!(
-            doctor_fix_action(None, &crate::acp::version_probe::ProbeStatus::Missing),
-            DoctorFixAction::Skip,
-        );
+            ("ungated, unparseable", None, unparseable(), false),
+            ("ungated, missing", None, ProbeStatus::Missing, false),
+        ];
+        for (label, gate, probe, hints) in cases {
+            let action = doctor_fix_action(gate, &probe);
+            assert_eq!(
+                matches!(action, DoctorFixAction::PrintHint { .. }),
+                hints,
+                "{label}: {action:?}"
+            );
+        }
     }
 
     #[test]
@@ -1219,48 +1196,11 @@ mod tests {
         assert!(!skip_gate_check("opencode", true));
     }
 
-    #[test]
-    fn doctor_fix_hints_non_npm_stale_agents() {
-        let opencode = crate::acp::agent_compat::version_gate_for(
-            crate::acp::agent_compat::ExpectedAgent::OpenCode,
-        );
-        assert!(matches!(
-            doctor_fix_action(
-                opencode,
-                &crate::acp::version_probe::ProbeStatus::Version {
-                    raw: "1.15.0".to_string(),
-                    parsed: semver::Version::parse("1.15.0").unwrap(),
-                    stdout_raw: "1.15.0".to_string(),
-                },
-            ),
-            DoctorFixAction::PrintHint { .. }
-        ));
-    }
-
     fn claude_gate() -> crate::acp::agent_compat::VersionGate {
         crate::acp::agent_compat::version_gate_for(
             crate::acp::agent_compat::ExpectedAgent::ClaudeAgentAcp,
         )
         .expect("claude-agent-acp must carry a version gate")
-    }
-
-    #[test]
-    fn doctor_flags_stale_gated_adapter_with_remediation() {
-        let gate = claude_gate();
-        let stale = crate::acp::version_probe::ProbeStatus::Version {
-            raw: "0.37.0".to_string(),
-            parsed: semver::Version::parse("0.37.0").unwrap(),
-            stdout_raw: "0.37.0".to_string(),
-        };
-        let issue = doctor_version_issue(&gate, &stale, false)
-            .expect("a below-floor adapter must produce a version issue");
-        assert!(issue.reason.contains("0.37.0"), "{}", issue.reason);
-        assert!(
-            issue.reason.contains(gate.min_version),
-            "reason must name the required floor: {}",
-            issue.reason
-        );
-        assert_eq!(issue.install_command, gate.install_command);
     }
 
     #[test]
@@ -1349,6 +1289,16 @@ mod tests {
         let issue = doctor_version_issue(&opencode, &ver("1.15.0"), false)
             .expect("stale opencode must produce a version issue");
         assert_eq!(issue.install_command, opencode.install_command);
+
+        let issue = doctor_version_issue(&gate, &ver("0.37.0"), false)
+            .expect("a below-floor adapter must produce a version issue");
+        assert!(issue.reason.contains("0.37.0"), "{}", issue.reason);
+        assert!(
+            issue.reason.contains(gate.min_version),
+            "the reason must name the required floor: {}",
+            issue.reason
+        );
+        assert_eq!(issue.install_command, gate.install_command);
     }
 
     #[test]
