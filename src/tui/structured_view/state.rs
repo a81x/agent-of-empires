@@ -339,7 +339,6 @@ impl StructuredViewState {
         self.composer.cursor() == (0, 0)
     }
 
-    /// Whether an ArrowUp/ArrowDown queue browse is active.
     pub fn browsing_queue(&self) -> bool {
         self.recall.is_some()
     }
