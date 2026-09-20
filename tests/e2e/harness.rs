@@ -530,15 +530,14 @@ last_seen_version = "{}"
 
     /// Start `aoe serve --daemon --no-auth` on a free port and wait for it to bind.
     pub fn start_daemon(&self) -> u16 {
+        self.start_daemon_with(&["--no-auth"])
+    }
+
+    /// `start_daemon` with different auth or proxy flags.
+    pub fn start_daemon_with(&self, args: &[&str]) -> u16 {
         let port = pick_free_port();
         let port_s = port.to_string();
-        let start = self.run_cli(&["serve", "--daemon", "--port", &port_s, "--no-auth"]);
-        assert!(
-            start.status.success(),
-            "aoe serve --daemon failed.\nstdout: {}\nstderr: {}",
-            String::from_utf8_lossy(&start.stdout),
-            String::from_utf8_lossy(&start.stderr),
-        );
+        self.run_cli_ok(&[&["serve", "--daemon", "--port", &port_s], args].concat());
         assert!(
             wait_for_port(port, Duration::from_secs(10)),
             "daemon never bound port {port}"
@@ -548,14 +547,7 @@ last_seen_version = "{}"
 
     /// Run `aoe add <args>`, assert success, and return the new session id.
     pub fn add_session(&self, args: &[&str]) -> String {
-        let add = self.run_cli(&[&["add"], args].concat());
-        assert!(
-            add.status.success(),
-            "aoe add {args:?} failed.\nstdout: {}\nstderr: {}",
-            String::from_utf8_lossy(&add.stdout),
-            String::from_utf8_lossy(&add.stderr),
-        );
-        parse_session_id(&String::from_utf8_lossy(&add.stdout))
+        parse_session_id(&self.run_cli_ok(&[&["add"], args].concat()))
     }
 
     /// Start a daemon and add a `claude --structured-view` session titled
@@ -596,6 +588,13 @@ last_seen_version = "{}"
             }
             std::thread::sleep(Duration::from_millis(250));
         }
+    }
+
+    /// Append TOML to the seeded `config.toml`.
+    pub fn append_config(&self, toml: &str) {
+        let path = app_dir_in(self.home_path()).join("config.toml");
+        let seeded = std::fs::read_to_string(&path).expect("read seeded config");
+        std::fs::write(&path, format!("{seeded}\n{toml}\n")).expect("write config.toml");
     }
 
     pub fn sessions_path(&self) -> PathBuf {
@@ -987,6 +986,29 @@ last_seen_version = "{}"
         self.cli_command(args)
             .output()
             .expect("failed to run aoe CLI")
+    }
+
+    /// `run_cli`, asserting success and returning stdout.
+    pub fn run_cli_ok(&self, args: &[&str]) -> String {
+        let out = self.run_cli(args);
+        assert!(
+            out.status.success(),
+            "aoe {args:?} failed.\nstdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr),
+        );
+        String::from_utf8_lossy(&out.stdout).into_owned()
+    }
+
+    /// `run_cli`, asserting a non-zero exit and returning stderr.
+    pub fn run_cli_err(&self, args: &[&str]) -> String {
+        let out = self.run_cli(args);
+        assert!(
+            !out.status.success(),
+            "aoe {args:?} unexpectedly succeeded.\nstdout: {}",
+            String::from_utf8_lossy(&out.stdout),
+        );
+        String::from_utf8_lossy(&out.stderr).into_owned()
     }
 
     pub fn run_cli_with_stdin(&self, args: &[&str], stdin: &str) -> Output {

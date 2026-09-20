@@ -62,8 +62,8 @@ fn archive_case(name: &str, kill_pane: bool) {
         !kill_pane,
         "tool sub-session survives only without kill_pane"
     );
-    let log = std::fs::read_to_string(app_dir_in(h.home_path()).join("fake-acp.log"))
-        .unwrap_or_default();
+    let log =
+        std::fs::read_to_string(app_dir_in(h.home_path()).join("fake-acp.log")).unwrap_or_default();
     assert!(
         !log.contains("session/delete"),
         "archive must not fire session/delete:\n{log}"
