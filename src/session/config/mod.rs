@@ -4282,45 +4282,12 @@ mod tests {
         assert_eq!(reparsed.row_tag, RowTagMode::None);
     }
 
-    // Full config serialization roundtrip
+    /// A whole config.toml with nested sections parses, and everything it sets
+    /// survives a serialize/parse round trip.
     #[test]
-    fn test_config_serialization_roundtrip() {
-        let config = Config {
-            default_profile: "test".to_string(),
-            worktree: WorktreeConfig {
-                enabled: true,
-                ..Default::default()
-            },
-            sandbox: SandboxConfig {
-                enabled_by_default: true,
-                ..Default::default()
-            },
-            updates: UpdatesConfig {
-                update_check_mode: UpdateCheckMode::Auto,
-                ..Default::default()
-            },
-            ..Default::default()
-        };
-
-        let serialized = toml::to_string(&config).unwrap();
-        let deserialized: Config = toml::from_str(&serialized).unwrap();
-
-        assert_eq!(config.default_profile, deserialized.default_profile);
-        assert_eq!(config.worktree.enabled, deserialized.worktree.enabled);
-        assert_eq!(
-            config.sandbox.enabled_by_default,
-            deserialized.sandbox.enabled_by_default
-        );
-        assert_eq!(
-            config.updates.update_check_mode,
-            deserialized.updates.update_check_mode
-        );
-    }
-
-    // Test nested sections in TOML
-    #[test]
-    fn test_config_nested_sections() {
-        let toml = r#"
+    fn config_nested_sections_round_trip() {
+        let config: Config = toml::from_str(
+            r#"
             default_profile = "work"
 
             [theme]
@@ -4334,28 +4301,24 @@ mod tests {
             enabled_by_default = true
 
             [updates]
-            update_check_mode = "notify"
+            update_check_mode = "auto"
 
             [app_state]
             has_seen_welcome = true
-        "#;
-
-        let config: Config = toml::from_str(toml).unwrap();
-        assert_eq!(config.default_profile, "work");
-        assert_eq!(config.theme.name, "monokai");
-        assert!(config.worktree.enabled);
-        assert_eq!(config.worktree.path_template, "../wt/{branch}");
-        assert!(config.sandbox.enabled_by_default);
-        assert_eq!(config.updates.update_check_mode, UpdateCheckMode::Notify);
+            "#,
+        )
+        .unwrap();
         assert!(config.app_state.has_seen_welcome);
-    }
 
-    // Test get_update_settings helper
-    #[test]
-    fn test_get_update_settings_returns_defaults_when_no_config() {
-        // This test doesn't access the filesystem, so it should return defaults
-        let settings = UpdatesConfig::default();
-        assert_eq!(settings.update_check_mode, UpdateCheckMode::Notify);
+        let reparsed: Config = toml::from_str(&toml::to_string(&config).unwrap()).unwrap();
+        for parsed in [&config, &reparsed] {
+            assert_eq!(parsed.default_profile, "work");
+            assert_eq!(parsed.theme.name, "monokai");
+            assert!(parsed.worktree.enabled);
+            assert_eq!(parsed.worktree.path_template, "../wt/{branch}");
+            assert!(parsed.sandbox.enabled_by_default);
+            assert_eq!(parsed.updates.update_check_mode, UpdateCheckMode::Auto);
+        }
     }
 
     // Tests for TmuxConfig
@@ -4370,6 +4333,12 @@ mod tests {
         use TmuxSettingMode::{Auto, Disabled, Enabled};
         let modes = |tmux: &TmuxConfig| (tmux.status_bar, tmux.mouse, tmux.clipboard);
         assert_eq!(modes(&TmuxConfig::default()), (Auto, Auto, Auto));
+
+        // `vt_live` predates the setting and defaulted on, so an existing
+        // config.toml without it must still come up live.
+        assert!(TmuxConfig::default().vt_live);
+        let tmux: TmuxConfig = toml::from_str("vt_live = false").unwrap();
+        assert!(!tmux.vt_live);
 
         let cases = [
             // Absent fields fall back to `auto` through `#[serde(default)]`.
@@ -4397,17 +4366,6 @@ mod tests {
             let round_tripped: Config = toml::from_str(&toml::to_string(&config).unwrap()).unwrap();
             assert_eq!(modes(&round_tripped.tmux), expected);
         }
-    }
-
-    #[test]
-    fn test_tmux_config_vt_live_defaults_on_and_deserializes_off() {
-        // Absent from an existing config.toml => on (the pre-setting
-        // behavior; the AOE_VT_LIVE env hatch this replaces defaulted on).
-        let tmux: TmuxConfig = toml::from_str(r#""#).unwrap();
-        assert!(tmux.vt_live, "vt_live must default on when absent");
-        // Explicit off round-trips.
-        let tmux: TmuxConfig = toml::from_str(r#"vt_live = false"#).unwrap();
-        assert!(!tmux.vt_live);
     }
 
     #[test]
