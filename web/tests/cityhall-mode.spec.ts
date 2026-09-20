@@ -2,6 +2,7 @@
 // Pane hiding and server lockdown are covered by unit tests.
 
 import { test, expect } from "./helpers/mockedTest";
+import { mockSettingsApis } from "./helpers/apiMocks";
 import type { Page } from "@playwright/test";
 import { openWizard, wizard } from "./helpers/wizard";
 
@@ -35,32 +36,11 @@ const SCHEMA = [
 }));
 
 async function installCityHallMocks(page: Page) {
-  await page.route(
-    (url) => url.pathname === "/api/about",
-    (r) =>
-      r.fulfill({
-        json: { read_only: false, auth_mode: "none", behind_tunnel: false, profile: "main", cityhall_mode: true },
-      }),
-  );
-  await page.route(
-    (url) => url.pathname === "/api/sessions",
-    (r) => r.fulfill({ json: { sessions: [], workspace_ordering: [] } }),
-  );
-  await page.route(
-    (url) => url.pathname === "/api/profiles",
-    (r) => r.fulfill({ json: [{ name: "main", is_default: true }] }),
-  );
-  await page.route(
-    (url) => url.pathname === "/api/settings/schema",
-    (r) => r.fulfill({ json: SCHEMA }),
-  );
-  await page.route(
-    (url) => url.pathname === "/api/settings",
-    (r) =>
-      r.fulfill({
-        json: { theme: { name: "dark" }, session: { delete_to_trash: true, trash_retention_days: 30 } },
-      }),
-  );
+  await mockSettingsApis(page, {
+    about: () => ({ cityhall_mode: true }),
+    schema: SCHEMA,
+    settings: () => ({ theme: { name: "dark" }, session: { delete_to_trash: true, trash_retention_days: 30 } }),
+  });
   await page.route(
     (url) => url.pathname === "/api/projects",
     (r) => r.fulfill({ json: [{ name: "app", path: "/repos/app", scope: "global", pinned: false }] }),

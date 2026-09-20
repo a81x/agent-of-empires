@@ -23,3 +23,39 @@ export async function mockSessionShellApis(page: Page) {
   );
   await page.routeWebSocket(/\/sessions\/.*\/(ws|acp-ws|container-ws)$/, () => {});
 }
+
+/** The reads SettingsView and the profiles page make before they render. A
+ *  failing sessions poll would disable the settings fieldset. */
+export async function mockSettingsApis(
+  page: Page,
+  opts: {
+    about?: () => Record<string, unknown>;
+    profiles?: () => unknown;
+    schema?: unknown;
+    settings?: () => unknown;
+  } = {},
+) {
+  await page.route(
+    (url) => url.pathname === "/api/sessions",
+    (r) => r.fulfill({ json: { sessions: [], workspace_ordering: [] } }),
+  );
+  await page.route(
+    (url) => url.pathname === "/api/about",
+    (r) =>
+      r.fulfill({
+        json: { read_only: false, auth_mode: "none", behind_tunnel: false, profile: "main", ...opts.about?.() },
+      }),
+  );
+  await page.route(
+    (url) => url.pathname === "/api/profiles",
+    (r) => r.fulfill({ json: opts.profiles?.() ?? [{ name: "main", is_default: true }] }),
+  );
+  await page.route(
+    (url) => url.pathname === "/api/settings/schema",
+    (r) => r.fulfill({ json: opts.schema ?? [] }),
+  );
+  await page.route(
+    (url) => url.pathname === "/api/settings",
+    (r) => r.fulfill({ json: opts.settings?.() ?? {} }),
+  );
+}

@@ -2,6 +2,7 @@
 // SettingsView fetches profiles once and would show stale default options after ProfileSelector edits.
 
 import { test, expect } from "./helpers/mockedTest";
+import { mockSettingsApis } from "./helpers/apiMocks";
 import type { Page } from "@playwright/test";
 
 interface ProfileState {
@@ -26,26 +27,7 @@ async function installProfileMocks(page: Page, initial: string[] = ["main"]): Pr
     defaultPatches: [],
   };
 
-  // A failing sessions poll would disable the settings fieldset.
-  await page.route(
-    (url) => url.pathname === "/api/sessions",
-    (r) => r.fulfill({ json: { sessions: [], workspace_ordering: [] } }),
-  );
-  await page.route(
-    (url) => url.pathname === "/api/about",
-    (r) =>
-      r.fulfill({
-        json: { read_only: false, auth_mode: "none", behind_tunnel: false, profile: "main" },
-      }),
-  );
-  await page.route(
-    (url) => url.pathname === "/api/settings/schema",
-    (r) => r.fulfill({ json: [] }),
-  );
-  await page.route(
-    (url) => url.pathname === "/api/settings",
-    (r) => r.fulfill({ json: { session: {} } }),
-  );
+  await mockSettingsApis(page, { settings: () => ({ session: {} }) });
 
   await page.route(
     (url) => url.pathname === "/api/profiles",

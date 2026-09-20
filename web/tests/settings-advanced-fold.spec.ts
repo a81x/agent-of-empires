@@ -11,6 +11,7 @@
 // format of an advanced edit.
 
 import { test, expect } from "./helpers/mockedTest";
+import { mockSettingsApis } from "./helpers/apiMocks";
 import type { Page } from "@playwright/test";
 
 const ALLOW = { policy: "allow" };
@@ -115,29 +116,7 @@ async function installFoldMocks(page: Page): Promise<FoldMockHandle> {
     patches: [],
   };
 
-  await page.route(
-    (url) => url.pathname === "/api/sessions",
-    (r) => r.fulfill({ json: { sessions: [], workspace_ordering: [] } }),
-  );
-  await page.route(
-    (url) => url.pathname === "/api/about",
-    (r) =>
-      r.fulfill({
-        json: { read_only: false, auth_mode: "none", behind_tunnel: false, profile: "main" },
-      }),
-  );
-  await page.route(
-    (url) => url.pathname === "/api/profiles",
-    (r) => r.fulfill({ json: [{ name: "main", is_default: true }] }),
-  );
-  await page.route(
-    (url) => url.pathname === "/api/settings/schema",
-    (r) => r.fulfill({ json: SCHEMA }),
-  );
-  await page.route(
-    (url) => url.pathname === "/api/settings",
-    (r) => r.fulfill({ json: handle.settings }),
-  );
+  await mockSettingsApis(page, { schema: SCHEMA, settings: () => handle.settings });
   await page.route(
     (url) => /^\/api\/profiles\/[^/]+\/settings$/.test(url.pathname),
     (route) => {

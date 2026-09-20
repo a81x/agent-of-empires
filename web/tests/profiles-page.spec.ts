@@ -12,6 +12,7 @@
 // the /api/about read_only flag, and the dropdown/rail refresh loops.
 
 import { test, expect } from "./helpers/mockedTest";
+import { mockSettingsApis } from "./helpers/apiMocks";
 import type { Page } from "@playwright/test";
 
 interface ProfileState {
@@ -42,27 +43,12 @@ async function installProfilesPageMocks(
     readOnly: !!opts.readOnly,
   };
 
-  await page.route(
-    (url) => url.pathname === "/api/sessions",
-    (r) => r.fulfill({ json: { sessions: [], workspace_ordering: [] } }),
-  );
-  await page.route(
-    (url) => url.pathname === "/api/about",
-    (r) =>
-      r.fulfill({
-        json: { read_only: handle.readOnly, auth_mode: "none", behind_tunnel: false, profile: "main" },
-      }),
-  );
-  await page.route(
-    (url) => url.pathname === "/api/settings/schema",
-    (r) => r.fulfill({ json: [] }),
-  );
-  // Global settings: ProfilesPage reads `hooks` from here to build the
-  // inherited rows of the read-only hooks panel.
-  await page.route(
-    (url) => url.pathname === "/api/settings",
-    (r) => r.fulfill({ json: { hooks: { on_launch: ["echo global-hook"] } } }),
-  );
+  // ProfilesPage reads `hooks` from global settings to build the inherited rows
+  // of the read-only hooks panel.
+  await mockSettingsApis(page, {
+    about: () => ({ read_only: handle.readOnly }),
+    settings: () => ({ hooks: { on_launch: ["echo global-hook"] } }),
+  });
 
   await page.route(
     (url) => url.pathname === "/api/profiles",
