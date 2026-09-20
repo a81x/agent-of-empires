@@ -1299,8 +1299,8 @@ mod tests {
             inst.idle_dormant_since = dormant.then(chrono::Utc::now);
             let persist = apply_acp_session_change(&mut inst, "sess-1", Some(&change));
             (
-                inst.acp_session_id,
-                inst.fork_pending,
+                inst.acp_session_id.clone(),
+                inst.fork_pending.clone(),
                 inst.import_pending,
                 persist.is_some(),
             )
