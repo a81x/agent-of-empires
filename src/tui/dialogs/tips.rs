@@ -430,14 +430,10 @@ impl TipsDialog {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crossterm::event::KeyModifiers;
+    use crate::tui::dialogs::test_keys::key;
 
-    fn key(code: KeyCode) -> KeyEvent {
-        KeyEvent::new(code, KeyModifiers::NONE)
-    }
-
-    // Synthetic fixtures so the overlay's behavior tests (sections, navigation,
-    // clicks) don't depend on how many tips the real catalog happens to ship.
+    /// Synthetic tips, so behavior does not depend on how many the real
+    /// catalog ships.
     static TEST_TIPS: &[Tip] = &[
         Tip {
             id: "alpha",
@@ -466,125 +462,101 @@ mod tests {
         TEST_TIPS.iter().collect()
     }
 
+    /// Ids of every tip from `skip` onward, for seeding the seen set.
     fn ids(skip: usize) -> Vec<String> {
-        all_tips()
+        TEST_TIPS
             .iter()
             .skip(skip)
             .map(|t| t.id.to_string())
             .collect()
     }
 
-    #[test]
-    fn opening_marks_the_first_tip_seen() {
-        let tips = all_tips();
-        let first_id = tips[0].id.to_string();
-        let dialog = TipsDialog::new(tips, vec![], false, false);
-        assert_eq!(dialog.newly_seen, vec![first_id]);
+    fn dialog(seen: Vec<String>) -> TipsDialog {
+        TipsDialog::new(all_tips(), seen, false, false)
     }
 
-    #[test]
-    fn navigating_marks_each_focused_tip_seen() {
-        let tips = all_tips();
-        let count = tips.len();
-        let mut dialog = TipsDialog::new(tips, vec![], false, false);
-        for _ in 0..count {
-            dialog.handle_key(key(KeyCode::Down));
-        }
-        // No tip was initially seen, so there's no Seen header to land on;
-        // every tip gets focused and recorded.
-        assert_eq!(dialog.newly_seen.len(), count);
+    /// Draw the dialog once so its row rects exist, and return the screen.
+    fn render_to(dialog: &mut TipsDialog) -> String {
+        use crate::tui::styles::load_theme;
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let theme = load_theme("empire");
+        let mut terminal = Terminal::new(TestBackend::new(90, 30)).unwrap();
+        terminal
+            .draw(|f| dialog.render(f, f.area(), &theme))
+            .unwrap();
+        let buf = terminal.backend().buffer();
+        (0..buf.area.height)
+            .map(|y| {
+                (0..buf.area.width)
+                    .map(|x| buf[(x, y)].symbol())
+                    .collect::<String>()
+                    + "\n"
+            })
+            .collect()
     }
 
-    #[test]
-    fn already_seen_tip_is_not_re_recorded() {
-        let tips = all_tips();
-        let first_id = tips[0].id.to_string();
-        // Mark the first tip seen, so it starts in the (collapsed) Seen section
-        // and the cursor opens on the first *unseen* tip instead.
-        let dialog = TipsDialog::new(tips, vec![first_id.clone()], false, false);
-        assert!(
-            !dialog.newly_seen.contains(&first_id),
-            "an already-seen tip is never re-recorded"
-        );
-    }
-
-    #[test]
-    fn esc_submits_outcome_with_seen_and_no_toggle() {
-        let mut dialog = TipsDialog::new(all_tips(), vec![], false, false);
-        match dialog.handle_key(key(KeyCode::Esc)) {
-            DialogResult::Submit(outcome) => {
-                assert!(!outcome.newly_seen.is_empty());
-                assert_eq!(
-                    outcome.disabled, None,
-                    "no toggle => leave preference alone"
-                );
-            }
-            _ => panic!("Esc should submit the tips outcome"),
+    fn submitted(result: DialogResult<TipsOutcome>) -> TipsOutcome {
+        match result {
+            DialogResult::Submit(outcome) => outcome,
+            _ => panic!("expected Submit"),
         }
     }
 
     #[test]
-    fn d_toggles_disabled_and_reports_it() {
-        let mut dialog = TipsDialog::new(all_tips(), vec![], false, false);
-        dialog.handle_key(key(KeyCode::Char('d')));
-        match dialog.handle_key(key(KeyCode::Esc)) {
-            DialogResult::Submit(outcome) => assert_eq!(outcome.disabled, Some(true)),
-            _ => panic!("Esc should submit"),
+    fn focusing_a_tip_records_it_as_seen_once() {
+        // The tip shown on open counts as viewed.
+        assert_eq!(dialog(vec![]).newly_seen, vec![TEST_TIPS[0].id.to_string()]);
+
+        // Walking the whole list records every tip; with nothing previously
+        // seen there is no Seen header to land on.
+        let mut d = dialog(vec![]);
+        for _ in 0..TEST_TIPS.len() {
+            d.handle_key(key(KeyCode::Down));
         }
+        assert_eq!(d.newly_seen.len(), TEST_TIPS.len());
+
+        // A tip already seen starts in the Seen section and is not re-recorded.
+        let first = TEST_TIPS[0].id.to_string();
+        assert!(!dialog(vec![first.clone()]).newly_seen.contains(&first));
     }
 
     #[test]
-    fn seen_tips_collapse_into_a_section_that_expands() {
-        let tips = all_tips();
-        let total = tips.len();
-        // All but the first are already seen.
-        let dialog_seen = ids(1);
-        let mut dialog = TipsDialog::new(tips, dialog_seen, false, false);
+    fn esc_reports_what_was_seen_and_whether_tips_were_disabled() {
+        let outcome = submitted(dialog(vec![]).handle_key(key(KeyCode::Esc)));
+        assert!(!outcome.newly_seen.is_empty());
+        assert_eq!(outcome.disabled, None, "no toggle leaves the preference");
 
-        // Collapsed by default (there's an unseen tip): one unseen tip + header.
-        assert!(dialog.seen_collapsed);
-        assert_eq!(dialog.visible_rows().len(), 2);
-
-        // Down onto the header, then expand: unseen tip + header + seen tips.
-        dialog.handle_key(key(KeyCode::Down));
-        assert!(dialog.on_seen_header());
-        dialog.handle_key(key(KeyCode::Enter));
-        assert!(!dialog.seen_collapsed);
-        assert_eq!(dialog.visible_rows().len(), total + 1);
-    }
-
-    #[test]
-    fn all_seen_expands_the_section_by_default() {
-        let tips = all_tips();
-        let total = tips.len();
-        let dialog = TipsDialog::new(tips, ids(0), false, false);
-        assert!(
-            !dialog.seen_collapsed,
-            "nothing new => show the seen tips rather than a lone header"
+        let mut d = dialog(vec![]);
+        d.handle_key(key(KeyCode::Char('d')));
+        assert_eq!(
+            submitted(d.handle_key(key(KeyCode::Esc))).disabled,
+            Some(true)
         );
-        assert_eq!(dialog.visible_rows().len(), total + 1);
     }
 
     #[test]
-    fn body_substitutes_the_new_from_selection_key_per_mode() {
-        let normal = TipsDialog::new(all_tips(), vec![], false, false);
-        let resolved = normal.resolve_body("Press {new_from_selection} now");
-        assert!(
-            !resolved.contains("{new_from_selection}"),
-            "placeholder filled"
-        );
-        assert!(resolved.contains(&bindings::label(ActionId::NewFromSelection, false)));
+    fn the_seen_section_collapses_only_while_something_is_unseen() {
+        // One unseen tip: a collapsed header holds the rest.
+        let mut d = dialog(ids(1));
+        assert!(d.seen_collapsed);
+        assert_eq!(d.visible_rows().len(), 2);
+        d.handle_key(key(KeyCode::Down));
+        assert!(d.on_seen_header());
+        d.handle_key(key(KeyCode::Enter));
+        assert!(!d.seen_collapsed);
+        assert_eq!(d.visible_rows().len(), TEST_TIPS.len() + 1);
 
-        let strict = TipsDialog::new(all_tips(), vec![], false, true);
-        let strict_resolved = strict.resolve_body("Press {new_from_selection} now");
-        assert!(strict_resolved.contains(&bindings::label(ActionId::NewFromSelection, true)));
-        // The two modes render different chords (Shift+N vs Ctrl+N).
-        assert_ne!(resolved, strict_resolved);
+        // Nothing new to read: show the seen tips rather than a lone header.
+        let d = dialog(ids(0));
+        assert!(!d.seen_collapsed);
+        assert_eq!(d.visible_rows().len(), TEST_TIPS.len() + 1);
     }
 
     #[test]
-    fn body_substitutes_all_shortcut_placeholders() {
-        let dialog = TipsDialog::new(all_tips(), vec![], false, false);
+    fn tip_bodies_substitute_the_live_keybindings() {
+        let dialog = dialog(vec![]);
         let body = "{toggle_view} {diff} {settings} {help} {sort} {group} {archive} \
                     {snooze} {favorite} {serve} {tool_session}";
         let resolved = dialog.resolve_body(body);
@@ -594,134 +566,68 @@ mod tests {
         );
         assert!(resolved.contains(&bindings::label(ActionId::Diff, false)));
         assert!(resolved.contains(&bindings::label(ActionId::ToggleArchive, false)));
-    }
 
-    fn rendered_dialog(seen: Vec<String>) -> TipsDialog {
-        use crate::tui::styles::load_theme;
-        use ratatui::backend::TestBackend;
-        use ratatui::Terminal;
-
-        let theme = load_theme("empire");
-        let mut dialog = TipsDialog::new(all_tips(), seen, false, false);
-        let backend = TestBackend::new(90, 30);
-        let mut terminal = Terminal::new(backend).unwrap();
-        terminal
-            .draw(|f| dialog.render(f, f.area(), &theme))
-            .unwrap();
-        dialog
+        // Strict mode renders a different chord for the same action.
+        let normal = dialog.resolve_body("Press {new_from_selection} now");
+        let strict = TipsDialog::new(all_tips(), vec![], false, true)
+            .resolve_body("Press {new_from_selection} now");
+        assert!(normal.contains(&bindings::label(ActionId::NewFromSelection, false)));
+        assert!(strict.contains(&bindings::label(ActionId::NewFromSelection, true)));
+        assert_ne!(normal, strict);
     }
 
     #[test]
-    fn renders_title_focused_tip_and_footer() {
-        use crate::tui::styles::load_theme;
-        use ratatui::backend::TestBackend;
-        use ratatui::Terminal;
+    fn clicks_focus_a_row_expand_the_header_and_close_from_outside() {
+        let mut d = dialog(vec![]);
+        let screen = render_to(&mut d);
+        assert!(screen.contains("Tips"), "title renders\n{screen}");
+        assert!(screen.contains(TEST_TIPS[0].title), "{screen}");
+        assert!(screen.contains("close"), "footer hint renders\n{screen}");
 
-        let theme = load_theme("empire");
-        let mut dialog = TipsDialog::new(all_tips(), vec![], false, false);
-        let backend = TestBackend::new(90, 30);
-        let mut terminal = Terminal::new(backend).unwrap();
-        terminal
-            .draw(|f| dialog.render(f, f.area(), &theme))
-            .unwrap();
-        let buf = terminal.backend().buffer();
-        let mut out = String::new();
-        for y in 0..buf.area.height {
-            for x in 0..buf.area.width {
-                out.push_str(buf[(x, y)].symbol());
-            }
-            out.push('\n');
-        }
-        assert!(out.contains("Tips"), "title renders\n{out}");
-        assert!(
-            out.contains(all_tips()[0].title),
-            "focused tip title renders\n{out}"
-        );
-        assert!(out.contains("close"), "footer hint renders\n{out}");
-    }
-
-    #[test]
-    fn clicking_a_row_focuses_and_marks_it_seen() {
-        // Nothing seen => every row is an unseen tip, in catalog order.
-        let mut dialog = rendered_dialog(vec![]);
-        assert_eq!(dialog.cursor, 0);
-        let target = dialog.row_rects[1];
+        let target = d.row_rects[1];
         assert!(target.width > 0, "second row should be drawn");
+        assert!(matches!(
+            d.handle_click(target.x + 1, target.y),
+            Some(DialogResult::Continue)
+        ));
+        assert_eq!(d.cursor, 1);
+        assert!(d.is_seen(d.tips[1].id), "the clicked row is marked seen");
 
-        let result = dialog.handle_click(target.x + 1, target.y);
-        assert!(matches!(result, Some(DialogResult::Continue)));
-        assert_eq!(dialog.cursor, 1);
-        let second_id = dialog.tips[1].id;
-        assert!(dialog.is_seen(second_id), "clicked row is marked seen");
-    }
-
-    #[test]
-    fn clicking_the_seen_header_expands_the_section() {
-        // All but the first seen: row 0 = unseen tip, row 1 = collapsed header.
-        let mut dialog = rendered_dialog(ids(1));
-        assert!(dialog.seen_collapsed);
-        let header = dialog.row_rects[1];
+        // With one unseen tip, row 1 is the collapsed header instead.
+        let mut d = dialog(ids(1));
+        render_to(&mut d);
+        assert!(d.seen_collapsed);
+        let header = d.row_rects[1];
         assert!(header.width > 0);
+        assert!(matches!(
+            d.handle_click(header.x + 1, header.y),
+            Some(DialogResult::Continue)
+        ));
+        assert!(!d.seen_collapsed);
 
-        let result = dialog.handle_click(header.x + 1, header.y);
-        assert!(matches!(result, Some(DialogResult::Continue)));
-        assert!(
-            !dialog.seen_collapsed,
-            "clicking the header expands the section"
-        );
+        // (0, 0) is outside the centered modal, so it closes and persists.
+        let mut d = dialog(vec![]);
+        render_to(&mut d);
+        let outcome = match d.handle_click(0, 0) {
+            Some(result) => submitted(result),
+            None => panic!("an outside click should close the overlay"),
+        };
+        assert!(!outcome.newly_seen.is_empty());
     }
 
     #[test]
-    fn empty_overlay_renders_a_message_and_stays_usable() {
-        use crate::tui::styles::load_theme;
-        use ratatui::backend::TestBackend;
-        use ratatui::Terminal;
+    fn an_empty_catalog_still_renders_and_closes() {
+        let mut d = TipsDialog::new(vec![], vec![], false, false);
+        // Navigation and the toggle must not panic with no rows.
+        d.handle_key(key(KeyCode::Down));
+        d.handle_key(key(KeyCode::Up));
+        d.handle_key(key(KeyCode::Char('d')));
 
-        let theme = load_theme("empire");
-        let mut dialog = TipsDialog::new(vec![], vec![], false, false);
-
-        // Navigation and the toggle must not panic with an empty list.
-        dialog.handle_key(key(KeyCode::Down));
-        dialog.handle_key(key(KeyCode::Up));
-        dialog.handle_key(key(KeyCode::Char('d')));
-
-        let backend = TestBackend::new(90, 30);
-        let mut terminal = Terminal::new(backend).unwrap();
-        terminal
-            .draw(|f| dialog.render(f, f.area(), &theme))
-            .unwrap();
-        let buf = terminal.backend().buffer();
-        let mut out = String::new();
-        for y in 0..buf.area.height {
-            for x in 0..buf.area.width {
-                out.push_str(buf[(x, y)].symbol());
-            }
-            out.push('\n');
-        }
-        assert!(
-            out.contains("No tips right now"),
-            "empty-state message renders\n{out}"
+        let screen = render_to(&mut d);
+        assert!(screen.contains("No tips right now"), "{screen}");
+        assert_eq!(
+            submitted(d.handle_key(key(KeyCode::Esc))).disabled,
+            Some(true)
         );
-
-        // Esc still closes and reports the toggle the user flipped.
-        match dialog.handle_key(key(KeyCode::Esc)) {
-            DialogResult::Submit(outcome) => assert_eq!(outcome.disabled, Some(true)),
-            _ => panic!("Esc should submit"),
-        }
-    }
-
-    #[test]
-    fn clicking_outside_the_modal_closes_it() {
-        let mut dialog = rendered_dialog(vec![]);
-        // (0, 0) is outside the centered modal.
-        match dialog.handle_click(0, 0) {
-            Some(DialogResult::Submit(outcome)) => {
-                assert!(
-                    !outcome.newly_seen.is_empty(),
-                    "seen state is persisted on close"
-                );
-            }
-            _ => panic!("outside click should close the overlay"),
-        }
     }
 }
