@@ -300,7 +300,13 @@ mod tests {
                 "latest",
                 false,
             ),
-            ("localhost:5000/team/img:dev", "localhost:5000", "team/img", "dev", false),
+            (
+                "localhost:5000/team/img:dev",
+                "localhost:5000",
+                "team/img",
+                "dev",
+                false,
+            ),
             (
                 "ghcr.io/agent-of-empires/aoe-sandbox@sha256:abc123def4567890",
                 "ghcr.io",
@@ -311,8 +317,16 @@ mod tests {
         ];
         for (raw, host, repository, reference, pinned) in cases {
             let r = RegistryRef::parse(raw).unwrap_or_else(|| panic!("{raw} must parse"));
-            assert_eq!((r.host.as_str(), r.repository.as_str(), r.reference.as_str(), r.pinned),
-                (host, repository, reference, pinned), "{raw}");
+            assert_eq!(
+                (
+                    r.host.as_str(),
+                    r.repository.as_str(),
+                    r.reference.as_str(),
+                    r.pinned
+                ),
+                (host, repository, reference, pinned),
+                "{raw}"
+            );
         }
         for empty in ["", "   "] {
             assert!(RegistryRef::parse(empty).is_none());

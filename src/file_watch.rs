@@ -229,8 +229,12 @@ impl FileWatchService {
             .name("file_watch_drain".into())
             .spawn(move || loop {
                 let (reason, err) = match notify_rx.recv() {
-                    Ok(res) if tokio_tx.send(DispatchMsg::Kernel(res)).is_ok() => continue,
-                    Ok(_) => ("dispatcher_channel_closed", None),
+                    Ok(res) => {
+                        if tokio_tx.send(DispatchMsg::Kernel(res)).is_ok() {
+                            continue;
+                        }
+                        ("dispatcher_channel_closed", None)
+                    }
                     Err(e) => ("notify_channel_closed", Some(e)),
                 };
                 if let Some(svc) = svc_weak_for_drain.upgrade() {
