@@ -1,8 +1,6 @@
 # Plugin system internals
 
-Host architecture and security boundaries. Plugin authors want
-[Writing plugins](../writing-plugins.md) and the
-[Plugin API reference](../../plugin-api.md) instead.
+Host architecture and security boundaries. Plugin authors want [Writing plugins](../writing-plugins.md) and the [Plugin API reference](../../plugin-api.md) instead.
 
 ## Components
 

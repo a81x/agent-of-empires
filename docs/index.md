@@ -8,14 +8,7 @@ AoE runs multiple AI agents in parallel, each in its own tmux session, optionall
 
 ## See it in action
 
-<iframe
-width="100%"
-style="aspect-ratio:16/9;border-radius:8px"
-src="https://www.youtube-nocookie.com/embed/videoseries?list=UUjGgsnOCZXvvk6UwUQAuwPg"
-title="Agent of Empires YouTube Channel"
-frameborder="0"
-allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
-allowfullscreen
+<iframe width="100%" style="aspect-ratio:16/9;border-radius:8px" src="https://www.youtube-nocookie.com/embed/videoseries?list=UUjGgsnOCZXvvk6UwUQAuwPg" title="Agent of Empires YouTube Channel" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen
 ></iframe>
 
 ![Agent of Empires Demo](assets/demo.gif)
@@ -37,7 +30,4 @@ Claude Code, OpenCode, Mistral Vibe, Codex CLI, Gemini CLI, Antigravity CLI, Cur
 
 Each agent carries a lifecycle state in AoE's registry, so when a vendor deprecates a CLI, AoE keeps supporting it but marks it everywhere it appears (`aoe agents`, `aoe acp doctor`, session creation, the restart and switch-agent pickers, the web wizard) before you launch one.
 
-<div class="cta-box">
-<p><strong>Ready to get started?</strong></p>
-<p><a href="installation.html">Install AoE</a></p>
-</div>
+<div class="cta-box"> <p><strong>Ready to get started?</strong></p> <p><a href="installation.html">Install AoE</a></p> </div>
