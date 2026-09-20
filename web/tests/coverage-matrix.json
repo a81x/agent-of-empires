@@ -1029,6 +1029,7 @@
       "specs": ["tests/wizard-agent-step.spec.ts"],
       "components": [
         "web/src/components/session-wizard/steps/AgentOptions.tsx",
+        "web/src/components/session-wizard/steps/AdvancedLaunchFields.tsx",
         "web/src/components/session-wizard/steps/ProfilePresetPicker.tsx"
       ]
     },

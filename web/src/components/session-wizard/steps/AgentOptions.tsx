@@ -5,6 +5,7 @@ import { isAcpEligible } from "../../../lib/acpCapableTools";
 import { resolveLaunchCommand } from "../../../lib/launchCommand";
 import { commandMapsFromSettings, EMPTY_COMMAND_MAPS, type CommandMaps } from "../commandMaps";
 import { profileDefaults, type ProfileDefaults } from "../profileDefaults";
+import { AdvancedLaunchFields } from "./AdvancedLaunchFields";
 import { ProfilePresetPicker } from "./ProfilePresetPicker";
 import { ToggleRow } from "./Toggle";
 
@@ -147,103 +148,6 @@ export function AgentOptions({
     [data.profileDirty, data.tool, onChange, onApplyProfileDefaults],
   );
 
-  const advancedBlock = (
-    <div className="space-y-4">
-      {data.sandboxEnabled && (
-        <>
-          <div>
-            <label className="block text-sm text-text-dim mb-1.5">Container image</label>
-            <input
-              type="text"
-              value={data.sandboxImage}
-              onChange={(e) => onChange("sandboxImage", e.target.value)}
-              placeholder="ghcr.io/agent-of-empires/aoe-sandbox:latest"
-              className="w-full bg-surface-900 border border-surface-700 rounded-lg px-3 py-2.5 text-sm font-mono text-text-primary placeholder:text-text-dim focus:border-brand-600 focus:outline-none"
-            />
-          </div>
-          <div>
-            <label className="block text-sm text-text-dim mb-1.5">Environment variables</label>
-            {data.extraEnv.map((env, i) => (
-              <div key={i} className="flex gap-2 mb-1">
-                <input
-                  type="text"
-                  value={env}
-                  onChange={(e) => {
-                    const updated = [...data.extraEnv];
-                    updated[i] = e.target.value;
-                    onChange("extraEnv", updated);
-                  }}
-                  placeholder="KEY=value"
-                  className="flex-1 bg-surface-900 border border-surface-700 rounded-md px-2 py-1.5 text-sm font-mono text-text-primary placeholder:text-text-dim focus:border-brand-600 focus:outline-none"
-                />
-                <button
-                  onClick={() =>
-                    onChange(
-                      "extraEnv",
-                      data.extraEnv.filter((_, j) => j !== i),
-                    )
-                  }
-                  className="px-2 text-text-dim hover:text-status-error cursor-pointer"
-                >
-                  &times;
-                </button>
-              </div>
-            ))}
-            <button
-              onClick={() => onChange("extraEnv", [...data.extraEnv, ""])}
-              className="text-xs text-text-dim hover:text-text-secondary cursor-pointer"
-            >
-              + Add variable
-            </button>
-          </div>
-        </>
-      )}
-
-      <div>
-        <label className="block text-sm text-text-dim mb-1.5">Agent instructions</label>
-        <textarea
-          value={data.customInstruction}
-          onChange={(e) => onChange("customInstruction", e.target.value)}
-          placeholder="Custom instructions for this session..."
-          rows={3}
-          className="w-full bg-surface-900 border border-surface-700 rounded-lg px-3 py-2 text-sm text-text-primary placeholder:text-text-dim focus:border-brand-600 focus:outline-none resize-y"
-        />
-      </div>
-
-      <div>
-        <label className="block text-sm text-text-dim mb-1.5">Additional arguments</label>
-        <input
-          type="text"
-          value={data.extraArgs}
-          onChange={(e) => onChange("extraArgs", e.target.value)}
-          placeholder="e.g. --port 8080"
-          className="w-full bg-surface-900 border border-surface-700 rounded-lg px-3 py-2.5 text-sm font-mono text-text-primary placeholder:text-text-dim focus:border-brand-600 focus:outline-none"
-        />
-        {extraArgsIgnored && (
-          <p className="mt-1.5 text-xs text-status-warning" data-testid="extra-args-ignored">
-            Extra args are ignored for structured-view sessions; use the command override to change the launch command.
-          </p>
-        )}
-      </div>
-
-      <div>
-        <label className="block text-sm text-text-dim mb-1.5">Command override</label>
-        <input
-          type="text"
-          value={data.commandOverride}
-          onChange={(e) => onChange("commandOverride", e.target.value)}
-          placeholder="Override the agent launch command"
-          className="w-full bg-surface-900 border border-surface-700 rounded-lg px-3 py-2.5 text-sm font-mono text-text-primary placeholder:text-text-dim focus:border-brand-600 focus:outline-none"
-        />
-        {resolvedCommand && (
-          <p className="mt-1.5 text-xs text-text-dim" data-testid="resolved-launch-command">
-            Resolved launch command: <code className="font-mono text-text-secondary">{resolvedCommand}</code>
-          </p>
-        )}
-      </div>
-    </div>
-  );
-
   return (
     <div>
       {acpCapable ? (
@@ -296,7 +200,17 @@ export function AgentOptions({
         </p>
       )}
 
-      {advancedBlock}
+      <AdvancedLaunchFields
+        sandboxEnabled={data.sandboxEnabled}
+        sandboxImage={data.sandboxImage}
+        extraEnv={data.extraEnv}
+        customInstruction={data.customInstruction}
+        extraArgs={data.extraArgs}
+        commandOverride={data.commandOverride}
+        extraArgsIgnored={extraArgsIgnored}
+        resolvedCommand={resolvedCommand}
+        onChange={onChange}
+      />
     </div>
   );
 }
