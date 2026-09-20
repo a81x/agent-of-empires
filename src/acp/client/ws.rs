@@ -165,13 +165,19 @@ async fn reader_loop(
             }
             next = stream.next() => {
                 match next {
-                    // `Ok(None)` is a keepalive: nothing to wake the consumer for.
-                    Some(Ok(Message::Text(text))) => match parse_text(&text) {
-                        Ok(None) => {}
-                        Ok(Some(msg)) if tx.send(Ok(msg)).await.is_err() => return,
-                        Err(e) if tx.send(Err(e)).await.is_err() => return,
-                        _ => {}
-                    },
+                    Some(Ok(Message::Text(text))) => {
+                        // `Ok(None)` is a keepalive: nothing to wake the consumer for.
+                        let delivery = match parse_text(&text) {
+                            Ok(None) => None,
+                            Ok(Some(msg)) => Some(Ok(msg)),
+                            Err(e) => Some(Err(e)),
+                        };
+                        if let Some(delivery) = delivery {
+                            if tx.send(delivery).await.is_err() {
+                                return; // consumer dropped
+                            }
+                        }
+                    }
                     Some(Ok(Message::Ping(payload))) => {
                         let _ = stream.send(Message::Pong(payload)).await;
                     }
