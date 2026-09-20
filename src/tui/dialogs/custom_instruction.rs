@@ -1,4 +1,4 @@
-//! Custom instruction editor dialog with multi-line text area and Save/Cancel buttons
+//! Custom instruction editor.
 
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::prelude::*;
@@ -48,7 +48,6 @@ impl CustomInstructionDialog {
 
             KeyCode::Enter if self.focused_zone == 1 => {
                 if self.focused_button == 0 {
-                    // Save
                     let text = self.get_text();
                     let value = if text.trim().is_empty() {
                         None
@@ -57,7 +56,6 @@ impl CustomInstructionDialog {
                     };
                     DialogResult::Submit(value)
                 } else {
-                    // Cancel
                     DialogResult::Cancel
                 }
             }
@@ -112,7 +110,6 @@ impl CustomInstructionDialog {
             ])
             .split(inner);
 
-        // Text area
         let textarea_border_color = if self.focused_zone == 0 {
             theme.accent
         } else {
@@ -154,7 +151,6 @@ impl CustomInstructionDialog {
             frame.set_cursor_position(Position::new(cursor_x, cursor_y));
         }
 
-        // Button row
         let button_area = chunks[1];
         let button_layout = Layout::default()
             .direction(Direction::Horizontal)
@@ -200,7 +196,6 @@ impl CustomInstructionDialog {
             button_layout[3],
         );
 
-        // Hint bar
         let hint = Line::from(vec![
             Span::styled("Tab", Style::default().fg(theme.hint)),
             Span::raw(" switch focus  "),

@@ -1,10 +1,7 @@
-//! Attach-project picker: choose a registered project to add to a session
-//! that already exists (#3103).
-//!
-//! Offers the project registry rather than a free-form path prompt, which is
-//! the same source the new-session dialog's extra-repo picker draws from, so a
-//! repo you can start a session on is a repo you can attach. A path that is not
-//! registered is still reachable through `aoe session add-project <path>`.
+//! Attach-project picker: add a registered project to an existing session.
+//! Drawing on the registry (as the new-session extra-repo picker does) means a
+//! repo you can start a session on is one you can attach. An unregistered path
+//! goes through `aoe session add-project <path>`.
 
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::prelude::*;
@@ -18,8 +15,7 @@ pub struct AttachProjectDialog {
     /// Registered projects, minus the ones this session already has.
     options: Vec<Project>,
     selected: usize,
-    /// Session the pick applies to, so the caller does not have to re-resolve
-    /// the selection against a list that may have moved underneath it.
+    /// Session the pick applies to, so the caller re-resolves nothing.
     session_id: String,
     session_title: String,
     list_area: Rect,
@@ -42,8 +38,7 @@ impl AttachProjectDialog {
         &self.session_id
     }
 
-    /// Whether there is anything to pick. An empty registry (or one whose every
-    /// entry is already attached) renders as guidance instead of an empty list.
+    /// Whether there is anything to pick; if not, the dialog shows guidance.
     pub fn is_empty(&self) -> bool {
         self.options.is_empty()
     }
@@ -177,9 +172,8 @@ impl AttachProjectDialog {
             frame.render_widget(Paragraph::new(lines), chunks[0]);
         }
 
-        // The agent has to be respawned to see the new root, so say so before the
-        // key that does it: attaching stops the session's ACP worker and starts a
-        // fresh one on the same conversation.
+        // Attaching restarts the session's ACP worker on the same conversation,
+        // so say so before the key that does it.
         frame.render_widget(
             Paragraph::new("Stops and restarts the agent (conversation is kept)")
                 .style(Style::default().fg(theme.waiting)),

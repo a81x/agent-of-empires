@@ -1,15 +1,11 @@
-//! Dialog for answering a session's pending permission prompt.
+//! Answer a session's pending permission prompt.
 //!
-//! Two paths share this dialog. For a terminal session it answers the CLI's
-//! "Do you want to proceed?" style prompt by sending the exact keystrokes a
-//! human would type, without attaching: AoE never parses pane content to
-//! detect or validate the prompt (see `AgentDef.permission_response`); the
-//! user has already seen it on the pane before opening this dialog. For a
-//! structured (ACP) session it resolves a daemon-reported approval nonce
-//! through ACP, and the body shows the tool, target, and destructive flag
-//! from the daemon's projection so the user sees what they are answering
-//! without entering the structured view. The Allow Always choice is offered
-//! when the terminal agent's mapping has one, and always on the ACP path.
+//! A terminal session gets the exact keystrokes a human would type, without
+//! attaching: AoE never parses pane content to detect or validate the prompt,
+//! and the user has already seen it on the pane. A structured session resolves
+//! the daemon-reported approval nonce through ACP, showing the tool, target
+//! and destructive flag from its projection. Allow Always is offered whenever
+//! the agent's mapping has it, and always on the ACP path.
 
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::prelude::*;
@@ -18,19 +14,15 @@ use ratatui::widgets::*;
 use super::DialogResult;
 use crate::tui::styles::{has_min_contrast, Theme};
 
-/// WCAG contrast floor for the focused choice's foreground against the
-/// dialog's background. `2.5` is the tightest a builtin clears
-/// (catppuccin-latte, at 2.64); a custom theme with a duller `accent` falls
-/// back to `theme.text` instead of rendering an illegible focused default.
+/// Contrast floor for the focused choice against the dialog background. The
+/// tightest builtin clears 2.64; a duller custom `accent` falls back to
+/// `theme.text` rather than rendering illegibly.
 const MIN_FOCUSED_CONTRAST_RATIO: f32 = 2.5;
 
-/// Style for the focused choice: `theme.accent` bold on the dialog's own
-/// background, the same fg-only treatment `components::buttons::render_yes_no`
-/// gives its focused button. `theme.selection` is a background surface token
-/// (see DESIGN.md); as a foreground it sits within ~1.7:1 of every builtin
-/// theme's background, so the focused choice would read as the dimmest item
-/// on the row. Unfocused choices drop to `theme.dimmed` so focus is carried
-/// by the brightness gap, not by a background block.
+/// Focused choice: bold `theme.accent`, the fg-only treatment `render_yes_no`
+/// gives its focused button. `theme.selection` is a background token and as a
+/// foreground would make the focused choice the dimmest item on the row, so
+/// focus is carried by the gap to `theme.dimmed` instead.
 fn focused_choice_style(theme: &Theme) -> Style {
     let fg = if has_min_contrast(theme.accent, theme.background, MIN_FOCUSED_CONTRAST_RATIO) {
         theme.accent
@@ -40,7 +32,6 @@ fn focused_choice_style(theme: &Theme) -> Style {
     Style::default().fg(fg).bold()
 }
 
-/// Style for the choices that are not focused.
 fn unfocused_choice_style(theme: &Theme) -> Style {
     Style::default().fg(theme.dimmed)
 }
@@ -62,10 +53,8 @@ struct StructuredApprovalDetail {
 pub struct PermissionResponseDialog {
     session_title: String,
     choices: Vec<(&'static str, PermissionResponseChoice)>,
-    /// Index of the focused choice within `choices`.
     focused: usize,
-    /// Whether `choices` includes `AllowAlways`; computed once in `new`
-    /// instead of re-scanning `choices` from `handle_key` and `render`.
+    /// Whether `choices` includes `AllowAlways`, computed once in `new`.
     supports_allow_always: bool,
     /// `Some` for a structured ACP approval: the dialog shows what is being
     /// approved and drops the terminal-only "raw keystrokes" guidance, which

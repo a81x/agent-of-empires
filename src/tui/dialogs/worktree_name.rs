@@ -1,8 +1,5 @@
-//! Edit-worktree-workdir-name dialog.
-//!
-//! A focused dialog (separate from the title/group rename flow) for changing
-//! a managed worktree session's directory name, with an opt-in to also rename
-//! the git branch. See #1723.
+//! Change a managed worktree session's directory name, with an opt-in to
+//! rename the git branch too. Separate from the title/group rename flow.
 
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::prelude::*;
@@ -14,12 +11,9 @@ use super::DialogResult;
 use crate::tui::components::render_text_field;
 use crate::tui::styles::Theme;
 
-/// Data returned when the dialog is submitted.
 #[derive(Debug, Clone)]
 pub struct WorktreeNameData {
-    /// New workdir name (raw; sanitized downstream).
     pub name: String,
-    /// Whether to also rename the underlying git branch.
     pub rename_branch: bool,
 }
 

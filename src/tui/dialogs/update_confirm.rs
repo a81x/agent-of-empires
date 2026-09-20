@@ -18,8 +18,7 @@ pub struct UpdateConfirmDialog {
     selected: bool, // true = Yes, false = No
     yes_button_area: Rect,
     no_button_area: Rect,
-    /// Which Yes/No button the mouse is over, for the hover highlight.
-    /// Visual only; never changes `selected`.
+    /// The hovered button. Visual only; never changes `selected`.
     hover: HoverState,
 }
 
@@ -59,9 +58,7 @@ impl UpdateConfirmDialog {
         None
     }
 
-    /// Highlight the Yes/No button under the cursor without changing
-    /// `selected`. See `ConfirmDialog::handle_hover` for the rationale.
-    /// Returns `true` when the highlighted button changed.
+    /// Highlight the button under the cursor without changing `selected`.
     pub fn handle_hover(&mut self, col: u16, row: u16) -> bool {
         self.hover
             .update(col, row, &[self.yes_button_area, self.no_button_area])

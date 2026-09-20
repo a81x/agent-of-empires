@@ -26,13 +26,10 @@ const ONE_WEEK: u32 = 7 * 24 * 60;
 
 pub struct SnoozeDurationDialog {
     title: String,
-    /// Hit rect per preset row, paired with the minutes it submits.
-    /// Captured during `render` so a click on a row produces the same
-    /// Submit as the matching digit key.
+    /// Hit rect per preset row with the minutes it submits, so a click
+    /// matches its digit key.
     row_rects: Vec<(u32, Rect)>,
-    /// Hover-tracked row index. Drives the row highlight without
-    /// changing semantics: a row hover doesn't itself submit, only a
-    /// click on the row does.
+    /// Hovered row. Drives the highlight only; a click submits.
     hovered_row: Option<usize>,
 }
 
