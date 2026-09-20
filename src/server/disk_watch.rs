@@ -284,6 +284,17 @@ mod tests {
     use crate::server::test_support;
     use crate::session::Instance;
 
+    /// These tests assert on live subscription counts, so the state needs a real
+    /// `FileWatchService` rather than the test harness's noop.
+    fn state_with_live_watch() -> Arc<AppState> {
+        let state = test_support::build_test_app_state(Vec::new());
+        let mut state = Arc::try_unwrap(state)
+            .map_err(|_| ())
+            .expect("unique state");
+        state.file_watch = FileWatchService::new().expect("live svc");
+        Arc::new(state)
+    }
+
     #[tokio::test]
     #[serial_test::serial]
     async fn init_disk_watch_subscriptions_bootstraps_one_reload_after_wiring() {
@@ -298,13 +309,7 @@ mod tests {
             })
             .expect("seed write");
 
-        let state = test_support::build_test_app_state(Vec::new());
-        let live = FileWatchService::new().expect("live svc");
-        let mut state_mut = Arc::try_unwrap(state)
-            .map_err(|_| ())
-            .expect("unique state");
-        state_mut.file_watch = live;
-        let state = Arc::new(state_mut);
+        let state = state_with_live_watch();
 
         let wake = {
             let signal = state.disk_changed.clone();
@@ -336,13 +341,7 @@ mod tests {
         let _app_dir = crate::session::test_support::isolate_app_dir_at(temp.path());
         let _ = crate::session::get_profile_dir("rewire-race").expect("profile dir");
 
-        let state = test_support::build_test_app_state(Vec::new());
-        let live = FileWatchService::new().expect("live svc");
-        let mut state_mut = Arc::try_unwrap(state)
-            .map_err(|_| ())
-            .expect("unique state");
-        state_mut.file_watch = live;
-        let state = Arc::new(state_mut);
+        let state = state_with_live_watch();
 
         let mut joins = Vec::new();
         for i in 0..50 {
@@ -392,13 +391,7 @@ mod tests {
         let _app_dir = crate::session::test_support::isolate_app_dir_at(temp.path());
         let _ = crate::session::get_profile_dir("race-fix").expect("profile dir");
 
-        let state = test_support::build_test_app_state(Vec::new());
-        let live = FileWatchService::new().expect("live svc");
-        let mut state_mut = Arc::try_unwrap(state)
-            .map_err(|_| ())
-            .expect("unique state");
-        state_mut.file_watch = live;
-        let state = Arc::new(state_mut);
+        let state = state_with_live_watch();
 
         let barrier = Arc::new(DiskWatchBuildBarrier {
             entered: tokio::sync::Notify::new(),
@@ -466,13 +459,7 @@ mod tests {
             .expect("seed p1");
         let _ = crate::session::get_profile_dir("init-gap-p2").expect("p2 dir");
 
-        let state = test_support::build_test_app_state(Vec::new());
-        let live = FileWatchService::new().expect("live svc");
-        let mut state_mut = Arc::try_unwrap(state)
-            .map_err(|_| ())
-            .expect("unique state");
-        state_mut.file_watch = live;
-        let state = Arc::new(state_mut);
+        let state = state_with_live_watch();
 
         init_disk_watch_subscriptions_with_hook(state.clone(), |profile| {
             if profile == "init-gap-p1" {
@@ -729,13 +716,7 @@ mod tests {
             })
             .expect("seed write");
 
-        let state = test_support::build_test_app_state(Vec::new());
-        let live = FileWatchService::new().expect("live svc");
-        let mut state_mut = Arc::try_unwrap(state)
-            .map_err(|_| ())
-            .expect("unique state");
-        state_mut.file_watch = live;
-        let state = Arc::new(state_mut);
+        let state = state_with_live_watch();
 
         init_disk_watch_subscriptions(state.clone()).await;
 
