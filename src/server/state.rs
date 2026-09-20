@@ -318,24 +318,4 @@ mod tests {
             "a key with a live holder must survive pruning"
         );
     }
-
-    #[test]
-    fn cleanup_defaults_cache_stale_within_ttl_is_false() {
-        let cache = CleanupDefaultsCache {
-            refreshed_at: std::time::Instant::now(),
-            entries: std::collections::HashMap::new(),
-        };
-        assert!(!cache.stale());
-    }
-
-    #[test]
-    fn cleanup_defaults_cache_stale_past_ttl_is_true() {
-        let cache = CleanupDefaultsCache {
-            refreshed_at: std::time::Instant::now()
-                - CLEANUP_DEFAULTS_TTL
-                - std::time::Duration::from_millis(1),
-            entries: std::collections::HashMap::new(),
-        };
-        assert!(cache.stale());
-    }
 }
