@@ -1,11 +1,8 @@
-//! Command palette dialog: fuzzy-searchable list of named TUI actions.
-//!
-//! Mirrors the web UI's `CommandPalette` (web/src/components/command-palette/).
-//! Activated with Ctrl+K. Built-in entries are generated from the shared
-//! keybinding registry and carry an [`ActionId`] that `HomeView::run_action`
-//! executes directly (so the palette is additive, not a parallel command
-//! implementation, and can't drift from the keyboard). Dynamic session/group
-//! entries use a "jump to cursor" payload instead.
+//! Command palette: a fuzzy-searchable list of named TUI actions, the twin of
+//! the web `CommandPalette`. Built-in entries come from the shared keybinding
+//! registry and carry an [`ActionId`] that `HomeView::run_action` executes, so
+//! the palette cannot drift from the keyboard. Session and group entries carry
+//! a "jump to cursor" payload instead.
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::prelude::*;
@@ -19,7 +16,7 @@ use crate::tui::components::set_prefixed_input_cursor_position;
 use crate::tui::home::bindings::{self, ActionId};
 use crate::tui::styles::Theme;
 
-/// Group buckets, rendered in this order. Mirrors `web/src/components/command-palette/groups.ts`.
+/// Group buckets, in render order. Twin of the web `groups.ts`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PaletteGroup {
     Actions,
@@ -53,49 +50,40 @@ impl PaletteGroup {
 
 /// What the dialog asks the input handler to do when the user picks an entry.
 pub enum PaletteAction {
-    /// Run a registry action directly via `HomeView::run_action`. This is the
-    /// canonical path: it never synthesizes a keypress, so it can't misfire in
-    /// strict mode (where a synthesized bare letter would hit the typing-guard
-    /// or a relocated arm).
+    /// Run a registry action directly. The canonical path: it synthesizes no
+    /// keypress, so strict mode's typing-guard cannot misfire on it.
     Invoke(ActionId),
-    /// Activate the selected session (the `Enter` action; not a relocatable
-    /// keybinding, so it's not in the registry).
+    /// Activate the selected session. `Enter` is not relocatable, so it is
+    /// not in the registry.
     Activate,
-    /// Enter live-send mode on the selected session (the `Tab` action; likewise
-    /// not a relocatable keybinding).
+    /// Enter live-send mode, `Tab` being likewise not relocatable.
     LiveSend,
-    /// Move the cursor to a position in `flat_items` (used for session/group jump items).
+    /// Move the cursor to a position in `flat_items`.
     JumpToCursor(usize),
-    /// Open a tool session by name (lazygit, yazi, etc.)
     ToolSession(String),
-    /// The query matched an Age of Empires cheat code; show its message as a
-    /// transient toast. The payload is the message to display.
+    /// The query matched an Age of Empires cheat code; toast its message.
     Cheat(String),
 }
 
-/// One entry in the palette. `payload` is what gets returned when the user picks it.
+/// One palette entry; `payload` is returned when it is picked.
 pub struct PaletteCommand {
     pub id: &'static str,
     pub title: String,
     pub group: PaletteGroup,
     pub keywords: Vec<&'static str>,
-    /// Human-readable hotkey shown on the right (e.g. "n", "Ctrl+D"). Empty if no binding.
+    /// Hotkey shown on the right, empty when unbound.
     pub hotkey: String,
     pub payload: PaletteAction,
 }
 
-/// Built-in named commands, generated from the shared keybinding registry so
-/// the palette's hotkey labels and dispatched actions can never drift from the
-/// keyboard dispatcher. Pure-navigation keys (j/k, arrows, h/l) are excluded.
-/// `Enter` (attach) and `Tab` (live-send) aren't relocatable keybindings, so
-/// they're appended explicitly rather than pulled from the registry.
+/// Built-in commands from the shared keybinding registry, so labels and
+/// actions cannot drift from the dispatcher. Pure-navigation keys are
+/// excluded; `Enter` and `Tab` are appended, not being relocatable.
 pub fn builtin_commands(strict_hotkeys: bool) -> Vec<PaletteCommand> {
     let mut cmds: Vec<PaletteCommand> = bindings::BINDINGS
         .iter()
         .filter_map(|b| {
             let meta = b.palette.as_ref()?;
-            // Drop the unread toggle entirely when the feature is off, so the
-            // palette can't invoke a removed binding.
             if b.id == bindings::ActionId::ToggleUnread && !crate::session::unread_enabled() {
                 return None;
             }
@@ -141,19 +129,14 @@ pub fn builtin_commands(strict_hotkeys: bool) -> Vec<PaletteCommand> {
 
 pub struct CommandPaletteDialog {
     input: Input,
-    /// All entries (built-ins + dynamic session/group jumps), in display order.
     entries: Vec<PaletteCommand>,
-    /// Indices into `entries` matching the current query, in score order.
     matches: Vec<usize>,
-    /// Cursor within `matches`.
     selected: usize,
-    /// Captured by `render`: the screen row of each visible (non-header)
-    /// item along with its `matches` index. Drives click + hover routing
-    /// without having to re-derive the scroll math.
+    /// Screen row and `matches` index per visible item, captured by `render`
+    /// so click and hover need no scroll math.
     visible_item_rows: Vec<(u16, usize)>,
-    /// Rect of the rendered dialog frame. Used by click routing to
-    /// distinguish "inside dialog but missed a row" (no-op) from
-    /// "outside dialog" (cancel).
+    /// The dialog frame, so a click inside it that misses a row is a no-op
+    /// rather than a cancel.
     dialog_area: Rect,
 }
 
@@ -178,7 +161,6 @@ impl CommandPaletteDialog {
         {
             return DialogResult::Cancel;
         }
-        // Hit-test the visible item rows.
         let Some(display_idx) = self
             .visible_item_rows
             .iter()
@@ -215,10 +197,8 @@ impl CommandPaletteDialog {
     }
 
     pub fn handle_key(&mut self, key: KeyEvent) -> DialogResult<PaletteAction> {
-        // Ctrl+K toggles the palette: if the user re-presses the activation
-        // key, close it (matches VS Code / cmdk behavior). Without this branch
-        // the wildcard arm would forward Ctrl+K to tui_input, which silently
-        // discards it, leaving the palette stuck open until Esc.
+        // Ctrl+K closes the palette again. Without this the wildcard arm
+        // forwards it to tui_input, which drops it, stranding the palette.
         if matches!(key.code, KeyCode::Char('k') | KeyCode::Char('K'))
             && key.modifiers.contains(KeyModifiers::CONTROL)
         {
@@ -242,15 +222,12 @@ impl CommandPaletteDialog {
                 let Some(&idx) = self.matches.get(self.selected) else {
                     return DialogResult::Cancel;
                 };
-                // Move the chosen entry out so we can return its payload by value.
                 let cmd = self.entries.swap_remove(idx);
                 DialogResult::Submit(cmd.payload)
             }
             _ => {
                 self.input.handle_event(&crossterm::event::Event::Key(key));
                 self.recompute_matches();
-                // A full-string match on a known cheat code fires its toast and
-                // closes the palette, mirroring the web easter egg.
                 if let Some(message) = super::cheats::match_cheat(self.input.value()) {
                     return DialogResult::Submit(PaletteAction::Cheat(message.to_string()));
                 }
@@ -265,7 +242,6 @@ impl CommandPaletteDialog {
 
         let query = self.input.value().trim();
         if query.is_empty() {
-            // No query: show everything in the original (group, insertion) order.
             self.matches = sort_indices_by_group(&self.entries);
             self.selected = 0;
             return;
@@ -331,7 +307,6 @@ impl CommandPaletteDialog {
             ])
             .split(inner);
 
-        // Input row
         let input_line = Line::from(vec![
             Span::styled("> ", Style::default().fg(theme.accent).bold()),
             Span::styled(self.input.value(), Style::default().fg(theme.text)),
@@ -340,7 +315,6 @@ impl CommandPaletteDialog {
         frame.render_widget(Paragraph::new(input_line), chunks[0]);
         set_prefixed_input_cursor_position(frame, chunks[0], "> ", &self.input);
 
-        // Separator
         let sep = "─".repeat(chunks[1].width as usize);
         frame.render_widget(
             Paragraph::new(Line::from(Span::styled(
@@ -350,13 +324,11 @@ impl CommandPaletteDialog {
             chunks[1],
         );
 
-        // List
         let list_area = chunks[2];
         let visible = list_area.height as usize;
 
         let mut lines: Vec<Line> = Vec::new();
-        // Parallel to `lines`: None for a group-header line, Some(idx)
-        // for an item line where idx is the `matches` index.
+        // Parallel to `lines`: the `matches` index, or None for a header.
         let mut line_to_display_idx: Vec<Option<usize>> = Vec::new();
         let mut selected_line: usize = 0;
         if self.matches.is_empty() {
@@ -370,8 +342,7 @@ impl CommandPaletteDialog {
             for (display_idx, &entry_idx) in self.matches.iter().enumerate() {
                 let cmd = &self.entries[entry_idx];
 
-                // Show group header on transition (only when no query, since
-                // fuzzy results mix groups by score and headers would be confusing).
+                // Headers only without a query: fuzzy results mix groups.
                 let show_headers = self.input.value().trim().is_empty();
                 if show_headers && last_group != Some(cmd.group) {
                     lines.push(Line::from(Span::styled(
@@ -425,8 +396,6 @@ impl CommandPaletteDialog {
         }
         let start = selected_line.saturating_sub(visible.saturating_sub(1));
         let end = (start + visible).min(lines.len());
-        // Capture screen rows for visible item lines so a click can map
-        // directly back to the `matches` display index.
         for (i, line_idx) in (start..end).enumerate() {
             if let Some(idx) = line_to_display_idx.get(line_idx).copied().flatten() {
                 self.visible_item_rows.push((list_area.y + i as u16, idx));
@@ -434,7 +403,6 @@ impl CommandPaletteDialog {
         }
         frame.render_widget(Paragraph::new(lines[start..end].to_vec()), list_area);
 
-        // Hint footer
         let footer_left = Line::from(vec![
             Span::styled("↑↓", Style::default().fg(theme.hint)),
             Span::raw(" navigate  "),
@@ -447,25 +415,20 @@ impl CommandPaletteDialog {
     }
 }
 
-/// Truncate a string to fit within `max_cols` terminal columns, appending "…"
-/// if cut. Uses Unicode display width (so a wide char like an emoji counts as
-/// 2 cells), and only ever cuts on char boundaries so this can't panic on
-/// session titles with multi-byte characters.
+/// Truncate to `max_cols` terminal columns, appending "…" if cut. Counts
+/// Unicode display width and cuts only on char boundaries.
 fn truncate_with_ellipsis(s: &str, max_cols: usize) -> String {
     if max_cols == 0 {
         return String::new();
     }
     if max_cols == 1 {
-        // Not enough room for ellipsis + content; return original and let the
-        // surrounding layout truncate at the column boundary.
+        // No room for ellipsis plus content; let the layout clip it.
         return s.to_string();
     }
     if s.width() <= max_cols {
         return s.to_string();
     }
-    // Reserve 1 cell for the ellipsis, then walk char-by-char until adding
-    // the next char would exceed the budget. Tracking width per char avoids
-    // mid-grapheme byte-slicing.
+    // Reserve a cell for the ellipsis, then walk char by char within budget.
     let budget = max_cols - 1;
     let mut used = 0usize;
     let mut cut_byte = 0usize;
@@ -480,8 +443,7 @@ fn truncate_with_ellipsis(s: &str, max_cols: usize) -> String {
     format!("{}…", &s[..cut_byte])
 }
 
-/// Stable sort: primary by group order, secondary by original insertion order.
-/// Used when no query is active so the palette has a predictable layout.
+/// Stable sort by group then insertion order, for the no-query layout.
 fn sort_indices_by_group(entries: &[PaletteCommand]) -> Vec<usize> {
     let mut idx: Vec<usize> = (0..entries.len()).collect();
     idx.sort_by_key(|&i| (entries[i].group.order(), i));

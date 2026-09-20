@@ -10,32 +10,26 @@ use crate::tui::components::checkbox::{checkbox_line, CheckboxStyle};
 use crate::tui::components::hover::{paint_hover_bg, HoverState};
 use crate::tui::styles::Theme;
 
-/// Options for what to clean up when deleting a session
 #[derive(Clone, Debug, Default)]
 pub struct DeleteOptions {
     pub delete_worktree: bool,
     pub force_delete: bool,
     pub delete_branch: bool,
     pub delete_sandbox: bool,
-    /// For scratch sessions: keep the scratch directory on disk instead of
-    /// removing it. No effect when `DeleteDialogConfig.is_scratch` is false.
+    /// Keep the scratch directory on disk. Only read when `is_scratch`.
     pub keep_scratch: bool,
 }
 
-/// Configuration for what cleanup options to show in the dialog
 #[derive(Clone, Debug, Default)]
 pub struct DeleteDialogConfig {
     pub worktree_branch: Option<String>,
     pub has_sandbox: bool,
-    /// Project path used to load repo-level config overrides.
     pub project_path: Option<String>,
-    /// True iff the session being deleted is a scratch session. Surfaces a
-    /// "Keep scratch directory" opt-in checkbox so users can rescue files
-    /// mid-delete; defaults off so the normal flow stays one-keystroke.
+    /// Surfaces the "Keep scratch directory" opt-in, off by default so the
+    /// normal flow stays one keystroke.
     pub is_scratch: bool,
 }
 
-/// Focus states for navigation
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum FocusElement {
     WorktreeCheckbox,
@@ -47,28 +41,19 @@ enum FocusElement {
     NoButton,
 }
 
-/// Unified delete dialog that adapts based on available cleanup options
 pub struct UnifiedDeleteDialog {
     session_title: String,
     config: DeleteDialogConfig,
     options: DeleteOptions,
     focus: FocusElement,
     focusable_elements: Vec<FocusElement>,
-    /// Screen rect of the rendered `[Yes]` button. Captured during
-    /// `render` so `handle_click` can hit-test the same cells the user
-    /// sees. `Rect::default()` until the dialog has been rendered at
-    /// least once.
+    /// The `[Yes]` button, zero-sized until the first render.
     yes_button_area: Rect,
-    /// Screen rect of the rendered `[No]` button, paired with
-    /// `yes_button_area`.
     no_button_area: Rect,
-    /// Per-focusable hit rect captured during `render`. Drives both
-    /// hover (move focus) and click (toggle / submit). Yes/No still
-    /// have dedicated fields above because the renderer returns them
-    /// from `render_yes_no` already; everything else lives here.
+    /// Hit rect per focusable row. Yes/No keep their own fields above,
+    /// since `render_yes_no` already returns them.
     focusable_rects: Vec<(FocusElement, Rect)>,
-    /// Which Yes/No button the mouse is over, for the hover highlight.
-    /// Visual only; never moves keyboard `focus`.
+    /// The hovered button. Visual only; never moves keyboard `focus`.
     hover: HoverState,
 }
 
@@ -88,8 +73,6 @@ impl UnifiedDeleteDialog {
             delete_branch: config.worktree_branch.is_some()
                 && user_config.worktree.delete_branch_on_cleanup,
             delete_sandbox: config.has_sandbox && user_config.sandbox.auto_cleanup,
-            // Scratch sessions default to remove. The user has to explicitly
-            // opt in to keep the directory.
             keep_scratch: false,
         };
 
@@ -118,13 +101,9 @@ impl UnifiedDeleteDialog {
         }
     }
 
-    /// Route a left-click. Returns `Some(Submit)` for `[Yes]`,
-    /// `Some(Cancel)` for `[No]`, `Some(Continue)` for a click on a
-    /// checkbox row (which is treated as a focus-then-toggle), and
-    /// `None` for clicks that landed elsewhere inside the dialog
-    /// (those are silently absorbed by the modal, no fall-through to
-    /// the list). Rects are written during `render`; before the first
-    /// render every rect is zero-sized so `contains()` returns false.
+    /// Route a left-click: `Submit` on `[Yes]`, `Cancel` on `[No]`,
+    /// `Continue` on a checkbox row (focus then toggle), `None` elsewhere
+    /// inside the dialog, which the modal absorbs.
     pub fn handle_click(&mut self, col: u16, row: u16) -> Option<DialogResult<DeleteOptions>> {
         let pos = ratatui::layout::Position::from((col, row));
         if self.yes_button_area.contains(pos) {
@@ -141,20 +120,16 @@ impl UnifiedDeleteDialog {
         None
     }
 
-    /// Highlight the Yes/No button or checkbox row under the cursor.
-    /// Hover never moves keyboard `focus` (mouse drift between reading the
-    /// dialog and pressing Enter would otherwise silently flip which
-    /// action fires); it only drives the visual highlight. Click still
-    /// moves focus and (for checkboxes) toggles state. Returns `true` when
-    /// the highlighted target changed so the caller can redraw.
+    /// Highlight the row under the cursor without moving keyboard `focus`:
+    /// a drift between reading the dialog and pressing Enter must not flip
+    /// which action fires. True when the highlight changed.
     pub fn handle_hover(&mut self, col: u16, row: u16) -> bool {
         let mut rects = vec![self.yes_button_area, self.no_button_area];
         rects.extend(self.focusable_rects.iter().map(|(_, r)| *r));
         self.hover.update(col, row, &rects)
     }
 
-    /// Rects of the checkbox rows captured this frame, for the hover
-    /// highlight. Yes/No are excluded; they're painted by `render_yes_no`.
+    /// Checkbox rows captured this frame; Yes/No are painted elsewhere.
     fn checkbox_rects(&self) -> Vec<Rect> {
         self.focusable_rects.iter().map(|(_, r)| *r).collect()
     }

@@ -12,10 +12,8 @@ use crate::tui::styles::Theme;
 pub struct SendMessageDialog {
     session_title: String,
     text_area: TextArea<'static>,
-    /// True for one keystroke after a kill (Ctrl+U/K/W or Alt+Backspace) that
-    /// actually wrote to the textarea's yank buffer. While true, the footer
-    /// shows the "Ctrl+P restore deleted text" hint and Ctrl+P pastes the yank
-    /// back. Any other key clears it.
+    /// Set for one keystroke after a kill that actually wrote to the yank
+    /// buffer, while the footer offers Ctrl+P to paste it back.
     restore_armed: bool,
 }
 
@@ -32,19 +30,15 @@ impl SendMessageDialog {
     }
 
     fn get_text(&self) -> String {
-        // ratatui_textarea preserves embedded CRs from voice/dictation paste
-        // (iOS speech often emits lone \r as a sentence break). Sending raw \r
-        // through to claude-code causes the agent to submit prematurely or
-        // receive garbled input — normalize before submit.
+        // Dictation pastes embedded lone CRs, which the textarea preserves and
+        // an agent reads as a premature submit.
         let joined = self.text_area.lines().join("\n");
         joined.replace("\r\n", "\n").replace('\r', "\n")
     }
 
-    /// Run a kill operation and arm the restore hint only if it actually wrote
-    /// to the textarea's yank buffer. Some "kills" (e.g. Ctrl+U at column 0,
-    /// Ctrl+K at end-of-line) call `delete_newline` under the hood, which joins
-    /// lines without touching yank, so a subsequent Ctrl+P paste would either
-    /// do nothing or splat stale content.
+    /// Run a kill, arming the restore hint only when it wrote to the yank
+    /// buffer. A kill at a line edge joins lines via `delete_newline` without
+    /// touching yank, so Ctrl+P would paste nothing or something stale.
     fn arm_if_yank_changed(&mut self, kill: impl FnOnce(&mut TextArea<'static>) -> bool) {
         let before = self.text_area.yank_text();
         let killed = kill(&mut self.text_area);
@@ -55,10 +49,8 @@ impl SendMessageDialog {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         let alt = key.modifiers.contains(KeyModifiers::ALT);
 
-        // Ctrl+P restores the last kill (from Ctrl+U/K/W) only while armed.
-        // Otherwise it falls through to the textarea's default (cursor up).
-        // Match both lowercase and uppercase in case the terminal sends 'P'
-        // when Shift was also held.
+        // Ctrl+P restores the last kill only while armed, else it falls
+        // through to the textarea's cursor-up. Either case, Shift may be held.
         if ctrl && matches!(key.code, KeyCode::Char('p' | 'P')) && self.restore_armed {
             self.text_area.paste();
             self.restore_armed = false;
@@ -67,35 +59,27 @@ impl SendMessageDialog {
 
         match key.code {
             KeyCode::Esc => DialogResult::Cancel,
-            // Ctrl+U: delete from cursor to start of line. The deleted slice goes
-            // into the textarea's yank buffer; Ctrl+P pastes it back.
             KeyCode::Char('u' | 'U') if ctrl => {
                 self.arm_if_yank_changed(|ta| ta.delete_line_by_head());
                 DialogResult::Continue
             }
-            // Ctrl+K: delete from cursor to end of line. The textarea has this
-            // by default, but we intercept so we can arm the restore hint.
+            // The textarea has Ctrl+K already; intercept it to arm the hint.
             KeyCode::Char('k' | 'K') if ctrl => {
                 self.arm_if_yank_changed(|ta| ta.delete_line_by_end());
                 DialogResult::Continue
             }
-            // Ctrl+W: delete previous word. Same yank buffer as Ctrl+U/K, so
-            // we arm the hint for symmetry. Note: ratatui-textarea also binds
-            // Alt+H, Alt+Backspace, Alt+D, Alt+Delete to word-delete, but those
-            // are less commonly typed and fall through to the textarea's native
-            // handler without arming the hint.
+            // The textarea's other word-delete bindings (Alt+H, Alt+D,
+            // Alt+Delete) fall through without arming the hint.
             KeyCode::Char('w' | 'W') if ctrl => {
                 self.arm_if_yank_changed(|ta| ta.delete_word());
                 DialogResult::Continue
             }
-            // Alt+Backspace: macOS-style word-backspace. Mirrors Ctrl+W.
             KeyCode::Backspace if alt => {
                 self.arm_if_yank_changed(|ta| ta.delete_word());
                 DialogResult::Continue
             }
-            // Shift+Enter inserts a newline.
-            // Most terminals send Shift+Enter as ESC + CR (\x1b\r), which crossterm
-            // decodes as Alt+Enter, so we accept both ALT and SHIFT modifiers.
+            // Most terminals send Shift+Enter as ESC + CR, which crossterm
+            // decodes as Alt+Enter, so both modifiers insert a newline.
             KeyCode::Enter
                 if key.modifiers.contains(KeyModifiers::SHIFT)
                     || key.modifiers.contains(KeyModifiers::ALT) =>
@@ -104,18 +88,14 @@ impl SendMessageDialog {
                 self.text_area.insert_newline();
                 DialogResult::Continue
             }
-            // Ctrl+J is how crossterm decodes a bare line feed (\n, 0x0A) once
-            // raw mode is on; some terminals send that for Shift+Enter (e.g. a
-            // Ghostty `keybind = shift+enter=text:\n`). Treat it as a newline
-            // like the rest of the Enter family. Without this it falls through
-            // to the textarea, whose default binds Ctrl+J to delete-to-line-head
-            // and silently wipes the input.
+            // Crossterm decodes a bare line feed as Ctrl+J, which some
+            // terminals send for Shift+Enter. Without this arm it reaches the
+            // textarea's delete-to-line-head and wipes the input.
             KeyCode::Char('j') if ctrl => {
                 self.restore_armed = false;
                 self.text_area.insert_newline();
                 DialogResult::Continue
             }
-            // Plain Enter sends
             KeyCode::Enter => {
                 let value = self.get_text().trim().to_string();
                 if value.is_empty() {

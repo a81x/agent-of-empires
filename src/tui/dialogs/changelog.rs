@@ -27,11 +27,9 @@ pub struct ChangelogDialog {
     scroll_offset: usize,
     display_lines: Vec<DisplayLine>,
     dialog_area: Rect,
-    /// Rect of the `[Got it]` button, captured during `render`. A click
-    /// anywhere dismisses, but the button is the call to action, so it
-    /// picks up the hover highlight to read as clickable.
+    /// The `[Got it]` button. A click anywhere dismisses, but the button
+    /// takes the hover highlight so it reads as clickable.
     got_it_button_area: Rect,
-    /// Whether the cursor is over `[Got it]`, for the hover highlight.
     hover: HoverState,
 }
 
@@ -103,10 +101,8 @@ impl ChangelogDialog {
         }
     }
 
-    /// A click anywhere inside the changelog dialog dismisses it,
-    /// matching the keyboard's "any of Enter/Esc/q/Space submits"
-    /// model. Returns None for clicks outside so the caller can decide
-    /// whether to swallow them.
+    /// A click anywhere inside dismisses, as any of Enter/Esc/q/Space does.
+    /// `None` outside, for the caller to decide.
     pub fn handle_click(&self, col: u16, row: u16) -> Option<DialogResult<()>> {
         if self
             .dialog_area
@@ -118,10 +114,7 @@ impl ChangelogDialog {
         }
     }
 
-    /// Highlight the `[Got it]` button when the cursor is over it. A
-    /// click anywhere still dismisses via `handle_click`; this only
-    /// signals the call to action. Returns `true` when the highlight
-    /// changed.
+    /// Highlight `[Got it]` under the cursor; true when it changed.
     pub fn handle_hover(&mut self, col: u16, row: u16) -> bool {
         self.hover.update(col, row, &[self.got_it_button_area])
     }
@@ -215,9 +208,8 @@ impl ChangelogDialog {
 
         const GOT_IT_WIDTH: u16 = 8; // "[Got it]"
         let button_area = chunks[1];
-        // The button line is "[Got it]" + scroll_hint, centered as one
-        // unit; mirror that centering to capture just the "[Got it]"
-        // cells for the hover highlight.
+        // The line centers "[Got it]" plus the scroll hint as one unit;
+        // mirror that to capture only the button's cells.
         let line_width = GOT_IT_WIDTH + scroll_hint.chars().count() as u16;
         self.got_it_button_area = if button_area.width >= line_width {
             let got_it_x = button_area.x + (button_area.width - line_width) / 2;
@@ -351,22 +343,18 @@ fn parse_release_body(body: &str) -> Vec<(Category, Vec<ChangeItem>)> {
     for raw in body.lines() {
         let trimmed = raw.trim();
 
-        // git-cliff emits "### Features" / "### Bug Fixes" / etc. Match those
-        // first so the prefix check below (which also catches "## ") doesn't
-        // swallow them.
+        // Match `###` first, or the `##` check below swallows it.
         if let Some(rest) = trimmed.strip_prefix("### ") {
             current_group = group_label_to_category(rest.trim());
             continue;
         }
-        // The version header ("## [1.8.0](url) - date") and any stray ## blocks
-        // reset the active group.
+        // The version header and any stray `##` reset the active group.
         if trimmed.starts_with("## ") {
             current_group = None;
             continue;
         }
 
-        // Real markdown bullets only — anything else (headers, the
-        // "**Full Changelog**: ..." footer, blank lines) is noise.
+        // Real markdown bullets only; headers and footers are noise.
         let bullet = if let Some(rest) = trimmed.strip_prefix("- ") {
             rest.trim()
         } else if let Some(rest) = trimmed.strip_prefix("* ") {
@@ -375,8 +363,7 @@ fn parse_release_body(body: &str) -> Vec<(Category, Vec<ChangeItem>)> {
             continue;
         };
 
-        // git-cliff renders the "New Contributors" roster as bullets too;
-        // skip them whether or not their `###` header was recognized.
+        // The "New Contributors" roster is bullets too; skip it.
         if bullet.contains("made their first contribution") {
             continue;
         }

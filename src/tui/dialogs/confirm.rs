@@ -10,10 +10,8 @@ use crate::tui::components::checkbox::{checkbox_line, CheckboxStyle};
 use crate::tui::components::hover::HoverState;
 use crate::tui::styles::Theme;
 
-/// The dialog's emphasis color. Destructive confirmations (delete, stop,
-/// cancel-a-running-hook) alarm in red; neutral ones (quitting, with
-/// sessions left running) use the calmer "heads-up" amber so a routine
-/// prompt doesn't read like a data-loss warning.
+/// The dialog's emphasis color: destructive prompts alarm in red, routine
+/// ones use a calmer amber so they do not read as data loss.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Tone {
     Destructive,
@@ -26,23 +24,18 @@ pub struct ConfirmDialog {
     action: String,
     selected: bool, // true = Yes, false = No
     tone: Tone,
-    /// When set, the dialog shows a "don't warn me again" checkbox the
-    /// user can toggle with Space. The caller reads `dont_ask_again()`
-    /// on Submit to persist the opt-out. `None` hides the checkbox.
+    /// When set, a "don't warn me again" checkbox the caller reads back with
+    /// `dont_ask_again()` on Submit.
     dont_ask_again: Option<bool>,
-    /// Extra character that confirms, alongside `y` and Enter-on-Yes. Set
-    /// for the delete confirm so the `d` that opened the dialog also
-    /// accepts it; left unset everywhere else so a stray keystroke can't
+    /// An extra confirm key beside `y` and Enter, so the hotkey that opened
+    /// the dialog also accepts it. Unset elsewhere, so no stray keystroke can
     /// fire an unrelated destructive confirm.
     confirm_char: Option<char>,
     /// Button labels, `("Yes", "No")` unless the caller names its verbs.
-    /// A confirm whose question can't be answered by "Yes" alone (the
-    /// trash prompt) says what each button does instead.
     buttons: (String, String),
     yes_button_area: Rect,
     no_button_area: Rect,
-    /// Which Yes/No button the mouse is over, for the hover highlight.
-    /// Visual only; never changes `selected`.
+    /// The hovered button. Visual only; never changes `selected`.
     hover: HoverState,
 }
 
@@ -63,46 +56,37 @@ impl ConfirmDialog {
         }
     }
 
-    /// Render with the calmer "heads-up" emphasis instead of the default
-    /// destructive red. For confirmations that aren't about losing data.
+    /// Use the calmer emphasis, for a confirm that is not about losing data.
     pub fn neutral(mut self) -> Self {
         self.tone = Tone::Neutral;
         self
     }
 
-    /// Also accept `c` (case-insensitively) as a confirm key, so a dialog
-    /// opened by a hotkey can be accepted by pressing that hotkey again.
-    /// Cancel keys still win: `Esc` / `n` cancel even when one of them is
-    /// passed here.
+    /// Accept another key as confirm, so the hotkey that opened the dialog
+    /// accepts it too. `Esc` / `n` still cancel.
     pub fn confirmed_by(mut self, c: char) -> Self {
         self.confirm_char = Some(c);
         self
     }
 
-    /// Name what the buttons do instead of the default Yes/No, for a
-    /// confirm where "Yes" alone doesn't say what is about to happen.
+    /// Name what the buttons do, where "Yes" alone would not.
     pub fn buttons(mut self, yes: &str, no: &str) -> Self {
         self.buttons = (yes.to_string(), no.to_string());
         self
     }
 
-    /// Offer a "don't warn me again" checkbox (unchecked to start). The
-    /// caller inspects `dont_ask_again()` after a Submit to act on it.
+    /// Offer a "don't warn me again" checkbox, unchecked to start.
     pub fn offering_dont_ask_again(mut self) -> Self {
         self.dont_ask_again = Some(false);
         self
     }
 
-    /// Whether the user ticked "don't warn me again". Always false when
-    /// the checkbox wasn't offered.
     pub fn dont_ask_again(&self) -> bool {
         self.dont_ask_again.unwrap_or(false)
     }
 
-    /// Route a left-click. `Some(Submit)` for `[Yes]`, `Some(Cancel)`
-    /// for `[No]`, `None` for clicks that hit elsewhere inside the
-    /// dialog. Mirrors UnifiedDeleteDialog so the home view's
-    /// `handle_dialog_click` can fan out the same way.
+    /// Route a left-click: `Submit` on `[Yes]`, `Cancel` on `[No]`, `None`
+    /// anywhere else inside the dialog.
     pub fn handle_click(&self, col: u16, row: u16) -> Option<DialogResult<()>> {
         let pos = ratatui::layout::Position::from((col, row));
         if self.yes_button_area.contains(pos) {
@@ -114,12 +98,9 @@ impl ConfirmDialog {
         None
     }
 
-    /// Highlight the Yes/No button under the cursor. Hover does not
-    /// change `selected`: otherwise the mouse drifting over the opposite
-    /// button between the user reading the prompt and pressing Enter
-    /// would silently flip which action fires. Click commits explicitly
-    /// via `handle_click`. Returns `true` when the highlighted button
-    /// changed so the caller can redraw.
+    /// Highlight the button under the cursor without changing `selected`:
+    /// a drift between reading the prompt and pressing Enter must not flip
+    /// which action fires. True when the highlight changed.
     pub fn handle_hover(&mut self, col: u16, row: u16) -> bool {
         self.hover
             .update(col, row, &[self.yes_button_area, self.no_button_area])

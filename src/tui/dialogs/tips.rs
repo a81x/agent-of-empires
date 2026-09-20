@@ -1,17 +1,12 @@
 //! Tips overlay: a browsable list of the hints from [`crate::tips`].
 //!
-//! Opened from the command palette, the `?` help screen, or the tips badge.
-//! Unseen tips lead the list; tips the user has already seen collapse into a
-//! "Seen" section (so the overlay foregrounds what's new), which can be
-//! expanded to re-read them. Focusing a tip counts as viewing it, so the
-//! badge's unseen count ticks down as the user works through the collection.
-//! A "don't show tips again" toggle disables the badge and earned pops without
-//! hiding this list. Closing persists what was seen plus any toggle via
-//! [`TipsOutcome`].
+//! Unseen tips lead; seen ones collapse into an expandable "Seen" section.
+//! Focusing a tip counts as viewing it, and a "don't show tips again" toggle
+//! silences the badge without hiding this list. Both persist via
+//! [`TipsOutcome`] on close.
 //!
-//! The unseen/seen split is snapshotted when the overlay opens, so focusing a
-//! tip marks it seen without making it jump sections mid-view; the move lands
-//! on the next reopen.
+//! The unseen/seen split is snapshotted at open, so focusing a tip does not
+//! make it jump sections mid-view; the move lands on the next reopen.
 
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::prelude::*;
@@ -26,8 +21,7 @@ use crate::tui::styles::Theme;
 pub struct TipsOutcome {
     /// Tip ids the user viewed this session; merge into `tips_seen`.
     pub newly_seen: Vec<String>,
-    /// Final "don't show tips" preference if the user toggled it this session;
-    /// `None` when untouched, so the caller leaves the stored value alone.
+    /// The "don't show tips" preference, `None` when untouched.
     pub disabled: Option<bool>,
 }
 
@@ -43,21 +37,18 @@ pub struct TipsDialog {
     tips: Vec<&'static Tip>,
     /// Cursor into the currently visible rows (see `visible_rows`).
     cursor: usize,
-    /// Ids seen before this overlay opened. Drives both the unseen marker and
-    /// the (stable) unseen/seen partition.
+    /// Ids seen before this overlay opened, fixing the partition.
     initially_seen: Vec<String>,
     /// Ids first viewed during this session.
     newly_seen: Vec<String>,
     /// Current "don't show tips" state, and whether the user flipped it here.
     disabled: bool,
     disabled_touched: bool,
-    /// Strict-hotkey mode, used to render keybinding placeholders with the live
-    /// chord (e.g. `Ctrl+N` vs `Shift+N`).
+    /// Strict-hotkey mode, so keybinding placeholders show the live chord.
     strict: bool,
     /// Whether the "Seen" section is collapsed.
     seen_collapsed: bool,
-    /// Click rects for the visible rows, parallel to `visible_rows()`
-    /// (zero-sized for rows outside the scroll window).
+    /// Click rects parallel to `visible_rows()`, zero-sized when scrolled out.
     row_rects: Vec<Rect>,
     /// The modal's outer rect; a click outside it closes the overlay.
     dialog_rect: Rect,
@@ -65,9 +56,8 @@ pub struct TipsDialog {
 
 impl TipsDialog {
     pub fn new(tips: Vec<&'static Tip>, seen: Vec<String>, disabled: bool, strict: bool) -> Self {
-        // Collapse the Seen section when there's something new to read, so the
-        // overlay leads with unseen tips. If everything's already been seen,
-        // expand it so the overlay isn't just a lone header.
+        // Lead with unseen tips, but expand Seen when there are none, so the
+        // overlay is not a lone header.
         let has_unseen = tips.iter().any(|t| !seen.iter().any(|s| s == t.id));
         let mut dialog = Self {
             tips,
@@ -101,10 +91,9 @@ impl TipsDialog {
             .count()
     }
 
-    /// The rows shown right now, top to bottom: unseen tips, then (if any were
-    /// already seen) the "Seen" header and, when expanded, the seen tips. The
-    /// partition uses the seen-state captured at open, so focusing a tip marks
-    /// it seen without reshuffling the list under the cursor.
+    /// The visible rows: unseen tips, then the "Seen" header and, when
+    /// expanded, the seen tips. Partitioned by the state captured at open, so
+    /// focusing a tip does not reshuffle the list under the cursor.
     fn visible_rows(&self) -> Vec<Row> {
         let mut rows: Vec<Row> = self
             .tips

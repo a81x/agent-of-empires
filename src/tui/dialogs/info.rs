@@ -1,4 +1,4 @@
-//! Info dialog for displaying informational messages
+//! Info dialog.
 
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::prelude::*;
@@ -8,9 +8,8 @@ use super::DialogResult;
 use crate::tui::components::hover::{paint_hover_bg, HoverState};
 use crate::tui::styles::Theme;
 
-/// Which end of an overflowing message stays visible. Most dialogs read
-/// top-down, so `Top` is the default; error output (hook failures, panics)
-/// puts the payload last and overrides to `Tail`.
+/// Which end of an overflowing message stays visible. `Top` by default; error
+/// output puts its payload last and overrides to `Tail`.
 #[derive(Clone, Copy, PartialEq, Eq, Default)]
 pub enum ScrollMode {
     #[default]
@@ -25,11 +24,9 @@ pub struct InfoDialog {
     height: u16,
     scroll_mode: ScrollMode,
     dialog_area: Rect,
-    /// Rect of the `[OK]` button, captured during `render`. A click
-    /// anywhere dismisses, but the button is the call to action, so it
-    /// picks up the hover highlight to read as clickable.
+    /// The `[OK]` button. A click anywhere dismisses, but the button takes
+    /// the hover highlight so it reads as clickable.
     ok_button_area: Rect,
-    /// Whether the cursor is over `[OK]`, for the hover highlight.
     hover: HoverState,
 }
 
@@ -47,28 +44,19 @@ impl InfoDialog {
         }
     }
 
-    /// Build a dialog sized to fit `message` after wrapping, for long
-    /// multi-line content that would clip at the default 50x9.
+    /// A dialog sized to fit `message` after wrapping, for content that would
+    /// clip at the default 50x9. Wrapping happens here so the row count is
+    /// exact, and an over-tall message loses its *head* behind a `… N earlier
+    /// lines hidden` marker: error payloads sit in the last lines.
     ///
-    /// The message is pre-wrapped to the inner width here (so the row count
-    /// is exact, not a byte-length estimate), and when it still exceeds the
-    /// max dialog height the *head* is dropped behind a `… N earlier lines
-    /// hidden` marker. Paragraph clips the bottom, and for error output the
-    /// last lines are the payload (the panic message, the npm error
-    /// summary), so overflow must eat the top, not the tail.
-    ///
-    /// 96, not 80: at the typical ~35-col sidebar width, a centered 80-wide
-    /// dialog on a 150-col terminal lands its left border exactly at the
-    /// sidebar's right border, which makes the modal visually blend into
-    /// the layout. 96 shifts the coincidence point off the common
-    /// laptop-fullscreen width and gives long path lines (e.g.
-    /// `~/.config/agent-of-empires-dev`) more breathing room.
+    /// 96 wide, not 80: at a typical sidebar width a centered 80-wide dialog
+    /// on a 150-column terminal lands its border exactly on the sidebar's, and
+    /// the modal blends into the layout.
     pub fn sized_to_fit(title: &str, message: &str) -> Self {
         const WIDTH: u16 = 96;
         const MAX_HEIGHT: u16 = 35;
-        // Rows available to the message at MAX_HEIGHT: borders, margin, and
-        // the button row consume 6, and the height formula below keeps one
-        // spare.
+        // Borders, margin and the button row consume 6 rows, and the height
+        // formula below keeps one spare.
         const MAX_ROWS: usize = MAX_HEIGHT as usize - 7;
         let inner_width = WIDTH.saturating_sub(4) as usize;
 
@@ -84,31 +72,25 @@ impl InfoDialog {
             .with_scroll_mode(ScrollMode::Tail)
     }
 
-    /// Choose which end of an overflowing message stays visible. Defaults to
-    /// `ScrollMode::Top`; error dialogs override to `ScrollMode::Tail` so
-    /// the trailing payload (panic message, hook output) isn't scrolled off.
+    /// Which end of an overflowing message stays visible.
     pub fn with_scroll_mode(mut self, mode: ScrollMode) -> Self {
         self.scroll_mode = mode;
         self
     }
 
-    /// The dialog title; the tick loop reads this to decide which
-    /// auto-dismiss path applies on recovery edges.
+    /// Read by the tick loop to pick an auto-dismiss path on a recovery edge.
     pub fn title(&self) -> &str {
         &self.title
     }
 
-    /// The dialog body. The tick loop compares this against the
-    /// current `reload_failure_state` body so a `Reload Failed`
-    /// dialog already on screen refreshes only when the failing
-    /// source set changes (partial recovery or a newly recorded
-    /// source).
+    /// Compared by the tick loop against the current `reload_failure_state`,
+    /// so an open `Reload Failed` dialog refreshes only when the failing
+    /// source set changes.
     pub fn message(&self) -> &str {
         &self.message
     }
 
-    /// A left-click anywhere inside the info dialog dismisses it,
-    /// matching the keyboard's "any of Esc/Enter/Space closes" model.
+    /// A click anywhere inside dismisses, as any of Esc/Enter/Space does.
     /// `None` when the click landed outside the dialog area, so the
     /// caller can decide whether to swallow it anyway.
     pub fn handle_click(&self, col: u16, row: u16) -> Option<DialogResult<()>> {

@@ -1,10 +1,6 @@
-//! First-run walkthrough dialog.
-//!
-//! Replaces the older one-page welcome with a multi-step intro that explains
-//! what AoE is, how to start a first session, lets the user pick a theme with
-//! live preview, and points at the help shortcut. Navigable by keyboard and
-//! mouse. Driven by `config.app_state.has_seen_welcome` like the previous
-//! welcome dialog, so existing first-run gating in `App::new()` carries over.
+//! First-run walkthrough: what AoE is, how to start a session, a theme picker
+//! with live preview, and the help shortcut. Gated on
+//! `config.app_state.has_seen_welcome`.
 
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::layout::Position;
@@ -15,21 +11,14 @@ use super::DialogResult;
 use crate::session::AttachMode;
 use crate::tui::styles::{available_themes, Theme};
 
-/// Outcome from the intro wizard.
-///
-/// Fields are `Some` when the user actually visited the corresponding page;
-/// the caller writes them to config only in that case so a wizard skipped
-/// before the page never overwrites pre-existing values. `final_theme` maps
-/// to `config.theme.name`; `final_attach_mode` maps to
-/// `config.session.default_attach_mode` for existing sessions.
+/// Outcome of the intro wizard. Each field is `Some` only when the user
+/// reached its page, so a wizard skipped early overwrites nothing.
 #[derive(Debug, Clone)]
 pub struct IntroOutcome {
     pub final_theme: Option<String>,
     pub final_attach_mode: Option<AttachMode>,
-    /// `Some(true)` if the user opted in to telemetry on the Telemetry page,
-    /// `Some(false)` if they declined, `None` if they skipped before reaching
-    /// it. The caller writes `config.telemetry.enabled` and marks the opt-in
-    /// prompt answered only when this is `Some`.
+    /// The Telemetry page's choice; the caller marks the opt-in prompt
+    /// answered only when it is `Some`.
     pub telemetry_opt_in: Option<bool>,
 }
 
@@ -43,8 +32,7 @@ enum Page {
     Done,
 }
 
-/// Which footer button the mouse is currently over. Drives a hover-tint
-/// background on the button text without moving keyboard focus.
+/// The footer button under the mouse, tinted without moving keyboard focus.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum HoverButton {
     Skip,
@@ -66,64 +54,42 @@ impl Page {
 }
 
 pub struct IntroDialog {
-    /// Original theme name when the dialog opened; restored if the user
-    /// cancels mid-flight so the rest of the TUI doesn't keep a half-picked
-    /// theme.
+    /// Theme active when the dialog opened, restored if the user cancels so
+    /// no half-picked preview outlives the wizard.
     original_theme: String,
-    /// Themes the picker can choose from. Built-in themes first, then user
-    /// custom themes (same ordering as `available_themes()`).
     themes: Vec<String>,
-    /// Index into `themes` for the currently-highlighted entry on the theme
-    /// page.
     theme_cursor: usize,
-    /// True once the user has visited the theme page; we only persist a
-    /// theme choice if they actually saw it.
+    /// A theme choice persists only once the user has seen the page.
     theme_visited: bool,
-    /// Pending theme to live-preview on the next handler tick; consumed by
-    /// the home view to dispatch `Action::SetTheme`.
+    /// Theme to live-preview next tick; the home view consumes it.
     pending_preview: Option<String>,
     page_idx: usize,
     skip_button_area: Rect,
     back_button_area: Rect,
     next_button_area: Rect,
-    /// Per-row rects on the theme page, indexed by theme position. Empty on
-    /// pages other than the theme picker and before the first render.
+    /// Per-theme row rects, empty off the theme page.
     theme_row_areas: Vec<Rect>,
 
-    /// Currently-highlighted attach mode on the AttachMode page. Pre-seeded
-    /// to `LiveSend` so new users keep the home list in view by default;
-    /// the historical `Tmux` default still wins for existing users because
-    /// they never see the wizard.
+    /// Seeded to `LiveSend`, so new users keep the home list in view. Existing
+    /// users never see the wizard and keep the historical `Tmux` default.
     attach_mode_cursor: AttachMode,
-    /// True once the user has visited the attach mode page; we only persist
-    /// a choice if they actually saw it (mirrors `theme_visited`).
+    /// An attach-mode choice persists only once the page has been seen.
     attach_mode_visited: bool,
-    /// Hit-test rects for the two attach-mode options on the AttachMode
-    /// page (LiveSend, Tmux). Empty before the first render.
+    /// Rects for the LiveSend and Tmux options.
     attach_mode_areas: [Rect; 2],
 
-    /// Which footer button (if any) the mouse is hovering. Hover paints a
-    /// background tint on the button text but never moves the keyboard
-    /// cursor; click drives the actual action.
     hovered_button: Option<HoverButton>,
-    /// Index into `theme_row_areas` for the row the mouse is currently
-    /// hovering on the ThemePicker page. `None` when not on that page or
-    /// when the mouse isn't over a row.
+    /// Hovered row on the ThemePicker page.
     hovered_theme_row: Option<usize>,
-    /// Index into `attach_mode_areas` (0 = LiveSend, 1 = Tmux) for the
-    /// option the mouse is currently hovering on the AttachMode page.
+    /// Hovered option on the AttachMode page (0 = LiveSend, 1 = Tmux).
     hovered_attach_idx: Option<usize>,
 
-    /// True when the user has chosen to opt in to telemetry on the Telemetry
-    /// page. Defaults to `false`: telemetry is off unless explicitly enabled.
+    /// Telemetry stays off unless explicitly enabled here.
     telemetry_opt_in: bool,
-    /// True once the user has visited the Telemetry page; the choice is only
-    /// persisted (and the opt-in prompt only marked answered) when they did.
+    /// The telemetry choice persists only once the page has been seen.
     telemetry_visited: bool,
-    /// Hit-test rects for the two Telemetry options (0 = enable, 1 = decline).
     telemetry_option_areas: [Rect; 2],
-    /// Index into `telemetry_option_areas` for the option under the mouse on
-    /// the Telemetry page.
+    /// Hovered option on the Telemetry page.
     hovered_telemetry_idx: Option<usize>,
 }
 
@@ -159,19 +125,14 @@ impl IntroDialog {
         }
     }
 
-    /// Theme name to preview right now, if the cursor moved since the last
-    /// call. Consumed by the home view to dispatch `Action::SetTheme` so the
-    /// TUI re-themes live while the user moves through the picker.
+    /// Theme to preview now, if the cursor moved since the last call.
     pub fn take_pending_preview(&mut self) -> Option<String> {
         self.pending_preview.take()
     }
 
-    /// True on every page of the wizard so xterm mouse tracking stays
-    /// off and the terminal can do native drag-to-select on the docs /
-    /// YouTube / Discord URLs (and any other text). The trade is that
-    /// the footer `[Skip]` / `[Back]` / `[Next →]` / `[Finish]` buttons aren't
-    /// clickable; navigation is keyboard-only (Enter / ← / Esc), which
-    /// the hint on each page advertises.
+    /// True on every page, so xterm mouse tracking stays off and the terminal
+    /// can drag-select the URLs. The trade is keyboard-only navigation, which
+    /// each page's hint advertises.
     pub fn wants_text_selection(&self) -> bool {
         true
     }
@@ -214,8 +175,6 @@ impl IntroDialog {
     }
 
     fn cancel(&mut self) -> DialogResult<IntroOutcome> {
-        // Revert to whatever theme was active before the dialog opened, so a
-        // mid-flight preview doesn't outlive the wizard.
         if self.theme_visited && self.themes.get(self.theme_cursor) != Some(&self.original_theme) {
             self.pending_preview = Some(self.original_theme.clone());
         }
@@ -223,11 +182,8 @@ impl IntroDialog {
     }
 
     fn outcome(&self) -> IntroOutcome {
-        // Only report a theme when the user picked something different from
-        // what was active when the wizard opened. Dispatching SetTheme for
-        // an identity change flips `needs_redraw` → `clear_terminal` on
-        // the next loop iteration, which the user sees as a flash when the
-        // wizard closes.
+        // An identity SetTheme would clear the terminal on the next loop
+        // iteration, which reads as a flash as the wizard closes.
         let final_theme = if self.theme_visited {
             self.themes
                 .get(self.theme_cursor)
@@ -264,9 +220,8 @@ impl IntroDialog {
         };
     }
 
-    /// Flip the telemetry opt-in choice. A no-op when `DO_NOT_TRACK` forces
-    /// telemetry off, so the displayed choice can't drift from what will
-    /// actually happen.
+    /// Flip the telemetry opt-in, a no-op under `DO_NOT_TRACK` so the shown
+    /// choice cannot drift from what happens.
     fn toggle_telemetry(&mut self) {
         if crate::telemetry::do_not_track() {
             self.telemetry_opt_in = false;
@@ -286,8 +241,7 @@ impl IntroDialog {
     }
 
     pub fn handle_key(&mut self, key: KeyEvent) -> DialogResult<IntroOutcome> {
-        // Theme page eats up/down so they navigate the list; everything else
-        // (Enter, Tab, arrows for paging) is shared across pages.
+        // The theme page eats up/down to navigate its list.
         if self.current_page() == Page::ThemePicker {
             match key.code {
                 KeyCode::Up | KeyCode::Char('k') => {
@@ -302,8 +256,6 @@ impl IntroDialog {
             }
         }
 
-        // Attach mode page captures up/down/j/k so the user can flip between
-        // LiveSend and Tmux without bouncing back to page-level handling.
         if self.current_page() == Page::AttachMode {
             match key.code {
                 KeyCode::Up | KeyCode::Char('k') | KeyCode::Down | KeyCode::Char('j') => {
@@ -314,8 +266,6 @@ impl IntroDialog {
             }
         }
 
-        // Telemetry page captures up/down/j/k to flip the opt-in choice,
-        // mirroring the attach-mode page.
         if self.current_page() == Page::Telemetry {
             match key.code {
                 KeyCode::Up | KeyCode::Char('k') | KeyCode::Down | KeyCode::Char('j') => {
@@ -339,13 +289,9 @@ impl IntroDialog {
         }
     }
 
-    /// Update the hover state from a `MouseEventKind::Moved` event.
-    /// Mirrors the pattern in `SnoozeDurationDialog` / `SortPickerDialog`:
-    /// the hover indicator tracks the cursor but never moves the keyboard
-    /// focus, so a stray mouse drift while reading the page can't silently
-    /// switch the user's pick. Returns true only when the hover target
-    /// resolves to a different rect, so the caller can skip a redraw on
-    /// every pixel-level mouse twitch.
+    /// Track the cursor without moving keyboard focus, so a drift while
+    /// reading cannot switch the user's pick. True only when the hover target
+    /// changes, so a pixel-level twitch skips the redraw.
     pub fn handle_hover(&mut self, col: u16, row: u16) -> bool {
         let pos = Position::from((col, row));
         let new_button = if self.skip_button_area.contains(pos) {
