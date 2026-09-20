@@ -23,9 +23,10 @@ import { SessionStep } from "./steps/SessionStep";
 import { AgentPickerEssentials } from "./steps/AgentPickerEssentials";
 import { AgentOptions } from "./steps/AgentOptions";
 import { LaunchFooter } from "./LaunchFooter";
-import { initialData, reducer, type Action, type WizardData } from "./wizardReducer";
+import { initialData, reducer, type WizardData } from "./wizardReducer";
 import { buildCreateRequest } from "./createRequest";
 import { commandMapsFromSettings, EMPTY_COMMAND_MAPS, type CommandMaps } from "./commandMaps";
+import { profileDefaults, type ProfileDefaults } from "./profileDefaults";
 
 // Validated against ACP_CAPABLE_TOOLS on read, since another install may have written it.
 const LAST_USED_TOOL_KEY = "aoe-acp-last-tool";
@@ -37,31 +38,7 @@ function loadLastUsedTool(): string {
   return stored && ACP_CAPABLE_TOOLS.has(stored) ? stored : "claude";
 }
 
-type Settings = NonNullable<Awaited<ReturnType<typeof fetchSettings>>>;
 type Obj = Record<string, unknown> | undefined;
-
-/** The mount-time defaults dispatch; explicit prefill values win over the profile. */
-function profileDefaultsAction(s: Settings, prefill: WizardPrefill | undefined, currentTool: string): Action {
-  const sandbox = s.sandbox as Obj;
-  const session = s.session as Obj;
-  const worktree = s.worktree as Obj;
-  const env = Array.isArray(sandbox?.environment)
-    ? (sandbox?.environment as unknown[]).filter((v): v is string => typeof v === "string")
-    : [];
-  const defaultTool = prefill?.tool || (session?.default_tool as string) || "";
-  const acp = (session?.acp_defaults as Obj)?.[defaultTool || currentTool] as Obj;
-  return {
-    type: "APPLY_PROFILE_DEFAULTS",
-    yoloMode: prefill?.yoloMode ?? (session?.yolo_mode_default as boolean) ?? false,
-    sandboxEnabled: prefill?.sandboxEnabled ?? (sandbox?.enabled_by_default as boolean) ?? false,
-    worktreeEnabled: (worktree?.enabled as boolean) ?? false,
-    tool: defaultTool,
-    extraEnv: env,
-    agentModel: typeof acp?.model === "string" ? acp.model : "",
-    agentEffort: typeof acp?.effort === "string" ? acp.effort : "",
-    skipIfDirty: true,
-  };
-}
 
 export interface WizardPrefill {
   path?: string;
@@ -148,7 +125,15 @@ export function SessionWizard({ onClose, onCreated, prefill, nameOnly = false }:
         setCommandMaps(commandMapsFromSettings(s));
         const img = ((s.sandbox as Obj)?.default_image as string) || "";
         if (img) dispatch({ type: "SET_FIELD", field: "sandboxImage", value: img });
-        dispatch(profileDefaultsAction(s, prefill, state.data.tool));
+        const defaults = profileDefaults(s, prefill?.tool ?? "", state.data.tool);
+        dispatch({
+          type: "APPLY_PROFILE_DEFAULTS",
+          ...defaults,
+          // Explicit prefill values win over the profile.
+          yoloMode: prefill?.yoloMode ?? defaults.yoloMode,
+          sandboxEnabled: prefill?.sandboxEnabled ?? defaults.sandboxEnabled,
+          skipIfDirty: true,
+        });
       });
     });
     // Seed once; a re-render with a new prefill object must not stomp user edits.
@@ -174,18 +159,11 @@ export function SessionWizard({ onClose, onCreated, prefill, nameOnly = false }:
     dispatch({ type: "SET_FIELD", field, value });
   }, []);
 
-  const handleApplyProfileDefaults = useCallback(
-    (
-      defaults: Omit<Extract<Action, { type: "APPLY_PROFILE_DEFAULTS" }>, "type" | "skipIfDirty"> & {
-        commandMaps?: CommandMaps;
-      },
-    ) => {
-      const { commandMaps: maps, ...rest } = defaults;
-      if (maps) setCommandMaps(maps);
-      dispatch({ type: "APPLY_PROFILE_DEFAULTS", ...rest });
-    },
-    [],
-  );
+  const handleApplyProfileDefaults = useCallback((defaults: ProfileDefaults & { commandMaps?: CommandMaps }) => {
+    const { commandMaps: maps, ...rest } = defaults;
+    if (maps) setCommandMaps(maps);
+    dispatch({ type: "APPLY_PROFILE_DEFAULTS", ...rest });
+  }, []);
 
   const runCreate = async (body: CreateSessionRequest, tool: string) => {
     const result = await createSession(body);

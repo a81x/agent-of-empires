@@ -1027,7 +1027,10 @@
       "kind": "mocked-playwright",
       "risk": "medium",
       "specs": ["tests/wizard-agent-step.spec.ts"],
-      "components": ["web/src/components/session-wizard/steps/AgentOptions.tsx"]
+      "components": [
+        "web/src/components/session-wizard/steps/AgentOptions.tsx",
+        "web/src/components/session-wizard/steps/ProfilePresetPicker.tsx"
+      ]
     },
     {
       "id": "wizard.scratch-toggle-visible",

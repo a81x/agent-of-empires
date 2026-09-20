@@ -4,6 +4,8 @@ import { fetchSettings } from "../../../lib/api";
 import { isAcpEligible } from "../../../lib/acpCapableTools";
 import { resolveLaunchCommand } from "../../../lib/launchCommand";
 import { commandMapsFromSettings, EMPTY_COMMAND_MAPS, type CommandMaps } from "../commandMaps";
+import { profileDefaults, type ProfileDefaults } from "../profileDefaults";
+import { ProfilePresetPicker } from "./ProfilePresetPicker";
 import { ToggleRow } from "./Toggle";
 
 interface WizardData {
@@ -28,16 +30,7 @@ interface Props {
   agents: AgentInfo[];
   profiles: ProfileInfo[];
   dockerAvailable: boolean;
-  onApplyProfileDefaults: (defaults: {
-    yoloMode: boolean;
-    sandboxEnabled: boolean;
-    worktreeEnabled: boolean;
-    tool: string;
-    extraEnv: string[];
-    agentModel?: string;
-    agentEffort?: string;
-    commandMaps?: CommandMaps;
-  }) => void;
+  onApplyProfileDefaults: (defaults: ProfileDefaults & { commandMaps?: CommandMaps }) => void;
   /** Profile-resolved maps for the launch command preview. */
   commandMaps?: CommandMaps;
 }
@@ -142,24 +135,8 @@ export function AgentOptions({
       try {
         const settings = await fetchSettings(profileName);
         if (settings) {
-          const session = settings.session as Record<string, unknown> | undefined;
-          const sandbox = settings.sandbox as Record<string, unknown> | undefined;
-          const worktree = settings.worktree as Record<string, unknown> | undefined;
-          // Without the profile env, an empty extra_env makes the backend use the wrong profile's env.
-          const env = Array.isArray(sandbox?.environment)
-            ? (sandbox.environment as unknown[]).filter((v): v is string => typeof v === "string")
-            : [];
-          const defaultTool = (session?.default_tool as string) || data.tool;
-          const acpDefaults = session?.acp_defaults as Record<string, unknown> | undefined;
-          const acpDefault = acpDefaults?.[defaultTool] as Record<string, unknown> | undefined;
           onApplyProfileDefaults({
-            yoloMode: (session?.yolo_mode_default as boolean) ?? false,
-            sandboxEnabled: (sandbox?.enabled_by_default as boolean) ?? false,
-            worktreeEnabled: (worktree?.enabled as boolean) ?? false,
-            tool: defaultTool,
-            extraEnv: env,
-            agentModel: typeof acpDefault?.model === "string" ? acpDefault.model : "",
-            agentEffort: typeof acpDefault?.effort === "string" ? acpDefault.effort : "",
+            ...profileDefaults(settings, "", data.tool),
             commandMaps: commandMapsFromSettings(settings),
           });
         }
@@ -284,57 +261,12 @@ export function AgentOptions({
       )}
 
       {showProfilePicker && (
-        <div className="mb-5">
-          <label className="block text-sm text-text-dim mb-1.5">Workflow preset</label>
-          <p className="text-xs text-text-dim mb-2">
-            Profiles preload tool, sandbox, auto-approve, and env defaults for common workflows.
-          </p>
-          <div role="radiogroup" aria-label="Workflow preset" className="space-y-1.5">
-            <button
-              type="button"
-              role="radio"
-              aria-checked={data.profile === ""}
-              onClick={() => handleProfileChange("")}
-              className={`w-full min-h-[44px] text-left p-3 rounded-lg border transition-colors cursor-pointer focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-600 ${
-                data.profile === ""
-                  ? "border-brand-600 bg-surface-900"
-                  : "border-surface-700 bg-surface-950 hover:border-surface-600"
-              }`}
-            >
-              <div className="text-sm font-semibold text-text-primary">Server default</div>
-              <div className="mt-0.5 text-xs text-text-dim leading-snug">
-                Use the active profile on the server with no client-side preset.
-              </div>
-            </button>
-            {profiles.map((p) => (
-              <button
-                type="button"
-                role="radio"
-                aria-checked={data.profile === p.name}
-                key={p.name}
-                onClick={() => handleProfileChange(p.name)}
-                className={`w-full min-h-[44px] text-left p-3 rounded-lg border transition-colors cursor-pointer focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-600 ${
-                  data.profile === p.name
-                    ? "border-brand-600 bg-surface-900"
-                    : "border-surface-700 bg-surface-950 hover:border-surface-600"
-                }`}
-              >
-                <div className="flex flex-wrap items-baseline gap-2">
-                  <span className="text-sm font-semibold text-text-primary">{p.name}</span>
-                  {p.is_default && (
-                    <span className="rounded px-1.5 py-px text-[10px] font-mono uppercase tracking-wide bg-surface-700 text-text-dim">
-                      Active
-                    </span>
-                  )}
-                </div>
-                {p.description && <div className="mt-0.5 text-xs text-text-dim leading-snug">{p.description}</div>}
-              </button>
-            ))}
-          </div>
-          {data.profile && data.profileDirty && (
-            <p className="text-xs text-brand-500 mt-1">(Custom) Settings differ from preset defaults</p>
-          )}
-        </div>
+        <ProfilePresetPicker
+          profiles={profiles}
+          selected={data.profile}
+          dirty={data.profileDirty}
+          onSelect={(name) => void handleProfileChange(name)}
+        />
       )}
 
       <div className="space-y-2 mb-4">
