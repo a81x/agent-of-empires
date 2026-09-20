@@ -278,30 +278,20 @@ pub(super) fn decrement_reported_count(counter: &std::sync::atomic::AtomicU32, r
 mod tests {
     use super::*;
 
-    // #1874 / #1875.
+    /// #1874 / #1875: a confirmed send clears only the increments it reported, so one
+    /// that lands mid-flight survives, and a zero report touches nothing.
     #[test]
     fn reported_count_decrement_preserves_concurrent_increments() {
         use std::sync::atomic::{AtomicU32, Ordering};
-        let counter = AtomicU32::new(5);
-        // The snapshot reported the 5 increments seen at build time.
-        let reported = counter.load(Ordering::Relaxed);
-        // One more lands while the snapshot is in flight.
-        counter.fetch_add(1, Ordering::Relaxed);
-        // The confirmed send clears only what it reported.
-        decrement_reported_count(&counter, reported);
-        assert_eq!(
-            counter.load(Ordering::Relaxed),
-            1,
-            "the increment that arrived during the send must be retained"
-        );
-    }
 
-    #[test]
-    fn reported_count_decrement_is_noop_for_zero() {
-        use std::sync::atomic::{AtomicU32, Ordering};
-        let counter = AtomicU32::new(3);
+        let counter = AtomicU32::new(5);
+        let reported = counter.load(Ordering::Relaxed);
+        counter.fetch_add(1, Ordering::Relaxed);
+        decrement_reported_count(&counter, reported);
+        assert_eq!(counter.load(Ordering::Relaxed), 1);
+
         decrement_reported_count(&counter, 0);
-        assert_eq!(counter.load(Ordering::Relaxed), 3);
+        assert_eq!(counter.load(Ordering::Relaxed), 1);
     }
 
     // #1883.

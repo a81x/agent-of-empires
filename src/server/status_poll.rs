@@ -357,82 +357,43 @@ mod tests {
         assert!(capacity_deferred.contains(&kept));
     }
 
+    /// The tmux poller owns the passive transition for terminal rows only: a structured
+    /// row gets neither a patch (#2697) nor an unread mark (#3181, the acp event listener
+    /// owns that). A terminal row's patch carries the row's own timestamps and must not
+    /// fabricate a `last_accessed_at` a brand-new session never had, since idle-reap and
+    /// the freshness sort both read its absence.
     #[test]
-    fn decide_passive_transition_skips_patch_for_structured_session() {
-        // Locks the CI regression from #2697.
-        let mut inst = Instance::new("acp-session", "/tmp/test");
-        inst.view = crate::session::View::Structured;
-        inst.status = Status::Idle;
+    fn decide_passive_transition_patches_only_terminal_rows() {
+        let mut structured = Instance::new("acp-session", "/tmp/test");
+        structured.view = crate::session::View::Structured;
+        structured.status = Status::Idle;
+        let decision = decide_passive_transition(&structured, Status::Starting, false);
+        assert!(decision.patch.is_none());
+        let decision = decide_passive_transition(&structured, Status::Running, true);
+        assert!(!decision.mark_unread);
 
-        let decision = decide_passive_transition(&inst, Status::Starting, false);
-
-        assert!(
-            decision.patch.is_none(),
-            "structured sessions must never get a passive status patch"
-        );
-    }
-
-    #[test]
-    fn decide_passive_transition_patches_plain_tmux_session() {
         let mut inst = Instance::new("tmux-session", "/tmp/test");
         inst.status = Status::Idle;
         inst.idle_entered_at = Some(chrono::Utc::now());
         inst.last_accessed_at = Some(chrono::Utc::now());
-
-        let decision = decide_passive_transition(&inst, Status::Running, false);
-
-        let patch = decision.patch.expect("plain tmux session must get a patch");
+        let patch = decide_passive_transition(&inst, Status::Running, false)
+            .patch
+            .expect("a terminal row gets a patch");
         assert_eq!(patch.status, Status::Idle);
         assert_eq!(patch.idle_entered_at, inst.idle_entered_at);
         assert_eq!(patch.last_accessed_at, inst.last_accessed_at);
-    }
 
-    #[test]
-    fn decide_passive_transition_never_fabricates_last_accessed_at() {
-        // A session that transitions status before any user touch has last_accessed_at ==
-        // None on disk; the patch must preserve that, not fabricate a stamp, or a brand-new
-        // session gains a spurious "touched" signal that idle-reap and the freshness sort
-        // rely on being absent.
-        let mut inst = Instance::new("tmux-session", "/tmp/test");
-        inst.status = Status::Idle;
         inst.last_accessed_at = None;
+        let patch = decide_passive_transition(&inst, Status::Running, false)
+            .patch
+            .expect("a terminal row gets a patch");
+        assert_eq!(patch.last_accessed_at, None, "no gesture stamp is invented");
 
-        let decision = decide_passive_transition(&inst, Status::Running, false);
-
-        let patch = decision.patch.expect("plain tmux session must get a patch");
-        assert_eq!(patch.last_accessed_at, None);
-    }
-
-    #[test]
-    fn decide_passive_transition_marks_unread_only_on_running_to_idle() {
-        let mut inst = Instance::new("tmux-session", "/tmp/test");
-        inst.status = Status::Idle;
-
-        let decision = decide_passive_transition(&inst, Status::Running, true);
-        assert!(decision.mark_unread);
-
-        let decision = decide_passive_transition(&inst, Status::Waiting, true);
-        assert!(
-            !decision.mark_unread,
-            "only a Running -> Idle transition marks unread"
-        );
-
+        // Unread is marked once, on the Running -> Idle turn end.
+        assert!(decide_passive_transition(&inst, Status::Running, true).mark_unread);
+        assert!(!decide_passive_transition(&inst, Status::Waiting, true).mark_unread);
         inst.unread = true;
-        let decision = decide_passive_transition(&inst, Status::Running, true);
-        assert!(
-            !decision.mark_unread,
-            "already-unread sessions must not re-mark"
-        );
-
-        // #3181.
-        let mut structured = Instance::new("acp-session", "/tmp/test");
-        structured.view = crate::session::View::Structured;
-        structured.status = Status::Idle;
-        let decision = decide_passive_transition(&structured, Status::Running, true);
-        assert!(
-            !decision.mark_unread,
-            "structured turn-end unread is owned by the acp event listener"
-        );
+        assert!(!decide_passive_transition(&inst, Status::Running, true).mark_unread);
     }
 
     // #2755 (follow-up to #2729).
