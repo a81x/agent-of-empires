@@ -249,11 +249,6 @@ mod tests {
     use tracing_subscriber::layer::SubscriberExt;
     use tracing_subscriber::Registry;
 
-    fn with_temp_home<F: FnOnce()>(f: F) {
-        let _home = crate::session::test_support::isolate_app_dir();
-        f();
-    }
-
     fn read_log(session: &str) -> String {
         let p = crate::process::worker_registry::log_path_for(session).unwrap();
         std::fs::read_to_string(p).unwrap_or_default()
@@ -261,75 +256,39 @@ mod tests {
 
     #[test]
     #[serial]
-    fn routes_event_with_session_field_to_its_file() {
-        with_temp_home(|| {
-            let sub = Registry::default().with(SessionTeeLayer::new());
-            with_default(sub, || {
-                tracing::warn!(target: "acp.protocol", session = %"sess-a", "watchdog fired");
-            });
-            let body = read_log("sess-a");
-            assert!(body.contains("watchdog fired"), "got: {body}");
-            assert!(body.contains("acp.protocol"), "got: {body}");
+    fn tee_routes_each_event_to_its_own_session_log() {
+        let _home = crate::session::test_support::isolate_app_dir();
+        let sub = Registry::default().with(SessionTeeLayer::new());
+        with_default(sub, || {
+            tracing::info!(target: "acp.protocol", "no session here");
+            // `acp.tee` is skipped so the layer cannot re-enter itself.
+            tracing::warn!(target: "acp.tee", session = %"sess-z", "internal");
         });
-    }
+        let dir = crate::process::worker_registry::workers_dir().unwrap();
+        assert_eq!(
+            std::fs::read_dir(&dir).map(|rd| rd.count()).unwrap_or(0),
+            0,
+            "a sessionless event and an acp.tee event must not create a log file"
+        );
 
-    #[test]
-    #[serial]
-    fn no_cross_session_leakage() {
-        with_temp_home(|| {
-            let sub = Registry::default().with(SessionTeeLayer::new());
-            with_default(sub, || {
-                tracing::info!(target: "acp.protocol", session = %"sess-x", "x only");
-                tracing::info!(target: "acp.protocol", session = %"sess-y", "y only");
-            });
-            let x = read_log("sess-x");
-            let y = read_log("sess-y");
-            assert!(x.contains("x only") && !x.contains("y only"), "x log: {x}");
-            assert!(y.contains("y only") && !y.contains("x only"), "y log: {y}");
+        let sub = Registry::default().with(SessionTeeLayer::new());
+        with_default(sub, || {
+            tracing::warn!(target: "acp.protocol", session = %"sess-a", "watchdog fired");
+            tracing::info!(target: "acp.protocol", session = %"sess-x", "x only");
+            tracing::info!(target: "acp.protocol", session = %"sess-y", "y only");
+            let span = tracing::info_span!("acp_session", session = %"sess-span");
+            let _g = span.enter();
+            tracing::warn!(target: "acp.protocol", "inherited via span");
         });
-    }
-
-    #[test]
-    #[serial]
-    fn drops_event_without_session() {
-        with_temp_home(|| {
-            let sub = Registry::default().with(SessionTeeLayer::new());
-            with_default(sub, || {
-                tracing::info!(target: "acp.protocol", "no session here");
-            });
-            let dir = crate::process::worker_registry::workers_dir().unwrap();
-            let count = std::fs::read_dir(&dir).map(|rd| rd.count()).unwrap_or(0);
-            assert_eq!(count, 0, "a sessionless event must not create a log file");
-        });
-    }
-
-    #[test]
-    #[serial]
-    fn inherits_session_from_span_scope() {
-        with_temp_home(|| {
-            let sub = Registry::default().with(SessionTeeLayer::new());
-            with_default(sub, || {
-                let span = tracing::info_span!("acp_session", session = %"sess-span");
-                let _g = span.enter();
-                tracing::warn!(target: "acp.protocol", "inherited via span");
-            });
-            let body = read_log("sess-span");
-            assert!(body.contains("inherited via span"), "got: {body}");
-        });
-    }
-
-    #[test]
-    #[serial]
-    fn skips_tee_target_to_avoid_reentrancy() {
-        with_temp_home(|| {
-            let sub = Registry::default().with(SessionTeeLayer::new());
-            with_default(sub, || {
-                tracing::warn!(target: "acp.tee", session = %"sess-z", "internal");
-            });
-            assert!(
-                read_log("sess-z").is_empty(),
-                "events on the acp.tee target must be skipped"
-            );
-        });
+        let a = read_log("sess-a");
+        assert!(
+            a.contains("watchdog fired") && a.contains("acp.protocol"),
+            "{a}"
+        );
+        let (x, y) = (read_log("sess-x"), read_log("sess-y"));
+        assert!(x.contains("x only") && !x.contains("y only"), "x log: {x}");
+        assert!(y.contains("y only") && !y.contains("x only"), "y log: {y}");
+        assert!(read_log("sess-span").contains("inherited via span"));
+        assert!(read_log("sess-z").is_empty());
     }
 }

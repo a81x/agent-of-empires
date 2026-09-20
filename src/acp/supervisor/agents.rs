@@ -139,10 +139,6 @@ impl<S: BroadcastSink> Supervisor<S> {
                 .await
                 .is_some()
     }
-
-    pub async fn upsert_agent(&self, name: String, spec: AgentSpec) {
-        self.registry.lock().await.upsert(name, spec);
-    }
 }
 
 /// Resolve the profile + repo config off the async runtime; `None` if the task panics.

@@ -107,15 +107,17 @@ mod tests {
     }
 
     #[test]
-    fn converts_stdio_with_args_and_env() {
+    fn converts_every_transport_with_its_args_env_and_headers() {
         let servers = to_acp(
             r#"{ "mcpServers": {
-                "fs": { "command": "mcp-fs", "args": ["--root", "."], "env": { "TOKEN": "secret" } }
+                "fs": { "command": "mcp-fs", "args": ["--root", "."], "env": { "TOKEN": "secret" } },
+                "h": { "type": "http", "url": "https://e/mcp", "headers": { "Authorization": "Bearer x" } },
+                "s": { "type": "sse", "url": "https://e/sse" }
             } }"#,
         );
+        assert_eq!(names(&servers), vec!["fs", "h", "s"]);
         match &servers[0] {
             McpServer::Stdio(s) => {
-                assert_eq!(s.name, "fs");
                 assert_eq!(s.command.to_string_lossy(), "mcp-fs");
                 assert_eq!(s.args, vec!["--root".to_string(), ".".to_string()]);
                 assert_eq!(s.env[0].name, "TOKEN");
@@ -123,17 +125,7 @@ mod tests {
             }
             other => panic!("expected stdio, got {other:?}"),
         }
-    }
-
-    #[test]
-    fn converts_remote_transports() {
-        let servers = to_acp(
-            r#"{ "mcpServers": {
-                "h": { "type": "http", "url": "https://e/mcp", "headers": { "Authorization": "Bearer x" } },
-                "s": { "type": "sse", "url": "https://e/sse" }
-            } }"#,
-        );
-        match &servers[0] {
+        match &servers[1] {
             McpServer::Http(h) => {
                 assert_eq!(h.url, "https://e/mcp");
                 assert_eq!(h.headers[0].name, "Authorization");
@@ -141,7 +133,7 @@ mod tests {
             }
             other => panic!("expected http, got {other:?}"),
         }
-        assert!(matches!(&servers[1], McpServer::Sse(_)));
+        assert!(matches!(&servers[2], McpServer::Sse(_)));
     }
 
     #[test]

@@ -7,27 +7,13 @@ use super::state::StartupErrorDetail;
 
 /// Single source of truth for the `claude-agent-acp` minimum-version floor.
 pub const CLAUDE_AGENT_ACP_MIN_VERSION: &str = "0.55.0";
-
-/// Parsed form of [`CLAUDE_AGENT_ACP_MIN_VERSION`].
-fn claude_agent_acp_min_version() -> semver::Version {
-    semver::Version::parse(CLAUDE_AGENT_ACP_MIN_VERSION)
-        .expect("CLAUDE_AGENT_ACP_MIN_VERSION must be valid semver")
-}
-
 pub const CLAUDE_AGENT_ACP_STEERING_MIN_VERSION: &str = "0.64.0";
-
-/// Parsed form of [`CLAUDE_AGENT_ACP_STEERING_MIN_VERSION`].
-fn claude_agent_acp_steering_min_version() -> semver::Version {
-    semver::Version::parse(CLAUDE_AGENT_ACP_STEERING_MIN_VERSION)
-        .expect("CLAUDE_AGENT_ACP_STEERING_MIN_VERSION must be valid semver")
-}
-
 /// Single source of truth for the `opencode` minimum-version floor.
 pub const OPENCODE_MIN_VERSION: &str = "1.16.0";
 
-/// Parsed form of [`OPENCODE_MIN_VERSION`].
-fn opencode_min_version() -> semver::Version {
-    semver::Version::parse(OPENCODE_MIN_VERSION).expect("OPENCODE_MIN_VERSION must be valid semver")
+/// Parse one of the floor constants above.
+fn floor(version: &str) -> semver::Version {
+    semver::Version::parse(version).expect("version floors must be valid semver")
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -99,13 +85,13 @@ impl ExpectedAgent {
         match self {
             Self::ClaudeAgentAcp => CompatibilityPolicy {
                 expected_name: Some("@agentclientprotocol/claude-agent-acp"),
-                min_version: Some(claude_agent_acp_min_version()),
+                min_version: Some(floor(CLAUDE_AGENT_ACP_MIN_VERSION)),
                 required_protocol: ProtocolVersion::V1,
                 fail_on_missing_agent_info: true,
             },
             Self::OpenCode => CompatibilityPolicy {
                 expected_name: Some("OpenCode"),
-                min_version: Some(opencode_min_version()),
+                min_version: Some(floor(OPENCODE_MIN_VERSION)),
                 required_protocol: ProtocolVersion::V1,
                 fail_on_missing_agent_info: true,
             },
@@ -298,7 +284,7 @@ pub fn supports_steering(expected: ExpectedAgent, init: &InitializeResponse) -> 
     init.agent_info
         .as_ref()
         .and_then(|info| semver::Version::parse(info.version.trim()).ok())
-        .is_some_and(|version| version >= claude_agent_acp_steering_min_version())
+        .is_some_and(|version| version >= floor(CLAUDE_AGENT_ACP_STEERING_MIN_VERSION))
 }
 
 /// The ACP binary name aoe expects for this agent, or `None` for agents
@@ -525,7 +511,7 @@ mod tests {
     fn steering_gate_requires_advert_and_floor() {
         use ExpectedAgent::*;
         assert!(
-            claude_agent_acp_steering_min_version() >= claude_agent_acp_min_version(),
+            floor(CLAUDE_AGENT_ACP_STEERING_MIN_VERSION) >= floor(CLAUDE_AGENT_ACP_MIN_VERSION),
             "the steering floor must not sit below the startup floor",
         );
         // (agent, advertised bit, version, expected)

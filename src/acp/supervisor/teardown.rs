@@ -167,29 +167,6 @@ impl<S: BroadcastSink> Supervisor<S> {
         }
     }
 
-    /// Shut down every worker and terminate every registered runner.
-    pub async fn shutdown_all(&self) {
-        let registry_pids: Vec<(String, u32)> = worker_registry::list()
-            .unwrap_or_default()
-            .into_iter()
-            .map(|r| (r.session_id, r.pid))
-            .collect();
-        let drained: Vec<(String, WorkerHandle)> = {
-            let mut workers = self.workers.lock().await;
-            lock_recover(&self.lifecycle).clear();
-            workers.drain().collect()
-        };
-        for (id, handle) in drained {
-            debug!(target: "acp.supervisor", session = %id, "shutting down");
-            let _ = handle.client.shutdown().await;
-            handle.drain_task.abort();
-        }
-        for (session_id, pid) in registry_pids {
-            crate::process::worker::terminate_process_group(pid);
-            worker_registry::delete(&session_id).ok();
-        }
-    }
-
     /// Drop every worker handle without killing the runners (daemon restart).
     pub async fn detach_all(&self) {
         let drained: Vec<(String, WorkerHandle)> = self.workers.lock().await.drain().collect();

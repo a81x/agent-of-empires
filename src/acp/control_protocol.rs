@@ -225,48 +225,17 @@ mod tests {
         serde_json::from_slice(&encoded[4..]).expect("decode")
     }
 
+    /// Every frame the two sides exchange survives the length-prefixed encoding.
     #[test]
-    fn hello_roundtrips() {
-        let body = ControlBody::Hello {
-            control_protocol_version: CONTROL_PROTOCOL_VERSION,
-            session_id: "abc-123".into(),
-        };
-        assert_eq!(roundtrip(body.clone()), body);
-    }
-
-    #[test]
-    fn prompt_completed_roundtrips() {
-        let body = ControlBody::PromptCompleted {
-            prompt_req_id: 42,
-            outcome: PromptOutcome::Completed {
-                stop_reason: Some("end_turn".into()),
-            },
-        };
-        assert_eq!(roundtrip(body.clone()), body);
-    }
-
-    #[test]
-    fn prompt_outcome_variants_roundtrip() {
-        for outcome in [
-            PromptOutcome::Completed { stop_reason: None },
-            PromptOutcome::Error {
-                code: -32000,
-                message: "boom".into(),
-                data: Some(serde_json::json!({"errorKind": "rate_limit"})),
-            },
-            PromptOutcome::Aborted,
-        ] {
-            let body = ControlBody::PromptCompleted {
-                prompt_req_id: 1,
-                outcome: outcome.clone(),
-            };
-            assert_eq!(roundtrip(body.clone()), body);
-        }
-    }
-
-    #[test]
-    fn handshake_frames_roundtrip() {
+    fn control_frames_roundtrip() {
         for body in [
+            ControlBody::Hello {
+                control_protocol_version: CONTROL_PROTOCOL_VERSION,
+                session_id: "abc-123".into(),
+            },
+            ControlBody::Attach {
+                control_protocol_version: CONTROL_PROTOCOL_VERSION,
+            },
             ControlBody::Initialize {
                 request: serde_json::json!({"protocolVersion": 1}),
             },
@@ -281,6 +250,7 @@ mod tests {
                 acp_session_id: "sess-1".into(),
                 result: serde_json::json!({"sessionId": "sess-1"}),
             },
+            ControlBody::ResumeSession,
             ControlBody::HandshakeFailed {
                 error: serde_json::json!({"code": -32603, "message": "incompatible"}),
             },
@@ -289,14 +259,28 @@ mod tests {
             },
             ControlBody::PromptStarted { prompt_req_id: 42 },
             ControlBody::Cancel,
-        ] {
-            assert_eq!(roundtrip(body.clone()), body);
-        }
-    }
-
-    #[test]
-    fn v3_lane_frames_roundtrip() {
-        for body in [
+            ControlBody::PromptCompleted {
+                prompt_req_id: 42,
+                outcome: PromptOutcome::Completed {
+                    stop_reason: Some("end_turn".into()),
+                },
+            },
+            ControlBody::PromptCompleted {
+                prompt_req_id: 1,
+                outcome: PromptOutcome::Completed { stop_reason: None },
+            },
+            ControlBody::PromptCompleted {
+                prompt_req_id: 1,
+                outcome: PromptOutcome::Error {
+                    code: -32000,
+                    message: "boom".into(),
+                    data: Some(serde_json::json!({"errorKind": "rate_limit"})),
+                },
+            },
+            ControlBody::PromptCompleted {
+                prompt_req_id: 1,
+                outcome: PromptOutcome::Aborted,
+            },
             ControlBody::ServerCall {
                 call_id: 1,
                 method: "session/request_permission".into(),
@@ -346,20 +330,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn write_then_read_frame() {
-        let body = ControlBody::PromptCompleted {
-            prompt_req_id: 7,
-            outcome: PromptOutcome::Aborted,
-        };
-        let mut buf = Vec::new();
-        write_frame(&mut buf, &body).await.expect("write");
-        let mut cursor = Cursor::new(buf);
-        let got = read_frame(&mut cursor).await.expect("read");
-        assert_eq!(got, Some(body));
-    }
-
-    #[tokio::test]
-    async fn multiple_frames_in_one_stream() {
+    async fn frames_read_back_in_order_until_a_clean_eof() {
         let a = ControlBody::Hello {
             control_protocol_version: CONTROL_PROTOCOL_VERSION,
             session_id: "s".into(),
@@ -376,12 +347,6 @@ mod tests {
         let mut cursor = Cursor::new(buf);
         assert_eq!(read_frame(&mut cursor).await.unwrap(), Some(a));
         assert_eq!(read_frame(&mut cursor).await.unwrap(), Some(b));
-        assert_eq!(read_frame(&mut cursor).await.unwrap(), None);
-    }
-
-    #[tokio::test]
-    async fn clean_eof_returns_none() {
-        let mut cursor = Cursor::new(Vec::new());
         assert_eq!(read_frame(&mut cursor).await.unwrap(), None);
     }
 

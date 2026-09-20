@@ -141,7 +141,7 @@ mod tests {
 
     #[test]
     #[serial]
-    fn record_and_load_round_trips_with_current_value_stripped() {
+    fn record_strips_current_value_debounces_and_skips_empty_agents() {
         let _tmp = isolate_app_dir();
         record(
             "opencode",
@@ -155,18 +155,8 @@ mod tests {
         // current_value is stripped; the choices survive.
         assert_eq!(entry.options[0].current_value, "");
         assert_eq!(entry.options[0].options[0].value, "gpt-5");
-    }
 
-    #[test]
-    #[serial]
-    fn record_debounces_unchanged_snapshot() {
-        let _tmp = isolate_app_dir();
-        record(
-            "opencode",
-            &[descriptor("gpt-5")],
-            "2026-07-03T00:00:00Z".into(),
-        )
-        .unwrap();
+        // Only current_value differs, so the stored snapshot is unchanged.
         record(
             "opencode",
             &[descriptor("gpt-4")],
@@ -174,13 +164,8 @@ mod tests {
         )
         .unwrap();
         assert_eq!(load().agents["opencode"].updated_at, "2026-07-03T00:00:00Z");
-    }
 
-    #[test]
-    #[serial]
-    fn empty_agent_name_is_ignored() {
-        let _tmp = isolate_app_dir();
         record("", &[descriptor("gpt-5")], "2026-07-03T00:00:00Z".into()).unwrap();
-        assert!(load().agents.is_empty());
+        assert_eq!(load().agents.len(), 1, "an empty agent name is ignored");
     }
 }

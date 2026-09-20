@@ -303,38 +303,31 @@ fn sha256_hex(bytes: &[u8]) -> String {
 mod tests {
     use super::*;
 
+    /// `meets_minimum` gates on the major; strip-types also on the minor.
     #[test]
-    fn strip_types_support_needs_the_minor_floor_only_on_the_floor_major() {
-        for (raw, expected) in [
-            (format!("v{MIN_NODE_MAJOR}.{}.9", MIN_NODE_MINOR - 1), false),
-            (format!("v{MIN_NODE_MAJOR}.{MIN_NODE_MINOR}.0"), true),
-            (format!("v{}.0.0", MIN_NODE_MAJOR + 1), true),
-            ("garbage".to_string(), false),
-        ] {
-            assert_eq!(supports_strip_types(&raw), expected, "{raw}");
+    fn version_floors_gate_on_major_then_minor() {
+        let below_major = format!("v{}.9.9", MIN_NODE_MAJOR - 1);
+        let below_minor = format!("v{MIN_NODE_MAJOR}.{}.9", MIN_NODE_MINOR - 1);
+        let at_floor = format!("{MIN_NODE_MAJOR}.{MIN_NODE_MINOR}.0");
+        let above = format!("v{}.0.0", MIN_NODE_MAJOR + 1);
+        // (raw, meets_minimum, supports_strip_types)
+        let cases = [
+            (below_major.as_str(), Some(false), false),
+            (below_minor.as_str(), Some(true), false),
+            (at_floor.as_str(), Some(true), true),
+            (above.as_str(), Some(true), true),
+            ("not a version", None, false),
+            ("", None, false),
+        ];
+        for (raw, minimum, strip_types) in cases {
+            assert_eq!(meets_minimum(raw), minimum, "{raw:?}");
+            assert_eq!(supports_strip_types(raw), strip_types, "{raw:?}");
         }
-    }
-
-    #[test]
-    fn parse_major_minor_handles_v_prefix_and_short_forms() {
+        // The parser tolerates a `v` prefix and short forms.
         assert_eq!(parse_major_minor("v22.21.0"), Some((22, 21)));
         assert_eq!(parse_major_minor("20"), Some((20, 0)));
         assert_eq!(parse_major_minor("18.17.1"), Some((18, 17)));
         assert_eq!(parse_major_minor("not a version"), None);
-    }
-
-    #[test]
-    fn meets_minimum_is_inclusive_at_the_boundary() {
-        for (raw, expected) in [
-            (format!("v{}.9.9", MIN_NODE_MAJOR - 1), Some(false)),
-            (format!("v{MIN_NODE_MAJOR}.0.0"), Some(true)),
-            (format!("{MIN_NODE_MAJOR}.0.0"), Some(true)),
-            (format!("v{}.0.0", MIN_NODE_MAJOR + 1), Some(true)),
-            ("not a version".to_string(), None),
-            (String::new(), None),
-        ] {
-            assert_eq!(meets_minimum(&raw), expected, "for {raw:?}");
-        }
     }
 
     #[test]
