@@ -4,7 +4,6 @@
 
 import { test, expect } from "./helpers/mockedTest";
 import type { Page } from "@playwright/test";
-import { clickSidebarSession } from "./helpers/sidebar";
 import { mockTerminalApis, type MockHandle } from "./helpers/terminal-mocks";
 import { iPhone13 } from "./helpers/viewports";
 import { liveContent, openLiveSession, openLiveTerminal } from "./helpers/liveTerminal";

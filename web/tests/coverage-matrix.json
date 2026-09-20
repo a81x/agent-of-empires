@@ -142,7 +142,6 @@
         "tests/mobile-panes.spec.ts",
         "tests/keyboard-auto-resize.spec.ts",
         "tests/mobile-keyboard.spec.ts",
-        "tests/mobile-panes.spec.ts",
         "src/hooks/useMobileViewportLock.test.ts"
       ],
       "components": [
