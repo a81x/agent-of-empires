@@ -5094,39 +5094,32 @@ keep_count = 10
         );
     }
 
+    /// App state lives in state.toml alone: `update_config` never writes an
+    /// `[app_state]` table into config.toml, and `Config::load` picks the
+    /// state up from state.toml.
     #[test]
     #[serial_test::serial]
-    fn update_config_strips_app_state_from_config_toml() {
+    fn app_state_is_written_to_state_toml_not_config_toml() {
         let _guard = crate::session::test_support::isolate_app_dir();
 
-        update_config(|c| {
-            c.app_state.has_seen_welcome = true;
-            c.default_profile = "x".to_string();
+        update_config(|config| {
+            config.app_state.has_seen_welcome = true;
+            config.default_profile = "x".to_string();
         })
         .unwrap();
-
         let raw = fs::read_to_string(config_path().unwrap()).unwrap();
         let table: toml::Table = raw.parse().unwrap();
-        assert!(
-            !table.contains_key("app_state"),
-            "app_state must never be written into config.toml: {raw}"
-        );
-    }
+        assert!(!table.contains_key("app_state"), "config.toml: {raw}");
 
-    #[test]
-    #[serial_test::serial]
-    fn config_load_reads_app_state_from_state_toml() {
-        let _guard = crate::session::test_support::isolate_app_dir();
-
-        update_app_state(|s| {
-            s.has_seen_welcome = true;
+        update_app_state(|state| {
+            state.has_seen_welcome = true;
         })
         .unwrap();
-
-        let config = Config::load().unwrap();
-        assert!(config.app_state.has_seen_welcome);
+        assert!(Config::load().unwrap().app_state.has_seen_welcome);
     }
 
+    /// With no state.toml, app state defaults rather than falling back to an
+    /// `[app_state]` table an older build left in config.toml.
     #[test]
     #[serial_test::serial]
     fn config_load_ignores_app_state_in_config_toml() {
@@ -5139,48 +5132,29 @@ keep_count = 10
         )
         .unwrap();
 
-        // No state.toml exists, so app_state must default rather than fall
-        // back to the stale config.toml value.
-        let config = Config::load().unwrap();
-        assert!(
-            !config.app_state.has_seen_welcome,
-            "a stale [app_state] left in config.toml must never be consulted"
-        );
+        assert!(!Config::load().unwrap().app_state.has_seen_welcome);
     }
 
+    /// `update_app_state` applies the mutation, persists it, and hands back
+    /// whatever the closure returned.
     #[test]
     #[serial_test::serial]
-    fn update_app_state_roundtrip() {
+    fn update_app_state_persists_and_returns_the_closures_value() {
         let _guard = crate::session::test_support::isolate_app_dir();
 
-        update_app_state(|s| {
-            s.has_seen_welcome = true;
-            s.tips_seen = vec!["new-from-selection".to_string()];
-        })
-        .unwrap();
-
-        let loaded = AppStateConfig::load().unwrap();
-        assert!(loaded.has_seen_welcome);
-        assert_eq!(loaded.tips_seen, vec!["new-from-selection".to_string()]);
-    }
-
-    #[test]
-    #[serial_test::serial]
-    fn update_app_state_applies_mutation_and_persists() {
-        let _guard = crate::session::test_support::isolate_app_dir();
-
-        let returned = update_app_state(|s| {
-            s.has_seen_web_tour = true;
+        let returned = update_app_state(|state| {
+            state.has_seen_welcome = true;
+            state.has_seen_web_tour = true;
+            state.tips_seen = vec!["new-from-selection".to_string()];
             42
         })
         .unwrap();
-        assert_eq!(
-            returned, 42,
-            "update_app_state must return the closure's value"
-        );
+        assert_eq!(returned, 42);
 
         let loaded = AppStateConfig::load().unwrap();
+        assert!(loaded.has_seen_welcome);
         assert!(loaded.has_seen_web_tour);
+        assert_eq!(loaded.tips_seen, vec!["new-from-selection".to_string()]);
     }
 
     #[test]
