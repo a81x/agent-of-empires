@@ -653,6 +653,13 @@ mod tests {
         )
     }
 
+    fn write_app_config(body: &str) {
+        let path = crate::session::get_app_dir()
+            .expect("isolated app dir")
+            .join("config.toml");
+        std::fs::write(&path, body).expect("write config");
+    }
+
     fn kind(e: &DispatchError) -> String {
         e.data
             .as_ref()
@@ -739,16 +746,10 @@ mod tests {
     #[tokio::test]
     #[serial_test::serial]
     async fn create_refuses_a_model_off_the_profile_pin() {
-        use crate::session::test_support::isolate_app_dir;
-        let _tmp = isolate_app_dir();
-        let config_path = crate::session::get_app_dir()
-            .expect("isolated app dir")
-            .join("config.toml");
-        std::fs::write(
-            &config_path,
+        let _tmp = crate::session::test_support::isolate_app_dir();
+        write_app_config(
             "[acp.acp_defaults.claude]\nmodel = \"claude-pinned\"\npin_model = true\n",
-        )
-        .expect("write pinned config");
+        );
         let (deps, _dir) = test_deps(Vec::new());
         let ctx = ctx_with(&["session.create"]);
 
@@ -794,17 +795,11 @@ mod tests {
     #[tokio::test]
     #[serial_test::serial]
     async fn create_reads_the_pin_of_the_agent_a_wrapper_spawns() {
-        use crate::session::test_support::isolate_app_dir;
-        let _tmp = isolate_app_dir();
-        let config_path = crate::session::get_app_dir()
-            .expect("isolated app dir")
-            .join("config.toml");
-        std::fs::write(
-            &config_path,
+        let _tmp = crate::session::test_support::isolate_app_dir();
+        write_app_config(
             "[session.agent_detect_as]\nmy-claude = \"claude\"\n\n\
              [acp.acp_defaults.claude]\nmodel = \"claude-pinned\"\npin_model = true\n",
-        )
-        .expect("write pinned config");
+        );
         crate::acp::option_catalog::record("my-claude", &[], "2026-01-01T00:00:00Z".into())
             .expect("seed catalog");
         let (deps, _dir) = test_deps(Vec::new());
