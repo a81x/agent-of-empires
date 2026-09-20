@@ -1625,59 +1625,63 @@ mod tests {
         }
     }
 
+    /// #2766: a drift target that did not move is re-asserted once, then suppressed
+    /// until the retry window, so a transient tmux failure still recovers without
+    /// spinning the repaint loop. A genuinely new target, or a reset after the pane
+    /// reached its size, fires immediately.
     #[test]
-    fn reassert_guard_suppresses_identical_stuck_target() {
-        // #2766.
+    fn reassert_guard_suppresses_only_an_unchanged_stuck_target() {
         let mut g = ReassertGuard::new(STUCK_REASSERT_RETRY);
         let stuck = geom((115, 67), (115, 66));
         let t0 = Instant::now();
-        assert!(g.should_reassert(stuck, t0), "first drift re-asserts");
-        assert!(
-            !g.should_reassert(stuck, t0 + Duration::from_secs(2)),
-            "identical stuck target is suppressed"
-        );
-        assert!(
-            !g.should_reassert(stuck, t0 + Duration::from_secs(20)),
-            "still suppressed within the retry window"
-        );
-    }
+        let at = |secs: u64| t0 + Duration::from_secs(secs);
 
-    #[test]
-    fn reassert_guard_allows_genuine_geometry_change() {
-        let mut g = ReassertGuard::new(STUCK_REASSERT_RETRY);
-        let t0 = Instant::now();
-        assert!(g.should_reassert(geom((115, 67), (115, 66)), t0));
-        // A real resize (new grid) is a different tuple: re-assert at once.
-        assert!(
-            g.should_reassert(geom((120, 70), (115, 66)), t0 + Duration::from_secs(1)),
-            "changed target re-asserts immediately"
-        );
-    }
-
-    #[test]
-    fn reassert_guard_retries_after_window_and_after_reset() {
-        let mut g = ReassertGuard::new(STUCK_REASSERT_RETRY);
-        let stuck = geom((115, 67), (115, 66));
-        let t0 = Instant::now();
-        assert!(g.should_reassert(stuck, t0));
-        assert!(!g.should_reassert(stuck, t0 + Duration::from_secs(10)));
-        // Transient recovery: the same target is retried once past the window.
+        assert!(g.should_reassert(stuck, t0), "first drift");
+        assert!(!g.should_reassert(stuck, at(2)), "identical target");
+        assert!(!g.should_reassert(stuck, at(20)), "still inside the window");
         assert!(
             g.should_reassert(stuck, t0 + STUCK_REASSERT_RETRY + Duration::from_secs(1)),
-            "stuck target retries after the window"
+            "retried once past the window"
         );
-        // Reaching target resets the guard, so a later drift fires immediately.
+        // Without the reset, t0+35s sits inside the window opened by that retry.
         g.reset();
-        // Without reset, t0+35s is 4s after the t0+31s re-assert (inside the
-        // 30s window) and would be suppressed; reset clears it so it fires.
-        assert!(g.should_reassert(stuck, t0 + Duration::from_secs(35)));
+        assert!(g.should_reassert(stuck, at(35)), "reset clears the window");
+
+        let mut g = ReassertGuard::new(STUCK_REASSERT_RETRY);
+        assert!(g.should_reassert(stuck, t0));
+        assert!(
+            g.should_reassert(geom((120, 70), (115, 66)), at(1)),
+            "a real resize is a different target"
+        );
+    }
+
+    fn cursor() -> crate::tmux::PaneCursor {
+        crate::tmux::PaneCursor {
+            x: 3,
+            y: 7,
+            visible: true,
+            pane_height: 46,
+            history_size: 1200,
+            pane_width: 74,
+            alternate_on: false,
+            mouse_tracking: false,
+            mouse_sgr: false,
+            mouse_all: false,
+            position_reliable: true,
+            composite_pane0: None,
+        }
+    }
+
+    fn frame_value(cursor: Option<&crate::tmux::PaneCursor>) -> serde_json::Value {
+        serde_json::from_str(&frame_json("hello\nworld", cursor, 1)).unwrap()
     }
 
     #[test]
     fn frame_json_includes_geometry_and_cursor() {
+        // (pane 0 of a composited split, the `pane0` block the frame must carry)
         let cases = [
-            // Unsplit: `pane0` is null and the cursor is untouched.
-            (None, (3, 7), serde_json::Value::Null),
+            // Unsplit: `pane0` is null.
+            (None, serde_json::Value::Null),
             // Composited with pane 0 at the corner (a borderless split).
             (
                 Some(crate::tmux::PaneGeom {
@@ -1686,13 +1690,7 @@ mod tests {
                     width: 37,
                     height: 46,
                 }),
-                (3, 7),
-                serde_json::json!({
-                    "cols": 37,
-                    "rows": 46,
-                    "left": 0,
-                    "top": 0,
-                }),
+                serde_json::json!({"cols": 37, "rows": 46, "left": 0, "top": 0}),
             ),
             // Composited with pane-border-status top.
             (
@@ -1702,135 +1700,89 @@ mod tests {
                     width: 37,
                     height: 46,
                 }),
-                (5, 8),
-                serde_json::json!({
-                    "cols": 37,
-                    "rows": 46,
-                    "left": 2,
-                    "top": 1,
-                }),
+                serde_json::json!({"cols": 37, "rows": 46, "left": 2, "top": 1}),
             ),
         ];
-        for (pane0, want_cursor, want_pane0) in cases {
-            let cursor = crate::tmux::PaneCursor {
-                x: 3,
-                y: 7,
-                visible: true,
-                pane_height: 46,
-                history_size: 1200,
-                pane_width: 74,
-                alternate_on: false,
-                mouse_tracking: false,
-                mouse_sgr: false,
-                mouse_all: false,
-                position_reliable: true,
-                composite_pane0: pane0,
-            };
-            let json = frame_json("hello\nworld", Some(&cursor), 1);
-            let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        for (pane0, want_pane0) in cases {
+            let mut c = cursor();
+            c.composite_pane0 = pane0;
+            let v = frame_value(Some(&c));
             assert_eq!(v["type"], "frame");
             assert_eq!(v["content"], "hello\nworld");
             assert_eq!(v["rows"], 46);
             assert_eq!(v["history"], 1200);
-            assert_eq!(v["cursor"]["x"], want_cursor.0, "{pane0:?}");
-            assert_eq!(v["cursor"]["y"], want_cursor.1, "{pane0:?}");
+            // The cursor is reported in pane coordinates, untouched by the offset.
+            assert_eq!(v["cursor"]["x"], 3, "{want_pane0}");
+            assert_eq!(v["cursor"]["y"], 7, "{want_pane0}");
             assert_eq!(v["altScreen"], false);
             assert_eq!(v["mouse"], false);
             assert_eq!(v["mouseSgr"], false);
-            assert_eq!(v["pane0"], want_pane0, "{pane0:?}");
+            assert_eq!(v["pane0"], want_pane0);
         }
     }
 
     #[test]
-    fn frame_json_reports_alt_screen_mouse_flags() {
-        let cursor = crate::tmux::PaneCursor {
-            x: 0,
-            y: 0,
-            visible: true,
-            pane_height: 40,
-            history_size: 0,
-            pane_width: 80,
-            alternate_on: true,
-            mouse_tracking: true,
-            mouse_sgr: false,
-            mouse_all: false,
-            position_reliable: true,
-            composite_pane0: None,
-        };
-        let v: serde_json::Value =
-            serde_json::from_str(&frame_json("x", Some(&cursor), 1)).unwrap();
+    fn frame_json_reports_cursor_modes() {
+        let mut alt = cursor();
+        alt.alternate_on = true;
+        alt.mouse_tracking = true;
+        let v = frame_value(Some(&alt));
         assert_eq!(v["altScreen"], true);
         assert_eq!(v["mouse"], true);
         assert_eq!(v["mouseSgr"], false);
-    }
 
-    #[test]
-    fn frame_json_hides_cursor_when_dectcem_off() {
-        let cursor = crate::tmux::PaneCursor {
-            x: 3,
-            y: 7,
-            visible: false,
-            pane_height: 46,
-            history_size: 0,
-            pane_width: 74,
-            alternate_on: false,
-            mouse_tracking: false,
-            mouse_sgr: false,
-            mouse_all: false,
-            position_reliable: true,
-            composite_pane0: None,
-        };
-        let v: serde_json::Value =
-            serde_json::from_str(&frame_json("x", Some(&cursor), 1)).unwrap();
+        // DECTCEM off hides the cursor without losing the geometry.
+        let mut hidden = cursor();
+        hidden.visible = false;
+        let v = frame_value(Some(&hidden));
         assert!(v["cursor"].is_null());
         assert_eq!(v["rows"], 46);
-    }
 
-    #[test]
-    fn frame_json_null_cursor() {
-        let v: serde_json::Value = serde_json::from_str(&frame_json("x", None, 1)).unwrap();
+        // No cursor at all: nothing knows the pane height either.
+        let v = frame_value(None);
         assert!(v["cursor"].is_null());
         assert_eq!(v["rows"], 0);
     }
 
     #[test]
     fn control_messages_parse() {
-        let m: LiveControlMessage =
-            serde_json::from_str(r#"{"type":"resize","cols":74,"rows":46}"#).unwrap();
+        fn parse(json: &str) -> LiveControlMessage {
+            serde_json::from_str(json).unwrap()
+        }
+        use LiveControlMessage::*;
         assert!(matches!(
-            m,
-            LiveControlMessage::Resize { cols: 74, rows: 46 }
+            parse(r#"{"type":"resize","cols":74,"rows":46}"#),
+            Resize { cols: 74, rows: 46 }
         ));
-        let m: LiveControlMessage =
-            serde_json::from_str(r#"{"type":"window","lines":800}"#).unwrap();
-        assert!(matches!(m, LiveControlMessage::Window { lines: 800 }));
-        let m: LiveControlMessage =
-            serde_json::from_str(r#"{"type":"cadence","fast":false}"#).unwrap();
-        assert!(matches!(m, LiveControlMessage::Cadence { fast: false }));
-        let m: LiveControlMessage = serde_json::from_str(r#"{"type":"claim"}"#).unwrap();
-        assert!(matches!(m, LiveControlMessage::Claim));
-        let m: LiveControlMessage = serde_json::from_str(r#"{"type":"claim_if_vacant"}"#).unwrap();
-        assert!(matches!(m, LiveControlMessage::ClaimIfVacant));
-        let m: LiveControlMessage =
-            serde_json::from_str(r#"{"type":"caps","deflate":true}"#).unwrap();
         assert!(matches!(
-            m,
-            LiveControlMessage::Caps {
+            parse(r#"{"type":"window","lines":800}"#),
+            Window { lines: 800 }
+        ));
+        assert!(matches!(
+            parse(r#"{"type":"cadence","fast":false}"#),
+            Cadence { fast: false }
+        ));
+        assert!(matches!(parse(r#"{"type":"claim"}"#), Claim));
+        assert!(matches!(
+            parse(r#"{"type":"claim_if_vacant"}"#),
+            ClaimIfVacant
+        ));
+        // `patch` defaults to false when the client does not advertise it.
+        assert!(matches!(
+            parse(r#"{"type":"caps","deflate":true}"#),
+            Caps {
                 deflate: true,
                 patch: false
             }
         ));
-        let m: LiveControlMessage =
-            serde_json::from_str(r#"{"type":"caps","deflate":true,"patch":true}"#).unwrap();
         assert!(matches!(
-            m,
-            LiveControlMessage::Caps {
+            parse(r#"{"type":"caps","deflate":true,"patch":true}"#),
+            Caps {
                 deflate: true,
                 patch: true
             }
         ));
-        let m: LiveControlMessage = serde_json::from_str(r#"{"type":"resync"}"#).unwrap();
-        assert!(matches!(m, LiveControlMessage::Resync));
+        assert!(matches!(parse(r#"{"type":"resync"}"#), Resync));
     }
 
     /// Feed the deflater's binary payloads through one raw-inflate stream
