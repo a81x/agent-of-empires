@@ -848,45 +848,38 @@ mod tests {
     /// X-Forwarded-For is only trusted from loopback, i.e. only behind the proxy.
     #[test]
     fn resolve_client_ip_trusts_forwarding_headers_only_from_loopback() {
-        // (name, socket, headers, expected)
-        let cases: &[(&str, &str, &[(&str, &str)], &str)] = &[
-            (
-                "cf-connecting-ip wins over xff",
-                "127.0.0.1:12345",
-                &[
-                    ("cf-connecting-ip", "203.0.113.50"),
-                    ("x-forwarded-for", "10.0.0.1"),
-                ],
-                "203.0.113.50",
-            ),
-            (
-                "xff uses the last hop, not the client-spoofable head",
-                "127.0.0.1:12345",
-                &[("x-forwarded-for", "spoofed.by.client, 203.0.113.50")],
-                "203.0.113.50",
-            ),
-            ("no forwarding headers", "127.0.0.1:12345", &[], "127.0.0.1"),
-            (
-                "a remote peer cannot forge its own origin",
-                "192.168.1.100:12345",
-                &[("x-forwarded-for", "10.0.0.1")],
-                "192.168.1.100",
-            ),
-            (
-                "malformed xff falls back to the socket",
-                "127.0.0.1:12345",
-                &[("x-forwarded-for", "not-an-ip")],
-                "127.0.0.1",
-            ),
-        ];
-        for (name, socket, headers, want) in cases {
+        let from = |socket: &str, headers: &[(&str, &str)]| {
             let mut map = axum::http::HeaderMap::new();
-            for (k, v) in *headers {
+            for (k, v) in headers {
                 map.insert(*k, v.parse().unwrap());
             }
-            let socket: SocketAddr = socket.parse().unwrap();
-            assert_eq!(resolve_client_ip(socket, &map), ip(want), "{name}");
-        }
+            resolve_client_ip(socket.parse().unwrap(), &map)
+        };
+        let cf = ("cf-connecting-ip", "203.0.113.50");
+        let xff = |v: &'static str| ("x-forwarded-for", v);
+
+        let loopback = "127.0.0.1:12345";
+        assert_eq!(
+            from(loopback, &[cf, xff("10.0.0.1")]),
+            ip("203.0.113.50"),
+            "cf-connecting-ip wins over xff"
+        );
+        assert_eq!(
+            from(loopback, &[xff("spoofed.by.client, 203.0.113.50")]),
+            ip("203.0.113.50"),
+            "xff uses the last hop, not the client-spoofable head"
+        );
+        assert_eq!(from(loopback, &[]), ip("127.0.0.1"));
+        assert_eq!(
+            from(loopback, &[xff("not-an-ip")]),
+            ip("127.0.0.1"),
+            "malformed xff falls back to the socket"
+        );
+        assert_eq!(
+            from("192.168.1.100:12345", &[xff("10.0.0.1")]),
+            ip("192.168.1.100"),
+            "a remote peer cannot forge its own origin"
+        );
     }
 
     #[test]

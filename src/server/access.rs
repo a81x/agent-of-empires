@@ -619,138 +619,40 @@ mod tests {
 
     #[test]
     fn evaluate_access_gates_host_then_origin() {
+        use AccessDecision::*;
         let hosts = vecs(&["localhost"]);
         let origins = vecs(&["http://localhost:8080"]);
-        // (name, host, origin, expected)
-        let cases: &[(&str, Option<&str>, Option<&str>, AccessDecision)] = &[
-            (
-                "listed host",
-                Some("localhost"),
-                None,
-                AccessDecision::Allow,
-            ),
-            (
-                "port stripped",
-                Some("localhost:8080"),
-                None,
-                AccessDecision::Allow,
-            ),
-            (
-                "bracketed ipv6 loopback",
-                Some("[::1]:8080"),
-                None,
-                AccessDecision::Allow,
-            ),
-            (
-                "host match is case-insensitive",
-                Some("LOCALHOST"),
-                None,
-                AccessDecision::Allow,
-            ),
-            (
-                "trailing dot host",
-                Some("localhost."),
-                None,
-                AccessDecision::Allow,
-            ),
-            (
-                "unlisted host",
-                Some("evil.com"),
-                None,
-                AccessDecision::DenyHost,
-            ),
-            (
-                "userinfo is not a host",
-                Some("user@localhost"),
-                None,
-                AccessDecision::DenyHost,
-            ),
-            (
-                "no host header",
-                None,
-                None,
-                AccessDecision::DenyMissingHost,
-            ),
-            // A routable IP literal is trusted without an --allowed-host entry, as
-            // Host and as Origin; the excluded literals are not.
-            (
-                "ipv4 literal host",
-                Some("192.168.1.5:8080"),
-                None,
-                AccessDecision::Allow,
-            ),
-            (
-                "ipv6 literal host",
-                Some("[2001:db8::5]:8080"),
-                None,
-                AccessDecision::Allow,
-            ),
-            (
-                "ip literal origin",
-                Some("192.168.1.5:8080"),
-                Some("http://192.168.1.5:8080"),
-                AccessDecision::Allow,
-            ),
-            (
-                "unspecified literal",
-                Some("0.0.0.0"),
-                None,
-                AccessDecision::DenyHost,
-            ),
-            (
-                "metadata literal",
-                Some("169.254.169.254"),
-                None,
-                AccessDecision::DenyHost,
-            ),
-            (
-                "link-local literal",
-                Some("fe80::1"),
-                None,
-                AccessDecision::DenyHost,
-            ),
-            // Origin is only consulted once the Host passes, and an absent one is exempt.
-            (
-                "absent origin",
-                Some("localhost"),
-                None,
-                AccessDecision::Allow,
-            ),
-            (
-                "listed origin",
-                Some("localhost"),
-                Some("http://localhost:8080"),
-                AccessDecision::Allow,
-            ),
-            (
-                "unlisted origin",
-                Some("localhost"),
-                Some("https://evil.com"),
-                AccessDecision::DenyOrigin,
-            ),
-            (
-                "null origin",
-                Some("localhost"),
-                Some("null"),
-                AccessDecision::DenyOrigin,
-            ),
-            // An unlisted hostname origin must not slip through the IP exemption.
-            (
-                "hostname origin behind an ip host",
-                Some("192.168.1.5"),
-                Some("https://evil.com"),
-                AccessDecision::DenyOrigin,
-            ),
-        ];
-        for (name, host, origin, want) in cases {
-            assert_eq!(
-                evaluate_access(*host, *origin, &hosts, &origins),
-                *want,
-                "{name}"
-            );
-        }
+        let d = |host: Option<&str>, origin: Option<&str>| {
+            evaluate_access(host, origin, &hosts, &origins)
+        };
 
-        // Case-insensitive Origin matching needs an allowlist entry to match against.
+        assert_eq!(d(Some("localhost"), None), Allow);
+        assert_eq!(d(Some("localhost:8080"), None), Allow, "port stripped");
+        assert_eq!(d(Some("[::1]:8080"), None), Allow, "bracketed ipv6");
+        assert_eq!(d(Some("LOCALHOST"), None), Allow, "case-insensitive");
+        assert_eq!(d(Some("localhost."), None), Allow, "trailing fqdn dot");
+        assert_eq!(d(Some("evil.com"), None), DenyHost);
+        assert_eq!(d(Some("user@localhost"), None), DenyHost, "userinfo");
+        assert_eq!(d(None, None), DenyMissingHost);
+
+        // A routable IP literal is trusted without an --allowed-host entry, as Host
+        // and as Origin; the excluded literals are not.
+        assert_eq!(d(Some("192.168.1.5:8080"), None), Allow);
+        assert_eq!(d(Some("[2001:db8::5]:8080"), None), Allow);
+        let ip_origin = d(Some("192.168.1.5:8080"), Some("http://192.168.1.5:8080"));
+        assert_eq!(ip_origin, Allow);
+        assert_eq!(d(Some("0.0.0.0"), None), DenyHost, "unspecified");
+        assert_eq!(d(Some("169.254.169.254"), None), DenyHost, "metadata");
+        assert_eq!(d(Some("fe80::1"), None), DenyHost, "link-local");
+
+        // Origin is consulted only once the Host passes, and an absent one is exempt.
+        assert_eq!(d(Some("localhost"), Some("http://localhost:8080")), Allow);
+        assert_eq!(d(Some("localhost"), Some("https://evil.com")), DenyOrigin);
+        assert_eq!(d(Some("localhost"), Some("null")), DenyOrigin);
+        // An unlisted hostname Origin must not slip through the IP exemption.
+        assert_eq!(d(Some("192.168.1.5"), Some("https://evil.com")), DenyOrigin);
+
+        // Origin matching is case-insensitive against the allowlist.
         assert_eq!(
             evaluate_access(
                 Some("localhost"),
@@ -758,7 +660,7 @@ mod tests {
                 &hosts,
                 &vecs(&["https://x.trycloudflare.com"]),
             ),
-            AccessDecision::Allow
+            Allow
         );
     }
 
@@ -845,98 +747,83 @@ mod tests {
         assert!(o.contains(&"https://std.example.com".to_string()));
     }
 
-    /// The gate runs ahead of auth (403 wins over 401), and every rejection returns
-    /// the same non-leaking body whatever the reason.
+    /// The gate runs ahead of auth (403 wins over 401) and every rejection returns the
+    /// same non-leaking body whatever the reason.
     #[tokio::test]
     async fn access_gate_runs_before_auth_at_the_router() {
         use axum::http::StatusCode;
         use tower::ServiceExt;
 
-        let remote: std::net::SocketAddr = "203.0.113.7:5555".parse().unwrap();
-        // (name, allowed hosts, uri, host header, origin header, expected status)
-        let cases: &[(&str, &[&str], &str, Option<&str>, Option<&str>, StatusCode)] = &[
-            (
-                "unlisted host beats auth",
-                &["localhost"],
-                "/api/sessions",
-                Some("evil.com"),
-                None,
-                StatusCode::FORBIDDEN,
-            ),
-            (
-                "listed host reaches auth",
-                &["localhost"],
-                "/api/sessions",
-                Some("localhost"),
-                None,
-                StatusCode::UNAUTHORIZED,
-            ),
-            (
-                "unlisted origin beats auth",
-                &["localhost"],
-                "/api/sessions",
-                Some("localhost"),
-                Some("https://evil.com"),
-                StatusCode::FORBIDDEN,
-            ),
-            (
-                "listed origin reaches auth",
-                &["localhost"],
-                "/api/sessions",
-                Some("localhost"),
-                Some("http://localhost:8080"),
-                StatusCode::UNAUTHORIZED,
-            ),
-            (
-                "listed :authority stands in for a missing host",
-                &["x.trycloudflare.com"],
-                "http://x.trycloudflare.com/api/sessions",
-                None,
-                None,
-                StatusCode::UNAUTHORIZED,
-            ),
-            (
-                "unlisted :authority",
-                &["localhost"],
-                "http://evil.trycloudflare.com/api/sessions",
-                None,
-                None,
-                StatusCode::FORBIDDEN,
-            ),
-        ];
-
-        for (name, hosts, uri, host, origin, want) in cases {
+        // Status plus body, so the generic deny text is asserted alongside the verdict.
+        async fn probe(
+            allowed_hosts: &[&str],
+            uri: &str,
+            host: Option<&str>,
+            origin: Option<&str>,
+        ) -> (StatusCode, String) {
             let state = test_support::build_test_app_state_with_policy(
                 Vec::new(),
-                vecs(hosts),
+                vecs(allowed_hosts),
                 vecs(&["http://localhost:8080"]),
                 Some("secret-token".to_string()),
             );
-            let app = test_support::build_router_for_test(state);
-            let mut builder = axum::http::Request::builder().uri(*uri);
-            if let Some(h) = host {
-                builder = builder.header("host", *h);
-            }
-            if let Some(o) = origin {
-                builder = builder.header("origin", *o);
+            let mut builder = axum::http::Request::builder().uri(uri);
+            for (name, value) in [("host", host), ("origin", origin)] {
+                if let Some(value) = value {
+                    builder = builder.header(name, value);
+                }
             }
             let mut req = builder.body(axum::body::Body::empty()).unwrap();
-            req.extensions_mut()
-                .insert(axum::extract::ConnectInfo(remote));
-            let resp = app.oneshot(req).await.unwrap();
+            req.extensions_mut().insert(axum::extract::ConnectInfo(
+                "203.0.113.7:5555".parse::<std::net::SocketAddr>().unwrap(),
+            ));
+            let resp = test_support::build_router_for_test(state)
+                .oneshot(req)
+                .await
+                .unwrap();
             let status = resp.status();
-            assert_eq!(status, *want, "{name}");
-            if status == StatusCode::FORBIDDEN {
-                let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
-                    .await
-                    .unwrap();
-                assert_eq!(
-                    String::from_utf8(bytes.to_vec()).unwrap(),
-                    "forbidden: host or origin not allowed",
-                    "{name}: every deny reason returns one generic body"
-                );
-            }
+            let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            (status, String::from_utf8(bytes.to_vec()).unwrap())
         }
+        let denied = (
+            StatusCode::FORBIDDEN,
+            "forbidden: host or origin not allowed".to_string(),
+        );
+        let local = &["localhost"][..];
+        let api = "/api/sessions";
+
+        assert_eq!(probe(local, api, Some("evil.com"), None).await, denied);
+        assert_eq!(
+            probe(local, api, Some("localhost"), Some("https://evil.com")).await,
+            denied
+        );
+        // A listed Host or Origin clears the gate and lands on auth instead.
+        for origin in [None, Some("http://localhost:8080")] {
+            let (status, _) = probe(local, api, Some("localhost"), origin).await;
+            assert_eq!(status, StatusCode::UNAUTHORIZED, "origin {origin:?}");
+        }
+
+        // With no Host header the gate falls back to the absolute-form `:authority`.
+        let (status, _) = probe(
+            &["x.trycloudflare.com"],
+            "http://x.trycloudflare.com/api/sessions",
+            None,
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        assert_eq!(
+            probe(
+                local,
+                "http://evil.trycloudflare.com/api/sessions",
+                None,
+                None
+            )
+            .await,
+            denied
+        );
     }
 
     #[test]
