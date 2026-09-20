@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { renderHook, waitFor } from "@testing-library/react";
 import type { RichDiffHunk } from "../../lib/types";
 
@@ -28,14 +28,16 @@ function hunkOf(content: string): RichDiffHunk {
   };
 }
 
+beforeEach(() => {
+  useShikiTheme.mockReturnValue({ theme: "github-dark", appearance: "dark" });
+});
+
 afterEach(() => {
   vi.clearAllMocks();
 });
 
 describe("useHighlightedLines", () => {
-  it("returns tokens=null when the file has no extension", async () => {
-    useShikiTheme.mockReturnValue({ theme: "github-dark", appearance: "dark" });
-
+  it("returns tokens=null when the file has no extension", () => {
     const { result } = renderHook(() => useHighlightedLines([hunkOf("some text\n")], "README"));
 
     expect(result.current.tokens).toBeNull();
@@ -43,7 +45,6 @@ describe("useHighlightedLines", () => {
   });
 
   it("settles an empty grid when the extension has no grammar", async () => {
-    useShikiTheme.mockReturnValue({ theme: "github-dark", appearance: "dark" });
     getSnippetHighlighter.mockResolvedValue(null);
 
     const { result } = renderHook(() => useHighlightedLines([hunkOf("some text\n")], "README.unknown"));
@@ -57,7 +58,6 @@ describe("useHighlightedLines", () => {
   });
 
   it("settles tokens with a grid when shiki resolves", async () => {
-    useShikiTheme.mockReturnValue({ theme: "github-dark", appearance: "dark" });
     const codeToTokens = vi.fn(() => ({
       tokens: [[{ content: "x", color: "#abcdef" }]],
     }));
@@ -77,7 +77,6 @@ describe("useHighlightedLines", () => {
   });
 
   it("falls back to empty grid when the highlighter rejects", async () => {
-    useShikiTheme.mockReturnValue({ theme: "github-dark", appearance: "dark" });
     getSnippetHighlighter.mockRejectedValue(new Error("call to WebAssembly.instantiate() blocked by CSP"));
     const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
 
@@ -91,7 +90,6 @@ describe("useHighlightedLines", () => {
   });
 
   it("returns null tokens after filePath switches until the new path settles", async () => {
-    useShikiTheme.mockReturnValue({ theme: "github-dark", appearance: "dark" });
     getSnippetHighlighter.mockResolvedValue({
       highlighter: {
         codeToTokens: vi.fn(() => ({

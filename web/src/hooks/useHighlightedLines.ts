@@ -19,6 +19,30 @@ export interface HighlightResult {
   tokens: TokenGrid | null;
 }
 
+function tokenizeHunks(
+  hunks: RichDiffHunk[],
+  hl: { codeToTokens: (code: string, opts: { lang: string; theme: string }) => { tokens: unknown[] } },
+  lang: string,
+  theme: string,
+): TokenGrid {
+  return hunks.map((hunk) =>
+    hunk.lines.map((line) => {
+      const raw = line.content.replace(/\r?\n$/, "");
+      if (!raw) return [];
+      try {
+        const { tokens } = hl.codeToTokens(raw, { lang, theme });
+        return (
+          (tokens[0] as ThemedToken[] | undefined)?.map((t) => ({ content: t.content, color: t.color })) ?? [
+            { content: raw },
+          ]
+        );
+      } catch {
+        return [{ content: raw }];
+      }
+    }),
+  );
+}
+
 export function useHighlightedLines(hunks: RichDiffHunk[], filePath: string): HighlightResult {
   const [state, setState] = useState<GridState | null>(null);
   const requestRef = useRef(0);
@@ -50,32 +74,7 @@ export function useHighlightedLines(hunks: RichDiffHunk[], filePath: string): Hi
         }
         const { highlighter: hl, langId, theme: resolvedTheme } = resolved;
 
-        const result: TokenGrid = [];
-
-        for (const hunk of hunks) {
-          const hunkTokens: SyntaxToken[][] = [];
-          for (const line of hunk.lines) {
-            const raw = line.content.replace(/\r?\n$/, "");
-            if (!raw) {
-              hunkTokens.push([]);
-              continue;
-            }
-            try {
-              const { tokens } = hl.codeToTokens(raw, {
-                lang: langId,
-                theme: resolvedTheme,
-              });
-              const mapped: SyntaxToken[] = (tokens[0] as ThemedToken[] | undefined)?.map((t) => ({
-                content: t.content,
-                color: t.color,
-              })) ?? [{ content: raw }];
-              hunkTokens.push(mapped);
-            } catch {
-              hunkTokens.push([{ content: raw }]);
-            }
-          }
-          result.push(hunkTokens);
-        }
+        const result = tokenizeHunks(hunks, hl, langId, resolvedTheme);
 
         if (isMountedRef.current && reqId === requestRef.current) {
           setState({ grid: result, path: filePath });
