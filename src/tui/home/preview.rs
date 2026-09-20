@@ -4,11 +4,10 @@ use std::collections::HashSet;
 
 use ratatui::layout::{Position, Rect};
 
-/// The output pane's text layout, captured at render time so input handlers
-/// can map screen cells to content lines. The output renders unwrapped and
-/// unscrolled horizontally, so row `pane.y + k` shows line `first_line + k`
-/// and col `pane.x + c` shows column `c`. `total_lines == 0` means nothing is
-/// selectable.
+/// The output pane's text layout, captured at render time so input handlers can map screen
+/// cells to content lines. The output renders unwrapped and unscrolled horizontally, so row
+/// `pane.y + k` shows line `first_line + k` and col `pane.x + c` shows column `c`.
+/// `total_lines == 0` means nothing is selectable.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(in crate::tui) struct PreviewTextView {
     pub(in crate::tui) pane: Rect,
@@ -17,9 +16,9 @@ pub(in crate::tui) struct PreviewTextView {
 }
 
 impl PreviewTextView {
-    /// True when `(col, row)` lands on painted content. Rows below the last
-    /// painted line are rejected: `screen_to_content` would clamp them onto
-    /// the last line and anchor a selection on text the user never clicked.
+    /// True when `(col, row)` lands on painted content. Rows below the last painted line are
+    /// rejected: `screen_to_content` would clamp them onto the last line and anchor a
+    /// selection on text the user never clicked.
     pub(in crate::tui) fn contains(self, col: u16, row: u16) -> bool {
         self.pane.contains(Position::from((col, row)))
             && usize::from(row - self.pane.y) < self.total_lines.saturating_sub(self.first_line)
@@ -52,10 +51,9 @@ impl PreviewTextView {
 
 /// Flow-style text selection matching tmux's default mouse selection.
 ///
-/// Coordinates are `(col_offset, from_bottom)`, counted up from the newest
-/// captured line. Anchoring to the bottom is load-bearing: the captured window
-/// grows from the top as the user scrolls back, so an absolute index would
-/// drift onto older lines while distance from the newest line stays fixed.
+/// Coordinates are `(col_offset, from_bottom)`, counted up from the newest captured line.
+/// Anchoring to the bottom is load-bearing: the captured window grows from the top as the
+/// user scrolls back, so an absolute index would drift onto older lines.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(in crate::tui) struct PreviewSelection {
     pub(in crate::tui) anchor: (u16, usize),
@@ -76,9 +74,9 @@ impl PreviewSelection {
         }
     }
 
-    /// Per-row flow-shape screen rects clipped to the visible window: inner
-    /// rows span the full pane width, the first starts at the start column
-    /// and the last ends at the end column.
+    /// Per-row flow-shape screen rects clipped to the visible window: inner rows span the
+    /// full pane width, the first starts at the start column and the last ends at the end
+    /// column.
     pub(in crate::tui) fn screen_flow_rects(self, view: PreviewTextView) -> Vec<Rect> {
         let pane = view.pane;
         if pane.width == 0 || pane.height == 0 {

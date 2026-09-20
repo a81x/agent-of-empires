@@ -509,6 +509,50 @@ fn push_shelf_error_lines(
     }
 }
 
+/// Centered placeholder body: heading, message, the selected row's `last_error`, and an
+/// optional hint. The shelf placeholders wrap their prose; the fixed-copy ones do not.
+fn render_placeholder(
+    frame: &mut Frame,
+    area: Rect,
+    theme: &Theme,
+    heading: &str,
+    body: String,
+    inst: Option<&crate::session::Instance>,
+    hint: Option<Line<'static>>,
+    wrap: bool,
+) {
+    let mut lines = vec![
+        Line::from(""),
+        Line::from(Span::styled(
+            heading.to_string(),
+            Style::default().fg(theme.text).bold(),
+        )),
+        Line::from(""),
+        Line::from(Span::styled(body, Style::default().fg(theme.dimmed))),
+    ];
+    push_shelf_error_lines(&mut lines, inst, theme);
+    if let Some(hint) = hint {
+        lines.push(Line::from(""));
+        lines.push(hint);
+    }
+    let para = Paragraph::new(lines).alignment(Alignment::Center);
+    let para = if wrap {
+        para.wrap(Wrap { trim: false })
+    } else {
+        para
+    };
+    frame.render_widget(para, area);
+}
+
+/// A `Press <key><tail>` hint line for a placeholder.
+fn press_hint(theme: &Theme, key: &str, tail: &str) -> Line<'static> {
+    Line::from(vec![
+        Span::styled("Press ", Style::default().fg(theme.dimmed)),
+        Span::styled(key.to_string(), Style::default().fg(theme.hint).bold()),
+        Span::styled(tail.to_string(), Style::default().fg(theme.dimmed)),
+    ])
+}
+
 /// Per-row tag content plus the mode's max content width. The renderer right-pads
 /// `content` to `max_width` so the bracket span is fixed-width across rows (`[fb  ]` vs
 /// `[def ]`) and the activity column cannot reflow. `compute_row_tag` truncates to the
@@ -3337,31 +3381,21 @@ impl HomeView {
         }
 
         let key = if self.strict_hotkeys { "Z" } else { "z" };
-        let parked = if title.is_empty() {
+        let body = if title.is_empty() {
             "This session is parked. Its agent was stopped.".to_string()
         } else {
             format!("\"{}\" is parked. Its agent was stopped.", title)
         };
-        let mut lines = vec![
-            Line::from(""),
-            Line::from(Span::styled(
-                "Archived",
-                Style::default().fg(theme.text).bold(),
-            )),
-            Line::from(""),
-            Line::from(Span::styled(parked, Style::default().fg(theme.dimmed))),
-        ];
-        push_shelf_error_lines(&mut lines, inst, theme);
-        lines.push(Line::from(""));
-        lines.push(Line::from(vec![
-            Span::styled("Press ", Style::default().fg(theme.dimmed)),
-            Span::styled(key, Style::default().fg(theme.hint).bold()),
-            Span::styled(" to unarchive it.", Style::default().fg(theme.dimmed)),
-        ]));
-        let para = Paragraph::new(lines)
-            .alignment(Alignment::Center)
-            .wrap(Wrap { trim: false });
-        frame.render_widget(para, area);
+        render_placeholder(
+            frame,
+            area,
+            theme,
+            "Archived",
+            body,
+            inst,
+            Some(press_hint(theme, key, " to unarchive it.")),
+            true,
+        );
     }
 
     /// Shared "Deleting" takeover for the archived/trashed placeholders while a
@@ -3378,19 +3412,7 @@ impl HomeView {
         } else {
             format!("\"{}\" is being permanently deleted.", title)
         };
-        let lines = vec![
-            Line::from(""),
-            Line::from(Span::styled(
-                "Deleting",
-                Style::default().fg(theme.text).bold(),
-            )),
-            Line::from(""),
-            Line::from(Span::styled(body, Style::default().fg(theme.dimmed))),
-        ];
-        let para = Paragraph::new(lines)
-            .alignment(Alignment::Center)
-            .wrap(Wrap { trim: false });
-        frame.render_widget(para, area);
+        render_placeholder(frame, area, theme, "Deleting", body, None, None, true);
     }
 
     /// Calm placeholder for a trashed session: its agent was stopped but its transcript
@@ -3421,11 +3443,7 @@ impl HomeView {
         // The permanent-delete keybind routes to a "Cannot delete terminal" dialog in
         // Terminal view, so advertise it only in Structured view. See #2489.
         let hint = if self.view_mode == ViewMode::Terminal {
-            Line::from(vec![
-                Span::styled("Press ", Style::default().fg(theme.dimmed)),
-                Span::styled(restore_key, Style::default().fg(theme.hint).bold()),
-                Span::styled(" to restore.", Style::default().fg(theme.dimmed)),
-            ])
+            press_hint(theme, restore_key, " to restore.")
         } else {
             Line::from(vec![
                 Span::styled("Press ", Style::default().fg(theme.dimmed)),
@@ -3438,47 +3456,22 @@ impl HomeView {
                 Span::styled(" to delete permanently.", Style::default().fg(theme.dimmed)),
             ])
         };
-        let mut lines = vec![
-            Line::from(""),
-            Line::from(Span::styled(
-                "Trash",
-                Style::default().fg(theme.text).bold(),
-            )),
-            Line::from(""),
-            Line::from(Span::styled(body, Style::default().fg(theme.dimmed))),
-        ];
-        push_shelf_error_lines(&mut lines, inst, theme);
-        lines.push(Line::from(""));
-        lines.push(hint);
-        let para = Paragraph::new(lines)
-            .alignment(Alignment::Center)
-            .wrap(Wrap { trim: false });
-        frame.render_widget(para, area);
+        render_placeholder(frame, area, theme, "Trash", body, inst, Some(hint), true);
     }
 
     /// Calm placeholder for a pane that is simply gone (the generic gone-error), in
     /// place of the red crash error; the row's status icon still signals the state.
     fn render_stopped_preview(&self, frame: &mut Frame, area: Rect, theme: &Theme) {
-        let lines = vec![
-            Line::from(""),
-            Line::from(Span::styled(
-                "Stopped",
-                Style::default().fg(theme.text).bold(),
-            )),
-            Line::from(""),
-            Line::from(Span::styled(
-                "This session isn't running.",
-                Style::default().fg(theme.dimmed),
-            )),
-            Line::from(""),
-            Line::from(vec![
-                Span::styled("Press ", Style::default().fg(theme.dimmed)),
-                Span::styled("Enter", Style::default().fg(theme.hint).bold()),
-                Span::styled(" to start it.", Style::default().fg(theme.dimmed)),
-            ]),
-        ];
-        let para = Paragraph::new(lines).alignment(Alignment::Center);
-        frame.render_widget(para, area);
+        render_placeholder(
+            frame,
+            area,
+            theme,
+            "Stopped",
+            "This session isn't running.".to_string(),
+            None,
+            Some(press_hint(theme, "Enter", " to start it.")),
+            false,
+        );
     }
 
     /// Placeholder for a structured-view session: it has no agent tmux pane to capture
@@ -3490,40 +3483,31 @@ impl HomeView {
             .as_ref()
             .and_then(|id| self.get_instance(id));
         let title = inst.map(|i| i.title.clone()).unwrap_or_default();
-        let agent = inst.and_then(|i| i.agent_name.clone());
-        let body = {
-            let name = if title.is_empty() {
-                "This session".to_string()
-            } else {
-                format!("\"{title}\"")
-            };
-            match agent {
-                Some(agent) => {
-                    format!("{name} runs {agent} as a structured transcript, not a terminal pane.")
-                }
-                None => format!("{name} renders as a structured transcript, not a terminal pane."),
-            }
+        let name = if title.is_empty() {
+            "This session".to_string()
+        } else {
+            format!("\"{title}\"")
         };
-        let lines = vec![
-            Line::from(""),
-            Line::from(Span::styled(
-                "Structured view",
-                Style::default().fg(theme.text).bold(),
+        let body = match inst.and_then(|i| i.agent_name.clone()) {
+            Some(agent) => {
+                format!("{name} runs {agent} as a structured transcript, not a terminal pane.")
+            }
+            None => format!("{name} renders as a structured transcript, not a terminal pane."),
+        };
+        render_placeholder(
+            frame,
+            area,
+            theme,
+            "Structured view",
+            body,
+            None,
+            Some(press_hint(
+                theme,
+                "Enter",
+                " to open it (offers to start a local `aoe serve` daemon if none is running).",
             )),
-            Line::from(""),
-            Line::from(Span::styled(body, Style::default().fg(theme.dimmed))),
-            Line::from(""),
-            Line::from(vec![
-                Span::styled("Press ", Style::default().fg(theme.dimmed)),
-                Span::styled("Enter", Style::default().fg(theme.hint).bold()),
-                Span::styled(
-                    " to open it (offers to start a local `aoe serve` daemon if none is running).",
-                    Style::default().fg(theme.dimmed),
-                ),
-            ]),
-        ];
-        let para = Paragraph::new(lines).alignment(Alignment::Center);
-        frame.render_widget(para, area);
+            false,
+        );
     }
 
     fn render_status_bar(&mut self, frame: &mut Frame, area: Rect, theme: &Theme) {

@@ -47,9 +47,9 @@ impl HomeView {
             .collect()
     }
 
-    /// Build the id-keyed map from loaded instances. Ids duplicated across
-    /// profiles (an interrupted profile move) are ambiguous, so every copy is
-    /// excluded rather than routing lifecycle work to the wrong profile.
+    /// Build the id-keyed map from loaded instances. Ids duplicated across profiles (an
+    /// interrupted profile move) are ambiguous, so every copy is excluded rather than routing
+    /// lifecycle work to the wrong profile.
     pub(super) fn build_instances_map(
         all_instances: Vec<Instance>,
     ) -> indexmap::IndexMap<String, Instance> {
@@ -160,10 +160,9 @@ impl HomeView {
         items
     }
 
-    /// Instances in the active view with `group_path` rewritten by `key`, plus
-    /// the live (non-archived, non-trashed) subset that seeds the tree. An
-    /// archived-only group must not seed a header: it would render as an
-    /// empty, undeletable phantom in the main flow.
+    /// Instances in the active view with `group_path` rewritten by `key`, plus the live
+    /// subset that seeds the tree. An archived-only group must not seed a header: it would
+    /// render as an empty, undeletable phantom in the main flow.
     fn regrouped_instances(
         &self,
         key: impl Fn(&Instance) -> String,

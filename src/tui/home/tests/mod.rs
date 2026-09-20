@@ -104,6 +104,19 @@ fn seeded_env(
     }
 }
 
+/// Session id of the `flat_items` row at `idx`, or `None` when it is not a session row.
+fn session_id_at(view: &HomeView, idx: usize) -> Option<String> {
+    match view.flat_items.get(idx) {
+        Some(Item::Session { id, .. }) => Some(id.clone()),
+        _ => None,
+    }
+}
+
+/// Session id under the cursor, or `None` when the cursor is not on a session row.
+fn cursor_session_id(view: &HomeView) -> Option<String> {
+    session_id_at(view, view.cursor)
+}
+
 fn instance_in(title: &str, path: &str, group: &str) -> Instance {
     let mut inst = Instance::new(title, path);
     inst.group_path = group.to_string();
