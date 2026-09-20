@@ -2320,106 +2320,47 @@ fn send_message_post_restart_save_preserves_peer_sid_write() {
     assert!(disk.last_accessed_at.is_some());
 }
 
+/// A tool name must resolve to a built-in agent, or to a custom agent whose
+/// configured command is non-empty.
 #[test]
 #[serial_test::serial]
-fn session_tool_identity_accepts_builtin_agent() {
-    let temp_home = tempfile::tempdir().unwrap();
-    let _home = crate::session::test_support::isolate_app_dir_at(temp_home.path());
-    let project = tempfile::tempdir().unwrap();
+fn session_tool_identity_accepts_builtins_and_non_empty_custom_agents() {
+    // (custom_agents config body, agent, expected)
+    let cases = [
+        ("", "claude", true),
+        (
+            "remote-claude = \"ssh -t host claude\"",
+            "remote-claude",
+            true,
+        ),
+        ("", "surprise-agent", false),
+        ("remote-claude = \"\"", "remote-claude", false),
+        ("remote-claude = \"   \"", "remote-claude", false),
+    ];
 
-    assert!(validate_session_tool_identity(
-        "claude",
-        "default",
-        project.path()
-    ));
+    for (custom_agents, agent, expected) in cases {
+        let temp_home = tempfile::tempdir().unwrap();
+        let _home = crate::session::test_support::isolate_app_dir_at(temp_home.path());
+        let app_dir = crate::session::get_app_dir().expect("isolated app dir");
+        std::fs::create_dir_all(&app_dir).unwrap();
+        if !custom_agents.is_empty() {
+            std::fs::write(
+                app_dir.join("config.toml"),
+                format!("[session.custom_agents]\n{custom_agents}\n"),
+            )
+            .unwrap();
+        }
+        let project = tempfile::tempdir().unwrap();
+
+        assert_eq!(
+            validate_session_tool_identity(agent, "default", project.path()),
+            expected,
+            "agent={agent} custom_agents={custom_agents:?}"
+        );
+    }
 }
 
-#[test]
-#[serial_test::serial]
-fn session_tool_identity_accepts_non_empty_configured_custom_agent() {
-    let temp_home = tempfile::tempdir().unwrap();
-    let _home = crate::session::test_support::isolate_app_dir_at(temp_home.path());
-    let app_dir = crate::session::get_app_dir().expect("isolated app dir");
-    std::fs::create_dir_all(&app_dir).unwrap();
-    std::fs::write(
-        app_dir.join("config.toml"),
-        r#"
-            [session.custom_agents]
-            remote-claude = "ssh -t host claude"
-        "#,
-    )
-    .unwrap();
-    let project = tempfile::tempdir().unwrap();
-
-    assert!(validate_session_tool_identity(
-        "remote-claude",
-        "default",
-        project.path()
-    ));
-}
-
-#[test]
-#[serial_test::serial]
-fn session_tool_identity_rejects_unknown_agent() {
-    let temp_home = tempfile::tempdir().unwrap();
-    let _home = crate::session::test_support::isolate_app_dir_at(temp_home.path());
-    let project = tempfile::tempdir().unwrap();
-
-    assert!(!validate_session_tool_identity(
-        "surprise-agent",
-        "default",
-        project.path()
-    ));
-}
-
-#[test]
-#[serial_test::serial]
-fn session_tool_identity_rejects_empty_custom_agent_command() {
-    let temp_home = tempfile::tempdir().unwrap();
-    let _home = crate::session::test_support::isolate_app_dir_at(temp_home.path());
-    let app_dir = crate::session::get_app_dir().expect("isolated app dir");
-    std::fs::create_dir_all(&app_dir).unwrap();
-    std::fs::write(
-        app_dir.join("config.toml"),
-        r#"
-            [session.custom_agents]
-            remote-claude = ""
-        "#,
-    )
-    .unwrap();
-    let project = tempfile::tempdir().unwrap();
-
-    assert!(!validate_session_tool_identity(
-        "remote-claude",
-        "default",
-        project.path()
-    ));
-}
-
-#[test]
-#[serial_test::serial]
-fn session_tool_identity_rejects_whitespace_only_custom_agent_command() {
-    let temp_home = tempfile::tempdir().unwrap();
-    let _home = crate::session::test_support::isolate_app_dir_at(temp_home.path());
-    let app_dir = crate::session::get_app_dir().expect("isolated app dir");
-    std::fs::create_dir_all(&app_dir).unwrap();
-    std::fs::write(
-        app_dir.join("config.toml"),
-        r#"
-            [session.custom_agents]
-            remote-claude = "   "
-        "#,
-    )
-    .unwrap();
-    let project = tempfile::tempdir().unwrap();
-
-    assert!(!validate_session_tool_identity(
-        "remote-claude",
-        "default",
-        project.path()
-    ));
-}
-
+/// A custom agent declared under one profile is invisible from another.
 #[test]
 #[serial_test::serial]
 fn session_tool_identity_uses_requested_profile() {
