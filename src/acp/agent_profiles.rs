@@ -72,6 +72,20 @@ impl AgentProfile {
     }
 }
 
+/// Permissive base for unknown registry keys: no claude-specific gates fire,
+/// no clear aliases match, no parent-meta lookup. Every profile below states
+/// only what it changes.
+pub const DEFAULT: AgentProfile = AgentProfile {
+    key: "default",
+    parent_meta_namespaces: &[],
+    clear_aliases: &[],
+    clear_requires_driven_reset: false,
+    supports_exit_plan_mode: false,
+    supports_wakeup_tools: false,
+    emits_heartbeat_keepalives: false,
+    yolo_mode_id: None,
+};
+
 /// Claude via `claude-agent-acp`.
 pub const CLAUDE: AgentProfile = AgentProfile {
     key: "claude",
@@ -93,132 +107,69 @@ pub const CLAUDE_CODE: AgentProfile = AgentProfile {
 /// OpenAI Codex CLI via `@agentclientprotocol/codex-acp`.
 pub const CODEX: AgentProfile = AgentProfile {
     key: "codex",
-    parent_meta_namespaces: &[],
     clear_aliases: &["/new"],
     clear_requires_driven_reset: true,
-    supports_exit_plan_mode: false,
-    supports_wakeup_tools: false,
-    emits_heartbeat_keepalives: false,
     yolo_mode_id: Some("agent-full-access"),
+    ..DEFAULT
 };
 
-/// SST OpenCode via native `opencode acp`.
+/// SST OpenCode via native `opencode acp`. Its bypass-mode id over ACP is
+/// unverified, so YOLO stays a no-op rather than guessing an id.
 pub const OPENCODE: AgentProfile = AgentProfile {
     key: "opencode",
-    parent_meta_namespaces: &[],
     clear_aliases: &["/new"],
-    clear_requires_driven_reset: false,
-    supports_exit_plan_mode: false,
-    supports_wakeup_tools: false,
-    emits_heartbeat_keepalives: false,
-    // OpenCode's bypass-mode id over ACP is unverified; leave YOLO a no-op
-    // until observed rather than guessing an id the adapter would reject.
-    yolo_mode_id: None,
+    ..DEFAULT
 };
 
-/// Google Gemini CLI via native `gemini --acp`.
+/// Google Gemini CLI via native `gemini --acp`. It surfaces its YOLO approval
+/// mode with the `yolo` id (see `acp_client/update_events.rs`).
 pub const GEMINI: AgentProfile = AgentProfile {
     key: "gemini",
-    parent_meta_namespaces: &[],
-    clear_aliases: &[],
-    clear_requires_driven_reset: false,
-    supports_exit_plan_mode: false,
-    supports_wakeup_tools: false,
-    emits_heartbeat_keepalives: false,
-    // gemini-cli surfaces its YOLO approval mode over `gemini --acp` with
-    // the `yolo` id (see the CurrentModeUpdate mapping in acp_client/update_events.rs).
     yolo_mode_id: Some("yolo"),
+    ..DEFAULT
 };
 
 /// Mistral Vibe via bundled `vibe-acp`.
 pub const VIBE: AgentProfile = AgentProfile {
     key: "vibe",
-    parent_meta_namespaces: &[],
-    clear_aliases: &[],
-    clear_requires_driven_reset: false,
-    supports_exit_plan_mode: false,
-    supports_wakeup_tools: false,
-    emits_heartbeat_keepalives: false,
-    yolo_mode_id: None,
+    ..DEFAULT
 };
 
 /// Pi coding agent via `pi-acp`.
 pub const PI: AgentProfile = AgentProfile {
     key: "pi",
-    parent_meta_namespaces: &[],
-    clear_aliases: &[],
-    clear_requires_driven_reset: false,
-    supports_exit_plan_mode: false,
-    supports_wakeup_tools: false,
-    emits_heartbeat_keepalives: false,
-    yolo_mode_id: None,
+    ..DEFAULT
 };
 
 /// Oh My Pi via native `omp acp`.
 pub const OMP: AgentProfile = AgentProfile {
     key: "omp",
-    parent_meta_namespaces: &[],
     clear_aliases: &["/new"],
-    clear_requires_driven_reset: false,
-    supports_exit_plan_mode: false,
-    supports_wakeup_tools: false,
-    emits_heartbeat_keepalives: false,
-    yolo_mode_id: None,
+    ..DEFAULT
 };
 
 /// Kimi Code (Moonshot AI) via native `kimi acp`.
 pub const KIMI: AgentProfile = AgentProfile {
     key: "kimi",
-    parent_meta_namespaces: &[],
     clear_aliases: &["/new"],
-    clear_requires_driven_reset: false,
-    supports_exit_plan_mode: false,
-    supports_wakeup_tools: false,
-    emits_heartbeat_keepalives: false,
     yolo_mode_id: Some("yolo"),
+    ..DEFAULT
 };
 
 /// PrimeIntellect Prime Agent via native `prime-agent --mode acp`.
 pub const PRIME_AGENT: AgentProfile = AgentProfile {
     key: "prime-agent",
-    parent_meta_namespaces: &[],
-    clear_aliases: &[],
-    clear_requires_driven_reset: false,
-    supports_exit_plan_mode: false,
-    supports_wakeup_tools: false,
-    emits_heartbeat_keepalives: false,
-    yolo_mode_id: None,
+    ..DEFAULT
 };
 
 /// aoe's own multi-provider agent (Vercel AI SDK 7), at
-/// `acp-worker/aoe-agent/src/index.ts`.
+/// `acp-worker/aoe-agent/src/index.ts`. A forwarded /clear is ordinary model
+/// text, and `session/set_mode` accepts any id while changing nothing.
 pub const AOE_AGENT: AgentProfile = AgentProfile {
     key: "aoe-agent",
-    parent_meta_namespaces: &[],
     clear_aliases: &["/clear"],
-    // A forwarded /clear is ordinary model text.
     clear_requires_driven_reset: true,
-    // No ExitPlanMode tool and no mode channel; no ScheduleWakeup or cron
-    // tools.
-    supports_exit_plan_mode: false,
-    supports_wakeup_tools: false,
-    emits_heartbeat_keepalives: false,
-    // `session/set_mode` is `() => ({})`: it accepts any id and changes
-    // nothing, and the adapter advertises no modes.
-    yolo_mode_id: None,
-};
-
-/// Permissive default for unknown registry keys: no claude-specific
-/// gates fire, no clear aliases match, no parent-meta lookup.
-pub const DEFAULT: AgentProfile = AgentProfile {
-    key: "default",
-    parent_meta_namespaces: &[],
-    clear_aliases: &[],
-    clear_requires_driven_reset: false,
-    supports_exit_plan_mode: false,
-    supports_wakeup_tools: false,
-    emits_heartbeat_keepalives: false,
-    yolo_mode_id: None,
+    ..DEFAULT
 };
 
 /// Resolve a static profile by registry key.
@@ -250,211 +201,124 @@ pub fn is_reviewed(key: &str) -> bool {
 mod tests {
     use super::*;
 
+    /// One row per registry key: the adapter conventions the server gates on.
+    /// Unverified adapters stay off until their behavior is observed.
     #[test]
-    fn resolve_known_agents() {
-        assert_eq!(resolve("claude").key, "claude");
-        assert_eq!(resolve("claude-code").key, "claude-code");
-        assert_eq!(resolve("codex").key, "codex");
-        assert_eq!(resolve("opencode").key, "opencode");
-        assert_eq!(resolve("gemini").key, "gemini");
-        assert_eq!(resolve("vibe").key, "vibe");
-        assert_eq!(resolve("pi").key, "pi");
-        assert_eq!(resolve("omp").key, "omp");
-        assert_eq!(resolve("kimi").key, "kimi");
-        assert_eq!(resolve("prime-agent").key, "prime-agent");
-        assert_eq!(resolve("aoe-agent").key, "aoe-agent");
-    }
-
-    #[test]
-    fn resolve_falls_back_to_default() {
-        assert_eq!(resolve("").key, "default");
-        assert_eq!(resolve("unknown-agent").key, "default");
-    }
-
-    #[test]
-    fn is_reviewed_covers_only_verified_approval_conventions() {
-        // Verified adapters get the benign automation classifications.
-        for key in [
-            "claude",
-            "claude-code",
-            "codex",
-            "gemini",
-            "kimi",
-            "aoe-agent",
-        ] {
-            assert!(is_reviewed(key), "{key} should be reviewed");
-        }
-        for key in [
-            "opencode",
-            "vibe",
-            "pi",
-            "omp",
-            "prime-agent",
-            "unknown-agent",
-            "",
-        ] {
-            assert!(!is_reviewed(key), "{key} should not be reviewed");
-        }
-    }
-
-    #[test]
-    fn yolo_mode_id_is_adapter_specific() {
-        assert_eq!(resolve("claude").yolo_mode_id, Some("bypassPermissions"));
-        // Inherited from CLAUDE via `..CLAUDE`.
-        assert_eq!(
-            resolve("claude-code").yolo_mode_id,
-            Some("bypassPermissions")
-        );
-        assert_eq!(resolve("aoe-agent").yolo_mode_id, None);
-        assert_eq!(resolve("codex").yolo_mode_id, Some("agent-full-access"));
-        assert_eq!(resolve("gemini").yolo_mode_id, Some("yolo"));
-        assert_eq!(resolve("kimi").yolo_mode_id, Some("yolo"));
-        // Adapters with no verified bypass mode keep YOLO a no-op.
-        assert_eq!(resolve("opencode").yolo_mode_id, None);
-        assert_eq!(resolve("vibe").yolo_mode_id, None);
-        assert_eq!(resolve("pi").yolo_mode_id, None);
-        assert_eq!(resolve("omp").yolo_mode_id, None);
-        assert_eq!(resolve("prime-agent").yolo_mode_id, None);
-        assert_eq!(resolve("unknown-agent").yolo_mode_id, None);
-    }
-
-    #[test]
-    fn is_clear_command_per_profile() {
-        assert!(CLAUDE.is_clear_command("/clear"));
-        assert!(CLAUDE.is_clear_command("  /clear  "));
-        assert!(CLAUDE.is_clear_command("/clear --hard"));
-        assert!(!CLAUDE.is_clear_command("/new"));
-
-        assert!(CODEX.is_clear_command("/new"));
-        assert!(!CODEX.is_clear_command("/clear"));
-
-        assert!(OPENCODE.is_clear_command("/new"));
-        assert!(!OPENCODE.is_clear_command("/clear"));
-
-        // Gemini has no clear alias; nothing matches.
-        assert!(!GEMINI.is_clear_command("/clear"));
-        assert!(!GEMINI.is_clear_command("/new"));
-        assert!(!GEMINI.is_clear_command("/restore"));
-        assert!(OMP.is_clear_command("/new"));
-        assert!(!OMP.is_clear_command("/clear"));
-    }
-
-    /// Two different defects share the driven-reset remedy.
-    #[test]
-    fn clear_requires_driven_reset_for_codex_and_claude() {
-        for profile in [&CODEX, &CLAUDE, &CLAUDE_CODE, &AOE_AGENT] {
-            assert!(profile.clear_requires_driven_reset, "{}", profile.key);
-        }
-        for profile in [
-            &OPENCODE,
-            &GEMINI,
-            &VIBE,
-            &PI,
-            &OMP,
-            &KIMI,
-            &PRIME_AGENT,
-            &DEFAULT,
-        ] {
-            assert!(!profile.clear_requires_driven_reset, "{}", profile.key);
+    fn profile_matrix_is_pinned_per_registry_key() {
+        // (key, clear aliases, driven reset, parent namespaces, claude-family
+        //  tool gates, yolo mode id, reviewed)
+        let cases: [(&str, &[&str], bool, &[&str], bool, Option<&str>, bool); 13] = [
+            (
+                "claude",
+                &["/clear"],
+                true,
+                &["claudeCode"],
+                true,
+                Some("bypassPermissions"),
+                true,
+            ),
+            (
+                "claude-code",
+                &["/clear"],
+                true,
+                &["claudeCode"],
+                true,
+                Some("bypassPermissions"),
+                true,
+            ),
+            (
+                "codex",
+                &["/new"],
+                true,
+                &[],
+                false,
+                Some("agent-full-access"),
+                true,
+            ),
+            ("opencode", &["/new"], false, &[], false, None, false),
+            ("gemini", &[], false, &[], false, Some("yolo"), true),
+            ("vibe", &[], false, &[], false, None, false),
+            ("pi", &[], false, &[], false, None, false),
+            ("omp", &["/new"], false, &[], false, None, false),
+            ("kimi", &["/new"], false, &[], false, Some("yolo"), true),
+            ("prime-agent", &[], false, &[], false, None, false),
+            ("aoe-agent", &["/clear"], true, &[], false, None, true),
+            ("unknown-agent", &[], false, &[], false, None, false),
+            ("", &[], false, &[], false, None, false),
+        ];
+        for (key, aliases, driven, namespaces, claude_gates, yolo, reviewed) in cases {
+            let p = resolve(key);
+            let want_key = if p.key == "default" { "default" } else { key };
+            assert_eq!(p.key, want_key, "{key}");
+            assert_eq!(p.clear_aliases, aliases, "{key}");
+            assert_eq!(p.clear_requires_driven_reset, driven, "{key}");
+            assert_eq!(p.parent_meta_namespaces, namespaces, "{key}");
+            assert_eq!(p.supports_exit_plan_mode, claude_gates, "{key}");
+            assert_eq!(p.supports_wakeup_tools, claude_gates, "{key}");
+            assert_eq!(p.emits_heartbeat_keepalives, claude_gates, "{key}");
+            assert_eq!(p.supports_memory_recall_tool(), claude_gates, "{key}");
+            assert_eq!(p.yolo_mode_id, yolo, "{key}");
+            assert_eq!(is_reviewed(key), reviewed, "{key}");
         }
     }
 
     #[test]
-    fn is_clear_command_rejects_partial_matches() {
-        assert!(!CLAUDE.is_clear_command("clear"));
-        assert!(!CLAUDE.is_clear_command("/cleart"));
-        assert!(!CLAUDE.is_clear_command("hello /clear world"));
-        assert!(!CLAUDE.is_clear_command(""));
-    }
-
-    #[test]
-    fn parent_tool_use_id_from_meta_reads_claudecode_for_claude() {
-        let mut meta = serde_json::Map::new();
-        meta.insert(
-            "claudeCode".to_string(),
-            serde_json::json!({ "parentToolUseId": "tc-parent-7" }),
-        );
-        assert_eq!(
-            CLAUDE.parent_tool_use_id_from_meta(&Some(meta)),
-            Some("tc-parent-7".to_string())
-        );
-    }
-
-    #[test]
-    fn parent_tool_use_id_from_meta_returns_none_for_unverified_agents() {
-        let mut meta = serde_json::Map::new();
-        meta.insert(
-            "opencode".to_string(),
-            serde_json::json!({ "parentToolUseId": "tc-9" }),
-        );
-        assert!(OPENCODE.parent_tool_use_id_from_meta(&Some(meta)).is_none());
-
-        let mut claude_meta = serde_json::Map::new();
-        claude_meta.insert(
-            "claudeCode".to_string(),
-            serde_json::json!({ "parentToolUseId": "tc-parent-7" }),
-        );
-        assert!(AOE_AGENT
-            .parent_tool_use_id_from_meta(&Some(claude_meta))
-            .is_none());
-    }
-
-    #[test]
-    fn parent_tool_use_id_from_meta_returns_none_for_missing_namespace() {
-        let mut meta = serde_json::Map::new();
-        meta.insert(
-            "otherNamespace".to_string(),
-            serde_json::json!({ "parentToolUseId": "tc-x" }),
-        );
-        assert!(CLAUDE.parent_tool_use_id_from_meta(&Some(meta)).is_none());
-    }
-
-    #[test]
-    fn parent_tool_use_id_from_meta_returns_none_for_non_string_value() {
-        let mut meta = serde_json::Map::new();
-        meta.insert(
-            "claudeCode".to_string(),
-            serde_json::json!({ "parentToolUseId": 42 }),
-        );
-        assert!(CLAUDE.parent_tool_use_id_from_meta(&Some(meta)).is_none());
-    }
-
-    #[test]
-    fn parent_tool_use_id_from_meta_returns_none_for_none_meta() {
-        assert!(CLAUDE.parent_tool_use_id_from_meta(&None).is_none());
-    }
-
-    #[test]
-    fn deferred_profiles_keep_parent_linkage_disabled() {
-        for profile in [&VIBE, &PI, &OMP, &KIMI, &PRIME_AGENT] {
-            assert!(
-                profile.parent_meta_namespaces.is_empty(),
-                "{}: parent linkage must stay off until observed",
+    fn is_clear_command_matches_an_alias_and_its_argument_cluster() {
+        // (profile, text, matches)
+        let cases: [(&AgentProfile, &str, bool); 13] = [
+            (&CLAUDE, "/clear", true),
+            (&CLAUDE, "  /clear  ", true),
+            (&CLAUDE, "/clear --hard", true),
+            (&CLAUDE, "/new", false),
+            (&CLAUDE, "clear", false),
+            (&CLAUDE, "/cleart", false),
+            (&CLAUDE, "hello /clear world", false),
+            (&CLAUDE, "", false),
+            (&CODEX, "/new", true),
+            (&CODEX, "/clear", false),
+            (&OMP, "/new", true),
+            // gemini has no clear alias, so nothing matches.
+            (&GEMINI, "/clear", false),
+            (&GEMINI, "/new", false),
+        ];
+        for (profile, text, want) in cases {
+            assert_eq!(
+                profile.is_clear_command(text),
+                want,
+                "{} {text:?}",
                 profile.key
             );
         }
     }
 
     #[test]
-    fn capability_flags_only_set_for_claude_family() {
-        for profile in [&CLAUDE, &CLAUDE_CODE] {
-            assert!(profile.supports_exit_plan_mode);
-            assert!(profile.supports_wakeup_tools);
-        }
-        for profile in [
-            &CODEX,
-            &OPENCODE,
-            &GEMINI,
-            &VIBE,
-            &PI,
-            &OMP,
-            &KIMI,
-            &PRIME_AGENT,
-            &AOE_AGENT,
-            &DEFAULT,
-        ] {
-            assert!(!profile.supports_exit_plan_mode, "{}", profile.key);
-            assert!(!profile.supports_wakeup_tools, "{}", profile.key);
+    fn parent_tool_use_id_reads_only_a_profiles_own_namespace() {
+        let meta = |namespace: &str, value: serde_json::Value| {
+            let mut map = serde_json::Map::new();
+            map.insert(
+                namespace.to_string(),
+                serde_json::json!({ "parentToolUseId": value }),
+            );
+            Some(map)
+        };
+        assert_eq!(
+            CLAUDE.parent_tool_use_id_from_meta(&meta("claudeCode", "tc-parent-7".into())),
+            Some("tc-parent-7".to_string())
+        );
+        // (profile, meta) pairs that must not resolve a parent.
+        let misses = [
+            (&CLAUDE, meta("otherNamespace", "tc-x".into())),
+            (&CLAUDE, meta("claudeCode", 42.into())),
+            (&CLAUDE, None),
+            (&OPENCODE, meta("opencode", "tc-9".into())),
+            (&AOE_AGENT, meta("claudeCode", "tc-parent-7".into())),
+        ];
+        for (profile, meta) in misses {
+            assert!(
+                profile.parent_tool_use_id_from_meta(&meta).is_none(),
+                "{}",
+                profile.key
+            );
         }
     }
 }

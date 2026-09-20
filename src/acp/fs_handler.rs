@@ -215,19 +215,18 @@ mod tests {
     }
 
     #[test]
-    fn rejects_path_outside_roots() {
+    fn resolve_inside_rejects_relative_and_out_of_root_paths() {
         let temp = tempfile::tempdir().unwrap();
         let policy = FsPolicy::new(vec![temp.path().to_path_buf()]);
         let outside = std::env::temp_dir().join("definitely-not-in-temp-dir-of-test");
-        let result = policy.resolve_inside(&outside);
-        assert!(matches!(result, Err(FsError::OutsideRoots(_))));
-    }
-
-    #[test]
-    fn rejects_relative_path() {
-        let policy = FsPolicy::new(vec![PathBuf::from("/tmp")]);
-        let result = policy.resolve_inside(Path::new("relative/file.txt"));
-        assert!(matches!(result, Err(FsError::NotAbsolute(_))));
+        assert!(matches!(
+            policy.resolve_inside(&outside),
+            Err(FsError::OutsideRoots(_))
+        ));
+        assert!(matches!(
+            policy.resolve_inside(Path::new("relative/file.txt")),
+            Err(FsError::NotAbsolute(_))
+        ));
     }
 
     #[test]
@@ -274,17 +273,7 @@ mod tests {
     }
 
     #[test]
-    fn sandbox_path_map_translates_root_mount() {
-        let map = SandboxPathMap::new(vec![(
-            PathBuf::from("/workspace/proj"),
-            PathBuf::from("/Users/me/proj"),
-        )]);
-        let translated = map.translate_to_host(Path::new("/workspace/proj/src/main.rs"));
-        assert_eq!(translated, PathBuf::from("/Users/me/proj/src/main.rs"));
-    }
-
-    #[test]
-    fn sandbox_path_map_picks_longest_prefix() {
+    fn sandbox_path_map_translates_on_the_longest_matching_mount() {
         let map = SandboxPathMap::new(vec![
             (PathBuf::from("/workspace"), PathBuf::from("/Users/me/all")),
             (
@@ -292,18 +281,20 @@ mod tests {
                 PathBuf::from("/Users/me/proj"),
             ),
         ]);
-        let translated = map.translate_to_host(Path::new("/workspace/proj/src/main.rs"));
-        assert_eq!(translated, PathBuf::from("/Users/me/proj/src/main.rs"));
-    }
-
-    #[test]
-    fn sandbox_path_map_passes_through_unmatched() {
-        let map = SandboxPathMap::new(vec![(
-            PathBuf::from("/workspace/proj"),
-            PathBuf::from("/Users/me/proj"),
-        )]);
-        let translated = map.translate_to_host(Path::new("/etc/hosts"));
-        assert_eq!(translated, PathBuf::from("/etc/hosts"));
+        // (container path, host path)
+        let cases = [
+            ("/workspace/proj/src/main.rs", "/Users/me/proj/src/main.rs"),
+            ("/workspace/other/x", "/Users/me/all/other/x"),
+            // Unmatched paths pass through untouched.
+            ("/etc/hosts", "/etc/hosts"),
+        ];
+        for (container, host) in cases {
+            assert_eq!(
+                map.translate_to_host(Path::new(container)),
+                PathBuf::from(host),
+                "{container}"
+            );
+        }
     }
 
     #[test]

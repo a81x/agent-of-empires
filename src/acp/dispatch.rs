@@ -73,140 +73,120 @@ pub fn decide(state: &AcpState, worker: WorkerLiveness) -> PromptDispatch {
 mod tests {
     use super::*;
 
-    fn live() -> WorkerLiveness {
-        WorkerLiveness {
-            running: true,
-            idle_dormant: false,
-            rate_limit_exhausted: false,
-        }
-    }
-
-    fn state(turn_active: bool, steering: bool, cancelling: bool, compacting: bool) -> AcpState {
+    /// `(turn_active, steering, cancelling, compacting)`.
+    fn state(flags: (bool, bool, bool, bool)) -> AcpState {
         let mut s = AcpState::new(
             crate::acp::state::AcpSessionId("sess-1".into()),
             crate::acp::state::AgentName("claude".into()),
             None,
         );
-        s.turn_active = turn_active;
-        s.steering = steering;
-        s.cancelling = cancelling;
-        s.compacting = compacting;
+        (s.turn_active, s.steering, s.cancelling, s.compacting) = flags;
         s
+    }
+
+    /// `(running, idle_dormant, rate_limit_exhausted)`.
+    fn worker(flags: (bool, bool, bool)) -> WorkerLiveness {
+        WorkerLiveness {
+            running: flags.0,
+            idle_dormant: flags.1,
+            rate_limit_exhausted: flags.2,
+        }
     }
 
     /// The decision table, keyed by the incident each row exists for.
     #[test]
     fn dispatch_table_covers_every_incident_by_name() {
         let queued = |r| PromptDispatch::Queued { reason: r };
-        let cases: [(&str, AcpState, WorkerLiveness, PromptDispatch); 12] = [
+        const LIVE: (bool, bool, bool) = (true, false, false);
+        const IDLE: (bool, bool, bool) = (false, false, false);
+        const DORMANT: (bool, bool, bool) = (false, true, false);
+        const CAPPED: (bool, bool, bool) = (false, false, true);
+        // (incident, turn flags, worker liveness, decision)
+        let cases = [
             (
                 "idle turn, live worker: ordinary send",
-                state(false, false, false, false),
-                live(),
+                (false, false, false, false),
+                LIVE,
                 PromptDispatch::Sent,
             ),
             (
                 "#2805 steerable turn takes a mid-turn prompt instead of queueing after it",
-                state(true, true, false, false),
-                live(),
+                (true, true, false, false),
+                LIVE,
                 PromptDispatch::Steered,
             ),
             (
                 "#2805 a non-steerable turn still parks",
-                state(true, false, false, false),
-                live(),
+                (true, false, false, false),
+                LIVE,
                 queued(QueueReason::TurnActive),
             ),
             (
                 "#1727 steerable but cancelling: parking is what keeps a \
                  Stop-then-type from restarting the runner",
-                state(true, true, true, false),
-                live(),
+                (true, true, true, false),
+                LIVE,
                 queued(QueueReason::Cancelling),
             ),
             (
                 "#1727 cancelling outranks compacting, so the reason names the \
                  gate that would have restarted the worker",
-                state(true, true, true, true),
-                live(),
+                (true, true, true, true),
+                LIVE,
                 queued(QueueReason::Cancelling),
             ),
             (
                 "#3219 steerable but compacting: the adapter would swallow the \
                  message into a turn that never answers it",
-                state(true, true, false, true),
-                live(),
+                (true, true, false, true),
+                LIVE,
                 queued(QueueReason::Compacting),
             ),
             (
                 "#1689 idle-dormant worker: the POST is the wake path, so a \
                  fresh prompt sends rather than parking on 'not running'",
-                state(false, false, false, false),
-                WorkerLiveness {
-                    running: false,
-                    idle_dormant: true,
-                    rate_limit_exhausted: false,
-                },
+                (false, false, false, false),
+                DORMANT,
                 PromptDispatch::Sent,
             ),
             (
                 "#1689 a genuinely cold worker (mid-resume, not dormant) parks",
-                state(false, false, false, false),
-                WorkerLiveness {
-                    running: false,
-                    idle_dormant: false,
-                    rate_limit_exhausted: false,
-                },
+                (false, false, false, false),
+                IDLE,
                 queued(QueueReason::WorkerDown),
             ),
             (
                 "worker liveness is checked before the turn flags: no worker \
                  means no turn can be steered into",
-                state(true, true, false, false),
-                WorkerLiveness {
-                    running: false,
-                    idle_dormant: false,
-                    rate_limit_exhausted: false,
-                },
+                (true, true, false, false),
+                IDLE,
                 queued(QueueReason::WorkerDown),
             ),
             (
                 "an idle-dormant session with a stale turn_active latch parks \
                  rather than sending into a turn nothing is running",
-                state(true, false, false, false),
-                WorkerLiveness {
-                    running: false,
-                    idle_dormant: true,
-                    rate_limit_exhausted: false,
-                },
+                (true, false, false, false),
+                DORMANT,
                 queued(QueueReason::TurnActive),
             ),
             (
                 "#3688 a session parked on the redelivery cap sends: nothing \
                  un-parks it on a timer, so queueing strands the prompt the \
                  banner asked for",
-                state(false, false, false, false),
-                WorkerLiveness {
-                    running: false,
-                    idle_dormant: false,
-                    rate_limit_exhausted: true,
-                },
+                (false, false, false, false),
+                CAPPED,
                 PromptDispatch::Sent,
             ),
             (
                 "#3688 the cap park does not override the turn gates either, \
                  so a stale turn_active latch still parks",
-                state(true, false, false, false),
-                WorkerLiveness {
-                    running: false,
-                    idle_dormant: false,
-                    rate_limit_exhausted: true,
-                },
+                (true, false, false, false),
+                CAPPED,
                 queued(QueueReason::TurnActive),
             ),
         ];
-        for (name, st, worker, expected) in cases {
-            assert_eq!(decide(&st, worker), expected, "{name}");
+        for (name, flags, liveness, expected) in cases {
+            assert_eq!(decide(&state(flags), worker(liveness)), expected, "{name}");
         }
     }
 

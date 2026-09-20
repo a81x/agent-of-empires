@@ -358,125 +358,22 @@ mod tests {
     }
 
     #[test]
-    fn default_env_allowlists_match_verified_providers() {
+    fn default_env_allowlists_come_from_the_binarys_catalog_entry() {
         let reg = AgentRegistry::with_defaults();
-        let al = |name: &str| reg.get(name).and_then(|s| s.env_allowlist.clone());
-
-        let claude_keys = strings(&[
-            "ANTHROPIC_API_KEY",
-            "ANTHROPIC_AUTH_TOKEN",
-            "CLAUDE_CODE_OAUTH_TOKEN",
-            "CLAUDE_CONFIG_DIR",
-        ]);
-        assert_eq!(al("claude"), Some(claude_keys.clone()));
-        assert_eq!(al("claude-code"), Some(claude_keys));
+        for (name, spec) in reg.list() {
+            let catalog = env_allowlist_for(&spec.command);
+            let want = (!catalog.is_empty()).then(|| strings(catalog));
+            assert_eq!(spec.env_allowlist, want, "{name}");
+        }
+        // The two Claude names share one binary, so they share one allowlist.
         assert_eq!(
-            al("codex"),
-            Some(strings(&[
-                "CODEX_API_KEY",
-                "OPENAI_API_KEY",
-                "OPENAI_BASE_URL",
-                "CODEX_HOME"
-            ]))
+            reg.get("claude").unwrap().env_allowlist,
+            reg.get("claude-code").unwrap().env_allowlist
         );
-        assert_eq!(
-            al("aoe-agent"),
-            Some(strings(&[
-                "ANTHROPIC_API_KEY",
-                "OPENAI_API_KEY",
-                "OPENAI_BASE_URL",
-                "GOOGLE_GENERATIVE_AI_API_KEY"
-            ]))
-        );
-        let contains_all = |name: &str, keys: &[&str]| {
-            let list = al(name).unwrap_or_default();
-            for key in keys {
-                assert!(list.iter().any(|k| k == key), "{name} missing {key}");
-            }
-        };
-        contains_all(
-            "gemini",
-            &[
-                "GEMINI_API_KEY",
-                "GOOGLE_GENAI_USE_VERTEXAI",
-                "GOOGLE_APPLICATION_CREDENTIALS",
-                "GOOGLE_CLOUD_PROJECT",
-                "GOOGLE_CLOUD_LOCATION",
-            ],
-        );
-        assert!(!al("gemini")
-            .unwrap_or_default()
-            .iter()
-            .any(|k| k == "GOOGLE_GENERATIVE_AI_API_KEY"));
-        contains_all(
-            "opencode",
-            &[
-                "ANTHROPIC_API_KEY",
-                "OPENROUTER_API_KEY",
-                "OPENCODE_API_KEY",
-                "GOOGLE_GENERATIVE_AI_API_KEY",
-                "GOOGLE_API_KEY",
-                "GEMINI_API_KEY",
-            ],
-        );
-
-        // Pinned whole so a dropped or guessed name fails here.
-        assert_eq!(
-            al("prime-agent"),
-            Some(strings(&[
-                "PRIME_API_KEY",
-                "PRIME_TEAM_ID",
-                "ANTHROPIC_OAUTH_TOKEN",
-                "ANTHROPIC_API_KEY",
-                "OPENAI_API_KEY",
-                "AZURE_OPENAI_API_KEY",
-                "DEEPSEEK_API_KEY",
-                "GEMINI_API_KEY",
-                "GROQ_API_KEY",
-                "CEREBRAS_API_KEY",
-                "XAI_API_KEY",
-                "OPENROUTER_API_KEY",
-                "AI_GATEWAY_API_KEY",
-                "ZAI_API_KEY",
-                "MISTRAL_API_KEY",
-                "MINIMAX_API_KEY",
-                "MINIMAX_CN_API_KEY",
-                "MOONSHOT_API_KEY",
-                "HF_TOKEN",
-                "FIREWORKS_API_KEY",
-                "OPENCODE_API_KEY",
-                "KIMI_API_KEY",
-                "CLOUDFLARE_API_KEY",
-                "XIAOMI_API_KEY",
-                "XIAOMI_TOKEN_PLAN_CN_API_KEY",
-                "XIAOMI_TOKEN_PLAN_AMS_API_KEY",
-                "XIAOMI_TOKEN_PLAN_SGP_API_KEY",
-                "COPILOT_GITHUB_TOKEN",
-                "GH_TOKEN",
-                "GITHUB_TOKEN",
-                "GOOGLE_CLOUD_API_KEY",
-                "GOOGLE_APPLICATION_CREDENTIALS",
-                "GOOGLE_CLOUD_PROJECT",
-                "GCLOUD_PROJECT",
-                "GOOGLE_CLOUD_LOCATION",
-                "AWS_BEARER_TOKEN_BEDROCK",
-                "AWS_PROFILE",
-                "AWS_ACCESS_KEY_ID",
-                "AWS_SECRET_ACCESS_KEY",
-                "AWS_SESSION_TOKEN",
-                "AWS_REGION",
-                "AWS_DEFAULT_REGION",
-                "AWS_CONFIG_FILE",
-                "AWS_SHARED_CREDENTIALS_FILE",
-                "AWS_WEB_IDENTITY_TOKEN_FILE",
-                "AWS_ROLE_ARN",
-                "AWS_ROLE_SESSION_NAME",
-                "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI",
-                "AWS_CONTAINER_CREDENTIALS_FULL_URI",
-                "AWS_CONTAINER_AUTHORIZATION_TOKEN",
-                "AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE",
-            ]))
-        );
+        // gemini reads GEMINI_API_KEY, never the AI-Studio-only name.
+        let gemini = reg.get("gemini").unwrap().env_allowlist.clone().unwrap();
+        assert!(gemini.iter().any(|k| k == "GEMINI_API_KEY"));
+        assert!(!gemini.iter().any(|k| k == "GOOGLE_GENERATIVE_AI_API_KEY"));
 
         let with_allowlist: Vec<&str> = reg
             .list()

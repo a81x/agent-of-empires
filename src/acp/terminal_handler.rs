@@ -187,137 +187,113 @@ mod tests {
         ));
     }
 
+    /// Both pipes must be drained concurrently or a writer fills its buffer
+    /// and blocks forever.
     #[tokio::test]
-    async fn large_stderr_does_not_deadlock() {
+    async fn large_pipes_drain_without_deadlocking() {
         let _env = crate::session::test_support::EnvGuard::read_lock();
-        let mgr = TerminalManager::new();
-        let cwd = std::env::temp_dir();
-        let script = "head -c 204800 /dev/zero | tr '\\0' 'x' >&2; echo done";
-        let run = mgr.create_and_run(
-            "s-large-stderr",
-            "sh",
-            vec!["-c".into(), script.into()],
-            cwd,
-            None,
-        );
-        let id = tokio::time::timeout(std::time::Duration::from_secs(5), run)
-            .await
-            .expect("create_and_run hung; pipe deadlock regressed")
-            .expect("create_and_run failed");
-        let out = mgr.output(&id).await.unwrap();
-        assert_eq!(out.stderr.len(), 204_800);
-        assert!(out.stdout.contains("done"));
-        assert_eq!(out.exit_code, Some(0));
-    }
-
-    #[tokio::test]
-    async fn large_stdout_and_stderr_drain_concurrently() {
-        let _env = crate::session::test_support::EnvGuard::read_lock();
-        let mgr = TerminalManager::new();
-        let cwd = std::env::temp_dir();
-        let script = "head -c 204800 /dev/zero | tr '\\0' 'o' \
-                      & head -c 204800 /dev/zero | tr '\\0' 'e' >&2 \
-                      & wait";
-        let run = mgr.create_and_run(
-            "s-both-pipes",
-            "sh",
-            vec!["-c".into(), script.into()],
-            cwd,
-            None,
-        );
-        let id = tokio::time::timeout(std::time::Duration::from_secs(5), run)
-            .await
-            .expect("create_and_run hung; pipe deadlock regressed")
-            .expect("create_and_run failed");
-        let out = mgr.output(&id).await.unwrap();
-        assert_eq!(out.stdout.len(), 204_800);
-        assert_eq!(out.stderr.len(), 204_800);
-        assert_eq!(out.exit_code, Some(0));
-    }
-
-    #[test]
-    fn sandbox_exec_args_emit_e_flags_for_each_entry() {
-        let sandbox = TerminalSandbox {
-            container_name: "aoe-sandbox-test".into(),
-            env_entries: vec![
-                EnvEntry::Inherit {
-                    key: "GH_TOKEN".into(),
-                    value: "ghp_secret".into(),
-                },
-                EnvEntry::Literal {
-                    key: "TERM".into(),
-                    value: "xterm".into(),
-                },
-            ],
-        };
-        let (argv, inherit) = build_sandbox_exec_args(
-            &sandbox,
-            std::path::Path::new("/workspace"),
-            "gh",
-            &["pr".into(), "list".into()],
-        );
-
-        // exec -w /workspace [-e flags...] container cmd [args...]
-        assert_eq!(argv[0], "exec");
-        assert_eq!(argv[1], "-w");
-        assert_eq!(argv[2], "/workspace");
-        // Both -e flags must appear before the container name.
-        let container_idx = argv
-            .iter()
-            .position(|a| a == "aoe-sandbox-test")
-            .expect("container name in argv");
-        let e_positions: Vec<usize> = argv
-            .iter()
-            .enumerate()
-            .filter_map(|(i, a)| (a == "-e").then_some(i))
-            .collect();
-        assert_eq!(e_positions.len(), 2, "one -e flag per env entry");
-        for pos in &e_positions {
-            assert!(
-                *pos < container_idx,
-                "-e flags must precede the container name"
+        // (session, shell script, trimmed stdout len, stderr len)
+        let cases: [(&str, &str, usize, usize); 2] = [
+            (
+                "s-large-stderr",
+                "head -c 204800 /dev/zero | tr '\\0' 'x' >&2; echo done",
+                4,
+                204_800,
+            ),
+            (
+                "s-both-pipes",
+                "head -c 204800 /dev/zero | tr '\\0' 'o' \
+                 & head -c 204800 /dev/zero | tr '\\0' 'e' >&2 \
+                 & wait",
+                204_800,
+                204_800,
+            ),
+        ];
+        for (session, script, stdout_len, stderr_len) in cases {
+            let mgr = TerminalManager::new();
+            let run = mgr.create_and_run(
+                session,
+                "sh",
+                vec!["-c".into(), script.into()],
+                std::env::temp_dir(),
+                None,
             );
+            let id = tokio::time::timeout(std::time::Duration::from_secs(5), run)
+                .await
+                .unwrap_or_else(|_| {
+                    panic!("{session}: create_and_run hung; pipe deadlock regressed")
+                })
+                .expect("create_and_run failed");
+            let out = mgr.output(&id).await.unwrap();
+            assert_eq!(out.stdout.trim_end().len(), stdout_len, "{session}");
+            assert_eq!(out.stderr.len(), stderr_len, "{session}");
+            assert_eq!(out.exit_code, Some(0), "{session}");
         }
-        // Inherit value must NOT leak into argv.
-        assert!(
-            !argv.iter().any(|a| a.contains("ghp_secret")),
-            "secret leaked into argv: {:?}",
-            argv
-        );
-        // Inherit pairs carry the actual value for cmd.env(k, v).
-        assert_eq!(
-            inherit,
-            vec![("GH_TOKEN".to_string(), "ghp_secret".to_string())]
-        );
-        // Command + args appear after the container name.
-        assert_eq!(argv[container_idx + 1], "gh");
-        assert_eq!(argv[container_idx + 2], "pr");
-        assert_eq!(argv[container_idx + 3], "list");
     }
 
     #[test]
-    fn sandbox_exec_args_no_env_entries() {
-        let sandbox = TerminalSandbox {
-            container_name: "aoe-sandbox-test".into(),
-            env_entries: vec![],
-        };
-        let (argv, inherit) = build_sandbox_exec_args(
-            &sandbox,
-            std::path::Path::new("/workspace"),
-            "echo",
-            &["hi".into()],
-        );
-        assert_eq!(
-            argv,
-            vec![
-                "exec".to_string(),
-                "-w".to_string(),
-                "/workspace".to_string(),
-                "aoe-sandbox-test".to_string(),
-                "echo".to_string(),
-                "hi".to_string(),
-            ]
-        );
-        assert!(inherit.is_empty());
+    fn sandbox_exec_args_place_env_flags_before_the_container() {
+        let entries = vec![
+            EnvEntry::Inherit {
+                key: "GH_TOKEN".into(),
+                value: "ghp_secret".into(),
+            },
+            EnvEntry::Literal {
+                key: "TERM".into(),
+                value: "xterm".into(),
+            },
+        ];
+        // (env entries, command, args, expected argv tail after `exec -w /workspace`)
+        let cases: [(Vec<EnvEntry>, &str, Vec<String>, Vec<&str>); 2] = [
+            (
+                entries,
+                "gh",
+                vec!["pr".into(), "list".into()],
+                vec![
+                    "-e",
+                    "GH_TOKEN",
+                    "-e",
+                    "TERM=xterm",
+                    "aoe-sandbox-test",
+                    "gh",
+                    "pr",
+                    "list",
+                ],
+            ),
+            (
+                vec![],
+                "echo",
+                vec!["hi".into()],
+                vec!["aoe-sandbox-test", "echo", "hi"],
+            ),
+        ];
+        for (env_entries, command, args, tail) in cases {
+            let inherits = env_entries
+                .iter()
+                .filter_map(|e| match e {
+                    EnvEntry::Inherit { key, value } => Some((key.clone(), value.clone())),
+                    EnvEntry::Literal { .. } => None,
+                })
+                .collect::<Vec<_>>();
+            let sandbox = TerminalSandbox {
+                container_name: "aoe-sandbox-test".into(),
+                env_entries,
+            };
+            let (argv, inherit) = build_sandbox_exec_args(
+                &sandbox,
+                std::path::Path::new("/workspace"),
+                command,
+                &args,
+            );
+            let want: Vec<String> = ["exec", "-w", "/workspace"]
+                .into_iter()
+                .chain(tail)
+                .map(str::to_string)
+                .collect();
+            assert_eq!(argv, want, "{command}");
+            // An inherited value reaches `cmd.env`, never argv.
+            assert_eq!(inherit, inherits, "{command}");
+            assert!(!argv.iter().any(|a| a.contains("ghp_secret")), "{command}");
+        }
     }
 }

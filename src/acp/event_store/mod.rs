@@ -81,7 +81,6 @@ impl EventStore {
     pub fn record(&self, session_id: &str, seq: u64, event: &Event) -> Result<()> {
         let json = serde_json::to_string(event)
             .with_context(|| format!("serialise event for {session_id}@{seq}"))?;
-        let kind = event_kind(event);
         let now_ms = chrono::Utc::now().timestamp_millis();
         let mut conn = self.conn();
         let tx = conn.transaction()?;
@@ -90,24 +89,15 @@ impl EventStore {
             rate_limit::update_rate_limit_budget(&tx, &self.schema, session_id, seq, event);
         }
         tx.commit()?;
-        if inserted == 0 {
-            trace!(
-                target: "acp.event_store",
-                session = %session_id,
-                seq,
-                kind,
-                "skipped duplicate event (already on disk)"
-            );
-        } else {
-            trace!(
-                target: "acp.event_store",
-                session = %session_id,
-                seq,
-                kind,
-                bytes = json.len(),
-                "recorded event"
-            );
-        }
+        trace!(
+            target: "acp.event_store",
+            session = %session_id,
+            seq,
+            kind = event_kind(&json),
+            bytes = json.len(),
+            duplicate = inserted == 0,
+            "recorded event"
+        );
         events::prune_retention(
             &conn,
             &self.schema,
@@ -208,57 +198,13 @@ fn query_strings(conn: &Connection, sql: &str, what: &str, session_id: &str) -> 
         .unwrap_or_default()
 }
 
-/// Cheap discriminant label so trace logs don't dump payloads.
-fn event_kind(event: &Event) -> &'static str {
-    match event {
-        Event::PlanUpdated { .. } => "plan_updated",
-        Event::TodoListUpdated { .. } => "todo_list_updated",
-        Event::SessionTitleSuggested { .. } => "session_title_suggested",
-        Event::ToolCallStarted { .. } => "tool_call_started",
-        Event::ToolCallCompleted { .. } => "tool_call_completed",
-        Event::ToolCallContent { .. } => "tool_call_content",
-        Event::ToolCallUpdated { .. } => "tool_call_updated",
-        Event::ApprovalRequested { .. } => "approval_requested",
-        Event::ApprovalResolved { .. } => "approval_resolved",
-        Event::ElicitationRequested { .. } => "elicitation_requested",
-        Event::ElicitationResolved { .. } => "elicitation_resolved",
-        Event::DiffEmitted { .. } => "diff_emitted",
-        Event::ThinkingStarted => "thinking_started",
-        Event::ThinkingEnded => "thinking_ended",
-        Event::RateLimit { .. } => "rate_limit",
-        Event::RateLimitAutoResumed { .. } => "rate_limit_auto_resumed",
-        Event::UsageUpdated { .. } => "usage_updated",
-        Event::ModeChanged { .. } => "mode_changed",
-        Event::ModesAvailable { .. } => "modes_available",
-        Event::CurrentModeChanged { .. } => "current_mode_changed",
-        Event::ModeSwitchFailed { .. } => "mode_switch_failed",
-        Event::AvailableCommandsUpdated { .. } => "available_commands_updated",
-        Event::ConfigOptionsUpdated { .. } => "config_options_updated",
-        Event::ConfigOptionSwitchFailed { .. } => "config_option_switch_failed",
-        Event::RawAgentUpdate { .. } => "raw_agent_update",
-        Event::BackgroundAgentLaunched { .. } => "background_agent_launched",
-        Event::BackgroundAgentProgress { .. } => "background_agent_progress",
-        Event::BackgroundAgentCompleted { .. } => "background_agent_completed",
-        Event::PromptRuntimeError { .. } => "prompt_runtime_error",
-        Event::AgentMessageChunk { .. } => "agent_message_chunk",
-        Event::CancelRequested { .. } => "cancel_requested",
-        Event::Stopped { .. } => "stopped",
-        Event::AgentStartupError { .. } => "agent_startup_error",
-        Event::IncompatibleAgent { .. } => "incompatible_agent",
-        Event::UserPromptSent { .. } => "user_prompt_sent",
-        Event::UserDiffCommentsPrompt { .. } => "user_diff_comments_prompt",
-        Event::PromptCapabilities { .. } => "prompt_capabilities",
-        Event::AcpSessionAssigned { .. } => "acp_session_assigned",
-        Event::SessionContextReset { .. } => "session_context_reset",
-        Event::SessionCleared => "session_cleared",
-        Event::ConversationCompactionStarted => "conversation_compaction_started",
-        Event::ConversationCompacted => "conversation_compacted",
-        Event::ConversationSummary { .. } => "conversation_summary",
-        Event::WakeupScheduled { .. } => "wakeup_scheduled",
-        Event::MonitorArmed { .. } => "monitor_armed",
-        Event::PromptRejected { .. } => "prompt_rejected",
-        Event::AgentSwitched { .. } => "agent_switched",
-    }
+/// Variant name of a serialized event, for trace breadcrumbs that must not
+/// dump payloads. Serde writes `{"Variant":{..}}`, or `"Variant"` for unit ones.
+fn event_kind(json: &str) -> &str {
+    json.trim_start_matches(['{', '"'])
+        .split(['"', ':'])
+        .next()
+        .unwrap_or_default()
 }
 
 #[cfg(test)]
