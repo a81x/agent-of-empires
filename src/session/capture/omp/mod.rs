@@ -777,7 +777,8 @@ mod tests {
             };
             assert_eq!(
                 lexical_store_session_path(&meta.layout, &breadcrumb).is_ok(),
-                expect_ok
+                expect_ok,
+                "{label}"
             );
         }
         let breadcrumb = Breadcrumb {

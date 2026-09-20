@@ -800,7 +800,8 @@ mod tests {
             .unwrap();
             assert_eq!(
                 resolved.get("PI_CODING_AGENT_DIR").map(String::as_str),
-                Some(expected)
+                Some(expected),
+                "launcher value: {launcher:?}"
             );
         }
     }
@@ -1023,7 +1024,10 @@ mod tests {
                 &OmpCliCaptureOptions::default(),
             )
             .unwrap_err();
-            assert!(error.to_string().contains("non-routing variables"));
+            assert!(
+                error.to_string().contains("non-routing variables"),
+                "{key}: {error:#}"
+            );
         }
     }
 
@@ -1214,7 +1218,11 @@ mod tests {
         ];
         for (input, reject, expanded) in cases {
             assert_eq!(has_nonrouting_reference(input), reject, "detect {input:?}");
-            assert_eq!(expand_dotenv_value(input, &env), expanded);
+            assert_eq!(
+                expand_dotenv_value(input, &env),
+                expanded,
+                "expand {input:?}"
+            );
         }
     }
 }

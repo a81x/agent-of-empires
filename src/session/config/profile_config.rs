@@ -708,11 +708,13 @@ mod tests {
         for setting in TmuxSetting::ALL {
             assert_eq!(
                 resolve_tmux_setting(setting, &global),
-                TmuxSettingAction::Apply
+                TmuxSettingAction::Apply,
+                "{setting:?} global"
             );
             assert_eq!(
                 resolve_tmux_setting(setting, &merged),
-                TmuxSettingAction::ForceOff
+                TmuxSettingAction::ForceOff,
+                "{setting:?} profile"
             );
         }
     }

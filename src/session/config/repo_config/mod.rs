@@ -507,7 +507,11 @@ mod tests {
             ("updates", "not_a_real_field", false),
         ];
         for (section, field, expected) in cases {
-            assert_eq!(repo_may_override_field(section, field), expected);
+            assert_eq!(
+                repo_may_override_field(section, field),
+                expected,
+                "{section}.{field}"
+            );
         }
     }
 

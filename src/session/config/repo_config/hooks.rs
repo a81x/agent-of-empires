@@ -816,7 +816,10 @@ mod tests {
                 .expect_err("non-zero exit must be an error")
                 .to_string();
             assert!(msg.starts_with(label), "got: {msg}");
-            assert!(msg.contains("exit code 4") && msg.contains("boom"));
+            assert!(
+                msg.contains("exit code 4") && msg.contains("boom"),
+                "got: {msg}"
+            );
             assert!(!msg.contains("topsecret"), "stdout secret leaked: {msg}");
         }
     }
@@ -940,12 +943,21 @@ mod tests {
         };
         let msg = error(&["sh hook.sh"]);
         assert!(msg.contains("exit code 3"), "got: {msg}");
-        assert!(msg.contains("fatal: dependency xyz not found"));
+        assert!(
+            msg.contains("fatal: dependency xyz not found"),
+            "got: {msg}"
+        );
         assert!(!msg.contains("(hook "), "got: {msg}");
         let msg = error(&["true", "sh -c 'exit 7'", "true"]);
-        assert!(msg.contains("(hook 2 of 3; remaining hooks skipped)"));
+        assert!(
+            msg.contains("(hook 2 of 3; remaining hooks skipped)"),
+            "got: {msg}"
+        );
         let msg = error(&["true", "sh -c 'exit 7'"]);
-        assert!(msg.contains("(hook 2 of 2)") && !msg.contains("skipped"));
+        assert!(
+            msg.contains("(hook 2 of 2)") && !msg.contains("skipped"),
+            "got: {msg}"
+        );
     }
 
     /// CLI paths keep the terminal attached; TUI/web best-effort paths detach.

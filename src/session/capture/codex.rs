@@ -205,7 +205,11 @@ mod tests {
             ("invalid json", "not json".to_string(), root, None),
         ];
         for (name, line, filename_uuid, expected) in cases {
-            assert_eq!(parse_codex_cwd_from_json(&line, filename_uuid), expected);
+            assert_eq!(
+                parse_codex_cwd_from_json(&line, filename_uuid),
+                expected,
+                "{name}"
+            );
         }
     }
 

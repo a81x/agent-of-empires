@@ -2974,7 +2974,11 @@ mod tests {
             .unwrap()
             .map(|entry| entry.unwrap().file_name())
             .collect();
-        assert_eq!(outside_entries.len(), 1);
+        assert_eq!(
+            outside_entries.len(),
+            1,
+            "nothing may be written through the link: {outside_entries:?}"
+        );
     }
 
     /// Unset, blank and `bridge` mean the runtime default; `host` and the
@@ -3000,7 +3004,11 @@ mod tests {
             (Some(" egress-proxy "), Some("egress-proxy")),
         ];
         for (input, expected) in cases {
-            assert_eq!(sanitize_network(*input).as_deref(), *expected);
+            assert_eq!(
+                sanitize_network(*input).as_deref(),
+                *expected,
+                "network {input:?}"
+            );
         }
     }
 
@@ -3119,7 +3127,8 @@ mod tests {
             // them apart from the result alone.
             assert_eq!(
                 workspace_path,
-                format!("/workspace/{}", path.file_name().unwrap().to_string_lossy())
+                format!("/workspace/{}", path.file_name().unwrap().to_string_lossy()),
+                "{case}"
             );
         }
     }
@@ -3154,7 +3163,8 @@ mod tests {
         );
         assert_eq!(
             volumes[0].container_path,
-            format!("/workspace/{}", repo_name)
+            format!("/workspace/{}", repo_name),
+            "Container mount path should be /workspace/{{repo_name}}"
         );
         assert!(working_dir.starts_with(&format!("/workspace/{}", repo_name)));
         assert!(working_dir.ends_with("/main"));
@@ -3483,7 +3493,11 @@ mod tests {
         assert!(sandbox.join(".env").exists());
 
         for runtime_dir in runtime_dirs {
-            assert!(!sandbox.join(runtime_dir).exists());
+            assert!(
+                !sandbox.join(runtime_dir).exists(),
+                "{} should be skipped",
+                runtime_dir
+            );
         }
         assert!(!sandbox.join("state.db").exists());
     }
@@ -3610,7 +3624,11 @@ mod tests {
     #[test]
     fn test_agent_config_mounts_match_agent_registry() {
         for mount in AGENT_CONFIG_MOUNTS {
-            assert!(crate::agents::get_agent(mount.tool_name).is_some());
+            assert!(
+                crate::agents::get_agent(mount.tool_name).is_some(),
+                "AGENT_CONFIG_MOUNTS entry '{}' has no matching agent in the registry",
+                mount.tool_name
+            );
         }
     }
 
@@ -3633,7 +3651,11 @@ mod tests {
             eprintln!("skipping: git not available");
             return;
         };
-        assert!(out.status.success());
+        assert!(
+            out.status.success(),
+            "git failed to parse seeded gitconfig: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
         let helper = String::from_utf8_lossy(&out.stdout);
         assert!(helper.starts_with('!'), "helper must be a shell snippet");
         assert!(
@@ -4009,7 +4031,11 @@ mod tests {
             (credential(now + horizon + 1), None),
         ];
         for (content, expires_at) in cases {
-            assert_eq!(plausible_credential_expires_at(&content, now), expires_at);
+            assert_eq!(
+                plausible_credential_expires_at(&content, now),
+                expires_at,
+                "{content}"
+            );
         }
     }
 
@@ -4028,7 +4054,11 @@ mod tests {
             (blanked_credential(9000), credential(1000), true),
         ];
         for (existing, incoming, overwrite) in cases {
-            assert_eq!(should_overwrite_credential(&existing, &incoming), overwrite);
+            assert_eq!(
+                should_overwrite_credential(&existing, &incoming),
+                overwrite,
+                "{existing} -> {incoming}"
+            );
         }
     }
 
@@ -4186,7 +4216,11 @@ mod tests {
         for unusable in ["", "{}", "not json"] {
             fs::write(&shared, unusable).unwrap();
             prepare(CredentialFold::SeedOnly);
-            assert_eq!(fs::read_to_string(&shared).unwrap(), credential(100));
+            assert_eq!(
+                fs::read_to_string(&shared).unwrap(),
+                credential(100),
+                "{unusable:?}"
+            );
         }
 
         // A fresher copy in the store, a sandbox chain of its own, waits for
@@ -4340,7 +4374,11 @@ mod tests {
             fs::write(&shared, unfolded).unwrap();
             fs::write(&copy, &copy_content).unwrap();
             place_shadowed_credential_mountpoints(&config_for(&store));
-            assert_eq!(fs::read_to_string(&copy).unwrap(), copy_content);
+            assert_eq!(
+                fs::read_to_string(&copy).unwrap(),
+                copy_content,
+                "{unfolded:?}"
+            );
         }
         fs::write(&shared, credential(2)).unwrap();
 
@@ -4419,7 +4457,11 @@ mount_ssh = true
 
         // #2587: the session artifact dir is bind-mounted at the fixed
         // container path and exported via AOE_ARTIFACT_DIR.
-        assert!(env_keys.contains(&crate::session::artifacts::ARTIFACT_DIR_ENV));
+        assert!(
+            env_keys.contains(&crate::session::artifacts::ARTIFACT_DIR_ENV),
+            "AOE_ARTIFACT_DIR should be in environment, got: {:?}",
+            config.environment
+        );
         assert!(
             config
                 .volumes
@@ -4567,7 +4609,12 @@ volume_ignores = ["**/bin", "**/obj", "target"]
         let expect = |p: &str| format!("/workspace/{}/{}", dir_name, p);
 
         for matched in ["src/App/bin", "tests/Lib/bin", "src/App/obj"] {
-            assert!(config.anonymous_volumes.contains(&expect(matched)));
+            assert!(
+                config.anonymous_volumes.contains(&expect(matched)),
+                "glob should have expanded to {}, got: {:?}",
+                matched,
+                config.anonymous_volumes
+            );
         }
         assert!(
             config.anonymous_volumes.contains(&expect("target")),
@@ -5306,7 +5353,11 @@ trust_level = "trusted"
 
         for agent in sidecar_agents {
             let sidecar = agent.sidecar_hooks.as_ref().unwrap();
-            assert!(!sidecar.sandbox_config_subpath.is_empty());
+            assert!(
+                !sidecar.sandbox_config_subpath.is_empty(),
+                "{} is sandboxable so it needs a sandbox_config_subpath",
+                agent.name
+            );
 
             let instance_id = format!("{}-sidecar-sandbox-test", agent.name);
             let config = Build::new(agent.name)
@@ -5321,7 +5372,11 @@ trust_level = "trusted"
             .unwrap()
             .iter()
             .any(|event| event.identity_field.is_some());
-            assert_eq!(config.identity_publisher_installed, expects_identity);
+            assert_eq!(
+                config.identity_publisher_installed, expects_identity,
+                "{} publisher evidence",
+                agent.name
+            );
 
             let mount = AGENT_CONFIG_MOUNTS
                 .iter()
@@ -5333,9 +5388,18 @@ trust_level = "trusted"
             let sandbox_config = sandbox_dir_for(mount, temp_home.path(), Some(&instance_id))
                 .unwrap()
                 .join(relative);
-            assert!(sandbox_config.exists());
+            assert!(
+                sandbox_config.exists(),
+                "{} sandbox hook config should be installed at {}",
+                agent.name,
+                sandbox_config.display()
+            );
             let contents = fs::read_to_string(&sandbox_config).unwrap();
-            assert!(contents.contains("aoe-hooks"));
+            assert!(
+                contents.contains("aoe-hooks"),
+                "{} sandbox config should contain the AoE hook marker",
+                agent.name
+            );
 
             let hook_dir = crate::hooks::hook_status_dir(&instance_id)
                 .expect("test id must be allowlist-safe");
@@ -5413,7 +5477,11 @@ trust_level = "trusted"
         // Hooks land in the selected agent's staged sandbox config...
         let selected_config =
             sandbox_store(temp_home.path(), ".kiro", &instance_id).join("agents/custom-agent.json");
-        assert!(selected_config.exists());
+        assert!(
+            selected_config.exists(),
+            "selected-agent sandbox hook config should be installed at {}",
+            selected_config.display()
+        );
         assert!(fs::read_to_string(&selected_config)
             .unwrap()
             .contains("aoe-hooks"));
@@ -5456,7 +5524,11 @@ trust_level = "trusted"
 
         let matched = sandbox_store(temp_home.path(), ".kiro", &instance_id)
             .join("agents/TeamAgents-custom-agent.json");
-        assert!(matched.exists());
+        assert!(
+            matched.exists(),
+            "hooks should install into the name-matched staged file at {}",
+            matched.display()
+        );
         let body = fs::read_to_string(&matched).unwrap();
         assert!(
             body.contains("aoe-hooks"),
@@ -5756,7 +5828,10 @@ trusted_hash = "keep"
             let cmd = hooks["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
                 .as_str()
                 .unwrap();
-            assert!(cmd.contains(&format!("printf {expected_status}")));
+            assert!(
+                cmd.contains(&format!("printf {expected_status}")),
+                "got command: {cmd}"
+            );
             crate::hooks::cleanup_hook_status_dir(instance_id);
         }
     }
@@ -6069,7 +6144,12 @@ volume_ignores = ["target"]
             .to_string_lossy()
             .to_string();
         let expected_wt_target = format!("/workspace/{}/main/target", main_name);
-        assert!(config.anonymous_volumes.contains(&expected_wt_target));
+        assert!(
+            config.anonymous_volumes.contains(&expected_wt_target),
+            "anonymous_volumes should contain worktree target ({}), got: {:?}",
+            expected_wt_target,
+            config.anonymous_volumes
+        );
     }
 
     #[test]

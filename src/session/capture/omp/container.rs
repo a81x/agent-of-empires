@@ -318,7 +318,10 @@ mod tests {
         );
         for pending in ["", &*session.to_string_lossy()] {
             std::fs::write(&marker, launch_marker(&meta, "pts-9", pending)).unwrap();
-            assert!(run_container_script(&meta, &marker).is_empty());
+            assert!(
+                run_container_script(&meta, &marker).is_empty(),
+                "{pending:?}"
+            );
         }
         std::fs::write(&marker, launch_marker(&meta, "pts-9", "/pending")).unwrap();
 

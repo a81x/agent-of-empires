@@ -664,7 +664,8 @@ mod tests {
                 .collect();
             assert_eq!(
                 pick_native_config_dir(explicit, reads, &env, daemon_env),
-                expected
+                expected,
+                "{label}"
             );
         }
     }
@@ -795,7 +796,10 @@ mod tests {
         write(home.path(), ".claude.json", "{ not json");
         write(home.path(), ".codex/config.toml", "this = = not toml");
         for agent in ["claude", "codex"] {
-            assert!(load_native_mcp_servers(agent, home.path()).is_err());
+            assert!(
+                load_native_mcp_servers(agent, home.path()).is_err(),
+                "{agent}"
+            );
         }
     }
 

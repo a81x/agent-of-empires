@@ -416,7 +416,10 @@ mod tests {
     fn cron_grammar() {
         let ok = ["0 9 * * 1-5", "*/15 * * * *", "0 0,12 1 */2 *", "* * * * *"];
         for e in ok {
-            assert!(validate_value(&ValidationKind::Cron, &json!(e)).is_ok());
+            assert!(
+                validate_value(&ValidationKind::Cron, &json!(e)).is_ok(),
+                "{e}"
+            );
         }
         let bad = [
             "0 9 * *",     // too few fields
@@ -431,7 +434,10 @@ mod tests {
             "abc * * * *", // non-numeric
         ];
         for e in bad {
-            assert!(validate_value(&ValidationKind::Cron, &json!(e)).is_err());
+            assert!(
+                validate_value(&ValidationKind::Cron, &json!(e)).is_err(),
+                "{e}"
+            );
         }
         assert!(validate_value(&ValidationKind::Cron, &json!(5)).is_err());
     }
