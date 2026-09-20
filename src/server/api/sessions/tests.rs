@@ -979,17 +979,15 @@ fn acp_can_fork_tracks_acp_capable_and_fork_strategy() {
     claude.tool = "claude".to_string();
     assert!(SessionResponse::from_instance(&claude, false).acp_can_fork);
 
-    // aoe-agent is ACP-capable (it is in the ACP registry) but declares no
-    // fork strategy, so it is NOT forkable. Gating the web Fork action on
-    // acp_session_id alone would offer a dead-end button for it; this is the
-    // signal that suppresses that.
+    // aoe-agent is ACP-capable but declares no fork strategy, so it is NOT
+    // forkable. Gating the web Fork action on acp_session_id alone would offer
+    // a dead-end button for it.
     let mut aoe_agent = make_test_instance();
     aoe_agent.tool = "aoe-agent".to_string();
     assert!(!SessionResponse::from_instance(&aoe_agent, false).acp_can_fork);
 
-    // codex has a real terminal fork strategy but its ACP adapter is not
-    // verified to implement `session/fork`, so the web signal must stay
-    // false rather than offer a fork the live handshake would refuse.
+    // codex has a terminal fork strategy but its ACP adapter is not verified
+    // to implement `session/fork`, so the web signal stays false.
     let mut codex = make_test_instance();
     codex.tool = "codex".to_string();
     assert!(!SessionResponse::from_instance(&codex, false).acp_can_fork);
@@ -1002,10 +1000,9 @@ fn acp_can_fork_tracks_acp_capable_and_fork_strategy() {
 
 #[test]
 fn trash_body_default_keeps_kill_pane_true() {
-    // #2523: a no-body trash request resolves through
-    // `unwrap_or_default()`. The derived `Default` would yield
-    // `kill_pane = false` and leave the pane running; the hand impl must
-    // match the serde field default.
+    // #2523: a no-body trash request resolves through `unwrap_or_default()`,
+    // and the derived `Default` would leave the pane running, so the hand impl
+    // must match the serde field default.
     assert!(TrashSessionBody::default().kill_pane);
 
     // An empty JSON object goes through serde, which honors the field
@@ -1020,10 +1017,9 @@ fn trash_body_default_keeps_kill_pane_true() {
 
 #[test]
 fn upsert_instance_replaces_same_id_instead_of_duplicating() {
-    // Race regression: `create_session` persists to disk before pushing
-    // the in-memory copy, so a `status_poll_loop` tick can load the row
-    // and insert it first. The handler's insert must replace that entry,
-    // not append a second one with the same id.
+    // `create_session` persists to disk before pushing the in-memory copy, so
+    // a `status_poll_loop` tick can insert the row first. The handler's insert
+    // must replace that entry, not append a duplicate id.
     let poll_loaded = make_test_instance();
     let id = poll_loaded.id.clone();
     let mut instances = vec![poll_loaded];
@@ -1058,11 +1054,9 @@ fn upsert_instance_appends_a_new_id() {
 }
 
 // Regression for #2363: a multi-repo workspace session carries
-// `workspace_info` and no `worktree_info`. The DTO must report
-// `has_cleanable_worktree: true` so the web delete dialog shows the
-// "Delete worktree" checkbox, while keeping `has_managed_worktree: false`
-// so worktree-only actions (sidebar "Edit workdir name", tie overlay) stay
-// hidden for workspace sessions.
+// `workspace_info` and no `worktree_info`, so the DTO must report
+// `has_cleanable_worktree: true` for the delete dialog's checkbox while keeping
+// `has_managed_worktree: false` so worktree-only actions stay hidden.
 #[test]
 fn from_instance_reports_managed_worktree_for_workspace_session() {
     let mut inst = make_test_instance();
@@ -1098,10 +1092,9 @@ fn from_instance_reports_managed_worktree_for_workspace_session() {
 #[test]
 #[serial_test::serial(hook_base)]
 fn from_instance_surfaces_hook_urgent_flag() {
-    // #1640: the web Attention sort needs `Instance::is_urgent()` on the
-    // wire. Write the hook-side attention.json the agent would emit and
-    // confirm it round-trips onto the response, then confirm a session
-    // with no hook file reports urgent: false.
+    // #1640: the web Attention sort needs `Instance::is_urgent()` on the wire.
+    // Write the hook-side attention.json the agent would emit and confirm it
+    // round-trips, then that a session with no hook file reports urgent: false.
     let (_g, _, _tmp_base) = crate::hooks::test_support::BaseGuard::ready();
     let inst = make_test_instance();
     let dir = crate::hooks::ensure_instance_dir_path(&inst.id)
@@ -1273,15 +1266,14 @@ fn resolve_diff_base_prefers_override_then_worktree_then_config_then_auto() {
         resolve_diff_base(None, None, Some("develop"), tmp.path()),
         "develop"
     );
-    // Auto-detect when nothing is set. The tmp dir is not a repo so
-    // `get_default_base_ref` returns Err -> "main" fallback.
+    // Auto-detect when nothing is set: the tmp dir is not a repo, so
+    // `get_default_base_ref` errors and falls back to "main".
     assert_eq!(resolve_diff_base(None, None, None, tmp.path()), "main");
 }
 
-/// Each workspace member carries its own override and recorded base, and
-/// the session-level `base_branch_override` does not leak into any of
-/// them. That leak is what made a multi-repo diff compare every repo
-/// against one ref. See #3329.
+/// Each workspace member carries its own override and recorded base, and the
+/// session-level `base_branch_override` does not leak into any of them. That
+/// leak made a multi-repo diff compare every repo against one ref (#3329).
 #[test]
 fn diff_repos_of_scopes_bases_per_workspace_repo() {
     fn repo(name: &str, base: Option<&str>, over: Option<&str>) -> crate::session::WorkspaceRepo {
@@ -1736,13 +1728,11 @@ async fn rename_session_distinguishes_cwd_stable_title_and_branch_changes() {
 #[tokio::test]
 #[serial_test::serial]
 async fn rename_session_quiesces_structured_worker_only_when_its_cwd_moves() {
-    // Invariant #2260: a live structured-view worker is pinned to its cwd,
-    // so a tied rename that MOVES the worktree directory must stop the
-    // worker first (else it crash-loops at the pulled-out path), while a
-    // rename that leaves the cwd in place must NOT interrupt it. The
-    // quiesce runs before the git edit, so the cwd-moving assertion holds
-    // even though the edit itself then fails on a fixture with no real
-    // worktree to move: what #2260 pins is that the worker is gone by then.
+    // Invariant #2260: a live structured worker is pinned to its cwd, so a
+    // tied rename that MOVES the worktree must stop the worker first, while one
+    // that leaves the cwd in place must not interrupt it. The quiesce runs
+    // before the git edit, so the assertion holds even though the edit then
+    // fails on a fixture with no real worktree to move.
     let _app_dir = crate::session::test_support::isolate_app_dir();
 
     struct Case {
@@ -1778,9 +1768,9 @@ async fn rename_session_quiesces_structured_worker_only_when_its_cwd_moves() {
             project_path.to_str().expect("UTF-8 temp path"),
         );
         inst.id = case.id.to_string();
-        // Idle, not Running: a structured session the user "stopped" sits
-        // at Idle yet still owns a live worker, which is exactly the gap
-        // `blocks_worktree_edit` misses and quiesce closes.
+        // Idle, not Running: a structured session the user "stopped" sits at
+        // Idle yet still owns a live worker, the gap `blocks_worktree_edit`
+        // misses and quiesce closes.
         inst.status = Status::Idle;
         inst.view = crate::session::View::Structured;
         inst.worktree_info = Some(worktree(
@@ -1826,11 +1816,9 @@ async fn rename_session_quiesces_structured_worker_only_when_its_cwd_moves() {
 #[serial_test::serial]
 async fn set_worktree_name_quiesces_structured_worker_only_when_its_cwd_moves() {
     // The standalone-endpoint mirror of the rename_session gate above: both
-    // stop a live structured-view worker only when the edit actually moves
-    // the worktree cwd (#2260), never for a cwd-stable or branch-only edit.
-    // The quiesce precedes the git edit, so the cwd-moving assertion holds
-    // even though the edit itself then fails on a fixture with no real
-    // worktree to move: what #2260 pins is that the worker is gone by then.
+    // stop a live structured worker only when the edit actually moves the cwd
+    // (#2260). The quiesce precedes the git edit, so the assertion holds even
+    // though the edit then fails on a fixture with no real worktree.
     let _app_dir = crate::session::test_support::isolate_app_dir();
     // set_worktree_name refuses a tied managed worktree (tied callers must
     // go through rename_session), so untie the profile to reach the worker
@@ -1959,12 +1947,10 @@ fn worktree_name_edit_updates_path_and_optionally_branch() {
 #[test]
 #[serial_test::serial]
 fn apply_post_restart_sync_propagates_agent_session_id() {
-    // Models the rapid double-restart case: in-memory state is stale
-    // (agent_session_id = None) because the 2s status poller hasn't
-    // refreshed yet, while the just-finished restart produced a Claude
-    // UUID via acquire_session_id. The sync must propagate that ID so a
-    // second ensure_session within the poller window doesn't generate a
-    // fresh UUID and orphan the persisted Claude conversation.
+    // The rapid double-restart case: in-memory state is stale because the 2s
+    // poller has not refreshed, while the just-finished restart produced a
+    // Claude UUID. The sync must propagate it, or a second ensure_session inside
+    // the poller window mints a fresh UUID and orphans the conversation.
     let mut live = make_test_instance();
     live.status = Status::Stopped;
     live.last_error = Some("prior failure".to_string());
@@ -2080,10 +2066,9 @@ fn apply_post_restart_identity_sync_clears_repair_backoff_when_restart_poller_ru
 
 #[test]
 fn apply_post_restart_sync_overwrites_stale_session_id() {
-    // If somehow the in-memory ID was non-None and the start path
-    // produced a different (newer) ID, the sync must use the newer one.
-    // Belt-and-suspenders: in practice acquire_session_id reuses an
-    // existing ID, but the contract here is "started wins."
+    // When the in-memory id is non-None and the start path produced a newer
+    // one, `started` wins. In practice acquire_session_id reuses the existing
+    // id, but that is the contract.
     let mut live = make_test_instance();
     live.agent_session_id = Some("stale-id".to_string());
     let before = live.clone();
@@ -2441,15 +2426,15 @@ fn delete_race_state_for(ids: &[&str]) -> std::sync::Arc<crate::server::AppState
     crate::server::test_support::build_test_app_state(instances)
 }
 
-/// #3650: prompt submission moved off `instance_lock`, so a permanent
-/// delete that takes only `instance_lock` no longer excludes a queue drain
-/// that snapshotted an idle turn and is on its way to `send_turn`. The
-/// delete would then stop the worker, purge the transcript and remove the
-/// worktree under a delivery already in flight.
+/// #3650: prompt submission moved off `instance_lock`, so a permanent delete
+/// that takes only `instance_lock` no longer excludes a queue drain that
+/// snapshotted an idle turn and is on its way to `send_turn`. The delete would
+/// then stop the worker, purge the transcript and remove the worktree under a
+/// delivery already in flight.
 ///
 /// Each permanent-delete path is checked the same way: hold the session's
-/// submission guard (standing in for that drain) and assert the delete
-/// parks before any teardown, then completes once the guard drops.
+/// submission guard and assert the delete parks before any teardown, then
+/// completes once the guard drops.
 #[tokio::test]
 async fn permanent_deletion_waits_for_an_in_flight_submission() {
     let _home = crate::session::test_support::isolate_app_dir();
@@ -2617,16 +2602,12 @@ async fn the_retention_purge_takes_submission_before_the_instance_lock() {
     );
 }
 
-/// #3650's barrier applies to every handler that stops a worker, not just
-/// the ones that delete a session. `drain_queued_prompts_once` reads the
-/// status and the trashed/archived/snoozed flags once under the submission
-/// guard and only then reaches `send_turn`, which respawns a worker it
-/// finds gone. So a stop that lands inside that window is undone: the user
-/// presses Stop and the session comes back running the queued prompt.
-///
-/// Before #3639 the drain held `instance_lock` across delivery and these
-/// four handlers were excluded by it. They take the submission guard now
-/// for the same reason `attach_project` and the tied renames do.
+/// #3650's barrier applies to every handler that stops a worker, not only the
+/// ones that delete. `drain_queued_prompts_once` reads status and the
+/// trashed/archived/snoozed flags once under the submission guard and only then
+/// reaches `send_turn`, which respawns a worker it finds gone, so a stop landing
+/// inside that window is undone. Before #3639 the drain held `instance_lock`
+/// across delivery and excluded these four handlers.
 #[tokio::test]
 async fn worker_stopping_handlers_wait_for_an_in_flight_submission() {
     let _app_dir = crate::session::test_support::isolate_app_dir();
@@ -2697,10 +2678,10 @@ async fn worker_stopping_handlers_wait_for_an_in_flight_submission() {
     }
 }
 
-/// #3651: `prompt_submission` auto-vivifies a registry entry for whatever
-/// id it is handed and nothing prunes it, so every externally reachable
-/// mutation that claims it must prove the session exists first. Otherwise
-/// an authenticated client grows daemon memory with random ids.
+/// #3651: `prompt_submission` auto-vivifies a registry entry for whatever id it
+/// is handed and nothing prunes it, so every externally reachable mutation must
+/// prove the session exists first, or an authenticated client can grow daemon
+/// memory with random ids.
 #[tokio::test]
 async fn session_mutations_allocate_no_prompt_lock_for_an_unknown_id() {
     let state = crate::server::test_support::build_test_app_state(Vec::new());
@@ -2904,14 +2885,9 @@ async fn send_message_refreshes_instance_after_instance_lock() {
         StatusCode::NOT_FOUND
     );
 }
-// ── validate_diff_path: security regression tests ──────────────────────────
-//
-// Regression for a path-traversal vulnerability in the first cut of the
-// `/api/sessions/{id}/diff/file?path=...` endpoint. Any authenticated user
-// could pass `?path=/etc/passwd` or `?path=../../etc/shadow` and have the
-// server dump the file contents in a diff response. The validator must
-// reject absolute paths, parent-dir traversal, and any path that isn't in
-// the set of actually-changed files.
+// Regression for a path-traversal vulnerability in the first cut of
+// `/api/sessions/{id}/diff/file?path=...`, where any authenticated user could
+// pass `?path=/etc/passwd` and have the server dump it in a diff response.
 
 use crate::git::diff::{DiffFile, FileStatus};
 use std::path::PathBuf;
@@ -3099,12 +3075,10 @@ fn plan_summary_truncates_a_long_current_step_title() {
 
 // --- persist_session_update (the persist-first contract from #1589) ---
 //
-// The five session-mutation PATCH handlers route every write through
-// this helper and only touch memory after it returns `Ok`, so disk and
-// memory cannot diverge on a write failure. Full-handler coverage is
-// impractical (AppState has no test constructor), so these lock the
-// helper's two guarantees directly: a success durably writes, and every
-// storage failure surfaces as `Err`.
+// The session-mutation PATCH handlers route every write through this helper and
+// only touch memory after it returns `Ok`. Full-handler coverage is impractical
+// (AppState has no test constructor), so these lock its two guarantees: a
+// success durably writes, and every storage failure surfaces as `Err`.
 
 #[test]
 #[serial_test::serial]
@@ -3186,10 +3160,9 @@ async fn persist_session_update_surfaces_storage_error() {
     assert!(result.is_err(), "a storage failure must surface as Err");
 }
 
-// Group edit (#1726): the persisted instance's group_path is the only
-// thing that changes; the groups Vec is left alone (the group list is
-// derived from instance group_path, exactly like create_session). Set
-// and clear both round-trip to disk.
+// Group edit (#1726): only the persisted instance's group_path changes; the
+// groups Vec is left alone, since the group list is derived from instance
+// group_path exactly as in create_session.
 #[tokio::test]
 #[serial_test::serial]
 async fn group_edit_set_and_clear_round_trip_to_disk() {
@@ -3277,10 +3250,9 @@ fn project_with_on_create_hooks(commands: &[&str]) -> tempfile::TempDir {
 #[test]
 #[serial_test::serial]
 fn resolve_hook_plan_refuses_untrusted_repo_hooks() {
-    // Bug #2066: the web API used to skip hooks entirely. The plan must now
-    // refuse an untrusted repo with hooks unless trust_hooks is passed, so
-    // the caller can prompt rather than silently get an un-bootstrapped
-    // worktree.
+    // #2066: the web API used to skip hooks entirely. The plan must refuse an
+    // untrusted repo with hooks unless trust_hooks is passed, so the caller can
+    // prompt rather than silently get an un-bootstrapped worktree.
     let temp_home = tempfile::tempdir().unwrap();
     let _home = crate::session::test_support::isolate_app_dir_at(temp_home.path());
     let _app_dir = crate::session::get_app_dir().expect("isolated app dir");
@@ -3391,10 +3363,9 @@ fn resolve_hook_plan_refuses_nothing_without_untrusted_repo_hooks() {
 #[test]
 #[serial_test::serial]
 fn resolve_hook_plan_inherits_trust_across_worktrees() {
-    // Secondary half of #2066: hook trust is keyed on the main repo
-    // (check_repo_trust resolves a worktree path back to it), so a worktree
-    // created from an already-trusted repo inherits that trust without a
-    // fresh prompt, even with trust_hooks: false.
+    // Secondary half of #2066: hook trust is keyed on the main repo, so a
+    // worktree created from an already-trusted repo inherits that trust without
+    // a fresh prompt, even with trust_hooks: false.
     let temp_home = tempfile::tempdir().unwrap();
     let _home = crate::session::test_support::isolate_app_dir_at(temp_home.path());
     let _app_dir = crate::session::get_app_dir().expect("isolated app dir");
@@ -3476,10 +3447,9 @@ async fn list_sessions_projects_pending_approvals_only_for_running_workers() {
         .record(&id, 1, &Event::ApprovalRequested { approval })
         .expect("record pending approval");
 
-    // No live worker: the durable log has an unresolved nonce, but the
-    // invariant is that a pending nonce only exists on a running worker.
-    // Projecting it would surface a phantom approval the resolver can only
-    // 404 on, so the gate must keep it hidden.
+    // No live worker: the durable log has an unresolved nonce, but a pending
+    // nonce only exists on a running worker, so projecting it would surface a
+    // phantom approval the resolver can only 404 on.
     let response = list_sessions(
         axum::extract::State(state.clone()),
         axum::extract::Query(ListSessionsQuery { state: None }),
