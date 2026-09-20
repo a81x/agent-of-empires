@@ -3505,29 +3505,162 @@ mod tests {
         host
     }
 
+    /// What `sync_agent_config` copies out of a host config dir: top-level
+    /// files only, minus the skip list, creating the sandbox path on the way.
+    /// Seeds fill names the host does not claim and never win against it, and
+    /// a re-sync leaves whatever the container wrote over a seed.
     #[test]
-    fn test_copies_top_level_files_only() {
+    fn sync_agent_config_copies_skips_and_seeds() {
+        let dir = TempDir::new().unwrap();
+        let host = setup_host_dir(&dir);
+
+        let sandbox = dir.path().join("plain");
+        sync_agent_config(&host, &sandbox, &[], &[], &[], &[]).unwrap();
+        assert!(sandbox.join("auth.json").exists());
+        assert!(sandbox.join("settings.json").exists());
+        assert!(!sandbox.join("subdir").exists());
+
+        let sandbox = dir.path().join("skipped");
+        sync_agent_config(&host, &sandbox, &["auth.json"], &[], &[], &[]).unwrap();
+        assert!(!sandbox.join("auth.json").exists());
+        assert!(sandbox.join("settings.json").exists());
+
+        let sandbox = dir.path().join("deep").join("nested").join("sandbox");
+        sync_agent_config(&host, &sandbox, &[], &[], &[], &[]).unwrap();
+        assert!(sandbox.join("auth.json").exists());
+
+        let sandbox = dir.path().join("seeded");
+        let seeds = [
+            (".claude.json", r#"{"seeded":true}"#),
+            ("auth.json", "seed-content"),
+        ];
+        sync_agent_config(&host, &sandbox, &[], &seeds, &[], &[]).unwrap();
+        assert_eq!(
+            fs::read_to_string(sandbox.join(".claude.json")).unwrap(),
+            r#"{"seeded":true}"#
+        );
+        assert_eq!(
+            fs::read_to_string(sandbox.join("auth.json")).unwrap(),
+            r#"{"token":"abc"}"#
+        );
+
+        fs::write(sandbox.join(".claude.json"), r#"{"modified":true}"#).unwrap();
+        sync_agent_config(&host, &sandbox, &[], &seeds, &[], &[]).unwrap();
+        assert_eq!(
+            fs::read_to_string(sandbox.join(".claude.json")).unwrap(),
+            r#"{"modified":true}"#
+        );
+    }
+
+    /// A later sync republishes changed and new host files but leaves a name
+    /// the host does not have, which is where container runtime state lives.
+    #[test]
+    fn sync_agent_config_refreshes_from_the_host_without_clobbering_the_container() {
         let dir = TempDir::new().unwrap();
         let host = setup_host_dir(&dir);
         let sandbox = dir.path().join("sandbox");
 
         sync_agent_config(&host, &sandbox, &[], &[], &[], &[]).unwrap();
+        assert!(!sandbox.join("new_cred.json").exists());
+        fs::write(sandbox.join("runtime.log"), "container-state").unwrap();
 
-        assert!(sandbox.join("auth.json").exists());
-        assert!(sandbox.join("settings.json").exists());
-        assert!(!sandbox.join("subdir").exists());
+        fs::write(host.join("auth.json"), r#"{"token":"refreshed"}"#).unwrap();
+        fs::write(host.join("new_cred.json"), "new").unwrap();
+        sync_agent_config(&host, &sandbox, &[], &[], &[], &[]).unwrap();
+
+        assert_eq!(
+            fs::read_to_string(sandbox.join("auth.json")).unwrap(),
+            r#"{"token":"refreshed"}"#
+        );
+        assert_eq!(
+            fs::read_to_string(sandbox.join("new_cred.json")).unwrap(),
+            "new"
+        );
+        assert_eq!(
+            fs::read_to_string(sandbox.join("runtime.log")).unwrap(),
+            "container-state"
+        );
     }
 
+    /// Only the directories `copy_dirs` names are copied, and those recursively.
     #[test]
-    fn test_skips_entries_in_skip_list() {
+    fn sync_agent_config_copies_only_listed_dirs() {
+        let dir = TempDir::new().unwrap();
+        let host = setup_host_dir(&dir);
+        let plugins = host.join("plugins");
+        fs::create_dir_all(plugins.join("lsp")).unwrap();
+        fs::write(plugins.join("config.json"), "{}").unwrap();
+        fs::write(plugins.join("lsp").join("gopls.wasm"), "binary").unwrap();
+
+        let sandbox = dir.path().join("listed");
+        sync_agent_config(&host, &sandbox, &[], &[], &["plugins"], &[]).unwrap();
+        assert!(sandbox.join("plugins").join("config.json").exists());
+        assert!(sandbox
+            .join("plugins")
+            .join("lsp")
+            .join("gopls.wasm")
+            .exists());
+        assert!(!sandbox.join("subdir").exists());
+
+        let sandbox = dir.path().join("unlisted");
+        sync_agent_config(&host, &sandbox, &[], &[], &["nonexistent"], &[]).unwrap();
+        assert!(!sandbox.join("subdir").exists());
+        assert!(sandbox.join("auth.json").exists());
+    }
+
+    /// A preserved file is seeded from the host once and then left alone, even
+    /// when the host copy changes; its neighbours still refresh.
+    #[test]
+    fn sync_agent_config_seeds_preserved_files_once() {
         let dir = TempDir::new().unwrap();
         let host = setup_host_dir(&dir);
         let sandbox = dir.path().join("sandbox");
+        let preserve = ["auth.json"];
 
-        sync_agent_config(&host, &sandbox, &["auth.json"], &[], &[], &[]).unwrap();
+        sync_agent_config(&host, &sandbox, &[], &[], &[], &preserve).unwrap();
+        assert_eq!(
+            fs::read_to_string(sandbox.join("auth.json")).unwrap(),
+            r#"{"token":"abc"}"#
+        );
 
-        assert!(!sandbox.join("auth.json").exists());
-        assert!(sandbox.join("settings.json").exists());
+        // A migration or an in-container login writes a different credential.
+        fs::write(sandbox.join("auth.json"), r#"{"token":"container"}"#).unwrap();
+        fs::write(host.join("auth.json"), r#"{"token":"refreshed"}"#).unwrap();
+        fs::write(host.join("settings.json"), "updated").unwrap();
+        sync_agent_config(&host, &sandbox, &[], &[], &[], &preserve).unwrap();
+
+        assert_eq!(
+            fs::read_to_string(sandbox.join("auth.json")).unwrap(),
+            r#"{"token":"container"}"#
+        );
+        assert_eq!(
+            fs::read_to_string(sandbox.join("settings.json")).unwrap(),
+            "updated"
+        );
+    }
+
+    /// Once a `projects/` sentinel shows the sandbox has run a session, neither
+    /// the general file copy nor `copy_dirs` runs again, so a restart keeps the
+    /// container's own state instead of re-copying the host tree over it.
+    #[test]
+    fn sync_agent_config_stops_copying_once_the_sandbox_has_prior_data() {
+        let dir = TempDir::new().unwrap();
+        let host = setup_host_dir(&dir);
+        fs::create_dir_all(host.join("plugins")).unwrap();
+        fs::write(host.join("plugins").join("p.txt"), "host-plugin").unwrap();
+        let sandbox = dir.path().join("sandbox");
+
+        sync_agent_config(&host, &sandbox, &[], &[], &[], &[]).unwrap();
+        fs::create_dir_all(sandbox.join("projects")).unwrap();
+        fs::write(sandbox.join("settings.json"), r#"{"theme":"dark"}"#).unwrap();
+        fs::write(host.join("settings.json"), r#"{"theme":"light"}"#).unwrap();
+
+        sync_agent_config(&host, &sandbox, &[], &[], &["plugins"], &[]).unwrap();
+        assert_eq!(
+            fs::read_to_string(sandbox.join("settings.json")).unwrap(),
+            r#"{"theme":"dark"}"#
+        );
+        assert!(!sandbox.join("plugins").exists());
     }
 
     #[test]
@@ -3653,83 +3786,6 @@ mod tests {
     }
 
     #[test]
-    fn test_writes_seed_files_when_missing() {
-        let dir = TempDir::new().unwrap();
-        let host = setup_host_dir(&dir);
-        let sandbox = dir.path().join("sandbox");
-
-        let seeds = [("seed.json", r#"{"seeded":true}"#)];
-        sync_agent_config(&host, &sandbox, &[], &seeds, &[], &[]).unwrap();
-
-        let content = fs::read_to_string(sandbox.join("seed.json")).unwrap();
-        assert_eq!(content, r#"{"seeded":true}"#);
-    }
-
-    #[test]
-    fn test_seed_files_not_overwritten_if_exist() {
-        let dir = TempDir::new().unwrap();
-        let host = setup_host_dir(&dir);
-        let sandbox = dir.path().join("sandbox");
-
-        // First sync writes the seed.
-        let seeds = [("seed.json", r#"{"seeded":true}"#)];
-        sync_agent_config(&host, &sandbox, &[], &seeds, &[], &[]).unwrap();
-        assert_eq!(
-            fs::read_to_string(sandbox.join("seed.json")).unwrap(),
-            r#"{"seeded":true}"#
-        );
-
-        // Container modifies the seed file.
-        fs::write(sandbox.join("seed.json"), r#"{"modified":true}"#).unwrap();
-
-        // Re-sync should NOT overwrite the container's changes.
-        sync_agent_config(&host, &sandbox, &[], &seeds, &[], &[]).unwrap();
-        assert_eq!(
-            fs::read_to_string(sandbox.join("seed.json")).unwrap(),
-            r#"{"modified":true}"#
-        );
-    }
-
-    #[test]
-    fn test_host_files_overwrite_seeds() {
-        let dir = TempDir::new().unwrap();
-        let host = setup_host_dir(&dir);
-        let sandbox = dir.path().join("sandbox");
-
-        // Seed has the same name as a host file -- host copy wins.
-        let seeds = [("auth.json", "seed-content")];
-        sync_agent_config(&host, &sandbox, &[], &seeds, &[], &[]).unwrap();
-
-        let content = fs::read_to_string(sandbox.join("auth.json")).unwrap();
-        assert_eq!(content, r#"{"token":"abc"}"#);
-    }
-
-    #[test]
-    fn test_seed_survives_when_no_host_equivalent() {
-        let dir = TempDir::new().unwrap();
-        let host = setup_host_dir(&dir);
-        let sandbox = dir.path().join("sandbox");
-
-        let seeds = [(".claude.json", r#"{"hasCompletedOnboarding":true}"#)];
-        sync_agent_config(&host, &sandbox, &[], &seeds, &[], &[]).unwrap();
-
-        let content = fs::read_to_string(sandbox.join(".claude.json")).unwrap();
-        assert_eq!(content, r#"{"hasCompletedOnboarding":true}"#);
-    }
-
-    #[test]
-    fn test_creates_sandbox_dir_if_missing() {
-        let dir = TempDir::new().unwrap();
-        let host = setup_host_dir(&dir);
-        let sandbox = dir.path().join("deep").join("nested").join("sandbox");
-
-        sync_agent_config(&host, &sandbox, &[], &[], &[], &[]).unwrap();
-
-        assert!(sandbox.exists());
-        assert!(sandbox.join("auth.json").exists());
-    }
-
-    #[test]
     fn test_rewrites_claude_plugin_paths_to_container_home() {
         let dir = TempDir::new().unwrap();
         let host_home = dir.path().join("home");
@@ -3800,136 +3856,6 @@ mod tests {
             helper.contains("$GH_TOKEN"),
             "helper must read GH_TOKEN at runtime"
         );
-    }
-
-    #[test]
-    fn test_home_seed_files_written_to_sandbox_root() {
-        let dir = TempDir::new().unwrap();
-        let sandbox_base = dir.path().join("sandbox-root");
-        fs::create_dir_all(&sandbox_base).unwrap();
-
-        let home_seeds: &[(&str, &str)] = &[(".claude.json", r#"{"hasCompletedOnboarding":true}"#)];
-
-        for &(filename, content) in home_seeds {
-            let path = sandbox_base.join(filename);
-            if !path.exists() {
-                fs::write(path, content).unwrap();
-            }
-        }
-
-        let written = fs::read_to_string(sandbox_base.join(".claude.json")).unwrap();
-        assert_eq!(written, r#"{"hasCompletedOnboarding":true}"#);
-
-        // Verify it's NOT inside an agent config subdirectory.
-        assert!(!sandbox_base.join(".claude").join(".claude.json").exists());
-    }
-
-    #[test]
-    fn test_home_seed_files_not_overwritten_if_exist() {
-        let dir = TempDir::new().unwrap();
-        let sandbox_base = dir.path().join("sandbox-root");
-        fs::create_dir_all(&sandbox_base).unwrap();
-
-        // First write.
-        let path = sandbox_base.join(".claude.json");
-        fs::write(&path, r#"{"hasCompletedOnboarding":true}"#).unwrap();
-
-        // Container modifies it.
-        fs::write(&path, r#"{"hasCompletedOnboarding":true,"extra":"data"}"#).unwrap();
-
-        // Write-once logic should not overwrite.
-        if !path.exists() {
-            fs::write(&path, r#"{"hasCompletedOnboarding":true}"#).unwrap();
-        }
-
-        let content = fs::read_to_string(&path).unwrap();
-        assert_eq!(content, r#"{"hasCompletedOnboarding":true,"extra":"data"}"#);
-    }
-
-    #[test]
-    fn test_refresh_updates_changed_host_files() {
-        let dir = TempDir::new().unwrap();
-        let host = setup_host_dir(&dir);
-        let sandbox = dir.path().join("sandbox");
-
-        sync_agent_config(&host, &sandbox, &[], &[], &[], &[]).unwrap();
-        assert_eq!(
-            fs::read_to_string(sandbox.join("auth.json")).unwrap(),
-            r#"{"token":"abc"}"#
-        );
-
-        // Host file changes between sessions.
-        fs::write(host.join("auth.json"), r#"{"token":"refreshed"}"#).unwrap();
-
-        sync_agent_config(&host, &sandbox, &[], &[], &[], &[]).unwrap();
-        assert_eq!(
-            fs::read_to_string(sandbox.join("auth.json")).unwrap(),
-            r#"{"token":"refreshed"}"#
-        );
-    }
-
-    #[test]
-    fn test_refresh_picks_up_new_host_files() {
-        let dir = TempDir::new().unwrap();
-        let host = setup_host_dir(&dir);
-        let sandbox = dir.path().join("sandbox");
-
-        sync_agent_config(&host, &sandbox, &[], &[], &[], &[]).unwrap();
-        assert!(!sandbox.join("new_cred.json").exists());
-
-        // New credential file appears on host.
-        fs::write(host.join("new_cred.json"), "new").unwrap();
-
-        sync_agent_config(&host, &sandbox, &[], &[], &[], &[]).unwrap();
-        assert_eq!(
-            fs::read_to_string(sandbox.join("new_cred.json")).unwrap(),
-            "new"
-        );
-    }
-
-    #[test]
-    fn test_refresh_preserves_container_written_files() {
-        let dir = TempDir::new().unwrap();
-        let host = setup_host_dir(&dir);
-        let sandbox = dir.path().join("sandbox");
-
-        sync_agent_config(&host, &sandbox, &[], &[], &[], &[]).unwrap();
-
-        // Container writes a runtime file into the sandbox dir.
-        fs::write(sandbox.join("runtime.log"), "container-state").unwrap();
-
-        // Refresh from host.
-        sync_agent_config(&host, &sandbox, &[], &[], &[], &[]).unwrap();
-
-        // Container-written file survives (host has no file with that name).
-        assert_eq!(
-            fs::read_to_string(sandbox.join("runtime.log")).unwrap(),
-            "container-state"
-        );
-    }
-
-    #[test]
-    fn test_copies_listed_dirs_recursively() {
-        let dir = TempDir::new().unwrap();
-        let host = setup_host_dir(&dir);
-
-        // Create a "plugins" dir with nested content.
-        let plugins = host.join("plugins");
-        fs::create_dir_all(plugins.join("lsp")).unwrap();
-        fs::write(plugins.join("config.json"), "{}").unwrap();
-        fs::write(plugins.join("lsp").join("gopls.wasm"), "binary").unwrap();
-
-        let sandbox = dir.path().join("sandbox");
-        sync_agent_config(&host, &sandbox, &[], &[], &["plugins"], &[]).unwrap();
-
-        assert!(sandbox.join("plugins").join("config.json").exists());
-        assert!(sandbox
-            .join("plugins")
-            .join("lsp")
-            .join("gopls.wasm")
-            .exists());
-        // "subdir" is NOT in copy_dirs, so still skipped.
-        assert!(!sandbox.join("subdir").exists());
     }
 
     #[test]
@@ -4040,19 +3966,6 @@ mod tests {
     }
 
     #[test]
-    fn test_unlisted_dirs_still_skipped() {
-        let dir = TempDir::new().unwrap();
-        let host = setup_host_dir(&dir);
-
-        // "subdir" exists from setup_host_dir but is not in copy_dirs.
-        let sandbox = dir.path().join("sandbox");
-        sync_agent_config(&host, &sandbox, &[], &[], &["nonexistent"], &[]).unwrap();
-
-        assert!(!sandbox.join("subdir").exists());
-        assert!(sandbox.join("auth.json").exists());
-    }
-
-    #[test]
     fn test_copy_dir_recursive() {
         let dir = TempDir::new().unwrap();
         let src = dir.path().join("src");
@@ -4125,41 +4038,6 @@ mod tests {
     }
 
     #[test]
-    fn test_preserve_files_not_overwritten() {
-        let dir = TempDir::new().unwrap();
-        let host = setup_host_dir(&dir);
-        let sandbox = dir.path().join("sandbox");
-
-        // First sync seeds the preserved file from host.
-        sync_agent_config(&host, &sandbox, &[], &[], &[], &["auth.json"]).unwrap();
-        assert_eq!(
-            fs::read_to_string(sandbox.join("auth.json")).unwrap(),
-            r#"{"token":"abc"}"#
-        );
-
-        // Simulate migration or in-container auth writing a different credential.
-        fs::write(sandbox.join("auth.json"), r#"{"token":"container"}"#).unwrap();
-
-        // Host file changes.
-        fs::write(host.join("auth.json"), r#"{"token":"refreshed"}"#).unwrap();
-
-        // Re-sync should NOT overwrite the preserved file.
-        sync_agent_config(&host, &sandbox, &[], &[], &[], &["auth.json"]).unwrap();
-        assert_eq!(
-            fs::read_to_string(sandbox.join("auth.json")).unwrap(),
-            r#"{"token":"container"}"#
-        );
-
-        // Non-preserved files are still overwritten.
-        fs::write(host.join("settings.json"), "updated").unwrap();
-        sync_agent_config(&host, &sandbox, &[], &[], &[], &["auth.json"]).unwrap();
-        assert_eq!(
-            fs::read_to_string(sandbox.join("settings.json")).unwrap(),
-            "updated"
-        );
-    }
-
-    #[test]
     fn test_history_preserved_across_resync() {
         let dir = TempDir::new().unwrap();
         let host = setup_host_dir(&dir);
@@ -4188,38 +4066,6 @@ mod tests {
         assert!(
             content.contains("container-session-1"),
             "container history entries must survive re-sync"
-        );
-    }
-
-    #[test]
-    fn test_has_prior_data_skips_general_file_copy() {
-        let dir = TempDir::new().unwrap();
-        let host = setup_host_dir(&dir);
-        let sandbox = dir.path().join("sandbox");
-
-        // First sync copies everything in.
-        sync_agent_config(&host, &sandbox, &[], &[], &[], &[]).unwrap();
-        assert_eq!(
-            fs::read_to_string(sandbox.join("settings.json")).unwrap(),
-            "{}"
-        );
-
-        // Simulate a prior container session by creating the "projects/" sentinel.
-        fs::create_dir_all(sandbox.join("projects")).unwrap();
-
-        // Container modifies settings.json during its session.
-        fs::write(sandbox.join("settings.json"), r#"{"theme":"dark"}"#).unwrap();
-
-        // Host updates settings.json independently.
-        fs::write(host.join("settings.json"), r#"{"theme":"light"}"#).unwrap();
-
-        // Re-sync should skip general file copies because projects/ exists,
-        // preserving the container's settings.json.
-        sync_agent_config(&host, &sandbox, &[], &[], &[], &[]).unwrap();
-        assert_eq!(
-            fs::read_to_string(sandbox.join("settings.json")).unwrap(),
-            r#"{"theme":"dark"}"#,
-            "container-side settings must not be overwritten when projects/ sentinel exists"
         );
     }
 
@@ -4333,39 +4179,6 @@ mod tests {
             });
             assert_eq!(suffix, expected, "{agent}");
         }
-    }
-
-    #[test]
-    fn test_copy_dirs_skipped_when_prior_data() {
-        let dir = TempDir::new().unwrap();
-        let host = dir.path().join("host");
-        fs::create_dir_all(host.join("plugins")).unwrap();
-        fs::write(host.join("plugins").join("p.txt"), "host-plugin").unwrap();
-        let sandbox = dir.path().join("sandbox");
-
-        // Prior container session sentinel.
-        fs::create_dir_all(sandbox.join("projects")).unwrap();
-
-        sync_agent_config(&host, &sandbox, &[], &[], &["plugins"], &[]).unwrap();
-        assert!(
-            !sandbox.join("plugins").exists(),
-            "copy_dirs must be skipped once the sandbox has prior session data, \
-             so a restart no longer re-copies the whole plugins tree"
-        );
-    }
-
-    #[test]
-    fn test_preserve_files_seeded_when_missing() {
-        let dir = TempDir::new().unwrap();
-        let host = setup_host_dir(&dir);
-        let sandbox = dir.path().join("sandbox");
-
-        // Preserved file is copied when sandbox doesn't have it yet.
-        sync_agent_config(&host, &sandbox, &[], &[], &[], &["auth.json"]).unwrap();
-        assert_eq!(
-            fs::read_to_string(sandbox.join("auth.json")).unwrap(),
-            r#"{"token":"abc"}"#
-        );
     }
 
     // --- credential freshness tests ---
