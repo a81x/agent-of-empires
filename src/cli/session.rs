@@ -394,11 +394,17 @@ pub async fn run(profile: &str, command: SessionCommands) -> Result<()> {
         SessionCommands::SetBase(args) => set_base(profile, args).await,
         SessionCommands::Snooze(args) => snooze_session(profile, args).await,
         SessionCommands::Unsnooze(args) => unsnooze_session(profile, args).await,
-        SessionCommands::Favorite(args) => favorite_session(profile, args).await,
-        SessionCommands::Unfavorite(args) => unfavorite_session(profile, args).await,
+        SessionCommands::Favorite(args) => {
+            mark_session(profile, args, "Favorited", Instance::favorite).await
+        }
+        SessionCommands::Unfavorite(args) => {
+            mark_session(profile, args, "Unfavorited", Instance::unfavorite).await
+        }
         SessionCommands::Color(args) => set_color_session(profile, args).await,
         SessionCommands::Archive(args) => archive_session(profile, args).await,
-        SessionCommands::Unarchive(args) => unarchive_session(profile, args).await,
+        SessionCommands::Unarchive(args) => {
+            mark_session(profile, args, "Unarchived", Instance::unarchive).await
+        }
         SessionCommands::Restore(args) => restore_session(profile, args).await,
         SessionCommands::Import(args) => import_sessions(profile, args).await,
         SessionCommands::ListTrash => list_trash(profile).await,
@@ -406,27 +412,21 @@ pub async fn run(profile: &str, command: SessionCommands) -> Result<()> {
     }
 }
 
-async fn favorite_session(profile: &str, args: SessionIdArgs) -> Result<()> {
+/// Flips one boolean marker on a session and reports it with `verb`.
+async fn mark_session(
+    profile: &str,
+    args: SessionIdArgs,
+    verb: &str,
+    apply: fn(&mut Instance),
+) -> Result<()> {
     let storage = Storage::open_unwatched(profile)?;
     let title = storage.update(|instances, _groups| {
         super::patch_instance(instances, &args.identifier, |inst| {
-            inst.favorite();
+            apply(inst);
             Ok(inst.title.clone())
         })
     })?;
-    println!("Favorited: {}", title);
-    Ok(())
-}
-
-async fn unfavorite_session(profile: &str, args: SessionIdArgs) -> Result<()> {
-    let storage = Storage::open_unwatched(profile)?;
-    let title = storage.update(|instances, _groups| {
-        super::patch_instance(instances, &args.identifier, |inst| {
-            inst.unfavorite();
-            Ok(inst.title.clone())
-        })
-    })?;
-    println!("Unfavorited: {}", title);
+    println!("{verb}: {title}");
     Ok(())
 }
 
@@ -490,18 +490,6 @@ async fn archive_session(profile: &str, args: ArchiveArgs) -> Result<()> {
             title
         );
     }
-}
-
-async fn unarchive_session(profile: &str, args: SessionIdArgs) -> Result<()> {
-    let storage = Storage::open_unwatched(profile)?;
-    let title = storage.update(|instances, _groups| {
-        super::patch_instance(instances, &args.identifier, |inst| {
-            inst.unarchive();
-            Ok(inst.title.clone())
-        })
-    })?;
-    println!("Unarchived: {}", title);
-    Ok(())
 }
 
 async fn restore_session(profile: &str, args: SessionIdArgs) -> Result<()> {
