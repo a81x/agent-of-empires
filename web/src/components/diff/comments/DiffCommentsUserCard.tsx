@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { CommentMarkdown } from "./CommentMarkdown";
-import type { DiffCommentsCardPayload } from "./buildPrompt";
+import { compareComments, type DiffCommentsCardPayload } from "./buildPrompt";
 import type { DiffComment } from "./types";
 import { highlightSnippet } from "../../../lib/snippetHighlighter";
 import { useShikiTheme } from "../../../hooks/useShikiTheme";
@@ -101,14 +101,4 @@ function CommentHeader({ comment, isMultiRepo }: { comment: DiffComment; isMulti
       <span>{comment.side}</span>
     </div>
   );
-}
-
-function compareComments(a: DiffComment, b: DiffComment): number {
-  const ra = a.repoName ?? "";
-  const rb = b.repoName ?? "";
-  if (ra !== rb) return ra.localeCompare(rb);
-  if (a.filePath !== b.filePath) return a.filePath.localeCompare(b.filePath);
-  if (a.startLine !== b.startLine) return a.startLine - b.startLine;
-  if (a.side !== b.side) return a.side === "old" ? -1 : 1;
-  return a.createdAt.localeCompare(b.createdAt);
 }

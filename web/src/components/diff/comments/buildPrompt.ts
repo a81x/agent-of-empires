@@ -98,7 +98,7 @@ function renderComment(c: DiffComment, isMultiRepo: boolean): string {
   return `### ${repo}\`${c.filePath}\` ${range} (${c.side})\n\n${codeBlock}\n\n${c.body.trim()}`;
 }
 
-function compareComments(a: DiffComment, b: DiffComment): number {
+export function compareComments(a: DiffComment, b: DiffComment): number {
   const ra = a.repoName ?? "";
   const rb = b.repoName ?? "";
   if (ra !== rb) return ra.localeCompare(rb);

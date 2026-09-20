@@ -1794,7 +1794,6 @@
       "risk": "medium",
       "specs": [
         "src/components/diff/comments/storage.test.ts",
-        "src/components/diff/comments/storage.sweep.test.ts",
         "src/hooks/useDiffComments.rtl.test.tsx"
       ],
       "components": ["web/src/components/diff/comments/storage.ts"]

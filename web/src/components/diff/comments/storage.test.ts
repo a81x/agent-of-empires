@@ -1,21 +1,21 @@
+// @vitest-environment jsdom
+
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { clearStoredComments, EMPTY_STORAGE, isEmptyState, loadComments, saveComments, storageKey } from "./storage";
+import {
+  clearStoredComments,
+  EMPTY_STORAGE,
+  isEmptyState,
+  loadComments,
+  saveComments,
+  storageKey,
+  sweepOrphanComments,
+} from "./storage";
 import type { DiffComment, DiffCommentsStorageV1 } from "./types";
 
-// The default node env has no localStorage.
-let data: Map<string, string>;
+const keys = () => Array.from({ length: localStorage.length }, (_, i) => localStorage.key(i)!);
+
 beforeEach(() => {
-  data = new Map();
-  (globalThis as { localStorage: Storage }).localStorage = {
-    get length() {
-      return data.size;
-    },
-    key: (i) => Array.from(data.keys())[i] ?? null,
-    getItem: (k) => data.get(k) ?? null,
-    setItem: (k, v) => void data.set(k, String(v)),
-    removeItem: (k) => void data.delete(k),
-    clear: () => data.clear(),
-  };
+  localStorage.clear();
 });
 afterEach(() => {
   vi.restoreAllMocks();
@@ -78,7 +78,7 @@ describe("loadComments", () => {
 
 describe("saveComments", () => {
   it("survives a throwing write", () => {
-    const spy = vi.spyOn(localStorage, "setItem").mockImplementation(() => {
+    const spy = vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
       throw new Error("QuotaExceeded");
     });
     expect(() => saveComments("sess-1", withComment())).not.toThrow();
@@ -87,9 +87,9 @@ describe("saveComments", () => {
 
   it("removes the key when state becomes empty, including a lone clearAfterSend toggle", () => {
     saveComments("sess-1", withComment());
-    expect(data.has(storageKey("sess-1"))).toBe(true);
+    expect(keys()).toEqual([storageKey("sess-1")]);
     saveComments("sess-1", { ...EMPTY_STORAGE, clearAfterSend: false });
-    expect(data.has(storageKey("sess-1"))).toBe(false);
+    expect(keys()).toEqual([]);
   });
 
   it.each<[Partial<DiffCommentsStorageV1>, boolean]>([
@@ -108,5 +108,24 @@ it("clearStoredComments removes only that session", () => {
   saveComments("sess-2", withComment());
   clearStoredComments("sess-1");
   clearStoredComments("absent");
-  expect([...data.keys()]).toEqual([storageKey("sess-2")]);
+  expect(keys()).toEqual([storageKey("sess-2")]);
+});
+
+describe("sweepOrphanComments", () => {
+  it("drops keys for sessions outside the active set and leaves unrelated keys alone", () => {
+    localStorage.setItem("acp:draft:foo", "keep me");
+    saveComments("active", withComment());
+    saveComments("orphan", withComment());
+    sweepOrphanComments(new Set(["active"]));
+    expect(localStorage.getItem("acp:draft:foo")).toBe("keep me");
+    expect(localStorage.getItem(storageKey("active"))).not.toBeNull();
+    expect(localStorage.getItem(storageKey("orphan"))).toBeNull();
+  });
+
+  it("is a no-op when every key is active", () => {
+    saveComments("a", withComment());
+    saveComments("b", withComment());
+    sweepOrphanComments(new Set(["a", "b"]));
+    expect(keys()).toEqual([storageKey("a"), storageKey("b")]);
+  });
 });
