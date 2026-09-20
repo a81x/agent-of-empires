@@ -2874,12 +2874,14 @@ mod tests {
     }
 
     /// An isolated HOME plus the hook base state every container test needs,
-    /// held together so one binding keeps all three guards alive.
+    /// held together so one binding keeps all three guards alive. Field order
+    /// is drop order: the HOME override is restored before the directory it
+    /// points at goes away.
     struct IsolatedHome {
-        home: TempDir,
-        _base: crate::hooks::test_support::BaseGuard,
-        _base_dir: TempDir,
         _home: crate::session::test_support::HomeGuard,
+        home: TempDir,
+        _base_dir: TempDir,
+        _base: crate::hooks::test_support::BaseGuard,
     }
 
     impl IsolatedHome {
@@ -2888,10 +2890,10 @@ mod tests {
             let home = TempDir::new().unwrap();
             let home_guard = crate::session::test_support::isolate_home(home.path());
             Self {
-                home,
-                _base: base,
-                _base_dir: base_dir,
                 _home: home_guard,
+                home,
+                _base_dir: base_dir,
+                _base: base,
             }
         }
 
@@ -3089,12 +3091,13 @@ mod tests {
     fn compute_volume_paths_mounts_one_directory_for_a_repo_root_or_plain_dir() {
         let (_repo_dir, repo_path) = setup_regular_repo();
         let plain_dir = TempDir::new().unwrap();
+        let plain = plain_dir.path().to_path_buf();
         let ancestor = TempDir::new().unwrap();
         git2::Repository::init(ancestor.path()).unwrap();
         let subdir = ancestor.path().join("playground");
         fs::create_dir_all(&subdir).unwrap();
 
-        for project in [&repo_path, &plain_dir.path().to_path_buf(), &subdir] {
+        for project in [&repo_path, &plain, &subdir] {
             let (volumes, working_dir) =
                 compute_volume_paths(project, project.to_str().unwrap()).unwrap();
             let label = project.display();
