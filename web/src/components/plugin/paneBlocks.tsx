@@ -1,7 +1,6 @@
-// Renderers for the plugin pane block vocabulary. Unknown kinds and blocks
-// missing required fields render nothing, so newer plugins degrade on older hosts.
+// Renderers for the plugin pane block vocabulary; a block missing required fields renders nothing.
 
-import { useEffect, useId, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { ArrowUpRight, ChevronRight } from "lucide-react";
 
 import { invokePluginAction, type PluginUiTone } from "../../lib/api";
@@ -521,36 +520,27 @@ function BlockSection({ block, pluginId, sessionId }: BlockProps) {
   );
 }
 
+const KINDS: Record<string, (p: BlockProps) => ReactNode> = {
+  heading: ({ block }) => {
+    const text = str(block, "text");
+    return text ? <div className="font-semibold text-sm text-text-primary">{text}</div> : null;
+  },
+  note: ({ block }) => {
+    const text = str(block, "text");
+    return text ? <p className={`text-xs ${toneTextClass(validTone(block.tone))}`}>{text}</p> : null;
+  },
+  divider: () => <hr className="border-surface-700/60" />,
+  row: (p) => <BlockRow {...p} />,
+  comment: ({ block }) => <BlockComment block={block} />,
+  action: (p) => <BlockAction {...p} />,
+  callout: (p) => <BlockCallout {...p} />,
+  bar: ({ block }) => <BlockBar block={block} />,
+  sparkline: ({ block }) => <BlockSparkline block={block} />,
+  columns: (p) => <BlockColumns {...p} />,
+  section: (p) => <BlockSection {...p} />,
+};
+
+/** Unknown kinds render nothing, so newer plugins degrade on older hosts. */
 export function DetailBlock(props: BlockProps) {
-  const { block } = props;
-  switch (str(block, "kind")) {
-    case "heading": {
-      const text = str(block, "text");
-      return text ? <div className="font-semibold text-sm text-text-primary">{text}</div> : null;
-    }
-    case "note": {
-      const text = str(block, "text");
-      return text ? <p className={`text-xs ${toneTextClass(validTone(block.tone))}`}>{text}</p> : null;
-    }
-    case "divider":
-      return <hr className="border-surface-700/60" />;
-    case "row":
-      return <BlockRow {...props} />;
-    case "comment":
-      return <BlockComment block={block} />;
-    case "action":
-      return <BlockAction {...props} />;
-    case "callout":
-      return <BlockCallout {...props} />;
-    case "bar":
-      return <BlockBar block={block} />;
-    case "sparkline":
-      return <BlockSparkline block={block} />;
-    case "columns":
-      return <BlockColumns {...props} />;
-    case "section":
-      return <BlockSection {...props} />;
-    default:
-      return null;
-  }
+  return KINDS[str(props.block, "kind") ?? ""]?.(props) ?? null;
 }
