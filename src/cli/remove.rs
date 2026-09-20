@@ -304,6 +304,28 @@ mod tests {
     use super::*;
     use crate::session::{WorkspaceInfo, WorkspaceRepo};
 
+    fn workspace_session() -> Instance {
+        let mut inst = Instance::new("WS", "/tmp/ws/repo-a");
+        inst.workspace_info = Some(WorkspaceInfo {
+            branch: "feature/abc".to_string(),
+            workspace_dir: "/tmp/ws".to_string(),
+            repos: vec![WorkspaceRepo {
+                name: "repo-a".to_string(),
+                source_path: "/tmp/src/repo-a".to_string(),
+                branch: "feature/abc".to_string(),
+                worktree_path: "/tmp/ws/repo-a".to_string(),
+                main_repo_path: "/tmp/src/repo-a".to_string(),
+                managed_by_aoe: true,
+                branch_preexisting: false,
+                base_branch: None,
+                base_branch_override: None,
+            }],
+            created_at: Utc::now(),
+            cleanup_on_delete: true,
+        });
+        inst
+    }
+
     fn args(delete_worktree: bool) -> RemoveArgs {
         RemoveArgs {
             identifier: "x".to_string(),
@@ -318,24 +340,7 @@ mod tests {
 
     #[test]
     fn needs_worktree_cleanup_true_for_workspace_session() {
-        let mut inst = Instance::new("WS", "/tmp/ws/repo-a");
-        inst.workspace_info = Some(WorkspaceInfo {
-            branch: "feature/abc".to_string(),
-            workspace_dir: "/tmp/ws".to_string(),
-            repos: vec![WorkspaceRepo {
-                name: "repo-a".to_string(),
-                source_path: "/tmp/src/repo-a".to_string(),
-                branch: "feature/abc".to_string(),
-                worktree_path: "/tmp/ws/repo-a".to_string(),
-                main_repo_path: "/tmp/src/repo-a".to_string(),
-                managed_by_aoe: true,
-                branch_preexisting: false,
-                base_branch: None,
-                base_branch_override: None,
-            }],
-            created_at: Utc::now(),
-            cleanup_on_delete: true,
-        });
+        let inst = workspace_session();
 
         assert!(needs_worktree_cleanup(&inst, &args(true)));
         assert!(!needs_worktree_cleanup(&inst, &args(false)));
@@ -343,24 +348,7 @@ mod tests {
 
     #[test]
     fn should_delete_branch_true_for_workspace_session() {
-        let mut inst = Instance::new("WS", "/tmp/ws/repo-a");
-        inst.workspace_info = Some(WorkspaceInfo {
-            branch: "feature/abc".to_string(),
-            workspace_dir: "/tmp/ws".to_string(),
-            repos: vec![WorkspaceRepo {
-                name: "repo-a".to_string(),
-                source_path: "/tmp/src/repo-a".to_string(),
-                branch: "feature/abc".to_string(),
-                worktree_path: "/tmp/ws/repo-a".to_string(),
-                main_repo_path: "/tmp/src/repo-a".to_string(),
-                managed_by_aoe: true,
-                branch_preexisting: false,
-                base_branch: None,
-                base_branch_override: None,
-            }],
-            created_at: Utc::now(),
-            cleanup_on_delete: true,
-        });
+        let inst = workspace_session();
 
         let mut with_flag = args(true);
         with_flag.delete_branch = true;
