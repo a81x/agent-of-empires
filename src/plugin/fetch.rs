@@ -439,26 +439,17 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parse_ls_remote_prefers_peeled_tag() {
-        let out = "1111111111111111111111111111111111111111\trefs/tags/v1\n\
-                   2222222222222222222222222222222222222222\trefs/tags/v1^{}";
+    fn parse_ls_remote_prefers_the_peeled_tag() {
+        let peeled = "1111111111111111111111111111111111111111\trefs/tags/v1\n\
+                      2222222222222222222222222222222222222222\trefs/tags/v1^{}";
         assert_eq!(
-            parse_ls_remote(out, "v1").unwrap(),
+            parse_ls_remote(peeled, "v1").unwrap(),
             "2222222222222222222222222222222222222222"
         );
-    }
-
-    #[test]
-    fn parse_ls_remote_takes_first_when_unpeeled() {
-        let out = "3333333333333333333333333333333333333333\tHEAD";
         assert_eq!(
-            parse_ls_remote(out, "HEAD").unwrap(),
+            parse_ls_remote("3333333333333333333333333333333333333333\tHEAD", "HEAD").unwrap(),
             "3333333333333333333333333333333333333333"
         );
-    }
-
-    #[test]
-    fn parse_ls_remote_errors_when_empty() {
         assert!(parse_ls_remote("", "nope").is_err());
     }
 
