@@ -119,32 +119,34 @@ export function useSessionLifecycle({
     ? (workspaces.find((w) => w.id === stoppingWorkspaceId)?.sessions[0] ?? null)
     : null;
 
+  // Show the outcome optimistically, and fall back to Error when the daemon refuses.
+  const run = useCallback(
+    async (sessionId: string, pending: SessionResponse["status"], call: () => Promise<unknown>, verb: string) => {
+      setSessionStatus(sessionId, pending);
+      if (await call()) {
+        toastBus.handler?.info(`Session ${verb}ed`);
+        return;
+      }
+      setSessionStatus(sessionId, "Error");
+      toastBus.handler?.error(`Failed to ${verb} session`);
+    },
+    [setSessionStatus],
+  );
+
   const confirmStop = useCallback(async () => {
     if (!stoppingSession) return;
-    const sessionId = stoppingSession.id;
+    const { id } = stoppingSession;
     setStoppingWorkspaceId(null);
-    setSessionStatus(sessionId, "Stopped");
-    if (!(await stopSession(sessionId))) {
-      setSessionStatus(sessionId, "Error");
-      toastBus.handler?.error("Failed to stop session");
-      return;
-    }
-    toastBus.handler?.info("Session stopped");
-  }, [stoppingSession, setSessionStatus]);
+    await run(id, "Stopped", () => stopSession(id), "stop");
+  }, [stoppingSession, run]);
 
   const start = useCallback(
     async (workspaceId: string) => {
       const session = workspaces.find((w) => w.id === workspaceId)?.sessions[0];
       if (!session) return;
-      setSessionStatus(session.id, "Starting");
-      if (!(await startSession(session.id))) {
-        setSessionStatus(session.id, "Error");
-        toastBus.handler?.error("Failed to start session");
-        return;
-      }
-      toastBus.handler?.info("Session started");
+      await run(session.id, "Starting", () => startSession(session.id), "start");
     },
-    [workspaces, setSessionStatus],
+    [workspaces, run],
   );
 
   const switchViewSession = switchViewTarget

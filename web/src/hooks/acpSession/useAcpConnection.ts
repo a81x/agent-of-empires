@@ -47,23 +47,15 @@ function closeQuietly(ws: WebSocket): void {
   }
 }
 
-function subscribeVisibility(cb: () => void): () => void {
-  document.addEventListener("visibilitychange", cb);
-  window.addEventListener("pageshow", cb);
+function subscribeAll(cb: () => void, ...events: [EventTarget, string][]): () => void {
+  for (const [target, type] of events) target.addEventListener(type, cb);
   return () => {
-    document.removeEventListener("visibilitychange", cb);
-    window.removeEventListener("pageshow", cb);
+    for (const [target, type] of events) target.removeEventListener(type, cb);
   };
 }
 
-function subscribeOnline(cb: () => void): () => void {
-  window.addEventListener("online", cb);
-  window.addEventListener("offline", cb);
-  return () => {
-    window.removeEventListener("online", cb);
-    window.removeEventListener("offline", cb);
-  };
-}
+const subscribeVisibility = (cb: () => void) => subscribeAll(cb, [document, "visibilitychange"], [window, "pageshow"]);
+const subscribeOnline = (cb: () => void) => subscribeAll(cb, [window, "online"], [window, "offline"]);
 
 function acpSocketProtocols(): string[] {
   const token = getToken();

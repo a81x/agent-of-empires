@@ -19,6 +19,17 @@ function storageKey(sessionId: string): string {
   return STORAGE_KEY_PREFIX + sessionId;
 }
 
+/** A stored entry with a usable timestamp, or null when it is missing or corrupt. */
+function parseEntry(raw: string | null): PersistedEntry | null {
+  if (raw === null) return null;
+  try {
+    const parsed = JSON.parse(raw) as PersistedEntry | null;
+    return parsed && typeof parsed.savedAt === "number" && !Number.isNaN(parsed.savedAt) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
 function persistedKeys(): string[] {
   const keys: string[] = [];
   for (let i = 0; i < window.localStorage.length; i++) {
@@ -39,16 +50,11 @@ export function evictOldestPersistedAcpState(currentKey: string): boolean {
       if (k === currentKey) continue;
       const raw = window.localStorage.getItem(k);
       if (raw === null) continue;
-      try {
-        const parsed = JSON.parse(raw) as PersistedEntry | null;
-        if (!parsed || typeof parsed.savedAt !== "number" || Number.isNaN(parsed.savedAt)) {
-          firstCorruptKey ??= k;
-        } else if (parsed.savedAt < oldestTime) {
-          oldestTime = parsed.savedAt;
-          oldestKey = k;
-        }
-      } catch {
-        firstCorruptKey ??= k;
+      const parsed = parseEntry(raw);
+      if (!parsed) firstCorruptKey ??= k;
+      else if (parsed.savedAt < oldestTime) {
+        oldestTime = parsed.savedAt;
+        oldestKey = k;
       }
     }
     const victim = firstCorruptKey ?? oldestKey;
@@ -83,12 +89,8 @@ export function persistState(sessionId: string, state: AcpState): void {
 export function loadPersistedState(sessionId: string): AcpState | undefined {
   if (typeof window === "undefined") return undefined;
   try {
-    const raw = window.localStorage.getItem(storageKey(sessionId));
-    if (!raw) return undefined;
-    const parsed = JSON.parse(raw) as PersistedEntry | null;
-    if (!parsed || typeof parsed.savedAt !== "number" || typeof parsed.state !== "object" || parsed.state === null) {
-      return undefined;
-    }
+    const parsed = parseEntry(window.localStorage.getItem(storageKey(sessionId)));
+    if (!parsed || typeof parsed.state !== "object" || parsed.state === null) return undefined;
     const state = parsed.state as Partial<AcpState>;
     if (
       Date.now() - parsed.savedAt > STATE_TTL_MS ||
@@ -122,14 +124,8 @@ export function sweepExpiredStorage(): void {
   const now = Date.now();
   removePersisted(() =>
     persistedKeys().filter((k) => {
-      const raw = window.localStorage.getItem(k);
-      if (!raw) return true;
-      try {
-        const parsed = JSON.parse(raw) as PersistedEntry | null;
-        return !parsed || typeof parsed.savedAt !== "number" || now - parsed.savedAt > STATE_TTL_MS;
-      } catch {
-        return true;
-      }
+      const parsed = parseEntry(window.localStorage.getItem(k));
+      return !parsed || now - parsed.savedAt > STATE_TTL_MS;
     }),
   );
 }
