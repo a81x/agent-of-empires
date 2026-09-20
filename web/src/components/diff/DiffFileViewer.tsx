@@ -21,6 +21,7 @@ import { changedLines } from "./find/changedLines";
 import type { FindMatch } from "./find/findMatches";
 import { targetScrollFraction } from "./scrollFraction";
 import { useDiffScrollHold } from "./useDiffScrollHold";
+import { Centered, TooLarge } from "./viewerChrome";
 
 interface Props {
   sessionId: string;
@@ -53,10 +54,6 @@ const lineRange = (line: number, side: "deletions" | "additions"): SelectedLineR
   side,
   endSide: side,
 });
-
-function Centered({ className = "text-text-dim", children }: { className?: string; children: ReactNode }) {
-  return <div className={`flex-1 flex items-center justify-center ${className}`}>{children}</div>;
-}
 
 export function DiffFileViewer({
   sessionId,
@@ -282,14 +279,7 @@ export function DiffFileViewer({
       </Centered>
     );
   } else if (contents.truncated) {
-    body = (
-      <Centered>
-        <div className="text-center px-4">
-          <p className="text-sm mb-1">File too large to diff inline</p>
-          <p className="text-xs">Open it in your editor to review the changes.</p>
-        </div>
-      </Centered>
-    );
+    body = <TooLarge what="File too large to diff inline" hint="Open it in your editor to review the changes." />;
   } else if (isFullFile) {
     body = <FullFileViewer content={newContent} filePath={resolvedPath} />;
   } else if (oldContent === newContent && staleComments.length === 0) {

@@ -1,7 +1,7 @@
-import type { ReactNode } from "react";
 import type { RichDiffFile } from "../../lib/types";
 import { useWebSettings } from "../../hooks/useWebSettings";
 import { LineCounts } from "./DiffFileRows";
+import { ACTIVE, BackButton, GROUP, IDLE, MarkdownToggle, ToggleButton } from "./viewerChrome";
 
 const STATUS: Record<string, [label: string, color: string]> = {
   added: ["Added", "text-status-running"],
@@ -13,37 +13,6 @@ const STATUS: Record<string, [label: string, color: string]> = {
   conflicted: ["Conflicted", "text-status-waiting"],
   unchanged: ["Unchanged", "text-text-muted"],
 };
-
-const ACTIVE = "bg-brand-600 text-white";
-const IDLE = "text-text-dim hover:text-text-secondary";
-
-function ToggleButton({
-  pressed,
-  onClick,
-  title,
-  skin,
-  children,
-}: {
-  pressed: boolean;
-  onClick: () => void;
-  title: string;
-  skin?: string;
-  children: ReactNode;
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      aria-pressed={pressed}
-      title={title}
-      className={`px-2 py-0.5 text-[11px] font-mono cursor-pointer transition-colors ${skin ?? (pressed ? ACTIVE : IDLE)}`}
-    >
-      {children}
-    </button>
-  );
-}
-
-const GROUP = "flex items-center rounded border border-surface-700/40 overflow-hidden";
 
 interface Props {
   file: RichDiffFile;
@@ -71,52 +40,14 @@ export function DiffViewerHeader({
   const split = settings.diffViewLayout === "split";
   return (
     <div className="px-3 py-2 border-b border-surface-700/20 flex items-center gap-2 shrink-0 flex-wrap">
-      {onClose && (
-        <button
-          onClick={onClose}
-          className="text-text-dim hover:text-text-secondary cursor-pointer transition-colors flex items-center gap-1 text-[11px]"
-          title="Back to terminal"
-          aria-label="Back to terminal"
-        >
-          <svg
-            width="14"
-            height="14"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="1.75"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          >
-            <path d="M15 18l-6-6 6-6" />
-          </svg>
-          <span className="hidden sm:inline">Terminal</span>
-        </button>
-      )}
+      {onClose && <BackButton label="Terminal" onClick={onClose} />}
       <span className={`font-mono text-[11px] font-semibold ${color}`}>{label}</span>
       <span className="font-mono text-[12px] text-text-primary truncate">
         {file.old_path ? `${file.old_path} → ${file.path}` : file.path}
       </span>
       <LineCounts additions={file.additions} deletions={file.deletions} />
       <div className="ml-auto flex items-center gap-2">
-        {markdownAvailable && (
-          <div className={GROUP}>
-            <ToggleButton
-              pressed={settings.markdownPreview === "rendered"}
-              onClick={() => update({ markdownPreview: "rendered" })}
-              title="Rendered Markdown"
-            >
-              Rendered
-            </ToggleButton>
-            <ToggleButton
-              pressed={settings.markdownPreview === "raw"}
-              onClick={() => update({ markdownPreview: "raw" })}
-              title="Raw Markdown source"
-            >
-              Raw
-            </ToggleButton>
-          </div>
-        )}
+        {markdownAvailable && <MarkdownToggle />}
         {!showRendered && (
           <>
             <button
