@@ -15,26 +15,21 @@ export function useServerAbout() {
   const [telemetryConsentNeeded, setTelemetryConsentNeeded] = useState(false);
   const [telemetryConsentKnown, setTelemetryConsentKnown] = useState(false);
 
-  const refreshServerAbout = useCallback(async () => {
+  const loadAbout = useCallback(async (reportSeen: boolean) => {
     try {
       const about = await fetchAbout();
-      if (about) setServerAbout(about);
+      if (!about) return;
+      setServerAbout(about);
+      if (reportSeen && !about.read_only) reportTelemetrySeen("web");
     } finally {
       setServerAboutLoaded(true);
     }
   }, []);
+  const refreshServerAbout = useCallback(() => loadAbout(false), [loadAbout]);
 
   useEffect(() => {
     let active = true;
-    void fetchAbout()
-      .then((about) => {
-        if (!active) return;
-        if (about) setServerAbout(about);
-        if (about && !about.read_only) reportTelemetrySeen("web");
-      })
-      .finally(() => {
-        if (active) setServerAboutLoaded(true);
-      });
+    void loadAbout(true);
     void fetchTelemetryStatus()
       .then((status) => {
         if (active && status && !status.responded && !status.do_not_track) setTelemetryConsentNeeded(true);
@@ -45,7 +40,7 @@ export function useServerAbout() {
     return () => {
       active = false;
     };
-  }, []);
+  }, [loadAbout]);
 
   const chooseTelemetryConsent = useCallback((enabled: boolean) => {
     setTelemetryConsentNeeded(false);

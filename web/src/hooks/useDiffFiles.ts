@@ -20,7 +20,6 @@ export function useDiffFiles(sessionId: string | null, enabled: boolean): UseDif
   const [loading, setLoading] = useState(false);
   const [revision, setRevision] = useState(0);
   const lastFingerprintRef = useRef("");
-  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const requestIdRef = useRef(0);
   const diffPanelSeenForRef = useRef<string | null>(null);
   const enabledRef = useRef(enabled);
@@ -80,16 +79,9 @@ export function useDiffFiles(sessionId: string | null, enabled: boolean): UseDif
   }, [sessionId, fetchFiles]);
 
   useEffect(() => {
-    if (intervalRef.current) {
-      clearInterval(intervalRef.current);
-      intervalRef.current = null;
-    }
-    if (enabled && sessionId) {
-      intervalRef.current = setInterval(() => void fetchFiles(), POLL_INTERVAL);
-    }
-    return () => {
-      if (intervalRef.current) clearInterval(intervalRef.current);
-    };
+    if (!enabled || !sessionId) return;
+    const id = setInterval(() => void fetchFiles(), POLL_INTERVAL);
+    return () => clearInterval(id);
   }, [enabled, sessionId, fetchFiles]);
 
   return {

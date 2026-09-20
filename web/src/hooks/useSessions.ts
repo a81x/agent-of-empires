@@ -42,10 +42,6 @@ export function useSessions() {
     setLoaded(true);
   }, []);
 
-  const refresh = useCallback(async () => {
-    applyResult(await fetchSessions());
-  }, [applyResult]);
-
   useEffect(() => {
     void fetchSessions().then(applyResult);
     intervalRef.current = setInterval(() => void fetchSessions().then(applyResult), POLL_INTERVAL);
@@ -79,7 +75,6 @@ export function useSessions() {
     markLocalOrderingUpdate,
     error,
     loaded,
-    refresh,
     injectSession,
     setSessionStatus,
     applySession,

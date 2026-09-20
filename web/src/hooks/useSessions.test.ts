@@ -22,24 +22,16 @@ describe("useSessions / loaded sentinel", () => {
     resolveFetch(null);
   });
 
-  it("flips loaded=true after the first successful fetch", async () => {
-    vi.spyOn(api, "fetchSessions").mockResolvedValue({
-      sessions: [],
-      workspace_ordering: [],
-    });
-
-    const { result } = renderHook(() => useSessions());
-
-    await waitFor(() => expect(result.current.loaded).toBe(true));
-    expect(result.current.error).toBe(false);
-  });
-
-  it("flips loaded=true even when the first fetch returns null", async () => {
-    vi.spyOn(api, "fetchSessions").mockResolvedValue(null);
-
-    const { result } = renderHook(() => useSessions());
-
-    await waitFor(() => expect(result.current.loaded).toBe(true));
-    expect(result.current.error).toBe(true);
-  });
+  it.each([
+    ["a successful fetch", { sessions: [], workspace_ordering: [] }, false],
+    ["a failed fetch", null, true],
+  ] as [string, api.SessionsEnvelope | null, boolean][])(
+    "flips loaded=true after %s",
+    async (_label, envelope, error) => {
+      vi.spyOn(api, "fetchSessions").mockResolvedValue(envelope);
+      const { result } = renderHook(() => useSessions());
+      await waitFor(() => expect(result.current.loaded).toBe(true));
+      expect(result.current.error).toBe(error);
+    },
+  );
 });

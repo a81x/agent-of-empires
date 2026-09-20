@@ -56,8 +56,7 @@ function normalizeSnapshot(settings: WebSettings): WebSettings {
   const defaults = getDefaults();
   return {
     ...settings,
-    persistentTerminals:
-      typeof settings.persistentTerminals === "boolean" ? settings.persistentTerminals : defaults.persistentTerminals,
+    persistentTerminals: normalizeBool(settings.persistentTerminals, defaults.persistentTerminals),
     maxPersistentTerminals: normalizePersistentTerminalLimit(settings.maxPersistentTerminals),
     structuredMobileFontSize: normalizeConversationFontSize(settings.structuredMobileFontSize),
     structuredDesktopFontSize: normalizeConversationFontSize(settings.structuredDesktopFontSize),
@@ -84,21 +83,13 @@ function getSnapshot(): WebSettings {
   return getDefaults();
 }
 
-export function getWebSettingsSnapshot(): WebSettings {
-  return getSnapshot();
-}
+export { getSnapshot as getWebSettingsSnapshot };
 
-let listeners: Array<() => void> = [];
+const listeners = new Set<() => void>();
 
 function subscribe(listener: () => void) {
-  listeners = [...listeners, listener];
-  return () => {
-    listeners = listeners.filter((l) => l !== listener);
-  };
-}
-
-function emitChange() {
-  for (const l of listeners) l();
+  listeners.add(listener);
+  return () => void listeners.delete(listener);
 }
 
 let cachedRaw: string | null = null;
@@ -123,7 +114,7 @@ export function useWebSettings() {
       console.warn("aoe-web-settings: failed to persist (storage full or disabled)");
     }
     cachedRaw = null;
-    emitChange();
+    for (const l of listeners) l();
   }, []);
 
   return { settings, update };
