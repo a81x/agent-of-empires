@@ -215,29 +215,19 @@ async fn probe_tmux_readiness(tmux_name: &str) -> PaneReadiness {
 mod tests {
     use super::*;
 
+    /// A window is ready while any pane is alive; an empty answer means tmux has not
+    /// created the panes yet, which is not the same as a dead window.
     #[test]
-    fn parse_pane_dead_empty_is_not_ready() {
-        assert_eq!(parse_pane_dead_output(""), PaneReadiness::NotReady);
-        assert_eq!(parse_pane_dead_output("   \n  \n"), PaneReadiness::NotReady);
-    }
-
-    #[test]
-    fn parse_pane_dead_single_alive_is_ready() {
-        assert_eq!(parse_pane_dead_output("0\n"), PaneReadiness::Ready);
-    }
-
-    #[test]
-    fn parse_pane_dead_single_dead_is_dead() {
-        assert_eq!(parse_pane_dead_output("1\n"), PaneReadiness::Dead);
-    }
-
-    #[test]
-    fn parse_pane_dead_mixed_is_ready() {
-        assert_eq!(parse_pane_dead_output("1\n0\n1\n"), PaneReadiness::Ready);
-    }
-
-    #[test]
-    fn parse_pane_dead_all_dead_is_dead() {
-        assert_eq!(parse_pane_dead_output("1\n1\n"), PaneReadiness::Dead);
+    fn parse_pane_dead_output_reads_the_whole_window() {
+        for (out, want) in [
+            ("", PaneReadiness::NotReady),
+            ("   \n  \n", PaneReadiness::NotReady),
+            ("0\n", PaneReadiness::Ready),
+            ("1\n", PaneReadiness::Dead),
+            ("1\n0\n1\n", PaneReadiness::Ready),
+            ("1\n1\n", PaneReadiness::Dead),
+        ] {
+            assert_eq!(parse_pane_dead_output(out), want, "{out:?}");
+        }
     }
 }

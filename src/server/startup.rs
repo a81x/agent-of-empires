@@ -1046,16 +1046,12 @@ mod tests {
     }
 
     #[test]
-    fn remote_serve_url_contents_keeps_public_primary_and_loopback_alternate() {
+    fn remote_serve_url_contents_pairs_the_public_url_with_a_loopback_alternate() {
         assert_eq!(
             remote_serve_url_contents("https://aoe.example.test", 8080, Some("secret")),
             "https://aoe.example.test/?token=secret\n\
              localhost\thttp://127.0.0.1:8080/?token=secret\n"
         );
-    }
-
-    #[test]
-    fn remote_serve_url_contents_handles_trailing_slash_and_no_auth() {
         assert_eq!(
             remote_serve_url_contents("https://aoe.example.test/", 8080, None),
             "https://aoe.example.test/\nlocalhost\thttp://127.0.0.1:8080/\n"
