@@ -1421,21 +1421,95 @@ mod tests {
         agents::get_agent("claude").expect("claude agent exists")
     }
 
-    fn title_default(agent: &agents::AgentDef) -> OneshotModel {
-        OneshotModel::Title(resolve_title_model_args(agent, &HashMap::new()))
+    /// The one-shot argv for `name`, joined with spaces, with `model` standing in
+    /// for that agent's `smart_rename_model` entry (`None` leaves it unset).
+    fn argv_for(name: &str, model: Option<&str>) -> String {
+        let agent = agents::get_agent(name).unwrap_or_else(|| panic!("{name} agent exists"));
+        let models: HashMap<String, String> = model
+            .map(|m| (name.to_string(), m.to_string()))
+            .into_iter()
+            .collect();
+        let args = OneshotModel::Title(resolve_title_model_args(agent, &models));
+        build_oneshot_argv(agent, "name this", args)
+            .unwrap_or_else(|| panic!("{name} one-shot"))
+            .join(" ")
     }
 
     #[test]
-    fn argv_is_binary_token_prompt() {
-        let argv = build_oneshot_argv(claude(), "hello", title_default(claude()))
-            .expect("claude one-shot");
-        assert_eq!(argv, vec!["claude", "-p", "--model", "haiku", "hello"]);
+    fn oneshot_argv_places_model_args_by_agent_convention() {
+        // (agent, smart_rename_model entry, argv)
+        let cases = [
+            ("claude", None, "claude -p --model haiku name this"),
+            ("codex", None, "codex exec --skip-git-repo-check name this"),
+            ("copilot", None, COPILOT_DEFAULT),
+            (
+                "codex",
+                Some("gpt-5"),
+                "codex exec -m gpt-5 --skip-git-repo-check name this",
+            ),
+            ("copilot", Some("claude-haiku-4.5"), COPILOT_MODEL),
+            (
+                "gemini",
+                Some("gemini-2.5-flash"),
+                "gemini -p name this -m gemini-2.5-flash",
+            ),
+            (
+                "kimi",
+                Some("moonshot-v1-8k"),
+                "kimi -p name this -m moonshot-v1-8k",
+            ),
+            (
+                "opencode",
+                Some("anthropic/claude-haiku-4-5"),
+                OPENCODE_MODEL,
+            ),
+        ];
+        for (name, model, want) in cases {
+            assert_eq!(argv_for(name, model), want, "{name} model={model:?}");
+        }
     }
 
+    const COPILOT_DEFAULT: &str = "copilot -p name this -s --allow-all-tools --no-ask-user";
+    const COPILOT_MODEL: &str =
+        "copilot -p name this --model claude-haiku-4.5 -s --allow-all-tools --no-ask-user";
+    const OPENCODE_MODEL: &str = "opencode run -m anthropic/claude-haiku-4-5 name this";
+
     #[test]
-    fn argv_none_for_agent_without_oneshot() {
+    fn oneshot_argv_is_none_without_a_one_shot_mode() {
         let cursor = agents::get_agent("cursor").expect("cursor agent exists");
         assert!(build_oneshot_argv(cursor, "hello", OneshotModel::CliDefault).is_none());
+    }
+
+    #[test]
+    fn cli_default_drops_only_the_resolved_model_args() {
+        assert_eq!(
+            build_oneshot_argv(claude(), "name this", OneshotModel::CliDefault).unwrap(),
+            vec!["claude", "-p", "name this"]
+        );
+        for agent in agents::AGENTS.iter().filter(|a| a.oneshot_flag.is_some()) {
+            let default_args = resolve_title_model_args(agent, &HashMap::new());
+            let title = build_oneshot_argv(
+                agent,
+                "name this",
+                OneshotModel::Title(default_args.clone()),
+            )
+            .expect("one-shot");
+            let cli =
+                build_oneshot_argv(agent, "name this", OneshotModel::CliDefault).expect("one-shot");
+            assert!(!cli.iter().any(|a| a == "--model" || a == "-m"));
+            assert_eq!(cli.len(), title.len() - default_args.len());
+        }
+    }
+
+    #[test]
+    fn agents_without_a_cheap_default_take_no_model_args() {
+        for name in ["opencode", "kimi", "codex", "gemini", "copilot"] {
+            let argv = argv_for(name, None);
+            assert!(
+                !argv.split(' ').any(|a| a == "--model" || a == "-m"),
+                "{name} has no built-in cheap alias, so its default argv carries no model flag: {argv:?}"
+            );
+        }
     }
 
     #[test]
@@ -1481,31 +1555,30 @@ mod tests {
     }
 
     #[test]
-    fn sandboxed_session_is_eligible_for_its_own_agent() {
+    fn a_sandboxed_session_may_only_be_named_by_its_own_agent() {
         let overrides = HashMap::new();
-        assert!(
-            check_eligible_resolved(true, true, "Vikings", "claude", "", true, "", &overrides)
-                .is_ok()
-        );
-    }
-
-    #[test]
-    fn sandboxed_session_rejects_a_different_rename_agent() {
-        let overrides = HashMap::new();
+        let resolved = |rename_agent: &str, sandboxed: bool| {
+            check_eligible_resolved(
+                true,
+                true,
+                "Vikings",
+                "claude",
+                rename_agent,
+                sandboxed,
+                "",
+                &overrides,
+            )
+        };
+        assert!(resolved("", true).is_ok(), "its own agent is fine");
         assert!(matches!(
-            check_eligible_resolved(true, true, "Vikings", "claude", "codex", true, "", &overrides),
+            resolved("codex", true),
             Err(SkipReason::SandboxRenameAgentMismatch)
         ));
-        assert!(matches!(
-            check_eligible_resolved(
-                true, true, "Vikings", "claude", "cursor", true, "", &overrides
-            ),
-            Err(SkipReason::NoOneshot)
-        ));
-        assert!(check_eligible_resolved(
-            true, true, "Vikings", "claude", "codex", false, "", &overrides
-        )
-        .is_ok());
+        assert!(
+            matches!(resolved("cursor", true), Err(SkipReason::NoOneshot)),
+            "an agent with no one-shot mode reports that, not the sandbox gate"
+        );
+        assert!(resolved("codex", false).is_ok(), "host sessions are free");
     }
 
     #[tokio::test]
@@ -1554,29 +1627,20 @@ mod tests {
         );
     }
 
+    /// Adding a variant here is what forces a new arm in `as_str` and `user_message`.
+    const ALL_SKIP_REASONS: [SkipReason; 7] = [
+        SkipReason::NotStructured,
+        SkipReason::Disabled,
+        SkipReason::NameNotDefault,
+        SkipReason::Sandboxed,
+        SkipReason::SandboxRenameAgentMismatch,
+        SkipReason::NoOneshot,
+        SkipReason::CommandOverridden,
+    ];
+
     #[test]
     fn every_skip_reason_has_a_user_message() {
-        let all = {
-            let _exhaustive = |r: SkipReason| match r {
-                SkipReason::NotStructured
-                | SkipReason::Disabled
-                | SkipReason::NameNotDefault
-                | SkipReason::Sandboxed
-                | SkipReason::SandboxRenameAgentMismatch
-                | SkipReason::NoOneshot
-                | SkipReason::CommandOverridden => (),
-            };
-            [
-                SkipReason::NotStructured,
-                SkipReason::Disabled,
-                SkipReason::NameNotDefault,
-                SkipReason::Sandboxed,
-                SkipReason::SandboxRenameAgentMismatch,
-                SkipReason::NoOneshot,
-                SkipReason::CommandOverridden,
-            ]
-        };
-        for reason in all {
+        for reason in ALL_SKIP_REASONS {
             assert!(
                 !reason.user_message().is_empty(),
                 "{} has no user message",
@@ -1638,188 +1702,6 @@ mod tests {
     }
 
     #[test]
-    fn argv_codex_skips_git_repo_check_with_prompt_last() {
-        let codex = agents::get_agent("codex").unwrap();
-        let argv =
-            build_oneshot_argv(codex, "name this", title_default(codex)).expect("codex one-shot");
-        assert_eq!(
-            argv,
-            vec!["codex", "exec", "--skip-git-repo-check", "name this"]
-        );
-        assert_eq!(
-            build_oneshot_argv(claude(), "name this", title_default(claude())).unwrap(),
-            vec!["claude", "-p", "--model", "haiku", "name this"]
-        );
-    }
-
-    #[test]
-    fn argv_copilot_appends_silent_autoapprove_flags_after_prompt() {
-        let copilot = agents::get_agent("copilot").unwrap();
-        let argv = build_oneshot_argv(copilot, "name this", title_default(copilot))
-            .expect("copilot one-shot");
-        assert_eq!(
-            argv,
-            vec![
-                "copilot",
-                "-p",
-                "name this",
-                "-s",
-                "--allow-all-tools",
-                "--no-ask-user"
-            ]
-        );
-    }
-
-    #[test]
-    fn argv_claude_injects_cheap_model_before_prompt() {
-        let argv = build_oneshot_argv(claude(), "name this", title_default(claude()))
-            .expect("claude one-shot");
-        let model_idx = argv.iter().position(|a| a == "--model").expect("--model");
-        assert_eq!(argv[model_idx + 1], "haiku");
-        let prompt_idx = argv.iter().position(|a| a == "name this").expect("prompt");
-        assert!(
-            model_idx < prompt_idx,
-            "model args must precede the prompt, got {argv:?}"
-        );
-        assert_eq!(
-            prompt_idx,
-            argv.len() - 1,
-            "prompt must be the last element"
-        );
-    }
-
-    #[test]
-    fn argv_summary_model_uses_cli_default() {
-        let argv = build_oneshot_argv(claude(), "name this", OneshotModel::CliDefault)
-            .expect("claude one-shot");
-        assert!(!argv.iter().any(|a| a == "--model" || a == "haiku"));
-        assert_eq!(argv, vec!["claude", "-p", "name this"]);
-    }
-
-    #[test]
-    fn argv_cli_default_omits_only_the_resolved_model_args() {
-        for agent in agents::AGENTS.iter().filter(|a| a.oneshot_flag.is_some()) {
-            let default_args = resolve_title_model_args(agent, &HashMap::new());
-            let title = build_oneshot_argv(
-                agent,
-                "name this",
-                OneshotModel::Title(default_args.clone()),
-            )
-            .expect("one-shot");
-            let cli =
-                build_oneshot_argv(agent, "name this", OneshotModel::CliDefault).expect("one-shot");
-            assert!(!cli.iter().any(|a| a == "--model" || a == "-m"));
-            assert_eq!(cli.len(), title.len() - default_args.len());
-        }
-    }
-
-    #[test]
-    fn argv_agents_without_cheap_default_take_no_model_args() {
-        for name in ["opencode", "kimi", "codex", "gemini", "copilot"] {
-            let agent = agents::get_agent(name).unwrap();
-            let argv = build_oneshot_argv(agent, "name this", title_default(agent))
-                .unwrap_or_else(|| panic!("{name} one-shot"));
-            assert!(
-                !argv.iter().any(|a| a == "--model" || a == "-m"),
-                "{name} has no built-in cheap alias, so its default argv carries no model flag: {argv:?}"
-            );
-        }
-    }
-
-    #[test]
-    fn argv_user_model_override_positioned_by_flag_binding() {
-        let mut models = HashMap::new();
-        models.insert("codex".to_string(), "gpt-5".to_string());
-        models.insert("copilot".to_string(), "claude-haiku-4.5".to_string());
-
-        let codex = agents::get_agent("codex").unwrap();
-        let codex_argv = build_oneshot_argv(
-            codex,
-            "name this",
-            OneshotModel::Title(resolve_title_model_args(codex, &models)),
-        )
-        .expect("codex one-shot");
-        assert_eq!(
-            codex_argv,
-            vec![
-                "codex",
-                "exec",
-                "-m",
-                "gpt-5",
-                "--skip-git-repo-check",
-                "name this"
-            ]
-        );
-
-        let copilot = agents::get_agent("copilot").unwrap();
-        let copilot_argv = build_oneshot_argv(
-            copilot,
-            "name this",
-            OneshotModel::Title(resolve_title_model_args(copilot, &models)),
-        )
-        .expect("copilot one-shot");
-        assert_eq!(
-            copilot_argv,
-            vec![
-                "copilot",
-                "-p",
-                "name this",
-                "--model",
-                "claude-haiku-4.5",
-                "-s",
-                "--allow-all-tools",
-                "--no-ask-user"
-            ]
-        );
-
-        let mut vb_models = HashMap::new();
-        vb_models.insert("gemini".to_string(), "gemini-2.5-flash".to_string());
-        vb_models.insert("kimi".to_string(), "moonshot-v1-8k".to_string());
-        let gemini = agents::get_agent("gemini").unwrap();
-        assert_eq!(
-            build_oneshot_argv(
-                gemini,
-                "name this",
-                OneshotModel::Title(resolve_title_model_args(gemini, &vb_models)),
-            )
-            .expect("gemini one-shot"),
-            vec!["gemini", "-p", "name this", "-m", "gemini-2.5-flash"]
-        );
-        let kimi = agents::get_agent("kimi").unwrap();
-        assert_eq!(
-            build_oneshot_argv(
-                kimi,
-                "name this",
-                OneshotModel::Title(resolve_title_model_args(kimi, &vb_models)),
-            )
-            .expect("kimi one-shot"),
-            vec!["kimi", "-p", "name this", "-m", "moonshot-v1-8k"]
-        );
-
-        let mut oc_models = HashMap::new();
-        oc_models.insert(
-            "opencode".to_string(),
-            "anthropic/claude-haiku-4-5".to_string(),
-        );
-        let opencode = agents::get_agent("opencode").unwrap();
-        assert_eq!(
-            build_oneshot_argv(
-                opencode,
-                "name this",
-                OneshotModel::Title(resolve_title_model_args(opencode, &oc_models)),
-            )
-            .expect("opencode one-shot"),
-            vec![
-                "opencode",
-                "run",
-                "-m",
-                "anthropic/claude-haiku-4-5",
-                "name this"
-            ]
-        );
-    }
-
-    #[test]
     fn resolve_title_model_args_precedence() {
         let claude = claude();
         let codex = agents::get_agent("codex").unwrap();
@@ -1857,78 +1739,48 @@ mod tests {
     }
 
     #[test]
-    fn resolved_unset_uses_session_agent() {
-        let overrides = HashMap::new();
-        let agent =
-            check_eligible_resolved(true, true, "Vikings", "claude", "", false, "", &overrides)
-                .expect("eligible");
-        assert_eq!(agent.binary, "claude");
-    }
-
-    #[test]
-    fn resolved_picks_distinct_rename_agent() {
-        let overrides = HashMap::new();
-        let agent = check_eligible_resolved(
-            true, true, "Vikings", "claude", "codex", false, "", &overrides,
-        )
-        .expect("eligible");
-        assert_eq!(agent.binary, "codex");
-    }
-
-    #[test]
-    fn resolved_override_gate_targets_the_right_agent() {
-        let mut overrides = HashMap::new();
-        overrides.insert("claude".to_string(), "my-wrapper".to_string());
-        assert!(matches!(
-            check_eligible_resolved(true, true, "Vikings", "claude", "", false, "", &overrides),
-            Err(SkipReason::CommandOverridden)
-        ));
-        assert!(check_eligible_resolved(
-            true, true, "Vikings", "claude", "codex", false, "", &overrides
-        )
-        .is_ok());
-        let mut codex_override = HashMap::new();
-        codex_override.insert("codex".to_string(), "my-codex".to_string());
-        assert!(matches!(
+    fn the_rename_agent_and_its_override_gate_resolve_independently_of_the_session() {
+        let none = HashMap::new();
+        let resolve = |rename_agent: &str, command: &str, overrides: &HashMap<String, String>| {
             check_eligible_resolved(
                 true,
                 true,
                 "Vikings",
                 "claude",
-                "codex",
+                rename_agent,
                 false,
-                "",
-                &codex_override
-            ),
-            Err(SkipReason::CommandOverridden)
-        ));
-    }
-
-    #[test]
-    fn resolved_session_command_ignored_for_distinct_rename_agent() {
-        let overrides = HashMap::new();
-        assert!(check_eligible_resolved(
-            true, true, "Vikings", "opencode", "claude", false, "opencode", &overrides
-        )
-        .is_ok());
-    }
-
-    #[test]
-    fn resolved_unknown_rename_agent_is_no_oneshot() {
-        let overrides = HashMap::new();
-        assert!(matches!(
-            check_eligible_resolved(
-                true,
-                true,
-                "Vikings",
-                "claude",
-                "not-a-real-agent",
-                false,
-                "",
-                &overrides
-            ),
+                command,
+                overrides,
+            )
+            .map(|agent| agent.binary)
+        };
+        assert_eq!(resolve("", "", &none), Ok("claude"));
+        assert_eq!(resolve("codex", "", &none), Ok("codex"));
+        assert_eq!(
+            resolve("not-a-real-agent", "", &none),
             Err(SkipReason::NoOneshot)
-        ));
+        );
+
+        // The override that matters is the one on the agent actually being run.
+        let claude_override = HashMap::from([("claude".to_string(), "my-wrapper".to_string())]);
+        assert_eq!(
+            resolve("", "", &claude_override),
+            Err(SkipReason::CommandOverridden)
+        );
+        assert_eq!(resolve("codex", "", &claude_override), Ok("codex"));
+        let codex_override = HashMap::from([("codex".to_string(), "my-codex".to_string())]);
+        assert_eq!(
+            resolve("codex", "", &codex_override),
+            Err(SkipReason::CommandOverridden)
+        );
+
+        assert!(
+            check_eligible_resolved(
+                true, true, "Vikings", "opencode", "claude", false, "opencode", &none
+            )
+            .is_ok(),
+            "the session's own command is irrelevant to a distinct rename agent"
+        );
     }
 
     const CLAUDE_BANNER_TRANSCRIPT: &str = "\
@@ -1964,28 +1816,7 @@ Patched the race in auth.rs and added a regression test.";
     }
 
     #[test]
-    fn strip_agent_banner_is_noop_for_other_agents() {
-        assert_eq!(
-            strip_agent_banner(CLAUDE_BANNER_TRANSCRIPT, "codex"),
-            CLAUDE_BANNER_TRANSCRIPT
-        );
-    }
-
-    #[test]
-    fn strip_agent_banner_is_noop_without_claude_code_mention() {
-        let plain = "> refactor the payment retry loop\n\nDone: added a backoff and a test.";
-        assert_eq!(strip_agent_banner(plain, "claude"), plain);
-    }
-
-    #[test]
-    fn strip_agent_banner_keeps_content_merely_mentioning_claude_code() {
-        let about = "> make the Claude Code onboarding docs clearer\n\n\
-Rewrote the getting-started section and fixed two broken links.";
-        assert_eq!(strip_agent_banner(about, "claude"), about);
-    }
-
-    #[test]
-    fn strip_agent_banner_falls_back_when_only_banner() {
+    fn strip_agent_banner_leaves_everything_else_alone() {
         let banner_only = "\
 ╭─── Claude Code v2.1.216 ──────────╮
 │         Welcome back Nathan!      │
@@ -1993,7 +1824,23 @@ Rewrote the getting-started section and fixed two broken links.";
 ╰────────────────────────────────────╯
 
  ⚠ 3 MCP servers need authentication · run /mcp";
-        assert_eq!(strip_agent_banner(banner_only, "claude"), banner_only);
+        for (case, text, tool) in [
+            ("another agent", CLAUDE_BANNER_TRANSCRIPT, "codex"),
+            (
+                "no claude code mention",
+                "> refactor the payment retry loop\n\nDone: added a backoff and a test.",
+                "claude",
+            ),
+            (
+                "content about claude code",
+                "> make the Claude Code onboarding docs clearer\n\n\
+Rewrote the getting-started section and fixed two broken links.",
+                "claude",
+            ),
+            ("nothing but banner", banner_only, "claude"),
+        ] {
+            assert_eq!(strip_agent_banner(text, tool), text, "{case}");
+        }
     }
 
     #[test]
@@ -2030,46 +1877,6 @@ Rewrote the getting-started section and fixed two broken links.";
     }
 
     #[test]
-    fn sanitize_picks_title_from_chatty_output() {
-        let raw = "Sure, here is a concise title:\n\nFix login redirect bug\n";
-        assert_eq!(
-            sanitize_title(raw, "fix the login redirect").as_deref(),
-            Some("Fix login redirect bug")
-        );
-    }
-
-    #[test]
-    fn argv_per_agent_tokens() {
-        assert_eq!(
-            build_oneshot_argv(
-                agents::get_agent("codex").unwrap(),
-                "x",
-                OneshotModel::CliDefault
-            )
-            .unwrap()[1],
-            "exec"
-        );
-        assert_eq!(
-            build_oneshot_argv(
-                agents::get_agent("opencode").unwrap(),
-                "x",
-                OneshotModel::CliDefault
-            )
-            .unwrap()[1],
-            "run"
-        );
-        assert_eq!(
-            build_oneshot_argv(
-                agents::get_agent("gemini").unwrap(),
-                "x",
-                OneshotModel::CliDefault
-            )
-            .unwrap()[1],
-            "-p"
-        );
-    }
-
-    #[test]
     fn build_prompt_truncates_and_strips_nul() {
         let msg = format!("start{}\u{0}end", "x".repeat(5000));
         let p = build_prompt(&msg);
@@ -2079,61 +1886,46 @@ Rewrote the getting-started section and fixed two broken links.";
     }
 
     #[test]
-    fn sanitize_plain_title() {
-        assert_eq!(
-            sanitize_title("Fix login bug", "whatever").as_deref(),
-            Some("Fix login bug")
-        );
-    }
+    fn sanitize_title_accepts_one_clean_line_and_rejects_the_rest() {
+        // Raw agent stdout, and the title kept from it.
+        let kept: &[(&str, &str)] = &[
+            ("Fix login bug", "Fix login bug"),
+            ("**\"Refactor auth module.\"**", "Refactor auth module"),
+            ("- Update README", "Update README"),
+            ("1. Add dark mode", "Add dark mode"),
+            ("\u{1b}[32mGreen title here\u{1b}[0m", "Green title here"),
+            // The last qualifying line wins over preamble and log noise.
+            (
+                "Sure, here is a concise title:\n\nFix login redirect bug\n",
+                "Fix login redirect bug",
+            ),
+            (
+                "[2024] booting agent\nthinking...\nWire up websockets\n",
+                "Wire up websockets",
+            ),
+        ];
+        for (raw, want) in kept {
+            assert_eq!(sanitize_title(raw, "x").as_deref(), Some(*want), "{raw:?}");
+        }
 
-    #[test]
-    fn sanitize_strips_quotes_markdown_punctuation() {
-        assert_eq!(
-            sanitize_title("**\"Refactor auth module.\"**", "x").as_deref(),
-            Some("Refactor auth module")
+        let too_wordy = "a ".repeat(20);
+        let too_long = "z".repeat(80);
+        let rejected = [
+            "I cannot help with that",
+            "Sorry, no.",
+            "NONE",
+            "   \n  ",
+            too_wordy.as_str(),
+            too_long.as_str(),
+            "12345",
+        ];
+        for raw in rejected {
+            assert!(sanitize_title(raw, "x").is_none(), "{raw:?}");
+        }
+        assert!(
+            sanitize_title("fix the thing", "fix the thing").is_none(),
+            "a title echoing the prompt is not a title"
         );
-        assert_eq!(
-            sanitize_title("- Update README", "x").as_deref(),
-            Some("Update README")
-        );
-        assert_eq!(
-            sanitize_title("1. Add dark mode", "x").as_deref(),
-            Some("Add dark mode")
-        );
-    }
-
-    #[test]
-    fn sanitize_picks_last_qualifying_line_from_verbose_output() {
-        let raw = "[2024] booting agent\nthinking...\nWire up websockets\n";
-        assert_eq!(
-            sanitize_title(raw, "x").as_deref(),
-            Some("Wire up websockets")
-        );
-    }
-
-    #[test]
-    fn sanitize_strips_ansi() {
-        let raw = "\u{1b}[32mGreen title here\u{1b}[0m";
-        assert_eq!(
-            sanitize_title(raw, "x").as_deref(),
-            Some("Green title here")
-        );
-    }
-
-    #[test]
-    fn sanitize_rejects_refusals_none_empty_and_echo() {
-        assert!(sanitize_title("I cannot help with that", "x").is_none());
-        assert!(sanitize_title("Sorry, no.", "x").is_none());
-        assert!(sanitize_title("NONE", "x").is_none());
-        assert!(sanitize_title("   \n  ", "x").is_none());
-        assert!(sanitize_title("fix the thing", "fix the thing").is_none());
-    }
-
-    #[test]
-    fn sanitize_rejects_too_long_or_wordy() {
-        assert!(sanitize_title("a ".repeat(20).trim(), "x").is_none());
-        assert!(sanitize_title(&"z".repeat(80), "x").is_none());
-        assert!(sanitize_title("12345", "x").is_none());
     }
 
     // Regression for: pins the shared helper that both `try_smart_rename` and the sidebar indicator
