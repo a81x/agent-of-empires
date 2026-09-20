@@ -93,6 +93,24 @@ const jobResult = (state: "succeeded" | "failed", tail: string, error?: string):
     },
   }) as PluginJobResult;
 
+const manifest = (over: Record<string, unknown> = {}) => ({
+  id: "acme.widget",
+  name: "Widget",
+  version: "2.3.0",
+  description: "A widget plugin.",
+  api_version: 4,
+  capabilities: ["net"],
+  ui_contributions: [{ slot: "status-bar", id: "s" }],
+  screenshots: [],
+  ...over,
+});
+
+const details = (over: Record<string, unknown> = {}) =>
+  api.fetchPluginDetails.mockResolvedValue({
+    kind: "ok",
+    detail: { source: "gh:acme/widget", manifest: manifest(), manifest_error: null, release_tags: [], ...over },
+  });
+
 const WIDGET = {
   slug: "gh:acme/widget",
   html_url: "https://github.com/acme/widget",
@@ -225,24 +243,7 @@ describe("detail modal", () => {
   });
 
   it("opens from a discovery result with version and release tags", async () => {
-    api.fetchPluginDetails.mockResolvedValue({
-      kind: "ok",
-      detail: {
-        source: "gh:acme/widget",
-        manifest: {
-          id: "acme.widget",
-          name: "Widget",
-          version: "2.3.0",
-          description: "A widget plugin.",
-          api_version: 4,
-          capabilities: ["net"],
-          ui_contributions: [{ slot: "status-bar", id: "s" }],
-          screenshots: [],
-        },
-        manifest_error: null,
-        release_tags: ["v2.3.0", "v2.2.0"],
-      },
-    });
+    details({ release_tags: ["v2.3.0", "v2.2.0"] });
     renderWith();
     await click("plugins-tab-marketplace");
     await click("plugins-discover");
@@ -257,26 +258,13 @@ describe("detail modal", () => {
 
   it("renders a screenshot gallery with a dismissible lightbox", async () => {
     const a = "https://raw.githubusercontent.com/acme/widget/HEAD/a.png";
-    api.fetchPluginDetails.mockResolvedValue({
-      kind: "ok",
-      detail: {
-        source: "gh:acme/widget",
-        manifest: {
-          id: "acme.widget",
-          name: "Widget",
-          version: "2.3.0",
-          description: "",
-          api_version: 5,
-          capabilities: [],
-          ui_contributions: [],
-          screenshots: [
-            { src: a, alt: "Dashboard card", caption: "Live card." },
-            { src: "https://raw.githubusercontent.com/acme/widget/HEAD/b.gif", alt: "Demo", caption: "" },
-          ],
-        },
-        manifest_error: null,
-        release_tags: [],
-      },
+    details({
+      manifest: manifest({
+        screenshots: [
+          { src: a, alt: "Dashboard card", caption: "Live card." },
+          { src: "https://raw.githubusercontent.com/acme/widget/HEAD/b.gif", alt: "Demo", caption: "" },
+        ],
+      }),
     });
     renderWith();
     await click("plugin-open-example.plugin");
