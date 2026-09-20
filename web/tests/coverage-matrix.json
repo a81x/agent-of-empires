@@ -1560,7 +1560,7 @@
       "id": "session.trash.flow",
       "kind": "mocked-playwright",
       "risk": "high",
-      "specs": ["tests/session-trash-flow.spec.ts"],
+      "specs": ["tests/session-trash.spec.ts"],
       "components": [
         "web/src/App.tsx",
         "web/src/components/WorkspaceSidebar.tsx",
@@ -1572,7 +1572,7 @@
       "id": "session.trash.empty-trash",
       "kind": "mocked-playwright",
       "risk": "high",
-      "specs": ["tests/session-empty-trash.spec.ts"],
+      "specs": ["tests/session-trash.spec.ts"],
       "components": [
         "web/src/App.tsx",
         "web/src/components/WorkspaceSidebar.tsx",
@@ -3035,7 +3035,7 @@
       "id": "story.delete-active-session",
       "kind": "mocked-playwright",
       "risk": "high",
-      "specs": ["tests/delete-active-session.spec.ts"],
+      "specs": ["tests/session-trash.spec.ts"],
       "components": ["web/src/components/DeleteSessionDialog.tsx", "web/src/components/WorkspaceSidebar.tsx"]
     },
     {
