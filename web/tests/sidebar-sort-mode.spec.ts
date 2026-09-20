@@ -2,6 +2,8 @@
 // sort client-side, pin multi-repo last, persist in localStorage, and disable drag.
 
 import { test, expect } from "./helpers/mockedTest";
+import { sessionResponse as baseSession } from "./helpers/sessions";
+import { mockStaticApis } from "./helpers/apiMocks";
 import { Page } from "@playwright/test";
 
 interface MockSession {
@@ -18,29 +20,7 @@ interface MockSession {
   workspace_repos?: { name: string; source_path: string; branch: string }[];
 }
 
-function sessionResponse(s: MockSession) {
-  return {
-    id: s.id,
-    title: s.title,
-    project_path: s.project_path,
-    group_path: s.project_path,
-    tool: "claude",
-    status: s.status ?? "Idle",
-    yolo_mode: false,
-    created_at: s.created_at,
-    last_accessed_at: s.last_accessed_at ?? null,
-    idle_entered_at: s.idle_entered_at ?? null,
-    last_error: null,
-    branch: s.branch,
-    main_repo_path: null,
-    is_sandboxed: false,
-    favorited: s.favorited ?? false,
-    urgent: s.urgent ?? false,
-    has_terminal: true,
-    profile: "default",
-    workspace_repos: s.workspace_repos ?? [],
-  };
-}
+const sessionResponse = (s: MockSession) => baseSession({ favorited: false, urgent: false, ...s });
 
 async function mockApis(
   page: Page,
@@ -48,7 +28,7 @@ async function mockApis(
   getOrdering: () => string[],
   onPut?: (order: string[]) => void,
 ) {
-  await page.route("**/api/login/status", (r) => r.fulfill({ json: { required: false, authenticated: true } }));
+  await mockStaticApis(page);
   await page.route("**/api/sessions", (r) => {
     if (r.request().method() !== "GET") return r.fulfill({ status: 400 });
     return r.fulfill({
@@ -65,9 +45,6 @@ async function mockApis(
     if (body.order) onPut?.(body.order);
     return r.fulfill({ json: { order: body.order ?? [] } });
   });
-  for (const path of ["settings", "themes", "agents", "profiles", "groups", "devices", "docker/status", "about"]) {
-    await page.route(`**/api/${path}`, (r) => r.fulfill({ json: path === "docker/status" ? {} : [] }));
-  }
 }
 
 async function readWorkspaceTitles(page: Page): Promise<string[]> {

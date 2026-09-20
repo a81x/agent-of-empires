@@ -11,6 +11,7 @@
 // not interfere with page-load writes to unrelated keys.
 
 import { test, expect } from "./helpers/mockedTest";
+import { mockStaticApis } from "./helpers/apiMocks";
 import type { Page } from "@playwright/test";
 
 const SIDEBAR_WIDTH_KEY = "aoe-sidebar-width";
@@ -45,11 +46,8 @@ async function enableThrow(page: Page, key: string) {
 }
 
 async function mockApis(page: Page) {
-  await page.route("**/api/login/status", (r) => r.fulfill({ json: { required: false, authenticated: true } }));
+  await mockStaticApis(page);
   await page.route("**/api/sessions", (r) => r.fulfill({ json: { sessions: [], workspace_ordering: [] } }));
-  for (const path of ["settings", "themes", "agents", "profiles", "groups", "devices", "docker/status", "about"]) {
-    await page.route(`**/api/${path}`, (r) => r.fulfill({ json: path === "docker/status" ? {} : [] }));
-  }
 }
 
 test.describe("#1345 localStorage QuotaExceeded crash regression", () => {

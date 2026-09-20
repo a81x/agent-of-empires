@@ -12,6 +12,8 @@
 // tests (src/lib/__tests__/pluginUi.test.ts, sidebarSort.test.ts).
 
 import { test, expect } from "./helpers/mockedTest";
+import { sessionResponse as baseSession } from "./helpers/sessions";
+import { mockStaticApis } from "./helpers/apiMocks";
 import { Page } from "@playwright/test";
 
 interface MockSession {
@@ -21,29 +23,8 @@ interface MockSession {
   created_at: string;
 }
 
-function sessionResponse(s: MockSession) {
-  return {
-    id: s.id,
-    title: s.title,
-    project_path: "/tmp/repo",
-    group_path: "/tmp/repo",
-    tool: "claude",
-    status: "Idle",
-    yolo_mode: false,
-    created_at: s.created_at,
-    last_accessed_at: null,
-    idle_entered_at: null,
-    last_error: null,
-    branch: s.branch,
-    main_repo_path: null,
-    is_sandboxed: false,
-    favorited: false,
-    urgent: false,
-    has_terminal: true,
-    profile: "default",
-    workspace_repos: [],
-  };
-}
+const sessionResponse = (s: MockSession) =>
+  baseSession({ project_path: "/tmp/repo", favorited: false, urgent: false, ...s });
 
 // A row-column with a sort scalar, a status facet token, plus the global
 // sort-key and filter-facet that reference them, for one session.
@@ -89,15 +70,12 @@ const GLOBAL_ENTRIES = [
 ];
 
 async function mockApis(page: Page, sessions: MockSession[], ordering: string[], uiEntries: unknown[]) {
-  await page.route("**/api/login/status", (r) => r.fulfill({ json: { required: false, authenticated: true } }));
+  await mockStaticApis(page);
   await page.route("**/api/sessions", (r) => {
     if (r.request().method() !== "GET") return r.fulfill({ status: 400 });
     return r.fulfill({ json: { sessions: sessions.map(sessionResponse), workspace_ordering: ordering } });
   });
   await page.route("**/api/plugins/ui-state", (r) => r.fulfill({ json: { entries: uiEntries, notifications: [] } }));
-  for (const path of ["settings", "themes", "agents", "profiles", "groups", "devices", "docker/status", "about"]) {
-    await page.route(`**/api/${path}`, (r) => r.fulfill({ json: path === "docker/status" ? {} : [] }));
-  }
 }
 
 async function readWorkspaceTitles(page: Page): Promise<string[]> {

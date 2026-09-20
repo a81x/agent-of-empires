@@ -14,36 +14,25 @@
 // the issue test plan.
 
 import { test, expect } from "./helpers/mockedTest";
+import { sessionResponse as baseSession } from "./helpers/sessions";
+import { mockStaticApis } from "./helpers/apiMocks";
 import { devices, type Page } from "@playwright/test";
 import { openMobileSidebar } from "./helpers/sidebar";
 
 // iPhone 13 profile: pointer:coarse, hasTouch, mobile viewport.
 test.use({ ...devices["iPhone 13"] });
 
-function sessionResponse() {
-  return {
+const sessionResponse = () =>
+  baseSession({
     id: "s-1",
     title: "demo-ws",
     project_path: "/tmp/repo",
-    group_path: "/tmp/repo",
-    tool: "claude",
-    status: "Idle",
-    yolo_mode: false,
     created_at: "2025-01-01T00:00:00Z",
-    last_accessed_at: null,
-    idle_entered_at: null,
-    last_error: null,
     branch: "feature/demo",
-    main_repo_path: null,
-    is_sandboxed: false,
-    has_terminal: true,
-    profile: "default",
-    workspace_repos: [],
-  };
-}
+  });
 
 async function mockApis(page: Page) {
-  await page.route("**/api/login/status", (r) => r.fulfill({ json: { required: false, authenticated: true } }));
+  await mockStaticApis(page);
   await page.route("**/api/sessions", (r) => {
     if (r.request().method() !== "GET") return r.fulfill({ status: 400 });
     return r.fulfill({
@@ -53,9 +42,6 @@ async function mockApis(page: Page) {
       },
     });
   });
-  for (const path of ["settings", "themes", "agents", "profiles", "groups", "devices", "docker/status", "about"]) {
-    await page.route(`**/api/${path}`, (r) => r.fulfill({ json: path === "docker/status" ? {} : [] }));
-  }
 }
 
 test.describe("Sidebar iOS callout suppression (#1451)", () => {
