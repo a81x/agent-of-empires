@@ -46,6 +46,8 @@ export async function mockTerminalApis(
     delayLiveWindowShrinkMs?: number;
     tool?: string;
     extraSessions?: Array<{ id: string; title: string }>;
+    /** Extra SessionResponse fields merged over the primary session's defaults. */
+    sessionFields?: Record<string, unknown>;
     pendingPaste?: boolean;
     onLiveMessage?: (url: string, message: Buffer) => void;
   } = {},
@@ -122,6 +124,7 @@ export async function mockTerminalApis(
             has_terminal: true,
             profile: "default",
             workspace_repos: [],
+            ...opts.sessionFields,
           },
           ...(opts.extraSessions ?? []).map((session) => ({
             id: session.id,
