@@ -1,24 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { buildSettingsSearchIndex } from "../settingsSearchIndex";
-import type { SettingsFieldDescriptor } from "../../../lib/types";
-
-const ALLOW = { policy: "allow" } as const;
-const NONE = { rule: "none" } as const;
-
-function descriptor(
-  over: Partial<SettingsFieldDescriptor> & Pick<SettingsFieldDescriptor, "section" | "field" | "label">,
-): SettingsFieldDescriptor {
-  return {
-    category: "Sandbox",
-    description: "",
-    widget: { kind: "toggle" },
-    web_write: ALLOW,
-    profile_overridable: true,
-    validation: NONE,
-    advanced: false,
-    ...over,
-  };
-}
+import { descriptor } from "./fixtures";
 
 describe("buildSettingsSearchIndex", () => {
   it("includes schema-backed writable fields and resolves the jump tab", () => {

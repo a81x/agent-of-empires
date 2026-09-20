@@ -4,11 +4,10 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { SettingsView } from "../../SettingsView";
 import * as api from "../../../lib/api";
+import { descriptor } from "./fixtures";
+import type { SettingsFieldDescriptor } from "../../../lib/types";
 
 const PROFILES = [{ name: "main", is_default: true }];
-
-const ALLOW = { policy: "allow" } as const;
-const NONE = { rule: "none" } as const;
 
 const TMUX_MODES = [
   { value: "auto", label: "Auto" },
@@ -20,21 +19,9 @@ const field = (
   section: string,
   name: string,
   label: string,
-  widget: Record<string, unknown>,
-  extra: Record<string, unknown> = {},
-) => ({
-  section,
-  field: name,
-  category: section,
-  label,
-  description: "",
-  widget,
-  web_write: ALLOW,
-  profile_overridable: true,
-  validation: NONE,
-  advanced: false,
-  ...extra,
-});
+  widget: SettingsFieldDescriptor["widget"],
+  extra: Partial<SettingsFieldDescriptor> = {},
+) => descriptor({ section, field: name, category: section, label, widget, ...extra });
 
 const SCHEMA = [
   field("tmux", "status_bar", "Status Bar", { kind: "select", options: TMUX_MODES }),
