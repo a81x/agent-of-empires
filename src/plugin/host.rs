@@ -689,6 +689,41 @@ mod tests {
         }
     }
 
+    fn worker_api(dir: &std::path::Path) -> (Arc<HostApiState>, PluginRpcContext) {
+        let api =
+            Arc::new(HostApiState::open(&dir.join("plugin_events.db"), "default", 100).unwrap());
+        let ctx = PluginRpcContext {
+            plugin_id: "acme.worker".to_string(),
+            granted_capabilities: vec!["runtime.worker".to_string()],
+            ui_contributions: std::collections::HashSet::new(),
+            ui_generation: 0,
+        };
+        (api, ctx)
+    }
+
+    fn spawn_node(script: &str) -> tokio::process::Child {
+        tokio::process::Command::new("node")
+            .arg("-e")
+            .arg(script)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::inherit())
+            .kill_on_drop(true)
+            .spawn()
+            .unwrap()
+    }
+
+    fn published(api: &HostApiState, ctx: &PluginRpcContext, topic: &str) -> serde_json::Value {
+        let got = dispatch(
+            api,
+            ctx,
+            "events.subscribe",
+            &json!({ "topics": [topic], "after_seq": 0 }),
+        )
+        .unwrap();
+        got["events"].clone()
+    }
+
     fn stdin_writer(stdin: tokio::process::ChildStdin) -> mpsc::UnboundedSender<String> {
         let (tx, mut rx) = mpsc::unbounded_channel::<String>();
         tokio::spawn(async move {
@@ -709,15 +744,7 @@ mod tests {
             return;
         }
         let tmp = tempfile::tempdir().unwrap();
-        let api = Arc::new(
-            HostApiState::open(&tmp.path().join("plugin_events.db"), "default", 100).unwrap(),
-        );
-        let ctx = PluginRpcContext {
-            plugin_id: "acme.worker".to_string(),
-            granted_capabilities: vec!["runtime.worker".to_string()],
-            ui_contributions: std::collections::HashSet::new(),
-            ui_generation: 0,
-        };
+        let (api, ctx) = worker_api(tmp.path());
 
         const WORKER: &str = r#"
 const rl = require('readline').createInterface({ input: process.stdin });
@@ -735,29 +762,15 @@ rl.on('line', (line) => {
 process.stdout.write(JSON.stringify({jsonrpc:"2.0",id:1,method:"session.meta.set",params:{session_id:"x",key:"k",value:1}}) + "\n");
 "#;
 
-        let mut child = tokio::process::Command::new("node")
-            .arg("-e")
-            .arg(WORKER)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::inherit())
-            .kill_on_drop(true)
-            .spawn()
-            .unwrap();
+        let mut child = spawn_node(WORKER);
         let stdin = child.stdin.take().unwrap();
         let stdout = child.stdout.take().unwrap();
 
         serve_connection(&api, &ctx, stdout, stdin_writer(stdin), None).await;
         let _ = child.wait().await;
 
-        let got = dispatch(
-            &api,
-            &ctx,
-            "events.subscribe",
-            &json!({ "topics": ["result"], "after_seq": 0 }),
-        )
-        .unwrap();
-        let events = got["events"].as_array().unwrap();
+        let events = published(&api, &ctx, "result");
+        let events = events.as_array().unwrap();
         assert_eq!(events.len(), 1, "worker should have published one result");
         assert_eq!(
             events[0]["payload"]["forbidden_code"],
@@ -772,15 +785,7 @@ process.stdout.write(JSON.stringify({jsonrpc:"2.0",id:1,method:"session.meta.set
             return;
         }
         let tmp = tempfile::tempdir().unwrap();
-        let api = Arc::new(
-            HostApiState::open(&tmp.path().join("plugin_events.db"), "default", 100).unwrap(),
-        );
-        let ctx = PluginRpcContext {
-            plugin_id: "acme.worker".to_string(),
-            granted_capabilities: vec!["runtime.worker".to_string()],
-            ui_contributions: std::collections::HashSet::new(),
-            ui_generation: 0,
-        };
+        let (api, ctx) = worker_api(tmp.path());
 
         const WORKER: &str = r#"
 const rl = require('readline').createInterface({ input: process.stdin });
@@ -794,15 +799,7 @@ rl.on('line', (line) => {
 });
 "#;
 
-        let mut child = tokio::process::Command::new("node")
-            .arg("-e")
-            .arg(WORKER)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::inherit())
-            .kill_on_drop(true)
-            .spawn()
-            .unwrap();
+        let mut child = spawn_node(WORKER);
         let stdin = child.stdin.take().unwrap();
         let stdout = child.stdout.take().unwrap();
 
@@ -815,14 +812,8 @@ rl.on('line', (line) => {
         serve_connection(&api, &ctx, stdout, tx, None).await;
         let _ = child.wait().await;
 
-        let got = dispatch(
-            &api,
-            &ctx,
-            "events.subscribe",
-            &json!({ "topics": ["pinged"], "after_seq": 0 }),
-        )
-        .unwrap();
-        let events = got["events"].as_array().unwrap();
+        let events = published(&api, &ctx, "pinged");
+        let events = events.as_array().unwrap();
         assert_eq!(events.len(), 1, "worker should react to the host push");
         assert_eq!(events[0]["payload"]["ok"], json!(true));
     }
