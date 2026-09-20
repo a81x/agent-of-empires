@@ -53,7 +53,8 @@ impl HomeView {
     pub(super) fn build_instances_map(
         all_instances: Vec<Instance>,
     ) -> indexmap::IndexMap<String, Instance> {
-        let mut map = indexmap::IndexMap::with_capacity(all_instances.len());
+        let mut map: indexmap::IndexMap<String, Instance> =
+            indexmap::IndexMap::with_capacity(all_instances.len());
         let mut duplicate_ids = HashSet::new();
         for inst in all_instances {
             if duplicate_ids.contains(&inst.id) {
@@ -163,7 +164,10 @@ impl HomeView {
     /// the live (non-archived, non-trashed) subset that seeds the tree. An
     /// archived-only group must not seed a header: it would render as an
     /// empty, undeletable phantom in the main flow.
-    fn regrouped_instances(&self, key: impl Fn(&Instance) -> String) -> (Vec<Instance>, Vec<Instance>) {
+    fn regrouped_instances(
+        &self,
+        key: impl Fn(&Instance) -> String,
+    ) -> (Vec<Instance>, Vec<Instance>) {
         let grouped: Vec<Instance> = self
             .cloned_instances_in_active_view()
             .into_iter()
