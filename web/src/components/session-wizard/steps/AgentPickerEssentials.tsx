@@ -12,18 +12,13 @@ interface Props {
   agents: AgentInfo[];
 }
 
-/** One-line deprecation warning for a selected deprecated agent. Server
- *  lifecycle wins when present; falls back to the static profile mirror so
- *  the notice still renders against older daemons. Only ever called with
- *  the deprecated arm, where since/note are required strings. */
+/** One-line deprecation warning; `since` and `note` are required on the deprecated arm. */
 function lifecycleWarningText(name: string, lifecycle: Extract<AgentLifecycleInfo, { state: "deprecated" }>): string {
   const replacement = lifecycle.replacement ? `; consider switching to ${lifecycle.replacement}` : "";
   return `${name} is deprecated (since ${lifecycle.since}): ${lifecycle.note}${replacement}`;
 }
 
-/** Always-visible essentials of the agent section: just the agent picker
- *  grid. The structured-view choice lives in `AgentOptions` under the More
- *  options fold (#2210). */
+/** The always-visible agent picker grid; the structured-view choice lives in `AgentOptions`. */
 export function AgentPickerEssentials({ data, onChange, agents }: Props) {
   const selectableAgents = agents.filter((agent) => agent.kind === "custom" || agent.installed);
   // The daemon's /api/agents lifecycle wins; the static profile mirror

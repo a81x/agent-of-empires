@@ -1,9 +1,6 @@
 // The only module importing react-joyride; lazy-loaded when a tour first runs.
-//
-// Controlled mode (`stepIndex`) is load-bearing: a `settingsTab` step's anchor
-// only exists after navigating into Settings. On each crossing we navigate,
-// unmount Joyride, poll for the anchor, then remount at the new index, so the
-// engine is never handed a missing target.
+// Controlled `stepIndex` is load-bearing: a `settingsTab` anchor exists only after
+// navigating, so each crossing unmounts Joyride, polls for the anchor, then remounts.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ACTIONS, Joyride, EVENTS, STATUS, type EventData, type Step } from "react-joyride";
 import { type TourShortcutHint, type TourStep, tourSelector } from "../../lib/tourSteps";

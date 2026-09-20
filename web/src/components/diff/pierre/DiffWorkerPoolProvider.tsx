@@ -3,12 +3,9 @@ import { useCallback, useState, type ReactNode } from "react";
 import { useShikiTheme } from "../../../hooks/useShikiTheme";
 
 /**
- * Off-main-thread highlighter pool for diffs, keyed by theme. Without `Worker`
- * (jsdom) children render directly and highlight on the main thread.
- *
- * A worker that fails to load leaves the library's pool pending forever, so on
- * that error we remount children without the provider; unmounting also
- * terminates the poisoned singleton so a later mount builds a fresh pool.
+ * Off-main-thread highlighter pool, keyed by theme; without `Worker` children highlight inline.
+ * A worker that fails to load leaves the library's pool pending forever, so children remount
+ * without the provider, which also terminates the poisoned singleton.
  */
 export function DiffWorkerPoolProvider({ children }: { children: ReactNode }) {
   const { theme } = useShikiTheme();

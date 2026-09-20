@@ -110,7 +110,7 @@ describe("TourRunner controlled transitions", () => {
     expect(onFinish).toHaveBeenCalledWith(true);
   });
 
-  // #2819: a close dismiss arrives as STEP_AFTER with status still running.
+  // A close dismiss arrives as STEP_AFTER with status still running.
   it.each([
     ["a close dismiss", 0, "close", true, "0"],
     ["advancing past the last step", 1, "next", true, "1"],
