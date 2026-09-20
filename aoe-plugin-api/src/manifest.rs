@@ -1035,6 +1035,8 @@ impl PluginManifest {
 mod tests {
     use super::*;
 
+    const HEAD: &str = "id = \"a.b\"\nname = \"B\"\nversion = \"1.0.0\"\napi_version = ";
+
     fn object_list_toml(api_version: u32) -> String {
         format!(
             "id = \"acme.cron\"\nname = \"Cron\"\nversion = \"1.0.0\"\napi_version = {api_version}\n\n\
@@ -1045,130 +1047,12 @@ mod tests {
         )
     }
 
-    #[test]
-    fn v9_object_list_manifest_parses_and_validates() {
-        let m = PluginManifest::from_toml_str(&object_list_toml(9)).expect("v9 manifest parses");
-        let jobs = &m.settings[0];
-        assert_eq!(jobs.value_type, SettingType::ObjectList);
-        assert_eq!(jobs.item_id_key.as_deref(), Some("id"));
-        assert_eq!(jobs.fields.len(), 3);
-        assert_eq!(jobs.fields[0].value_type, ObjectFieldType::DynamicSelect);
-        assert_eq!(jobs.fields[0].option_source, Some(OptionSource::AcpAgents));
-        assert_eq!(jobs.fields[1].depends_on, vec!["agent_id".to_string()]);
-        assert_eq!(jobs.fields[2].value_type, ObjectFieldType::Cron);
-    }
-
-    #[test]
-    fn v9_settings_types_rejected_below_v9() {
-        let err = PluginManifest::from_toml_str(&object_list_toml(8))
-            .unwrap_err()
-            .to_string();
-        assert!(err.contains("api_version >= 9"), "{err}");
-    }
-
-    #[test]
-    fn dynamic_select_requires_option_source() {
-        let toml = "id = \"a.b\"\nname = \"B\"\nversion = \"1.0.0\"\napi_version = 9\n\n\
-             [[settings]]\nkey = \"agent\"\ntype = \"dynamic_select\"\n";
-        let err = PluginManifest::from_toml_str(toml).unwrap_err().to_string();
-        assert!(err.contains("option_source"), "{err}");
-    }
-
-    #[test]
-    fn dynamic_multi_select_field_requires_v11() {
-        let toml = |api_version: u32| {
-            format!(
-                "id = \"a.b\"\nname = \"B\"\nversion = \"1.0.0\"\napi_version = {api_version}\n\n\
-                 [[settings]]\nkey = \"jobs\"\ntype = \"object_list\"\nitem_id_key = \"id\"\n\n\
-                 [[settings.fields]]\nkey = \"projects\"\ntype = \"dynamic_multi_select\"\noption_source = \"projects\"\n"
-            )
-        };
-        let m = PluginManifest::from_toml_str(&toml(11)).expect("v11 manifest parses");
-        assert_eq!(
-            m.settings[0].fields[0].value_type,
-            ObjectFieldType::DynamicMultiSelect
-        );
-        assert_eq!(
-            m.settings[0].fields[0].option_source,
-            Some(OptionSource::Projects)
-        );
-        let err = PluginManifest::from_toml_str(&toml(10))
-            .unwrap_err()
-            .to_string();
-        assert!(err.contains("api_version >= 11"), "{err}");
-    }
-
-    #[test]
-    fn dynamic_multi_select_requires_option_source() {
-        let toml = "id = \"a.b\"\nname = \"B\"\nversion = \"1.0.0\"\napi_version = 11\n\n\
+    fn multi_select_toml(api_version: u32) -> String {
+        format!(
+            "{HEAD}{api_version}\n\n\
              [[settings]]\nkey = \"jobs\"\ntype = \"object_list\"\nitem_id_key = \"id\"\n\n\
-             [[settings.fields]]\nkey = \"projects\"\ntype = \"dynamic_multi_select\"\n";
-        let err = PluginManifest::from_toml_str(toml).unwrap_err().to_string();
-        assert!(err.contains("option_source"), "{err}");
-    }
-
-    #[test]
-    fn dynamic_multi_select_required_rejects_empty_array_default() {
-        let toml = "id = \"a.b\"\nname = \"B\"\nversion = \"1.0.0\"\napi_version = 11\n\n\
-             [[settings]]\nkey = \"jobs\"\ntype = \"object_list\"\nitem_id_key = \"id\"\ndefault = [ { id = \"x\", projects = [] } ]\n\n\
-             [[settings.fields]]\nkey = \"projects\"\ntype = \"dynamic_multi_select\"\noption_source = \"projects\"\nrequired = true\n";
-        let err = PluginManifest::from_toml_str(toml).unwrap_err().to_string();
-        assert!(err.contains("is required but empty"), "{err}");
-    }
-
-    #[test]
-    fn object_list_field_key_cannot_collide_with_id_key() {
-        let toml = "id = \"a.b\"\nname = \"B\"\nversion = \"1.0.0\"\napi_version = 9\n\n\
-             [[settings]]\nkey = \"jobs\"\ntype = \"object_list\"\nitem_id_key = \"id\"\n\n\
-             [[settings.fields]]\nkey = \"id\"\ntype = \"string\"\n";
-        let err = PluginManifest::from_toml_str(toml).unwrap_err().to_string();
-        assert!(err.contains("collides with the item id key"), "{err}");
-    }
-
-    #[test]
-    fn top_level_dynamic_select_depends_on_must_name_a_sibling() {
-        let toml = "id = \"a.b\"\nname = \"B\"\nversion = \"1.0.0\"\napi_version = 9\n\n\
-             [[settings]]\nkey = \"agent\"\ntype = \"dynamic_select\"\noption_source = \"acp.agents\"\n\n\
-             [[settings]]\nkey = \"model\"\ntype = \"dynamic_select\"\noption_source = \"acp.models\"\ndepends_on = [\"typo\"]\n";
-        let err = PluginManifest::from_toml_str(toml).unwrap_err().to_string();
-        assert!(err.contains("is not a sibling setting"), "{err}");
-    }
-
-    #[test]
-    fn top_level_acp_models_requires_agent_dependency() {
-        let toml = "id = \"a.b\"\nname = \"B\"\nversion = \"1.0.0\"\napi_version = 9\n\n\
-             [[settings]]\nkey = \"model\"\ntype = \"dynamic_select\"\noption_source = \"acp.models\"\n";
-        let err = PluginManifest::from_toml_str(toml).unwrap_err().to_string();
-        assert!(
-            err.contains("acp.models/acp.modes require a depends_on"),
-            "{err}"
-        );
-    }
-
-    #[test]
-    fn top_level_dynamic_select_depends_on_agent_sibling_validates() {
-        let toml = "id = \"a.b\"\nname = \"B\"\nversion = \"1.0.0\"\napi_version = 9\n\n\
-             [[settings]]\nkey = \"agent\"\ntype = \"dynamic_select\"\noption_source = \"acp.agents\"\n\n\
-             [[settings]]\nkey = \"model\"\ntype = \"dynamic_select\"\noption_source = \"acp.models\"\ndepends_on = [\"agent\"]\n";
-        PluginManifest::from_toml_str(toml).expect("valid dependent selects parse");
-    }
-
-    #[test]
-    fn object_list_default_integer_field_respects_bounds() {
-        let toml = "id = \"a.b\"\nname = \"B\"\nversion = \"1.0.0\"\napi_version = 9\n\n\
-             [[settings]]\nkey = \"jobs\"\ntype = \"object_list\"\nitem_id_key = \"id\"\n\
-             default = [{ id = \"j1\", retries = 9 }]\n\n\
-             [[settings.fields]]\nkey = \"retries\"\ntype = \"integer\"\nmin = 0\nmax = 5\n";
-        let err = PluginManifest::from_toml_str(toml).unwrap_err().to_string();
-        assert!(err.contains("is above max 5"), "{err}");
-    }
-
-    #[test]
-    fn option_source_rejected_on_plain_types() {
-        let toml = "id = \"a.b\"\nname = \"B\"\nversion = \"1.0.0\"\napi_version = 9\n\n\
-             [[settings]]\nkey = \"x\"\ntype = \"string\"\noption_source = \"projects\"\n";
-        let err = PluginManifest::from_toml_str(toml).unwrap_err().to_string();
-        assert!(err.contains("only valid on a dynamic_select"), "{err}");
+             [[settings.fields]]\nkey = \"projects\"\ntype = \"dynamic_multi_select\"\noption_source = \"projects\"\n"
+        )
     }
 
     fn open_ui_link_toml(api_version: u32, caps: &str, ui_slot: &str, action_slot: &str) -> String {
@@ -1186,8 +1070,53 @@ mod tests {
         )
     }
 
+    fn rejects(cases: &[(&str, String, &str)]) {
+        for (label, toml, needle) in cases {
+            let err = PluginManifest::from_toml_str(toml).unwrap_err().to_string();
+            assert!(err.contains(needle), "{label}: {err}");
+        }
+    }
+
     #[test]
-    fn home_pane_requires_api_version_13() {
+    fn v9_object_list_manifest_parses_and_validates() {
+        let m = PluginManifest::from_toml_str(&object_list_toml(9)).expect("v9 manifest parses");
+        let jobs = &m.settings[0];
+        assert_eq!(jobs.value_type, SettingType::ObjectList);
+        assert_eq!(jobs.item_id_key.as_deref(), Some("id"));
+        assert_eq!(jobs.fields.len(), 3);
+        assert_eq!(jobs.fields[0].value_type, ObjectFieldType::DynamicSelect);
+        assert_eq!(jobs.fields[0].option_source, Some(OptionSource::AcpAgents));
+        assert_eq!(jobs.fields[1].depends_on, vec!["agent_id".to_string()]);
+        assert_eq!(jobs.fields[2].value_type, ObjectFieldType::Cron);
+    }
+
+    #[test]
+    fn dynamic_multi_select_parses_from_v11() {
+        let m = PluginManifest::from_toml_str(&multi_select_toml(11)).expect("v11 parses");
+        assert_eq!(
+            m.settings[0].fields[0].value_type,
+            ObjectFieldType::DynamicMultiSelect
+        );
+        assert_eq!(
+            m.settings[0].fields[0].option_source,
+            Some(OptionSource::Projects)
+        );
+    }
+
+    #[test]
+    fn newer_setting_shapes_are_gated_on_their_api_version() {
+        rejects(&[
+            (
+                "object_list below v9",
+                object_list_toml(8),
+                "api_version >= 9",
+            ),
+            (
+                "dynamic_multi_select below v11",
+                multi_select_toml(10),
+                "api_version >= 11",
+            ),
+        ]);
         let err = PluginManifest::from_toml_str(&home_pane_toml(12))
             .unwrap_err()
             .to_string();
@@ -1195,11 +1124,86 @@ mod tests {
             err.contains("home-pane") && err.contains("api_version"),
             "{err}"
         );
-        assert!(PluginManifest::from_toml_str(&home_pane_toml(13)).is_ok());
+        PluginManifest::from_toml_str(&home_pane_toml(13)).expect("home-pane parses from v13");
     }
 
     #[test]
-    fn open_ui_link_action_valid() {
+    fn settings_validation_rejects_malformed_declarations() {
+        rejects(&[
+            (
+                "dynamic_select without option_source",
+                format!("{HEAD}9\n\n[[settings]]\nkey = \"agent\"\ntype = \"dynamic_select\"\n"),
+                "option_source",
+            ),
+            (
+                "dynamic_multi_select field without option_source",
+                format!(
+                    "{HEAD}11\n\n[[settings]]\nkey = \"jobs\"\ntype = \"object_list\"\nitem_id_key = \"id\"\n\n\
+                     [[settings.fields]]\nkey = \"projects\"\ntype = \"dynamic_multi_select\"\n"
+                ),
+                "option_source",
+            ),
+            (
+                "required dynamic_multi_select defaulting to an empty array",
+                format!(
+                    "{HEAD}11\n\n[[settings]]\nkey = \"jobs\"\ntype = \"object_list\"\nitem_id_key = \"id\"\ndefault = [ {{ id = \"x\", projects = [] }} ]\n\n\
+                     [[settings.fields]]\nkey = \"projects\"\ntype = \"dynamic_multi_select\"\noption_source = \"projects\"\nrequired = true\n"
+                ),
+                "is required but empty",
+            ),
+            (
+                "object_list field colliding with the item id key",
+                format!(
+                    "{HEAD}9\n\n[[settings]]\nkey = \"jobs\"\ntype = \"object_list\"\nitem_id_key = \"id\"\n\n\
+                     [[settings.fields]]\nkey = \"id\"\ntype = \"string\"\n"
+                ),
+                "collides with the item id key",
+            ),
+            (
+                "depends_on naming a setting that does not exist",
+                format!(
+                    "{HEAD}9\n\n[[settings]]\nkey = \"agent\"\ntype = \"dynamic_select\"\noption_source = \"acp.agents\"\n\n\
+                     [[settings]]\nkey = \"model\"\ntype = \"dynamic_select\"\noption_source = \"acp.models\"\ndepends_on = [\"typo\"]\n"
+                ),
+                "is not a sibling setting",
+            ),
+            (
+                "acp.models without a depends_on",
+                format!(
+                    "{HEAD}9\n\n[[settings]]\nkey = \"model\"\ntype = \"dynamic_select\"\noption_source = \"acp.models\"\n"
+                ),
+                "acp.models/acp.modes require a depends_on",
+            ),
+            (
+                "object_list default outside an integer field's bounds",
+                format!(
+                    "{HEAD}9\n\n[[settings]]\nkey = \"jobs\"\ntype = \"object_list\"\nitem_id_key = \"id\"\n\
+                     default = [{{ id = \"j1\", retries = 9 }}]\n\n\
+                     [[settings.fields]]\nkey = \"retries\"\ntype = \"integer\"\nmin = 0\nmax = 5\n"
+                ),
+                "is above max 5",
+            ),
+            (
+                "option_source on a plain type",
+                format!(
+                    "{HEAD}9\n\n[[settings]]\nkey = \"x\"\ntype = \"string\"\noption_source = \"projects\"\n"
+                ),
+                "only valid on a dynamic_select",
+            ),
+        ]);
+    }
+
+    #[test]
+    fn top_level_dynamic_select_depends_on_agent_sibling_validates() {
+        let toml = format!(
+            "{HEAD}9\n\n[[settings]]\nkey = \"agent\"\ntype = \"dynamic_select\"\noption_source = \"acp.agents\"\n\n\
+             [[settings]]\nkey = \"model\"\ntype = \"dynamic_select\"\noption_source = \"acp.models\"\ndepends_on = [\"agent\"]\n"
+        );
+        PluginManifest::from_toml_str(&toml).expect("valid dependent selects parse");
+    }
+
+    #[test]
+    fn open_ui_link_action_needs_the_capability_and_one_declared_session_slot() {
         let m = PluginManifest::from_toml_str(&open_ui_link_toml(
             6,
             "\"browser_open\"",
@@ -1211,73 +1215,43 @@ mod tests {
             m.commands[0].action,
             Some(ClientAction::OpenUiLink { .. })
         ));
-    }
 
-    #[test]
-    fn open_ui_link_requires_capability() {
-        let err =
-            PluginManifest::from_toml_str(&open_ui_link_toml(6, "", "row-column", "row-column"))
-                .unwrap_err()
-                .to_string();
-        assert!(err.contains("browser_open"), "{err}");
-    }
-
-    #[test]
-    fn open_ui_link_requires_api_version_6() {
-        let err = PluginManifest::from_toml_str(&open_ui_link_toml(
-            5,
-            "\"browser_open\"",
-            "row-column",
-            "row-column",
-        ))
-        .unwrap_err()
-        .to_string();
-        assert!(err.contains("api_version"), "{err}");
-    }
-
-    #[test]
-    fn open_ui_link_rejects_global_slot() {
-        let err = PluginManifest::from_toml_str(&open_ui_link_toml(
-            6,
-            "\"browser_open\"",
-            "status-bar",
-            "status-bar",
-        ))
-        .unwrap_err()
-        .to_string();
-        assert!(err.contains("per-session"), "{err}");
-    }
-
-    #[test]
-    fn open_ui_link_requires_declared_slot() {
-        let err = PluginManifest::from_toml_str(&open_ui_link_toml(
-            6,
-            "\"browser_open\"",
-            "row-badge",
-            "row-column",
-        ))
-        .unwrap_err()
-        .to_string();
-        assert!(err.contains("exactly one ui slot"), "{err}");
-    }
-
-    #[test]
-    fn open_ui_link_rejects_duplicate_slot() {
-        let err = PluginManifest::from_toml_str(
-            "id = \"acme.thing\"\nname = \"Thing\"\nversion = \"1.0.0\"\napi_version = 6\ncapabilities = [\"browser_open\"]\n\n\
-             [[ui]]\nslot = \"row-column\"\nid = \"link\"\n\n[[ui]]\nslot = \"row-column\"\nid = \"link\"\n\n\
-             [[commands]]\nid = \"open\"\n[commands.action]\nkind = \"open-ui-link\"\nslot = \"row-column\"\nid = \"link\"\n",
-        )
-        .unwrap_err()
-        .to_string();
-        assert!(err.contains("exactly one ui slot"), "{err}");
+        rejects(&[
+            (
+                "without the browser_open capability",
+                open_ui_link_toml(6, "", "row-column", "row-column"),
+                "browser_open",
+            ),
+            (
+                "below api_version 6",
+                open_ui_link_toml(5, "\"browser_open\"", "row-column", "row-column"),
+                "api_version",
+            ),
+            (
+                "on a global slot",
+                open_ui_link_toml(6, "\"browser_open\"", "status-bar", "status-bar"),
+                "per-session",
+            ),
+            (
+                "naming a slot the manifest never declares",
+                open_ui_link_toml(6, "\"browser_open\"", "row-badge", "row-column"),
+                "exactly one ui slot",
+            ),
+            (
+                "naming a slot declared twice",
+                "id = \"acme.thing\"\nname = \"Thing\"\nversion = \"1.0.0\"\napi_version = 6\ncapabilities = [\"browser_open\"]\n\n\
+                 [[ui]]\nslot = \"row-column\"\nid = \"link\"\n\n[[ui]]\nslot = \"row-column\"\nid = \"link\"\n\n\
+                 [[commands]]\nid = \"open\"\n[commands.action]\nkind = \"open-ui-link\"\nslot = \"row-column\"\nid = \"link\"\n".to_string(),
+                "exactly one ui slot",
+            ),
+        ]);
     }
 
     #[test]
     fn setting_type_accepts_boolean_and_bool() {
         for spelling in ["boolean", "bool"] {
             let manifest = PluginManifest::from_toml_str(&format!(
-                "id = \"acme.thing\"\nname = \"Thing\"\nversion = \"1.0.0\"\napi_version = 4\n\n[[settings]]\nkey = \"flag\"\ntype = \"{spelling}\"\n"
+                "{HEAD}4\n\n[[settings]]\nkey = \"flag\"\ntype = \"{spelling}\"\n"
             ))
             .expect("manifest parses");
             assert_eq!(
