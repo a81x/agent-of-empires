@@ -702,55 +702,38 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn create_rejects_unknown_payload_fields() {
+    async fn invalid_params_are_rejected() {
         let (deps, _dir) = test_deps(Vec::new());
-        let ctx = ctx_with(&["session.create"]);
-        let err = dispatch(
-            &deps,
-            &ctx,
-            "sessions.create",
-            &serde_json::json!({
-                "agent_id": "claude",
-                "project_path": "/tmp",
-                "allow_untrusted": true,
-            }),
-        )
-        .await
-        .expect_err("unknown fields must be rejected");
-        assert_eq!(err.code, codes::INVALID_PARAMS);
-    }
-
-    #[tokio::test]
-    async fn probe_rejects_unknown_params() {
-        let (deps, _dir) = test_deps(Vec::new());
-        let ctx = ctx_with(&["acp.capabilities.probe"]);
-        let err = dispatch(
-            &deps,
-            &ctx,
-            "acp.capabilities.probe",
-            &serde_json::json!({ "bogus": 1 }),
-        )
-        .await
-        .expect_err("unknown probe param must be rejected");
-        assert_eq!(err.code, codes::INVALID_PARAMS);
-    }
-
-    #[tokio::test]
-    async fn scratch_with_extra_repos_is_rejected() {
-        let (deps, _dir) = test_deps(Vec::new());
-        let ctx = ctx_with(&["session.create"]);
-        let err = dispatch(
-            &deps,
-            &ctx,
-            "sessions.create",
-            &serde_json::json!({
-                "agent_id": "claude",
-                "extra_project_paths": ["/tmp"],
-            }),
-        )
-        .await
-        .expect_err("scratch + extra repos must be refused");
-        assert_eq!(err.code, codes::INVALID_PARAMS);
+        let cases = [
+            (
+                "unknown create field",
+                "session.create",
+                "sessions.create",
+                serde_json::json!({
+                    "agent_id": "claude",
+                    "project_path": "/tmp",
+                    "allow_untrusted": true,
+                }),
+            ),
+            (
+                "scratch session with extra repos",
+                "session.create",
+                "sessions.create",
+                serde_json::json!({ "agent_id": "claude", "extra_project_paths": ["/tmp"] }),
+            ),
+            (
+                "unknown probe param",
+                "acp.capabilities.probe",
+                "acp.capabilities.probe",
+                serde_json::json!({ "bogus": 1 }),
+            ),
+        ];
+        for (label, capability, method, params) in cases {
+            let err = dispatch(&deps, &ctx_with(&[capability]), method, &params)
+                .await
+                .expect_err(label);
+            assert_eq!(err.code, codes::INVALID_PARAMS, "{label}");
+        }
     }
 
     #[tokio::test]
