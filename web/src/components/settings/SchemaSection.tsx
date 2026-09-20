@@ -68,49 +68,31 @@ function renderField(
   save: (value: unknown) => Promise<boolean>,
 ) {
   const raw = values[d.field];
-  const description = describe(d);
   const widget = d.widget;
+  const common = { label: d.label, description: describe(d) };
+  const str = typeof raw === "string" ? raw : "";
 
   switch (widget.kind) {
     case "toggle":
-      return (
-        <ToggleField
-          key={d.field}
-          label={d.label}
-          description={description}
-          checked={typeof raw === "boolean" ? raw : false}
-          onChange={save}
-        />
-      );
+      return <ToggleField key={d.field} {...common} checked={typeof raw === "boolean" ? raw : false} onChange={save} />;
     case "text":
       return (
         <TextField
           key={d.field}
-          label={d.label}
-          description={description}
-          value={typeof raw === "string" ? raw : ""}
+          {...common}
+          value={str}
           onChange={(v) => save(v)}
           mono={widget.mono}
           multiline={widget.multiline}
         />
       );
     case "optional_text":
-      return (
-        <TextField
-          key={d.field}
-          label={d.label}
-          description={description}
-          value={typeof raw === "string" ? raw : ""}
-          onChange={(v) => save(v || null)}
-          mono={widget.mono}
-        />
-      );
+      return <TextField key={d.field} {...common} value={str} onChange={(v) => save(v || null)} mono={widget.mono} />;
     case "number":
       return (
         <NumberField
           key={d.field}
-          label={d.label}
-          description={description}
+          {...common}
           value={typeof raw === "number" ? raw : 0}
           onChange={save}
           min={widget.min}
@@ -121,8 +103,7 @@ function renderField(
       return (
         <SliderField
           key={d.field}
-          label={d.label}
-          description={description}
+          {...common}
           value={typeof raw === "number" ? raw : widget.min}
           onChange={save}
           min={widget.min}
@@ -134,8 +115,7 @@ function renderField(
       return (
         <SelectField
           key={d.field}
-          label={d.label}
-          description={description}
+          {...common}
           value={typeof raw === "string" ? raw : (widget.options[0]?.value ?? "")}
           onChange={save}
           options={widget.options}
@@ -145,8 +125,7 @@ function renderField(
       return (
         <ListField
           key={d.field}
-          label={d.label}
-          description={description}
+          {...common}
           items={Array.isArray(raw) ? (raw as string[]) : []}
           onChange={save}
           validate={listValidator(d.validation)}
@@ -156,32 +135,22 @@ function renderField(
       return (
         <DynamicSelectField
           key={d.field}
-          label={d.label}
-          description={description}
+          {...common}
           section={d.section}
           source={widget.source}
           dependsOn={widget.depends_on ?? []}
           sectionValues={values}
-          value={typeof raw === "string" ? raw : ""}
+          value={str}
           onChange={save}
         />
       );
     case "cron":
-      return (
-        <CronField
-          key={d.field}
-          label={d.label}
-          description={description}
-          value={typeof raw === "string" ? raw : ""}
-          onChange={save}
-        />
-      );
+      return <CronField key={d.field} {...common} value={str} onChange={save} />;
     case "object_list":
       return (
         <ObjectListField
           key={d.field}
-          label={d.label}
-          description={description}
+          {...common}
           section={d.section}
           idField={widget.id_field}
           fields={widget.fields}
@@ -196,7 +165,7 @@ function renderField(
       if (!Widget) {
         return <UnsupportedCustomWidget key={d.field} d={d} id={widget.id} />;
       }
-      return <Widget key={d.field} descriptor={{ ...d, description }} value={raw} save={save} />;
+      return <Widget key={d.field} descriptor={{ ...d, description: common.description }} value={raw} save={save} />;
     }
   }
 }
