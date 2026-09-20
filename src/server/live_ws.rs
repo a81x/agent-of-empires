@@ -1678,10 +1678,10 @@ mod tests {
 
     #[test]
     fn frame_json_includes_geometry_and_cursor() {
-        // (pane 0 of a composited split, the `pane0` block the frame must carry)
+        // (pane 0 of a composited split, the cursor in window coordinates, `pane0`)
         let cases = [
-            // Unsplit: `pane0` is null.
-            (None, serde_json::Value::Null),
+            // Unsplit: `pane0` is null and the cursor needs no offset.
+            (None, (3, 7), serde_json::Value::Null),
             // Composited with pane 0 at the corner (a borderless split).
             (
                 Some(crate::tmux::PaneGeom {
@@ -1690,9 +1690,11 @@ mod tests {
                     width: 37,
                     height: 46,
                 }),
+                (3, 7),
                 serde_json::json!({"cols": 37, "rows": 46, "left": 0, "top": 0}),
             ),
-            // Composited with pane-border-status top.
+            // Composited with pane-border-status top: the pane-relative cursor is
+            // shifted onto the window grid the content is composited into.
             (
                 Some(crate::tmux::PaneGeom {
                     left: 2,
@@ -1700,10 +1702,11 @@ mod tests {
                     width: 37,
                     height: 46,
                 }),
+                (5, 8),
                 serde_json::json!({"cols": 37, "rows": 46, "left": 2, "top": 1}),
             ),
         ];
-        for (pane0, want_pane0) in cases {
+        for (pane0, want_cursor, want_pane0) in cases {
             let mut c = cursor();
             c.composite_pane0 = pane0;
             let v = frame_value(Some(&c));
@@ -1711,9 +1714,8 @@ mod tests {
             assert_eq!(v["content"], "hello\nworld");
             assert_eq!(v["rows"], 46);
             assert_eq!(v["history"], 1200);
-            // The cursor is reported in pane coordinates, untouched by the offset.
-            assert_eq!(v["cursor"]["x"], 3, "{want_pane0}");
-            assert_eq!(v["cursor"]["y"], 7, "{want_pane0}");
+            assert_eq!(v["cursor"]["x"], want_cursor.0, "{want_pane0}");
+            assert_eq!(v["cursor"]["y"], want_cursor.1, "{want_pane0}");
             assert_eq!(v["altScreen"], false);
             assert_eq!(v["mouse"], false);
             assert_eq!(v["mouseSgr"], false);
