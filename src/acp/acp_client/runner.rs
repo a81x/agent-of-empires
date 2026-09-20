@@ -5,7 +5,7 @@ use tracing::{info, warn};
 use super::errors::AcpError;
 use super::resolve_command::resolve_agent_command;
 use super::session_sandbox::{build_sandbox_docker_argv, SessionSandbox};
-use super::spawn::{apply_env_filter, host_environment_denyreason, SpawnConfig};
+use super::spawn::{apply_env_filter, host_environment_denyreason, prepend_path_dirs, SpawnConfig};
 
 /// Deadline for the runner socket to appear. 10s suffices in production, but
 /// a debug-build cold start under CI load blows past it deterministically, so
@@ -176,7 +176,7 @@ pub(super) fn spawn_runner_detached(
     // The runner inherits this env when it spawns the agent, so one filter
     // pass covers both. AOE_TOKEN is stripped here and reaches neither.
     cmd.env_clear();
-    apply_env_filter(cmd.as_std_mut(), config);
+    apply_env_filter(cmd.as_std_mut(), config, &[]);
     #[cfg(debug_assertions)]
     if let Ok(interval) = std::env::var("AOE_ACP_WATCHDOG_POLL_MS") {
         cmd.env("AOE_ACP_WATCHDOG_POLL_MS", interval);
@@ -223,17 +223,7 @@ pub(super) fn spawn_runner_detached(
         // Prepend the resolved bin dirs so the adapter and its
         // `#!/usr/bin/env node` shim resolve against the same install.
         let current = std::env::var_os("PATH").unwrap_or_default();
-        let existing: Vec<std::path::PathBuf> = std::env::split_paths(&current).collect();
-        let mut chain: Vec<std::path::PathBuf> = Vec::new();
-        for dir in &extra_path_dirs {
-            if !existing.contains(dir) && !chain.contains(dir) {
-                chain.push(dir.clone());
-            }
-        }
-        chain.extend(existing);
-        if let Ok(joined) = std::env::join_paths(&chain) {
-            cmd.env("PATH", joined);
-        }
+        cmd.env("PATH", prepend_path_dirs(&current, &extra_path_dirs));
     }
 
     // Its own session leader, so a SIGTERM to the daemon's group does not

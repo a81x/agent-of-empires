@@ -163,45 +163,25 @@ pub(super) fn allowlisted_env_pairs(config: &SpawnConfig) -> Vec<(String, String
     pairs
 }
 
-/// The detached-runner path's environment, matching `spawn_subprocess`.
-pub(super) fn apply_env_filter(cmd: &mut std::process::Command, config: &SpawnConfig) {
-    for (key, value) in inherited_host_env_pairs(config) {
-        cmd.env(key, value);
-    }
-    for name in ALWAYS_FORWARD_ENV {
-        if let Ok(value) = std::env::var(name) {
-            cmd.env(name, value);
-        }
-    }
-    for (key, value) in allowlisted_env_pairs(config) {
-        cmd.env(key, value);
-    }
-    for (key, value) in &config.provider_env {
-        if provider_env_denyreason(key).is_some() {
-            continue;
-        }
-        cmd.env(key, value);
-    }
-}
-
 /// Key names applied per layer, for the spawn log. Values are never logged.
 #[derive(Debug, Default)]
-struct EnvKeys {
+pub(super) struct EnvKeys {
     inherited: Vec<String>,
     forwarded: Vec<String>,
     provider: Vec<String>,
     host: Vec<String>,
 }
 
-/// Env layers in precedence order, lowest first. `extra_path_dirs` are
-/// prepended to PATH so the adapter's own `node` lookups match its install.
-fn apply_stdio_env(
-    cmd: &mut tokio::process::Command,
+/// The env layers both spawn paths share, in precedence order, lowest first.
+/// `extra_path_dirs` are prepended to PATH so the adapter's own `node` lookups
+/// match its install. Neither `env_clear` nor the layers unique to one path
+/// (the stdio `host_environment`, the runner's own PATH chain) belong here.
+pub(super) fn apply_env_filter(
+    cmd: &mut std::process::Command,
     config: &SpawnConfig,
     extra_path_dirs: &[PathBuf],
 ) -> EnvKeys {
     let mut keys = EnvKeys::default();
-    cmd.env_clear();
     for (key, value) in inherited_host_env_pairs(config) {
         cmd.env(&key, value);
         keys.inherited.push(key);
@@ -211,17 +191,9 @@ fn apply_stdio_env(
             continue;
         };
         if name == "PATH" && !extra_path_dirs.is_empty() {
-            let existing: Vec<PathBuf> = std::env::split_paths(&value).collect();
-            let mut chain: Vec<PathBuf> = Vec::new();
-            for dir in extra_path_dirs {
-                if !existing.contains(dir) && !chain.contains(dir) {
-                    chain.push(dir.clone());
-                }
-            }
-            chain.extend(existing);
-            if let Ok(joined) = std::env::join_paths(&chain) {
-                value = joined.to_string_lossy().into_owned();
-            }
+            value = prepend_path_dirs(std::ffi::OsStr::new(&value), extra_path_dirs)
+                .to_string_lossy()
+                .into_owned();
         }
         cmd.env(name, value);
         keys.forwarded.push(name.to_string());
@@ -238,8 +210,31 @@ fn apply_stdio_env(
         cmd.env(key, value);
         keys.provider.push(key.clone());
     }
-    // Last, so trusted operator config outranks request-sourced env, as on
-    // the runner path.
+    keys
+}
+
+/// `dirs` first, then `path`, dropping any already present.
+pub(super) fn prepend_path_dirs(path: &std::ffi::OsStr, dirs: &[PathBuf]) -> std::ffi::OsString {
+    let existing: Vec<PathBuf> = std::env::split_paths(path).collect();
+    let mut chain: Vec<PathBuf> = Vec::new();
+    for dir in dirs {
+        if !existing.contains(dir) && !chain.contains(dir) {
+            chain.push(dir.clone());
+        }
+    }
+    chain.extend(existing);
+    std::env::join_paths(&chain).unwrap_or_else(|_| path.to_os_string())
+}
+
+fn apply_stdio_env(
+    cmd: &mut tokio::process::Command,
+    config: &SpawnConfig,
+    extra_path_dirs: &[PathBuf],
+) -> EnvKeys {
+    cmd.env_clear();
+    let mut keys = apply_env_filter(cmd.as_std_mut(), config, extra_path_dirs);
+    // Last, so trusted operator config outranks request-sourced env. The
+    // runner path carries these on `ACP_AGENT_ENV` instead.
     for (key, value) in &config.host_environment {
         if let Some(reason) = host_environment_denyreason(key) {
             warn!(target: "acp", key = %key, reason, "rejecting configured host environment key");
@@ -364,7 +359,7 @@ mod tests {
     fn applied_env(config: &SpawnConfig) -> HashMap<String, String> {
         let mut cmd = std::process::Command::new("/bin/true");
         cmd.env_clear();
-        apply_env_filter(&mut cmd, config);
+        apply_env_filter(&mut cmd, config, &[]);
         cmd.get_envs()
             .filter_map(|(k, v)| {
                 Some((
