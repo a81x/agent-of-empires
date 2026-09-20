@@ -1,20 +1,13 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useMemo } from "react";
 import type { RepoGroup } from "../lib/types";
-import { safeGetItem, safeRemoveItem, safeSetItem } from "../lib/safeStorage";
 import { buildNestedSidebarGroups, type NestedSidebarGroup } from "../lib/sidebarGroups";
 import type { PluginSortContext, SidebarSortMode } from "../lib/sidebarSort";
 import { useIdleDecayWindowMs } from "../lib/idleDecay";
-
-const COLLAPSED_KEY_PREFIX = "aoe-nested-group-collapsed-";
+import { useCollapsedKeys } from "./useCollapsedKeys";
 
 // Encode both halves so a `::` in a path cannot collide two pairs.
-function subgroupKey(repoId: string, groupPath: string): string {
-  return `${encodeURIComponent(repoId)}::${encodeURIComponent(groupPath)}`;
-}
-
-function loadCollapsed(key: string): boolean {
-  return safeGetItem(`${COLLAPSED_KEY_PREFIX}${key}`) === "1";
-}
+const subgroupKey = (repoId: string, groupPath: string) =>
+  `${encodeURIComponent(repoId)}::${encodeURIComponent(groupPath)}`;
 
 export function useNestedSidebarGroups(
   repoGroups: RepoGroup[],
@@ -25,7 +18,7 @@ export function useNestedSidebarGroups(
   toggleSubgroupCollapsed: (repoId: string, groupPath: string) => void;
 } {
   const idleDecayWindowMs = useIdleDecayWindowMs();
-  const [collapsedMap, setCollapsedMap] = useState<Record<string, boolean>>({});
+  const { isCollapsed, toggle } = useCollapsedKeys("aoe-nested-group-collapsed-");
 
   const groups = useMemo(
     () =>
@@ -33,31 +26,15 @@ export function useNestedSidebarGroups(
         idleDecayWindowMs,
         sortMode,
         pluginSort,
-        isSubgroupCollapsed: (repoId, groupPath) => {
-          const key = subgroupKey(repoId, groupPath);
-          return collapsedMap[key] ?? loadCollapsed(key);
-        },
+        isSubgroupCollapsed: (repoId, groupPath) => isCollapsed(subgroupKey(repoId, groupPath)),
       }),
-    [repoGroups, idleDecayWindowMs, sortMode, pluginSort, collapsedMap],
+    [repoGroups, idleDecayWindowMs, sortMode, pluginSort, isCollapsed],
   );
 
-  const toggleSubgroupCollapsed = useCallback((repoId: string, groupPath: string) => {
-    const key = subgroupKey(repoId, groupPath);
-    setCollapsedMap((prev) => {
-      const current = prev[key] ?? loadCollapsed(key);
-      return { ...prev, [key]: !current };
-    });
-  }, []);
-
-  useEffect(() => {
-    for (const [key, collapsed] of Object.entries(collapsedMap)) {
-      if (collapsed) {
-        safeSetItem(`${COLLAPSED_KEY_PREFIX}${key}`, "1");
-      } else {
-        safeRemoveItem(`${COLLAPSED_KEY_PREFIX}${key}`);
-      }
-    }
-  }, [collapsedMap]);
+  const toggleSubgroupCollapsed = useCallback(
+    (repoId: string, groupPath: string) => toggle(subgroupKey(repoId, groupPath)),
+    [toggle],
+  );
 
   return { groups, toggleSubgroupCollapsed };
 }

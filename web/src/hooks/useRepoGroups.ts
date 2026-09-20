@@ -1,7 +1,6 @@
 import { useCallback, useMemo, useState } from "react";
 import type { ProjectInfo, Workspace, RepoGroup } from "../lib/types";
 import { mergeRegisteredProjects, unpinnedSavedProjects } from "../lib/registeredProjects";
-import { safeGetItem, safeRemoveItem, safeSetItem } from "../lib/safeStorage";
 import {
   applyRepoAppearanceUpdate,
   loadRepoAppearances,
@@ -9,6 +8,7 @@ import {
   type RepoAppearanceUpdate,
 } from "../lib/repoAppearance";
 import { loadRepoGroupOrder, persistRepoGroupOrder } from "../lib/repoGroupOrder";
+import { useCollapsedKeys } from "./useCollapsedKeys";
 import { compareSortValues } from "../lib/pluginUi";
 import {
   compareWorkspacesByAttention,
@@ -24,13 +24,8 @@ import {
   type SidebarSortMode,
 } from "../lib/sidebarSort";
 
-const COLLAPSED_KEY_PREFIX = "aoe-repo-collapsed-";
 export const MULTI_REPO_GROUP_ID = "__multi_repo__";
 export const SCRATCH_GROUP_ID = "__scratch__";
-
-function loadCollapsed(id: string): boolean {
-  return safeGetItem(`${COLLAPSED_KEY_PREFIX}${id}`) === "1";
-}
 
 function isMultiRepoWorkspace(ws: Workspace): boolean {
   return ws.sessions.some((s) => (s.workspace_repos?.length ?? 0) > 1);
@@ -53,7 +48,7 @@ export function useRepoGroups(
   updateRepoAppearance: (repoId: string, update: RepoAppearanceUpdate) => void;
   reorderRepoGroups: (orderedGroupIds: string[]) => void;
 } {
-  const [collapsedMap, setCollapsedMap] = useState<Record<string, boolean>>({});
+  const { isCollapsed, toggle: toggleRepoCollapsed } = useCollapsedKeys("aoe-repo-collapsed-");
   const [appearanceMap, setAppearanceMap] = useState(loadRepoAppearances);
   const [groupOrder, setGroupOrder] = useState<string[]>(loadRepoGroupOrder);
 
@@ -121,7 +116,7 @@ export function useRepoGroups(
         remoteOwnerKey: owner?.remote_owner_key ?? null,
         workspaces: sorted,
         status: sorted.some((ws) => ws.status === "active") ? "active" : "idle",
-        collapsed: collapsedMap[id] ?? loadCollapsed(id),
+        collapsed: isCollapsed(id),
         registeredProjects: [],
       };
     };
@@ -136,7 +131,7 @@ export function useRepoGroups(
     const merged = mergeRegisteredProjects(repoGroups, [...projects], {
       alias: (repoPath) => appearanceMap[repoPath]?.alias ?? null,
       color: (repoPath) => appearanceMap[repoPath]?.color ?? null,
-      collapsed: (repoPath) => collapsedMap[repoPath] ?? loadCollapsed(repoPath),
+      collapsed: isCollapsed,
     });
 
     const isRegisteredEmpty = (g: RepoGroup) => g.workspaces.length === 0 && g.registeredProjects.length > 0;
@@ -205,20 +200,7 @@ export function useRepoGroups(
     });
 
     return { groups: merged, savedProjects };
-  }, [workspaces, workspaceOrdering, sortMode, pluginSort, projects, collapsedMap, appearanceMap, groupOrder]);
-
-  const toggleRepoCollapsed = useCallback((repoId: string) => {
-    setCollapsedMap((prev) => {
-      const current = prev[repoId] ?? loadCollapsed(repoId);
-      const next = !current;
-      if (next) {
-        safeSetItem(`${COLLAPSED_KEY_PREFIX}${repoId}`, "1");
-      } else {
-        safeRemoveItem(`${COLLAPSED_KEY_PREFIX}${repoId}`);
-      }
-      return { ...prev, [repoId]: next };
-    });
-  }, []);
+  }, [workspaces, workspaceOrdering, sortMode, pluginSort, projects, isCollapsed, appearanceMap, groupOrder]);
 
   const updateRepoAppearance = useCallback((repoId: string, update: RepoAppearanceUpdate) => {
     setAppearanceMap((prev) => {
