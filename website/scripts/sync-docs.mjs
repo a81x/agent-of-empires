@@ -99,16 +99,9 @@ const PAGES = [
   {
     source: "docs/guides/session-resume.md",
     dest: "guides/session-resume.md",
-    title: "Session Resume (Claude)",
+    title: "Session Resume & Forking",
     description:
-      "Persist and resume Claude Code conversations across reboots, upgrades, and runtime rotations.",
-  },
-  {
-    source: "docs/guides/session-fork.md",
-    dest: "guides/session-fork.md",
-    title: "Forking Sessions",
-    description:
-      "Fork a session to start a second agent from its context, then diverge onto a different task, leaving the original untouched.",
+      "Persist, resume, fork, and import agent conversations across reboots, upgrades, and runtime rotations.",
   },
   {
     source: "docs/guides/multi-repo-workspaces.md",

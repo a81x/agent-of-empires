@@ -21,6 +21,7 @@ export default defineConfig({
     '/guides/agent-override/': '/docs/guides/configuration/#agent-command-overrides',
     '/guides/web/diff/': '/guides/diff-view/',
     '/guides/web/settings/': '/guides/web/dashboard/#settings-and-profiles',
+    '/guides/session-fork/': '/guides/session-resume/#forking-a-session',
   },
   integrations: [
     sitemap({
