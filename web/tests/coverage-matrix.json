@@ -157,10 +157,7 @@
       "id": "terminal.live-split-composite",
       "kind": "vitest",
       "risk": "high",
-      "specs": [
-        "src/hooks/useLiveTerminal.forward.test.ts",
-        "src/components/__tests__/MobileLiveTerminal.forward.test.tsx"
-      ],
+      "specs": ["src/hooks/useLiveTerminal.test.ts", "src/components/__tests__/MobileLiveTerminal.forward.test.tsx"],
       "components": ["web/src/hooks/useLiveTerminal.ts", "web/src/components/MobileLiveTerminal.tsx"]
     },
     {
@@ -174,7 +171,7 @@
       "id": "terminal.live-row-patches",
       "kind": "vitest",
       "risk": "high",
-      "specs": ["src/hooks/useLiveTerminal.patch.test.ts"],
+      "specs": ["src/hooks/useLiveTerminal.test.ts"],
       "components": ["web/src/hooks/useLiveTerminal.ts"]
     },
     {
@@ -239,7 +236,7 @@
       "risk": "high",
       "specs": [
         "src/lib/clipboard.test.ts",
-        "src/hooks/useLiveTerminal.forward.test.ts",
+        "src/hooks/useLiveTerminal.test.ts",
         "src/components/__tests__/MobileLiveTerminal.paste.test.tsx",
         "src/components/__tests__/MobileLiveTerminal.clipboard.test.tsx",
         "src/components/__tests__/MobileLiveTerminal.rowIdentity.test.tsx",
@@ -299,7 +296,7 @@
       "id": "terminal.live-size-owner",
       "kind": "live-playwright",
       "risk": "high",
-      "specs": ["tests/live/live-size-owner-takeover.spec.ts", "src/hooks/useLiveTerminal.sizeOwner.test.ts"],
+      "specs": ["tests/live/live-size-owner-takeover.spec.ts", "src/hooks/useLiveTerminal.test.ts"],
       "components": ["web/src/components/LiveTerminalView.tsx", "web/src/hooks/useLiveTerminal.ts"]
     },
     {
@@ -308,7 +305,7 @@
       "risk": "high",
       "specs": [
         "src/lib/__tests__/liveMouse.test.ts",
-        "src/hooks/useLiveTerminal.forward.test.ts",
+        "src/hooks/useLiveTerminal.test.ts",
         "src/components/__tests__/MobileLiveTerminal.forward.test.tsx",
         "src/hooks/useTerminalGestureBoundary.test.tsx"
       ],
@@ -339,7 +336,7 @@
       "risk": "high",
       "specs": [
         "src/lib/__tests__/liveMouse.test.ts",
-        "src/hooks/useLiveTerminal.forward.test.ts",
+        "src/hooks/useLiveTerminal.test.ts",
         "src/components/__tests__/MobileLiveTerminal.forward.test.tsx"
       ],
       "components": [
@@ -507,7 +504,7 @@
       "id": "telemetry.structured-interaction",
       "kind": "vitest",
       "risk": "medium",
-      "specs": ["src/hooks/useAcpSession.queue.test.ts"],
+      "specs": ["src/hooks/useAcpSession.test.ts"],
       "components": ["web/src/hooks/useAcpSession.ts", "web/src/lib/api.ts"]
     },
     {
@@ -524,7 +521,7 @@
       "specs": [
         "tests/live/acp-mid-turn-steering.spec.ts",
         "tests/live/acp-compaction-phase.spec.ts",
-        "src/hooks/useAcpSession.queue.test.ts"
+        "src/hooks/useAcpSession.test.ts"
       ],
       "components": ["web/src/hooks/useAcpSession.ts"]
     },
@@ -1538,7 +1535,7 @@
       "id": "sidebar.org-axis-hook",
       "kind": "vitest",
       "risk": "medium",
-      "specs": ["src/hooks/__tests__/useOrgGroups.test.ts"],
+      "specs": ["src/hooks/__tests__/sidebarGroupCollapse.test.tsx"],
       "components": ["web/src/hooks/useOrgGroups.ts"]
     },
     {
@@ -1766,8 +1763,7 @@
         "tests/acp-history-window.spec.ts",
         "src/lib/acpHistoryWindow.test.ts",
         "src/hooks/__tests__/useHistoryWindow.test.tsx",
-        "src/hooks/useAcpSession.history.test.ts",
-        "src/hooks/useAcpSession.recentFirst.test.ts",
+        "src/hooks/useAcpSession.test.ts",
         "src/lib/historyScroll.test.ts"
       ],
       "components": [
@@ -2021,7 +2017,7 @@
       "id": "acp.approval-resolve-clear",
       "kind": "vitest",
       "risk": "high",
-      "specs": ["src/hooks/__tests__/useAcpResolveApproval.test.ts"],
+      "specs": ["src/hooks/acpSession/reducer.test.ts"],
       "components": ["web/src/hooks/useAcpSession.ts"]
     },
     {
@@ -2055,7 +2051,7 @@
       "risk": "high",
       "specs": [
         "src/lib/acpTypes.reducer.test.ts",
-        "src/hooks/__tests__/useAcpResolveApproval.test.ts",
+        "src/hooks/acpSession/reducer.test.ts",
         "src/components/acp/ElicitationAnswerCard.test.tsx"
       ],
       "components": [
@@ -2103,7 +2099,7 @@
         "tests/live/acp-compaction-phase.spec.ts",
         "src/components/acp/__tests__/WorkingSpinner.test.tsx",
         "src/lib/acpTypes.test.ts",
-        "src/hooks/useAcpSession.queue.test.ts"
+        "src/hooks/useAcpSession.test.ts"
       ],
       "components": ["web/src/components/acp/StructuredView.tsx"]
     },
@@ -2183,7 +2179,7 @@
         "tests/live/acp-config-pickers.spec.ts",
         "tests/acp-config-pickers-ui.spec.ts",
         "src/components/acp/SessionConfigControls.test.tsx",
-        "src/hooks/useAcpSession.configOption.test.ts"
+        "src/hooks/useAcpSession.test.ts"
       ],
       "components": [
         "web/src/components/acp/SessionConfigControls.tsx",
@@ -2241,12 +2237,11 @@
       "risk": "high",
       "specs": [
         "src/lib/acpTypes.test.ts",
-        "src/hooks/useAcpSession.queue.test.ts",
+        "src/hooks/useAcpSession.test.ts",
         "src/hooks/useRespawnSession.test.tsx",
         "src/components/acp/SystemNotices.test.tsx",
         "src/components/acp/RateLimitRecoverySection.test.tsx",
-        "src/components/acp/SwitchAgentModal.test.tsx",
-        "src/hooks/useAcpSession.rateLimitPark.test.ts"
+        "src/components/acp/SwitchAgentModal.test.tsx"
       ],
       "components": [
         "src/server/api/acp.rs",
@@ -2328,7 +2323,7 @@
       "id": "acp.server-queue-overlay",
       "kind": "vitest",
       "risk": "high",
-      "specs": ["src/hooks/useAcpSession.queue.test.ts"],
+      "specs": ["src/hooks/useAcpSession.test.ts"],
       "components": [
         "web/src/hooks/useAcpSession.ts",
         "web/src/hooks/useAcpQueueCount.ts",
@@ -2367,7 +2362,7 @@
       "id": "acp.idle-dormant-wake",
       "kind": "vitest",
       "risk": "high",
-      "specs": ["src/lib/acpTypes.test.ts", "src/hooks/useAcpSession.queue.test.ts"],
+      "specs": ["src/lib/acpTypes.test.ts", "src/hooks/useAcpSession.test.ts"],
       "components": ["web/src/lib/acpTypes.ts", "web/src/hooks/useAcpSession.ts"]
     },
     {
@@ -2400,7 +2395,7 @@
       "id": "acp.ws-reconnect-liveness",
       "kind": "vitest",
       "risk": "high",
-      "specs": ["src/hooks/useAcpSession.reconnect.test.ts"],
+      "specs": ["src/hooks/useAcpSession.test.ts"],
       "components": ["web/src/hooks/useAcpSession.ts"]
     },
     {
@@ -3271,7 +3266,7 @@
       "risk": "high",
       "specs": [
         "tests/live/acp-mid-turn-steering.spec.ts",
-        "src/hooks/useAcpSession.queue.test.ts",
+        "src/hooks/useAcpSession.test.ts",
         "src/lib/acpTypes.reducer.test.ts"
       ],
       "components": ["web/src/hooks/useAcpSession.ts", "web/src/lib/acpTypes.ts", "web/src/components/acp/Composer.tsx"]
@@ -3609,7 +3604,7 @@
       "risk": "medium",
       "specs": [
         "src/lib/__tests__/tourSteps.test.ts",
-        "src/hooks/__tests__/useTour.test.ts",
+        "src/hooks/useTour.test.tsx",
         "src/components/__tests__/Dashboard.tour.test.tsx",
         "src/components/tour/TourRunner.theme.test.tsx",
         "src/components/tour/TourRunner.transition.test.tsx"

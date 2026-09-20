@@ -9,7 +9,7 @@ import {
   type RepoAppearanceUpdate,
 } from "../lib/repoAppearance";
 import { loadRepoGroupOrder, persistRepoGroupOrder } from "../lib/repoGroupOrder";
-import { compareSortValues, type PluginSortValue } from "../lib/pluginUi";
+import { compareSortValues } from "../lib/pluginUi";
 import {
   compareWorkspacesByAttention,
   compareWorkspacesByLastActivityDesc,
@@ -105,76 +105,33 @@ export function useRepoGroups(
       else byRepo.set(ws.projectPath, [ws]);
     }
 
+    const isSyntheticGroup = (id: string) => id === MULTI_REPO_GROUP_ID || id === SCRATCH_GROUP_ID;
+    const makeGroup = (id: string, list: Workspace[], defaultDisplayName: string): RepoGroup => {
+      const sorted = sortWorkspaces(list);
+      const appearance = appearanceMap[id];
+      const owner = isSyntheticGroup(id) ? null : sorted[0]?.sessions[0];
+      return {
+        id,
+        repoPath: id,
+        displayName: appearance?.alias ?? defaultDisplayName,
+        defaultDisplayName,
+        alias: appearance?.alias ?? null,
+        color: appearance?.color ?? null,
+        remoteOwner: owner?.remote_owner ?? null,
+        remoteOwnerKey: owner?.remote_owner_key ?? null,
+        workspaces: sorted,
+        status: sorted.some((ws) => ws.status === "active") ? "active" : "idle",
+        collapsed: collapsedMap[id] ?? loadCollapsed(id),
+        registeredProjects: [],
+      };
+    };
+
     const repoGroups: RepoGroup[] = [];
-
     for (const [repoPath, repoWorkspaces] of byRepo) {
-      const sorted = sortWorkspaces(repoWorkspaces);
-      const hasActive = sorted.some((ws) => ws.status === "active");
-      const collapsed = collapsedMap[repoPath] ?? loadCollapsed(repoPath);
-      const remoteOwner = sorted[0]?.sessions[0]?.remote_owner ?? null;
-      const remoteOwnerKey = sorted[0]?.sessions[0]?.remote_owner_key ?? null;
-      const appearance = appearanceMap[repoPath];
-      const defaultDisplayName = repoPath.split("/").pop() ?? repoPath;
-
-      repoGroups.push({
-        id: repoPath,
-        repoPath,
-        displayName: appearance?.alias ?? defaultDisplayName,
-        defaultDisplayName,
-        alias: appearance?.alias ?? null,
-        color: appearance?.color ?? null,
-        remoteOwner,
-        remoteOwnerKey,
-        workspaces: sorted,
-        status: hasActive ? "active" : "idle",
-        collapsed,
-        registeredProjects: [],
-      });
+      repoGroups.push(makeGroup(repoPath, repoWorkspaces, repoPath.split("/").pop() ?? repoPath));
     }
-
-    if (multiRepo.length > 0) {
-      const sorted = sortWorkspaces(multiRepo);
-      const hasActive = sorted.some((ws) => ws.status === "active");
-      const collapsed = collapsedMap[MULTI_REPO_GROUP_ID] ?? loadCollapsed(MULTI_REPO_GROUP_ID);
-      const appearance = appearanceMap[MULTI_REPO_GROUP_ID];
-      const defaultDisplayName = "Multi-repo";
-      repoGroups.push({
-        id: MULTI_REPO_GROUP_ID,
-        repoPath: MULTI_REPO_GROUP_ID,
-        displayName: appearance?.alias ?? defaultDisplayName,
-        defaultDisplayName,
-        alias: appearance?.alias ?? null,
-        color: appearance?.color ?? null,
-        remoteOwner: null,
-        remoteOwnerKey: null,
-        workspaces: sorted,
-        status: hasActive ? "active" : "idle",
-        collapsed,
-        registeredProjects: [],
-      });
-    }
-
-    if (scratch.length > 0) {
-      const sorted = sortWorkspaces(scratch);
-      const hasActive = sorted.some((ws) => ws.status === "active");
-      const collapsed = collapsedMap[SCRATCH_GROUP_ID] ?? loadCollapsed(SCRATCH_GROUP_ID);
-      const appearance = appearanceMap[SCRATCH_GROUP_ID];
-      const defaultDisplayName = "Scratch";
-      repoGroups.push({
-        id: SCRATCH_GROUP_ID,
-        repoPath: SCRATCH_GROUP_ID,
-        displayName: appearance?.alias ?? defaultDisplayName,
-        defaultDisplayName,
-        alias: appearance?.alias ?? null,
-        color: appearance?.color ?? null,
-        remoteOwner: null,
-        remoteOwnerKey: null,
-        workspaces: sorted,
-        status: hasActive ? "active" : "idle",
-        collapsed,
-        registeredProjects: [],
-      });
-    }
+    if (multiRepo.length > 0) repoGroups.push(makeGroup(MULTI_REPO_GROUP_ID, multiRepo, "Multi-repo"));
+    if (scratch.length > 0) repoGroups.push(makeGroup(SCRATCH_GROUP_ID, scratch, "Scratch"));
 
     const merged = mergeRegisteredProjects(repoGroups, [...projects], {
       alias: (repoPath) => appearanceMap[repoPath]?.alias ?? null,
@@ -182,11 +139,34 @@ export function useRepoGroups(
       collapsed: (repoPath) => collapsedMap[repoPath] ?? loadCollapsed(repoPath),
     });
 
-    const isSyntheticGroup = (id: string) => id === MULTI_REPO_GROUP_ID || id === SCRATCH_GROUP_ID;
     const isRegisteredEmpty = (g: RepoGroup) => g.workspaces.length === 0 && g.registeredProjects.length > 0;
 
+    const autoCompare = pluginSort
+      ? (a: RepoGroup, b: RepoGroup) =>
+          compareSortValues(
+            repoGroupPluginSortValue(a.workspaces, pluginSort),
+            repoGroupPluginSortValue(b.workspaces, pluginSort),
+            pluginSort.direction,
+          )
+      : sortMode === "attention"
+        ? (a: RepoGroup, b: RepoGroup) => {
+            const au = repoGroupIsUrgent(a.workspaces);
+            const bu = repoGroupIsUrgent(b.workspaces);
+            if (au !== bu) return au ? -1 : 1;
+            const ar = repoGroupAttentionRank(a.workspaces);
+            const br = repoGroupAttentionRank(b.workspaces);
+            if (ar !== br) return ar - br;
+            const af = repoGroupIsFavorited(a.workspaces);
+            const bf = repoGroupIsFavorited(b.workspaces);
+            return af === bf ? 0 : af ? -1 : 1;
+          }
+        : sortMode === "lastActivity"
+          ? () => 0
+          : null;
+
     merged.sort((a, b) => {
-      if (pluginSort) {
+      if (autoCompare) {
+        // Synthetic groups sink below real repos, and repos with no live workspace below those.
         if (a.id === SCRATCH_GROUP_ID) return 1;
         if (b.id === SCRATCH_GROUP_ID) return -1;
         if (a.id === MULTI_REPO_GROUP_ID) return 1;
@@ -194,58 +174,19 @@ export function useRepoGroups(
         const ae = isRegisteredEmpty(a);
         const be = isRegisteredEmpty(b);
         if (ae !== be) return ae ? 1 : -1;
-        const av: PluginSortValue | undefined = repoGroupPluginSortValue(a.workspaces, pluginSort);
-        const bv: PluginSortValue | undefined = repoGroupPluginSortValue(b.workspaces, pluginSort);
-        const cmp = compareSortValues(av, bv, pluginSort.direction);
+        const cmp = autoCompare(a, b);
         if (cmp !== 0) return cmp;
         const ak = repoGroupLastActivityMs(a.workspaces);
         const bk = repoGroupLastActivityMs(b.workspaces);
         if (ak !== bk) return bk - ak;
         return a.repoPath.localeCompare(b.repoPath);
       }
-      if (sortMode === "attention") {
-        if (a.id === SCRATCH_GROUP_ID) return 1;
-        if (b.id === SCRATCH_GROUP_ID) return -1;
-        if (a.id === MULTI_REPO_GROUP_ID) return 1;
-        if (b.id === MULTI_REPO_GROUP_ID) return -1;
-        const ae = isRegisteredEmpty(a);
-        const be = isRegisteredEmpty(b);
-        if (ae !== be) return ae ? 1 : -1;
-        const au = repoGroupIsUrgent(a.workspaces);
-        const bu = repoGroupIsUrgent(b.workspaces);
-        if (au !== bu) return au ? -1 : 1;
-        const ar = repoGroupAttentionRank(a.workspaces);
-        const br = repoGroupAttentionRank(b.workspaces);
-        if (ar !== br) return ar - br;
-        const af = repoGroupIsFavorited(a.workspaces);
-        const bf = repoGroupIsFavorited(b.workspaces);
-        if (af !== bf) return af ? -1 : 1;
-        const ak = repoGroupLastActivityMs(a.workspaces);
-        const bk = repoGroupLastActivityMs(b.workspaces);
-        if (ak !== bk) return bk - ak;
-        return a.repoPath.localeCompare(b.repoPath);
-      }
-      if (sortMode === "lastActivity") {
-        if (a.id === SCRATCH_GROUP_ID) return 1;
-        if (b.id === SCRATCH_GROUP_ID) return -1;
-        if (a.id === MULTI_REPO_GROUP_ID) return 1;
-        if (b.id === MULTI_REPO_GROUP_ID) return -1;
-        const ae = isRegisteredEmpty(a);
-        const be = isRegisteredEmpty(b);
-        if (ae !== be) return ae ? 1 : -1;
-        const ak = repoGroupLastActivityMs(a.workspaces);
-        const bk = repoGroupLastActivityMs(b.workspaces);
-        if (ak !== bk) return bk - ak;
-        return a.repoPath.localeCompare(b.repoPath);
-      }
-      const ag = groupRank.get(a.id);
-      const bg = groupRank.get(b.id);
       const SYNTHETIC_BOTTOM = Number.MAX_SAFE_INTEGER;
       const fallbackRank = (g: RepoGroup) =>
         isSyntheticGroup(g.id) ? SYNTHETIC_BOTTOM : isRegisteredEmpty(g) ? SYNTHETIC_BOTTOM - 1 : -1;
-      const keyOf = (g: RepoGroup, rank: number | undefined) => (rank != null ? rank : fallbackRank(g));
-      const ka = keyOf(a, ag);
-      const kb = keyOf(b, bg);
+      const keyOf = (g: RepoGroup) => groupRank.get(g.id) ?? fallbackRank(g);
+      const ka = keyOf(a);
+      const kb = keyOf(b);
       if (ka !== kb) return ka - kb;
       if (ka === SYNTHETIC_BOTTOM) {
         if (a.id === MULTI_REPO_GROUP_ID) return -1;
