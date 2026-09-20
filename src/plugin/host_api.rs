@@ -1235,19 +1235,16 @@ mod tests {
         .unwrap();
 
         let state = state(tmp.path());
+        let get = |c: &PluginRpcContext, key: &str| {
+            dispatch(&state, c, "config.get", &json!({ "key": key }))
+        };
+
         let worker = ctx(&[CAP_WORKER]);
-
-        let got = dispatch(
-            &state,
-            &worker,
-            "config.get",
-            &json!({"key": "poll_interval_ms"}),
-        )
-        .unwrap();
-        assert_eq!(got["value"], json!(5000));
-
-        let missing = dispatch(&state, &worker, "config.get", &json!({"key": "nope"})).unwrap();
-        assert_eq!(missing["value"], json!(null));
+        assert_eq!(
+            get(&worker, "poll_interval_ms").unwrap()["value"],
+            json!(5000)
+        );
+        assert_eq!(get(&worker, "nope").unwrap()["value"], json!(null));
 
         let other = PluginRpcContext {
             plugin_id: "other.plugin".to_string(),
@@ -1255,22 +1252,13 @@ mod tests {
             ui_contributions: HashSet::new(),
             ui_generation: 0,
         };
-        let other_got = dispatch(
-            &state,
-            &other,
-            "config.get",
-            &json!({"key": "poll_interval_ms"}),
-        )
-        .unwrap();
-        assert_eq!(other_got["value"], json!(null));
+        assert_eq!(
+            get(&other, "poll_interval_ms").unwrap()["value"],
+            json!(null),
+            "settings are scoped to the calling plugin"
+        );
 
-        let err = dispatch(
-            &state,
-            &ctx(&[CAP_SESSION_READ]),
-            "config.get",
-            &json!({"key": "poll_interval_ms"}),
-        )
-        .unwrap_err();
+        let err = get(&ctx(&[CAP_SESSION_READ]), "poll_interval_ms").unwrap_err();
         assert_eq!(err.code, codes::FORBIDDEN);
     }
 
