@@ -1386,6 +1386,12 @@ pub(crate) fn apply_prompt_persist_to_disk(disk: &mut crate::session::Instance, 
 mod tests {
     use super::*;
 
+    fn service_for(rows: Vec<Instance>) -> Arc<SessionService> {
+        crate::server::test_support::build_test_app_state(rows)
+            .session_service
+            .clone()
+    }
+
     fn plugin_instance(plugin_id: &str, key: &str, payload_hash: &str) -> Instance {
         let mut inst = Instance::new("scheduled", "/tmp/aoe-2897-project");
         inst.created_by_plugin = Some(plugin_id.to_string());
@@ -1514,9 +1520,7 @@ mod tests {
 
     #[tokio::test]
     async fn in_flight_claim_waits_same_hash_and_conflicts_on_mismatch() {
-        let service = crate::server::test_support::build_test_app_state(Vec::new())
-            .session_service
-            .clone();
+        let service = service_for(Vec::new());
         let scope = ("cron".to_string(), "job-1".to_string());
 
         let ClaimOutcome::Claimed = service.try_claim_in_flight(&scope, "hash-a") else {
@@ -1554,9 +1558,7 @@ mod tests {
         let hash = spec_payload_hash(&spec);
         let mut prior = plugin_instance("cron", "job-1", &hash);
         prior.id = "sess-prior".to_string();
-        let service = crate::server::test_support::build_test_app_state(vec![prior])
-            .session_service
-            .clone();
+        let service = service_for(vec![prior]);
 
         // Same plugin, key, and payload: replay the existing session.
         match service
@@ -1599,10 +1601,7 @@ mod tests {
         let mut cron_session = Instance::new("cron-owned", "/tmp/aoe-2897-project");
         cron_session.id = "sess-cron".to_string();
         cron_session.created_by_plugin = Some("cron".to_string());
-        let service =
-            crate::server::test_support::build_test_app_state(vec![user_session, cron_session])
-                .session_service
-                .clone();
+        let service = service_for(vec![user_session, cron_session]);
 
         let cron = SessionCaller::Plugin {
             plugin_id: "cron".to_string(),
@@ -1654,9 +1653,7 @@ mod tests {
         let mut inst = Instance::new("no-pending", "/tmp/aoe-2897-project");
         inst.id = "sess-drain".to_string();
         inst.view = crate::session::View::Structured;
-        let service = crate::server::test_support::build_test_app_state(vec![inst])
-            .session_service
-            .clone();
+        let service = service_for(vec![inst]);
 
         // No pending turn.
         service.drain_pending_initial_turn("sess-drain").await;
@@ -1681,9 +1678,7 @@ mod tests {
         inst.id = "sess-husk".to_string();
         inst.view = crate::session::View::Structured;
         inst.status = crate::session::Status::Idle;
-        let service = crate::server::test_support::build_test_app_state(vec![inst])
-            .session_service
-            .clone();
+        let service = service_for(vec![inst]);
 
         // An attachment-only prompt.
         service
@@ -1823,9 +1818,7 @@ mod tests {
         inst.id = "sess-3621".to_string();
         inst.view = crate::session::View::Structured;
         inst.status = crate::session::Status::Idle;
-        let service = crate::server::test_support::build_test_app_state(vec![inst])
-            .session_service
-            .clone();
+        let service = service_for(vec![inst]);
 
         // Deliverable text, so the drain reaches `send_turn` rather than
         // retiring an undeliverable husk on the way.
@@ -1900,9 +1893,7 @@ mod tests {
         inst.id = "sess-mut".to_string();
         inst.view = crate::session::View::Structured;
         inst.status = crate::session::Status::Idle;
-        let service = crate::server::test_support::build_test_app_state(vec![inst])
-            .session_service
-            .clone();
+        let service = service_for(vec![inst]);
         service
             .enqueue_prompt(
                 "sess-mut",
@@ -2077,9 +2068,7 @@ mod tests {
             })
             .unwrap();
 
-        let service = crate::server::test_support::build_test_app_state(vec![inst])
-            .session_service
-            .clone();
+        let service = service_for(vec![inst]);
         service
             .enqueue_prompt(
                 "sess-recency",
@@ -2137,9 +2126,7 @@ mod tests {
                 Ok(())
             })
             .unwrap();
-        let service = crate::server::test_support::build_test_app_state(vec![inst])
-            .session_service
-            .clone();
+        let service = service_for(vec![inst]);
 
         // Fire them together, the way two quick taps on Queue do.
         let mut tasks = Vec::new();
@@ -2192,9 +2179,7 @@ mod tests {
         let mut inst = Instance::new("queue", "/tmp/aoe-queue-project");
         inst.id = "sess-q".to_string();
         inst.view = crate::session::View::Structured;
-        let service = crate::server::test_support::build_test_app_state(vec![inst])
-            .session_service
-            .clone();
+        let service = service_for(vec![inst]);
 
         // Enqueue two.
         let a = service
