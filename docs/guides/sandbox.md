@@ -121,11 +121,11 @@ when the session is deleted. Apple Container has no named volumes and falls
 back to anonymous with a warning.
 
 A named volume is keyed on its mount path, so moving a session's worktree
-starts those caches cold and the volumes left at the old path are removed on
-the next start. Volumes orphaned any other way (dropping a `volume_ignores`
-entry, switching back to `"anonymous"`, attaching a repo to a workspace) are
-left alone, because AoE cannot tell them from a cache you still use. List them
-with `docker volume ls -q --filter name=aoe-vi-` and remove what you recognize.
+starts those caches cold, and only the volumes left behind by that move are
+reclaimed. Volumes orphaned any other way (dropping a `volume_ignores` entry,
+switching back to `"anonymous"`, attaching a repo to a workspace) are left
+alone, because AoE cannot tell them from a cache you still use: list them with
+`docker volume ls -q --filter name=aoe-vi-` and remove what you recognize.
 
 ## Images
 
@@ -155,15 +155,16 @@ in every sandboxed session (its prompt blocks startup); Codex and Gemini only
 in YOLO mode.
 
 Trust activates the repo's own `.claude/settings.json`, including its hooks, so
-a pre-trusted workspace runs them unprompted. A repo's `.mcp.json` still asks
-per server. For host sessions, see `session.pre_trust_agent_folders` in the
-[configuration reference](configuration.md).
+a pre-trusted workspace runs them unprompted, while a repo's `.mcp.json` still
+asks per server. For host sessions, see `session.pre_trust_agent_folders` in the
+[configuration reference](configuration.md#session).
 
 For a custom agent whose wrapper points the CLI at another directory, name that
 host root in `session.agent_config_dir`; AoE stages a per-session child of it
 and mounts it at the agent's canonical container path. Do not add an
-`extra_volumes` entry for that path, which would shadow the managed mount, and
-leave the config-dir variables AoE sets in place inside the container.
+`extra_volumes` entry for that path, which would shadow the managed mount (AoE
+warns when one does), and leave the config-dir variables AoE sets in place
+inside the container.
 
 ## Per-session agent stores
 
@@ -175,7 +176,8 @@ credentials, hooks and conversation history belong to one session.
 Sessions created under the older shared-store layout move to a private store
 the next time they start, which makes that first start slower; the TUI shows
 the progress. `aoe migrate` moves every eligible session at once, and
-`AOE_DEFER_SANDBOX_MIGRATION=1` skips the move for one launch. Trashed and
+`AOE_DEFER_SANDBOX_MIGRATION=1` skips the move for one launch (a session whose
+container is stopped then cannot start until its store has moved). Trashed and
 archived sessions keep the shared store until they are started again.
 
 ### Shared credentials
@@ -188,11 +190,13 @@ is seen by all of them.
 
 A file holding no credential is seeded at the next start from the freshest of
 the macOS Keychain entry, `~/.claude/.credentials.json`, and any copy left in
-the session's store. Once it holds one, the host's copy never replaces it: the
-sandboxes are a credential chain of their own from then on. To re-seed from a
-new host login, stop the sandboxes, delete `sandbox-v2/.credentials.json`, and
-start one. Running `/logout` inside a sandbox revokes the token for all of
-them.
+the session's store. Once it holds one, the host's copy never replaces it: from
+the first refresh on, the sandboxes are a credential chain of their own. Claude
+Code empties both tokens in place when its credential fails to authenticate,
+which reaches every sandbox through the shared mount and makes the file eligible
+for seeding again. To re-seed from a new host login, stop the sandboxes, delete
+`sandbox-v2/.credentials.json`, and start one. Running `/logout` inside a
+sandbox revokes the token for all of them.
 
 ### Reclaiming stores
 
@@ -207,7 +211,8 @@ aoe sandbox reclaim --delete   # remove it
 
 Reporting is the default because a store holds a copy of the agent's
 credentials. A store is kept while any runtime still has a container for it,
-while a runtime cannot be asked, and for fifteen minutes after its last write.
+while a runtime cannot be asked, and for fifteen minutes after its last write,
+since a store is seeded before the session that owns it is recorded.
 
 ## Worktrees
 
