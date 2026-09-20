@@ -681,13 +681,28 @@ fn classify_daemon_probe(
     }
 }
 
+/// Files `aoe serve --daemon` leaves beside its pid file.
+const SERVE_STATE_FILES: [&str; 4] = [
+    "serve.url",
+    "serve.mode",
+    "serve.passphrase",
+    "serve.launch",
+];
+
 fn remove_stale_serve_state(pid_path: &std::path::Path) {
     let _ = std::fs::remove_file(pid_path);
     if let Ok(dir) = crate::session::get_app_dir() {
-        let _ = std::fs::remove_file(dir.join("serve.url"));
-        let _ = std::fs::remove_file(dir.join("serve.mode"));
-        let _ = std::fs::remove_file(dir.join("serve.passphrase"));
-        let _ = std::fs::remove_file(dir.join("serve.launch"));
+        for name in SERVE_STATE_FILES {
+            let _ = std::fs::remove_file(dir.join(name));
+        }
+    }
+}
+
+async fn clear_serve_state() {
+    if let Ok(dir) = crate::session::get_app_dir() {
+        for name in SERVE_STATE_FILES {
+            let _ = tokio::fs::remove_file(dir.join(name)).await;
+        }
     }
 }
 
@@ -923,12 +938,7 @@ pub async fn run(profile: &str, mut args: ServeArgs) -> Result<()> {
             .is_some_and(|pid| pid == std::process::id());
         if is_ours {
             let _ = tokio::fs::remove_file(&path).await;
-            if let Ok(dir) = crate::session::get_app_dir() {
-                let _ = tokio::fs::remove_file(dir.join("serve.url")).await;
-                let _ = tokio::fs::remove_file(dir.join("serve.mode")).await;
-                let _ = tokio::fs::remove_file(dir.join("serve.passphrase")).await;
-                let _ = tokio::fs::remove_file(dir.join("serve.launch")).await;
-            }
+            clear_serve_state().await;
         }
     }
 
@@ -1280,22 +1290,12 @@ pub(crate) async fn stop_daemon() -> Result<()> {
                 }
             }
             let _ = tokio::fs::remove_file(&path).await;
-            if let Ok(dir) = crate::session::get_app_dir() {
-                let _ = tokio::fs::remove_file(dir.join("serve.url")).await;
-                let _ = tokio::fs::remove_file(dir.join("serve.mode")).await;
-                let _ = tokio::fs::remove_file(dir.join("serve.passphrase")).await;
-                let _ = tokio::fs::remove_file(dir.join("serve.launch")).await;
-            }
+            clear_serve_state().await;
             println!("Stopped aoe serve daemon (PID {})", pid);
         }
         Err(nix::errno::Errno::ESRCH) => {
             tokio::fs::remove_file(&path).await?;
-            if let Ok(dir) = crate::session::get_app_dir() {
-                let _ = tokio::fs::remove_file(dir.join("serve.url")).await;
-                let _ = tokio::fs::remove_file(dir.join("serve.mode")).await;
-                let _ = tokio::fs::remove_file(dir.join("serve.passphrase")).await;
-                let _ = tokio::fs::remove_file(dir.join("serve.launch")).await;
-            }
+            clear_serve_state().await;
             println!("Daemon was not running (stale PID file cleaned up)");
         }
         Err(e) => bail!("Failed to stop daemon (PID {}): {}", pid, e),
