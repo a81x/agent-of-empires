@@ -1,4 +1,4 @@
-import { type ReactElement, useEffect, useMemo, useRef, useState } from "react";
+import { type ReactElement, useEffect, useMemo, useState } from "react";
 
 import { fetchPluginCommands, type PluginCommand, type PluginUiEntry } from "../lib/api";
 import type { CommandAction } from "../components/command-palette/types";
@@ -10,6 +10,7 @@ import {
   type CommandLink,
 } from "../lib/pluginCommands";
 import { PluginLinkPicker } from "../components/plugin/PluginLinkPicker";
+import { useLatestRef } from "./useLatestRef";
 
 export function usePluginCommands(
   entries: PluginUiEntry[],
@@ -33,10 +34,7 @@ export function usePluginCommands(
     [commands, entries, activeSessionId],
   );
 
-  const live = useRef({ commands, entries, activeSessionId });
-  useEffect(() => {
-    live.current = { commands, entries, activeSessionId };
-  });
+  const live = useLatestRef({ commands, entries, activeSessionId });
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if (e.defaultPrevented) return;
@@ -56,7 +54,7 @@ export function usePluginCommands(
     };
     document.addEventListener("keydown", handler);
     return () => document.removeEventListener("keydown", handler);
-  }, []);
+  }, [live]);
 
   const overlay = pickerLinks ? <PluginLinkPicker links={pickerLinks} onClose={() => setPickerLinks(null)} /> : null;
 

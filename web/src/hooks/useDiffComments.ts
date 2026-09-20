@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { DiffComment, DiffCommentDraft, DiffCommentsStorageV1 } from "../components/diff/comments/types";
 import { EMPTY_STORAGE, loadComments, saveComments } from "../components/diff/comments/storage";
 import { listen } from "./domEvents";
+import { useLatestRef } from "./useLatestRef";
 
 export interface UseDiffCommentsResult {
   comments: DiffComment[];
@@ -23,10 +24,7 @@ export function useDiffComments(sessionId: string | null): UseDiffCommentsResult
     sessionId ? loadComments(sessionId) : { ...EMPTY_STORAGE },
   );
 
-  const stateRef = useRef(state);
-  useEffect(() => {
-    stateRef.current = state;
-  }, [state]);
+  const stateRef = useLatestRef(state);
   const [trackedSessionId, setTrackedSessionId] = useState(sessionId);
 
   if (sessionId !== trackedSessionId) {
@@ -48,13 +46,13 @@ export function useDiffComments(sessionId: string | null): UseDiffCommentsResult
     return () => {
       if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current);
     };
-  }, [sessionId, saveCounter]);
+  }, [sessionId, saveCounter, stateRef]);
 
   useEffect(() => {
     if (!sessionId) return;
     const flush = () => saveComments(sessionId, stateRef.current);
     return listen(flush, [window, "beforeunload"], [window, "pagehide"]);
-  }, [sessionId]);
+  }, [sessionId, stateRef]);
 
   const addComment = useCallback(
     (draft: DiffCommentDraft): DiffComment => {

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { getSessionDiffFiles, reportTelemetrySeen } from "../lib/api";
 import type { RepoBase, RichDiffFile } from "../lib/types";
+import { useLatestRef } from "./useLatestRef";
 
 const POLL_INTERVAL = 10_000;
 
@@ -22,7 +23,7 @@ export function useDiffFiles(sessionId: string | null, enabled: boolean): UseDif
   const lastFingerprintRef = useRef("");
   const requestIdRef = useRef(0);
   const diffPanelSeenForRef = useRef<string | null>(null);
-  const enabledRef = useRef(enabled);
+  const enabledRef = useLatestRef(enabled);
 
   const fetchFiles = useCallback(async () => {
     if (!sessionId) return;
@@ -50,11 +51,7 @@ export function useDiffFiles(sessionId: string | null, enabled: boolean): UseDif
       }
     }
     setLoading(false);
-  }, [sessionId]);
-
-  useEffect(() => {
-    enabledRef.current = enabled;
-  }, [enabled]);
+  }, [sessionId, enabledRef]);
 
   const [trackedSessionId, setTrackedSessionId] = useState(sessionId);
   if (sessionId !== trackedSessionId) {

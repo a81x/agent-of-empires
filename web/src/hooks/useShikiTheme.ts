@@ -20,10 +20,7 @@ export function useShikiTheme(): ShikiThemeState {
     const onChange = (event: Event) => {
       const next = (event as CustomEvent<ResolvedTheme>).detail;
       if (!next) return;
-      setState({
-        theme: next.syntax.shikiTheme,
-        appearance: next.appearance,
-      });
+      setState({ theme: next.syntax.shikiTheme, appearance: next.appearance });
     };
     return listen(onChange, [window, THEME_CHANGED_EVENT]);
   }, []);
