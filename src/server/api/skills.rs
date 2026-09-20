@@ -243,19 +243,16 @@ pub struct SyncSkillsBody {
     roots: Vec<String>,
     /// Skills the caller has explicitly asked AoE to take over, overwriting a
     /// skill AoE does not manage or a propagated copy edited in place. Empty
-    /// means overwrite nothing, which is the default and what every automatic
-    /// sync uses.
+    /// (the default, and what every automatic sync uses) overwrites nothing.
     #[serde(default)]
     replace: Vec<String>,
-    /// When non-empty, reconcile only these skills. This is what makes sharing
-    /// a single skill a single-skill operation rather than a full sync whose
-    /// report is filtered afterwards.
+    /// When non-empty, reconcile only these skills, so sharing a single skill
+    /// is a single-skill operation rather than a filtered full sync.
     #[serde(default)]
     directories: Vec<String>,
 }
 
 /// `POST /api/skills/sync`: reconcile the managed store into agent skills dirs.
-///
 /// Returns one outcome per skill per root rather than failing on the first
 /// conflict: a destination AoE does not own is a normal result the user needs to
 /// see, not an error that should abandon the remaining roots.
