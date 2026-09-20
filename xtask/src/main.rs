@@ -712,27 +712,25 @@ mod tests {
     use std::path::Path;
 
     #[test]
-    fn rust_sources_are_relevant() {
-        assert!(is_watch_relevant(Path::new("src/main.rs")));
-        assert!(is_watch_relevant(Path::new("src/server/mod.rs")));
-        assert!(is_watch_relevant(Path::new(
-            "/abs/agent-of-empires/src/tui/app.rs"
-        )));
-    }
-
-    #[test]
-    fn cargo_manifests_are_relevant() {
-        assert!(is_watch_relevant(Path::new("Cargo.toml")));
-        assert!(is_watch_relevant(Path::new("./Cargo.lock")));
-        assert!(is_watch_relevant(Path::new("/abs/repo/Cargo.toml")));
-    }
-
-    #[test]
-    fn unrelated_paths_are_ignored() {
-        assert!(!is_watch_relevant(Path::new("README.md")));
-        assert!(!is_watch_relevant(Path::new("target/debug/aoe")));
-        assert!(!is_watch_relevant(Path::new(".git/index")));
-        assert!(!is_watch_relevant(Path::new("Cargo.toml.swp")));
-        assert!(!is_watch_relevant(Path::new("web/src/App.tsx")));
+    fn only_rust_sources_and_cargo_manifests_trigger_a_rebuild() {
+        for relevant in [
+            "src/main.rs",
+            "src/server/mod.rs",
+            "/abs/agent-of-empires/src/tui/app.rs",
+            "Cargo.toml",
+            "./Cargo.lock",
+            "/abs/repo/Cargo.toml",
+        ] {
+            assert!(is_watch_relevant(Path::new(relevant)), "{relevant}");
+        }
+        for ignored in [
+            "README.md",
+            "target/debug/aoe",
+            ".git/index",
+            "Cargo.toml.swp",
+            "web/src/App.tsx",
+        ] {
+            assert!(!is_watch_relevant(Path::new(ignored)), "{ignored}");
+        }
     }
 }

@@ -82,37 +82,37 @@ mod tests {
     use super::*;
 
     #[test]
-    fn known_agents_keep_canonical_name() {
-        assert_eq!(agent_bucket("claude"), "claude");
-        assert_eq!(agent_bucket("CLAUDE"), "claude");
-        assert_eq!(agent_bucket("codex"), "codex");
-        assert_eq!(agent_bucket("gemini"), "gemini");
-        assert_eq!(agent_bucket("opencode"), "opencode");
+    fn agent_bucket_keeps_known_names_and_collapses_the_rest_to_custom() {
+        for (raw, bucket) in [
+            ("claude", "claude"),
+            ("CLAUDE", "claude"),
+            ("codex", "codex"),
+            ("gemini", "gemini"),
+            ("opencode", "opencode"),
+            ("/usr/local/bin/my-secret-agent", "custom"),
+            ("acme-internal-llm", "custom"),
+            ("", "custom"),
+            ("   ", "custom"),
+        ] {
+            assert_eq!(agent_bucket(raw), bucket, "{raw:?}");
+        }
     }
 
     #[test]
-    fn unknown_agent_collapses_to_custom() {
-        assert_eq!(agent_bucket("/usr/local/bin/my-secret-agent"), "custom");
-        assert_eq!(agent_bucket("acme-internal-llm"), "custom");
-        assert_eq!(agent_bucket(""), "custom");
-        assert_eq!(agent_bucket("   "), "custom");
-    }
-
-    #[test]
-    fn model_buckets_map_to_families() {
-        assert_eq!(model_bucket(Some("claude-opus-4-8")), "claude");
-        assert_eq!(model_bucket(Some("gpt-5")), "openai");
-        assert_eq!(model_bucket(Some("o3-mini")), "openai");
-        assert_eq!(model_bucket(Some("gemini-2.5-pro")), "gemini");
-        assert_eq!(model_bucket(Some("qwen3-coder")), "qwen");
-    }
-
-    #[test]
-    fn model_bucket_unset_and_other() {
-        assert_eq!(model_bucket(None), "unset");
-        assert_eq!(model_bucket(Some("")), "unset");
-        assert_eq!(model_bucket(Some("   ")), "unset");
-        assert_eq!(model_bucket(Some("acme-internal-v2")), "other");
+    fn model_bucket_maps_families_and_reports_unset_separately_from_other() {
+        for (raw, bucket) in [
+            (Some("claude-opus-4-8"), "claude"),
+            (Some("gpt-5"), "openai"),
+            (Some("o3-mini"), "openai"),
+            (Some("gemini-2.5-pro"), "gemini"),
+            (Some("qwen3-coder"), "qwen"),
+            (None, "unset"),
+            (Some(""), "unset"),
+            (Some("   "), "unset"),
+            (Some("acme-internal-v2"), "other"),
+        ] {
+            assert_eq!(model_bucket(raw), bucket, "{raw:?}");
+        }
     }
 
     #[test]
