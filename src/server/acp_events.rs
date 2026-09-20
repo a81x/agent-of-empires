@@ -749,104 +749,39 @@ mod tests {
         assert_eq!(counts(), (1, 1, 2), "a cancellation is not a decision");
     }
 
-    /// #3181.
+    /// #3181: only a structured row's own Running -> Idle turn end marks unread.
     #[test]
     fn should_mark_acp_unread_only_on_a_structured_running_to_idle_turn_end() {
-        // (name, structured, old_status, new_status, unread_enabled, already_unread, expected)
-        let cases = [
-            (
-                "turn finished",
-                true,
-                Status::Running,
-                Status::Idle,
-                true,
-                false,
-                true,
-            ),
-            // The turn stopped while still blocked on the user, who is by construction
-            // present for it; an answered approval comes back through Running first, so
-            // this is not the answered-then-completed path.
-            (
-                "still blocked on the user",
-                true,
-                Status::Waiting,
-                Status::Idle,
-                true,
-                false,
-                false,
-            ),
-            (
-                "crashed, not finished",
-                true,
-                Status::Running,
-                Status::Error,
-                true,
-                false,
-                false,
-            ),
-            (
-                "turn starting",
-                true,
-                Status::Idle,
-                Status::Running,
-                true,
-                false,
-                false,
-            ),
-            (
-                "no transition applied",
-                true,
-                Status::Running,
-                Status::Running,
-                true,
-                false,
-                false,
-            ),
-            (
-                "feature off",
-                true,
-                Status::Running,
-                Status::Idle,
-                false,
-                false,
-                false,
-            ),
-            // Re-marking would churn the flock once per turn, and would undo a
-            // read the user has not been given a new turn to earn.
-            (
-                "already unread",
-                true,
-                Status::Running,
-                Status::Idle,
-                true,
-                true,
-                false,
-            ),
-            // Terminal rows stay with the tmux poll loop's `decide_passive_transition`.
-            (
-                "terminal row, owned elsewhere",
-                false,
-                Status::Running,
-                Status::Idle,
-                true,
-                false,
-                false,
-            ),
-        ];
-        for (name, structured, old, new, enabled, already_unread, expected) in cases {
-            let mut inst = Instance::new(name, "/tmp/test");
+        // The helper reads the row *after* `apply_status_intent` ran, so `new` is its
+        // current status and `old` the one it moved from.
+        let mark = |structured: bool, old, new, enabled, already_unread| {
+            let mut inst = Instance::new("row", "/tmp/test");
             if structured {
                 inst.view = crate::session::View::Structured;
             }
-            // The helper reads the row *after* `apply_status_intent` ran.
             inst.status = new;
             inst.unread = already_unread;
-            assert_eq!(
-                should_mark_acp_unread(&inst, old, enabled),
-                expected,
-                "{name}"
-            );
-        }
+            should_mark_acp_unread(&inst, old, enabled)
+        };
+        use Status::{Error, Idle, Running, Waiting};
+
+        assert!(mark(true, Running, Idle, true, false), "turn finished");
+        // The turn stopped while still blocked on the user, who is by construction
+        // present for it; an answered approval comes back through Running first, so
+        // this is not the answered-then-completed path.
+        assert!(
+            !mark(true, Waiting, Idle, true, false),
+            "blocked on the user"
+        );
+        assert!(!mark(true, Running, Error, true, false), "crashed");
+        assert!(!mark(true, Idle, Running, true, false), "turn starting");
+        assert!(!mark(true, Running, Running, true, false), "no transition");
+        assert!(!mark(true, Running, Idle, false, false), "feature off");
+        // Re-marking would churn the flock once per turn, and would undo a read the
+        // user has not been given a new turn to earn.
+        assert!(!mark(true, Running, Idle, true, true), "already unread");
+        // Terminal rows stay with the tmux poll loop's `decide_passive_transition`.
+        assert!(!mark(false, Running, Idle, true, false), "terminal row");
     }
 
     /// Seed `profile`'s store with `rows`, so a persist closure has a matching id to mark.
