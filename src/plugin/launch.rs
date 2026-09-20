@@ -277,13 +277,6 @@ capabilities = ["runtime.worker"]
     }
 
     #[test]
-    fn no_runtime_has_no_worker() {
-        let p = plugin(None, Some("/plugins/acme.worker"));
-        let err = resolve_launch(&p, &FakeResolver::new()).unwrap_err();
-        assert!(matches!(err, LaunchError::NoRuntime { .. }));
-    }
-
-    #[test]
     fn command_bare_name_resolves_on_path() {
         let p = plugin(
             Some("[runtime]\nkind = \"command\"\ncommand = [\"python3\", \"-m\", \"acme.main\"]\nsystem = true"),
@@ -301,46 +294,51 @@ capabilities = ["runtime.worker"]
     }
 
     #[test]
-    fn command_console_script_missing_on_path_fails_loudly() {
-        let p = plugin(
-            Some("[runtime]\nkind = \"command\"\ncommand = [\"aoe-github-worker\"]\nsystem = true"),
-            Some("/plugins/acme.worker"),
-        );
-        let err = resolve_launch(&p, &FakeResolver::new()).unwrap_err();
-        match err {
-            LaunchError::ProgramNotOnPath { program, .. } => {
-                assert_eq!(program, "aoe-github-worker");
-            }
-            other => panic!("expected ProgramNotOnPath, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn command_relative_path_resolves_in_plugin_dir() {
+    fn command_relative_path_must_exist_in_the_plugin_dir_and_be_executable() {
         let p = plugin(
             Some("[runtime]\nkind = \"command\"\ncommand = [\"bin/worker\"]"),
             Some("/plugins/acme.worker"),
         );
         let bin = PathBuf::from("/plugins/acme.worker/bin/worker");
+
         let resolver = FakeResolver::new().file(bin.clone(), true);
-        let launch = resolve_launch(&p, &resolver).unwrap();
-        assert_eq!(launch.program, bin);
-    }
+        assert_eq!(resolve_launch(&p, &resolver).unwrap().program, bin);
 
-    #[test]
-    fn command_relative_path_not_executable_fails() {
-        let p = plugin(
-            Some("[runtime]\nkind = \"command\"\ncommand = [\"bin/worker\"]"),
-            Some("/plugins/acme.worker"),
-        );
-        let bin = PathBuf::from("/plugins/acme.worker/bin/worker");
         let resolver = FakeResolver::new().file(bin, false);
         let err = resolve_launch(&p, &resolver).unwrap_err();
-        assert!(matches!(err, LaunchError::NotExecutable { .. }));
+        assert!(matches!(err, LaunchError::NotExecutable { .. }), "{err:?}");
     }
 
     #[test]
-    fn command_absolute_argv0_rejected() {
+    fn unusable_runtimes_are_refused_with_their_own_error() {
+        let cases = [
+            ("no runtime at all", None, "no-runtime"),
+            (
+                "console script missing from PATH",
+                Some("[runtime]\nkind = \"command\"\ncommand = [\"aoe-github-worker\"]\nsystem = true"),
+                "not-on-path",
+            ),
+            (
+                "command escaping the plugin dir",
+                Some("[runtime]\nkind = \"command\"\ncommand = [\"../escape\"]"),
+                "path-escape",
+            ),
+        ];
+        for (label, runtime, expected) in cases {
+            let p = plugin(runtime, Some("/plugins/acme.worker"));
+            let err = resolve_launch(&p, &FakeResolver::new()).unwrap_err();
+            let seen = match &err {
+                LaunchError::NoRuntime { .. } => "no-runtime",
+                LaunchError::ProgramNotOnPath { program, .. } => {
+                    assert_eq!(program, "aoe-github-worker", "{label}");
+                    "not-on-path"
+                }
+                LaunchError::PathEscape { .. } => "path-escape",
+                other => panic!("{label}: unexpected {other:?}"),
+            };
+            assert_eq!(seen, expected, "{label}");
+        }
+
         let argv0 = if cfg!(windows) {
             "C:/Windows/py.exe"
         } else {
@@ -353,40 +351,25 @@ capabilities = ["runtime.worker"]
             &FakeResolver::new(),
         )
         .unwrap_err();
-        assert!(matches!(err, LaunchError::AbsoluteArgv0 { .. }));
+        assert!(matches!(err, LaunchError::AbsoluteArgv0 { .. }), "{err:?}");
     }
 
     #[test]
-    fn command_parent_traversal_rejected() {
-        let p = plugin(
-            Some("[runtime]\nkind = \"command\"\ncommand = [\"../escape\"]"),
-            Some("/plugins/acme.worker"),
-        );
-        let err = resolve_launch(&p, &FakeResolver::new()).unwrap_err();
-        assert!(matches!(err, LaunchError::PathEscape { .. }));
-    }
-
-    #[test]
-    fn release_binary_resolves_in_tree() {
+    fn release_binary_resolves_in_tree_or_names_the_platform() {
         let p = plugin(
             Some("[runtime]\nkind = \"release-binary\"\nasset = \"worker-${os}-${arch}\"\nbin = \"bin/worker\""),
             Some("/plugins/acme.worker"),
         );
         let bin = PathBuf::from("/plugins/acme.worker/bin/worker");
-        let resolver = FakeResolver::new().file(bin.clone(), true);
-        let launch = resolve_launch(&p, &resolver).unwrap();
+        let launch = resolve_launch(&p, &FakeResolver::new().file(bin.clone(), true)).unwrap();
         assert_eq!(launch.program, bin);
         assert!(launch.args.is_empty());
-    }
 
-    #[test]
-    fn release_binary_missing_names_platform() {
         let p = plugin(
             Some("[runtime]\nkind = \"release-binary\"\nasset = \"worker\""),
             Some("/plugins/acme.worker"),
         );
-        let err = resolve_launch(&p, &FakeResolver::new()).unwrap_err();
-        match err {
+        match resolve_launch(&p, &FakeResolver::new()).unwrap_err() {
             LaunchError::ReleaseBinaryMissing { os, arch, .. } => {
                 assert_eq!(os, std::env::consts::OS);
                 assert_eq!(arch, std::env::consts::ARCH);
