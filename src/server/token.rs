@@ -242,44 +242,26 @@ mod tests {
     use super::*;
 
     #[test]
-    fn generate_token_correct_length_and_charset() {
-        let token = generate_token();
-        assert_eq!(token.len(), 64);
-        assert!(token.chars().all(|c| c.is_ascii_hexdigit()));
-    }
-
-    #[test]
-    fn valid_token_format_accepts_hex_64() {
-        assert!(is_valid_token_format(
-            "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2"
-        ));
-    }
-
-    #[test]
-    fn valid_token_format_accepts_legacy_32() {
+    fn token_format_accepts_hex_64_and_legacy_32() {
+        let generated = generate_token();
+        assert_eq!(generated.len(), 64);
+        assert!(is_valid_token_format(&generated));
         assert!(is_valid_token_format("abcdef0123456789abcdef0123456789"));
-    }
-
-    #[test]
-    fn valid_token_format_rejects_garbage() {
-        assert!(!is_valid_token_format("short"));
-        assert!(!is_valid_token_format(""));
-        assert!(!is_valid_token_format("ZZZZ0000111122223333444455556666"));
+        for bad in ["short", "", "ZZZZ0000111122223333444455556666"] {
+            assert!(!is_valid_token_format(bad), "{bad:?}");
+        }
     }
 
     #[tokio::test]
-    async fn token_manager_validates_current() {
+    async fn token_manager_validates_only_the_current_token() {
         let mgr = TokenManager::new(Some("abc123".to_string()), Duration::from_secs(3600));
-        let (valid, upgrade) = mgr.validate("abc123").await;
-        assert!(valid);
-        assert!(!upgrade);
-    }
-
-    #[tokio::test]
-    async fn token_manager_rejects_invalid() {
-        let mgr = TokenManager::new(Some("abc123".to_string()), Duration::from_secs(3600));
-        let (valid, _) = mgr.validate("wrong").await;
-        assert!(!valid);
+        assert_eq!(mgr.validate("abc123").await, (true, false));
+        assert!(!mgr.validate("wrong").await.0);
+        assert!(
+            TokenManager::new(None, Duration::from_secs(3600))
+                .is_no_auth()
+                .await
+        );
     }
 
     #[tokio::test]
@@ -288,26 +270,13 @@ mod tests {
         let mgr = TokenManager::new(Some("old_token".to_string()), Duration::from_secs(3600));
         mgr.rotate().await;
 
-        // Old token should still be valid during grace period
-        let (valid, upgrade) = mgr.validate("old_token").await;
-        assert!(valid);
-        assert!(upgrade); // needs cookie upgrade
+        // The old token stays valid through the grace window, flagged for cookie upgrade.
+        assert_eq!(mgr.validate("old_token").await, (true, true));
 
-        // New token should also be valid
+        // The rotation minted a different token, and it validates without an upgrade.
         let current = mgr.current_token().await.unwrap();
-        let (valid, upgrade) = mgr.validate(&current).await;
-        assert!(valid);
-        assert!(!upgrade);
-    }
-
-    #[tokio::test]
-    async fn token_manager_rotate_changes_token() {
-        let _app_dir = crate::session::test_support::isolate_app_dir();
-        let mgr = TokenManager::new(Some("original".to_string()), Duration::from_secs(3600));
-        let before = mgr.current_token().await;
-        mgr.rotate().await;
-        let after = mgr.current_token().await;
-        assert_ne!(before, after);
+        assert_ne!(current, "old_token");
+        assert_eq!(mgr.validate(&current).await, (true, false));
     }
 
     #[cfg(unix)]
@@ -379,11 +348,5 @@ mod tests {
         // A zero window makes expiration independent of filesystem precision.
         let rotated = load_or_generate_token_at(&path, std::time::Duration::ZERO).await;
         assert_ne!(rotated, first, "a token idle past the window rotates");
-    }
-
-    #[tokio::test]
-    async fn token_manager_no_auth_mode() {
-        let mgr = TokenManager::new(None, Duration::from_secs(3600));
-        assert!(mgr.is_no_auth().await);
     }
 }
