@@ -11,8 +11,7 @@ import { useNestedSidebarGroups } from "../useNestedSidebarGroups";
 import { useOrgGroups } from "../useOrgGroups";
 import { useRepoGroups } from "../useRepoGroups";
 import { useSessionGroups } from "../useSessionGroups";
-import { useSidebarAxis } from "../useSidebarAxis";
-import { useSidebarSortMode } from "../useSidebarSortMode";
+import { useSidebarAxis, useSidebarSortMode } from "../useSidebarPrefs";
 
 interface Options {
   workspaces: Workspace[];

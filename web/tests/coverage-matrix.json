@@ -1435,7 +1435,7 @@
       "id": "sidebar.sort-hook",
       "kind": "vitest",
       "risk": "medium",
-      "specs": ["src/hooks/useSidebarSortMode.test.ts"],
+      "specs": ["src/hooks/useSidebarPrefs.test.ts"],
       "components": []
     },
     {
@@ -1492,7 +1492,7 @@
       "id": "sidebar.axis-hook",
       "kind": "vitest",
       "risk": "medium",
-      "specs": ["src/hooks/useSidebarAxis.test.ts"],
+      "specs": ["src/hooks/useSidebarPrefs.test.ts"],
       "components": ["web/src/hooks/useSidebarAxis.ts"]
     },
     {
