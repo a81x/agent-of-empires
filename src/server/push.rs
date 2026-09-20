@@ -1151,88 +1151,67 @@ mod tests {
         assert_eq!(store.snapshot().await.len(), 0);
     }
 
+    /// The push URL's origin comes from the Origin header when the browser sent one,
+    /// otherwise from the proxy's forwarded scheme plus Host. A `null` Origin (an opaque
+    /// context) is no signal, and a forwarded-proto chain names its first hop.
     #[test]
-    fn extract_origin_prefers_origin_header() {
-        let mut h = HeaderMap::new();
-        h.insert(
-            axum::http::header::ORIGIN,
-            "http://localhost:42041".parse().unwrap(),
-        );
-        h.insert(axum::http::header::HOST, "ignored.example".parse().unwrap());
-        assert_eq!(
-            extract_request_origin(&h).as_deref(),
-            Some("http://localhost:42041")
-        );
+    fn extract_request_origin_prefers_origin_then_forwarded_host() {
+        let origin = |headers: &[(&str, &str)]| {
+            let mut h = HeaderMap::new();
+            for (name, value) in headers {
+                h.insert(
+                    axum::http::HeaderName::from_bytes(name.as_bytes()).unwrap(),
+                    value.parse().unwrap(),
+                );
+            }
+            extract_request_origin(&h)
+        };
+        let host = ("host", "aoe.example.com");
+
+        let cases: &[(&str, &[(&str, &str)], Option<&str>)] = &[
+            (
+                "origin wins over host",
+                &[
+                    ("origin", "http://localhost:42041"),
+                    ("host", "ignored.example"),
+                ],
+                Some("http://localhost:42041"),
+            ),
+            (
+                "trailing slash trimmed",
+                &[("origin", "https://aoe.example.com/")],
+                Some("https://aoe.example.com"),
+            ),
+            (
+                "null origin falls back to host",
+                &[("origin", "null"), host],
+                Some("https://aoe.example.com"),
+            ),
+            (
+                "forwarded proto",
+                &[("x-forwarded-proto", "https"), host],
+                Some("https://aoe.example.com"),
+            ),
+            (
+                "forwarded proto chain takes the first hop",
+                &[("x-forwarded-proto", "https, http"), host],
+                Some("https://aoe.example.com"),
+            ),
+            (
+                "host alone defaults to https",
+                &[host],
+                Some("https://aoe.example.com"),
+            ),
+            ("no signal", &[], None),
+        ];
+        for (name, headers, want) in cases {
+            assert_eq!(origin(headers).as_deref(), *want, "{name}");
+        }
     }
 
     #[test]
-    fn extract_origin_trims_trailing_slash_from_origin_header() {
-        let mut h = HeaderMap::new();
-        h.insert(
-            axum::http::header::ORIGIN,
-            "https://aoe.example.com/".parse().unwrap(),
-        );
-        assert_eq!(
-            extract_request_origin(&h).as_deref(),
-            Some("https://aoe.example.com")
-        );
-    }
-
-    #[test]
-    fn extract_origin_ignores_null_origin() {
-        let mut h = HeaderMap::new();
-        h.insert(axum::http::header::ORIGIN, "null".parse().unwrap());
-        h.insert(axum::http::header::HOST, "aoe.example.com".parse().unwrap());
-        // Falls back to Host + default scheme.
-        assert_eq!(
-            extract_request_origin(&h).as_deref(),
-            Some("https://aoe.example.com")
-        );
-    }
-
-    #[test]
-    fn extract_origin_falls_back_to_forwarded_proto_and_host() {
-        let mut h = HeaderMap::new();
-        h.insert("x-forwarded-proto", "https".parse().unwrap());
-        h.insert(axum::http::header::HOST, "aoe.example.com".parse().unwrap());
-        assert_eq!(
-            extract_request_origin(&h).as_deref(),
-            Some("https://aoe.example.com")
-        );
-    }
-
-    #[test]
-    fn extract_origin_forwarded_proto_handles_chained_values() {
-        // X-Forwarded-Proto can carry a comma-separated chain when there
-        // are multiple proxies in front. Take the first value.
-        let mut h = HeaderMap::new();
-        h.insert("x-forwarded-proto", "https, http".parse().unwrap());
-        h.insert(axum::http::header::HOST, "aoe.example.com".parse().unwrap());
-        assert_eq!(
-            extract_request_origin(&h).as_deref(),
-            Some("https://aoe.example.com")
-        );
-    }
-
-    #[test]
-    fn extract_origin_defaults_scheme_to_https_when_only_host_set() {
-        let mut h = HeaderMap::new();
-        h.insert(axum::http::header::HOST, "aoe.example.com".parse().unwrap());
-        assert_eq!(
-            extract_request_origin(&h).as_deref(),
-            Some("https://aoe.example.com")
-        );
-    }
-
-    #[test]
-    fn extract_origin_returns_none_when_no_signal() {
-        let h = HeaderMap::new();
-        assert_eq!(extract_request_origin(&h), None);
-    }
-
-    #[test]
-    fn build_push_url_joins_origin_and_path() {
-        let sub = Subscription {
+    fn build_push_url_joins_a_non_empty_origin_with_the_path() {
+        let with_origin = |origin: &str| Subscription {
             endpoint: "https://push.example/abc".into(),
             p256dh: "pk".into(),
             auth: "auth".into(),
@@ -1240,109 +1219,65 @@ mod tests {
             user_agent: "UA".into(),
             created_at: Utc::now(),
             generation: 0,
-            origin: "http://localhost:42041".into(),
+            origin: origin.into(),
         };
         assert_eq!(
-            build_push_url(&sub, "/session/abc").as_deref(),
+            build_push_url(&with_origin("http://localhost:42041"), "/session/abc").as_deref(),
             Some("http://localhost:42041/session/abc")
         );
-    }
-
-    #[test]
-    fn build_push_url_trims_origin_trailing_slash() {
-        let sub = Subscription {
-            endpoint: "https://push.example/abc".into(),
-            p256dh: "pk".into(),
-            auth: "auth".into(),
-            owner_token_hash: [1u8; 32],
-            user_agent: "UA".into(),
-            created_at: Utc::now(),
-            generation: 0,
-            origin: "https://aoe.example.com/".into(),
-        };
         assert_eq!(
-            build_push_url(&sub, "/").as_deref(),
+            build_push_url(&with_origin("https://aoe.example.com/"), "/").as_deref(),
             Some("https://aoe.example.com/")
         );
+        assert_eq!(build_push_url(&with_origin(""), "/session/abc"), None);
     }
 
+    /// Each notifiable status owns one dwell clock: entering a status starts its clock
+    /// and stops the others, and leaving the notifiable statuses altogether drops the
+    /// entry so a stopped session cannot fire later.
     #[test]
-    fn build_push_url_none_for_empty_origin() {
-        let sub = Subscription {
-            endpoint: "https://push.example/abc".into(),
-            p256dh: "pk".into(),
-            auth: "auth".into(),
-            owner_token_hash: [1u8; 32],
-            user_agent: "UA".into(),
-            created_at: Utc::now(),
-            generation: 0,
-            origin: String::new(),
-        };
-        assert_eq!(build_push_url(&sub, "/session/abc"), None);
-    }
-
-    #[test]
-    fn dwell_starts_on_enter_waiting_and_clears_on_exit() {
+    fn dwell_tracks_one_clock_per_status_and_drops_on_stopped() {
         let mut dwell: HashMap<String, DwellState> = HashMap::new();
         let id = "sess-1".to_string();
-
-        // Enter Waiting: dwell starts.
-        handle_status_change(
-            &mut dwell,
-            StatusChange {
-                instance_id: id.clone(),
-                instance_title: "my session".to_string(),
-                old: Status::Running,
-                new: Status::Waiting,
-                at: Utc::now(),
-            },
-        );
-        assert!(dwell.get(&id).unwrap().waiting_since.is_some());
-        assert_eq!(dwell.get(&id).unwrap().title, "my session");
-
-        // Leave Waiting.
-        handle_status_change(
-            &mut dwell,
-            StatusChange {
-                instance_id: id.clone(),
-                instance_title: "my session".to_string(),
-                old: Status::Waiting,
-                new: Status::Running,
-                at: Utc::now(),
-            },
-        );
-        assert!(dwell.get(&id).unwrap().waiting_since.is_none());
-    }
-
-    #[test]
-    fn dwell_switches_between_event_types() {
-        let mut dwell: HashMap<String, DwellState> = HashMap::new();
-        let id = "sess-3".to_string();
-        let ev = |new: Status| StatusChange {
-            instance_id: id.clone(),
-            instance_title: "s".into(),
-            old: Status::Running,
-            new,
-            at: Utc::now(),
+        let mut step = |old: Status, new: Status| {
+            handle_status_change(
+                &mut dwell,
+                StatusChange {
+                    instance_id: id.clone(),
+                    instance_title: "my session".to_string(),
+                    old,
+                    new,
+                    at: Utc::now(),
+                },
+            );
+            dwell.get(&id).map(|s| {
+                (
+                    s.title.clone(),
+                    s.waiting_since.is_some(),
+                    s.idle_since.is_some(),
+                    s.error_since.is_some(),
+                )
+            })
         };
 
-        handle_status_change(&mut dwell, ev(Status::Waiting));
-        let s = dwell.get(&id).unwrap();
-        assert!(s.waiting_since.is_some());
-        assert!(s.idle_since.is_none());
-        assert!(s.error_since.is_none());
-
-        handle_status_change(&mut dwell, ev(Status::Error));
-        let s = dwell.get(&id).unwrap();
-        assert!(s.waiting_since.is_none());
-        assert!(s.idle_since.is_none());
-        assert!(s.error_since.is_some());
-
-        handle_status_change(&mut dwell, ev(Status::Idle));
-        let s = dwell.get(&id).unwrap();
-        assert!(s.waiting_since.is_none());
-        assert!(s.idle_since.is_some());
-        assert!(s.error_since.is_none());
+        let title = "my session".to_string();
+        assert_eq!(
+            step(Status::Running, Status::Waiting),
+            Some((title.clone(), true, false, false))
+        );
+        assert_eq!(
+            step(Status::Waiting, Status::Error),
+            Some((title.clone(), false, false, true))
+        );
+        assert_eq!(
+            step(Status::Error, Status::Idle),
+            Some((title.clone(), false, true, false))
+        );
+        assert_eq!(
+            step(Status::Idle, Status::Running),
+            Some((title, false, false, false))
+        );
+        assert_eq!(step(Status::Running, Status::Stopped), None);
     }
 
     #[test]
@@ -1404,34 +1339,6 @@ mod tests {
             NotificationEvent::Waiting,
             &inst
         ));
-    }
-
-    #[test]
-    fn dwell_entry_drops_on_stopped() {
-        let mut dwell: HashMap<String, DwellState> = HashMap::new();
-        let id = "sess-2".to_string();
-        handle_status_change(
-            &mut dwell,
-            StatusChange {
-                instance_id: id.clone(),
-                instance_title: "s".to_string(),
-                old: Status::Running,
-                new: Status::Waiting,
-                at: Utc::now(),
-            },
-        );
-        assert!(dwell.contains_key(&id));
-        handle_status_change(
-            &mut dwell,
-            StatusChange {
-                instance_id: id.clone(),
-                instance_title: "s".to_string(),
-                old: Status::Waiting,
-                new: Status::Stopped,
-                at: Utc::now(),
-            },
-        );
-        assert!(!dwell.contains_key(&id));
     }
 
     #[test]
