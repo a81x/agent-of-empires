@@ -4538,28 +4538,35 @@ mod tests {
         assert!(err.to_string().contains("stopped"));
     }
 
+    /// Every accessor on `AcpAgentDefaults` treats a blank string as unset, and
+    /// the per-model effort wins over the flat one only when it has a value.
     #[test]
-    fn acp_defaults_effort_for_model_prefers_per_model_then_flat() {
-        let mut defaults = AcpAgentDefaults {
-            effort: Some("low".to_string()),
-            ..Default::default()
-        };
+    fn acp_defaults_read_blank_values_as_unset() {
+        let mut defaults = AcpAgentDefaults::default();
+        assert_eq!(defaults.mode(), None);
+        assert_eq!(defaults.model(), None);
+        for blank in [Some(String::new()), None] {
+            defaults.mode.clone_from(&blank);
+            defaults.model.clone_from(&blank);
+            assert_eq!(defaults.mode(), None);
+            assert_eq!(defaults.model(), None);
+        }
+        defaults.mode = Some("plan".to_string());
+        defaults.model = Some("openai/gpt-5.5".to_string());
+        assert_eq!(defaults.mode().as_deref(), Some("plan"));
+        assert_eq!(defaults.model().as_deref(), Some("openai/gpt-5.5"));
+
+        defaults.effort = Some("low".to_string());
         defaults
             .effort_by_model
             .insert("gpt-5".to_string(), "high".to_string());
-
-        // Matching model uses the per-model override.
         assert_eq!(
             defaults.effort_for_model(Some("gpt-5")).as_deref(),
             Some("high")
         );
-        // Non-matching model and the no-model case fall back to the flat effort.
-        assert_eq!(
-            defaults.effort_for_model(Some("other")).as_deref(),
-            Some("low")
-        );
-        assert_eq!(defaults.effort_for_model(None).as_deref(), Some("low"));
-        // An empty per-model value is treated as unset and falls back.
+        for model in [Some("other"), None] {
+            assert_eq!(defaults.effort_for_model(model).as_deref(), Some("low"));
+        }
         defaults
             .effort_by_model
             .insert("gpt-5".to_string(), String::new());
@@ -4569,45 +4576,22 @@ mod tests {
         );
     }
 
+    /// A pin needs both the flag and a non-blank model; a plain default is not
+    /// one, and an agent with no entry is not pinned either.
     #[test]
-    fn acp_defaults_is_empty_covers_new_fields() {
-        let mut defaults = AcpAgentDefaults::default();
-        assert!(defaults.is_empty());
-        defaults.mode = Some("plan".to_string());
-        assert!(!defaults.is_empty());
-
-        let mut with_map = AcpAgentDefaults::default();
-        with_map
-            .effort_by_model
-            .insert("gpt-5".to_string(), "high".to_string());
-        assert!(!with_map.is_empty());
-
-        let with_pin = AcpAgentDefaults {
-            pin_model: true,
-            ..Default::default()
-        };
-        assert!(!with_pin.is_empty());
-    }
-
-    #[test]
-    fn acp_defaults_pinned_model_needs_both_the_flag_and_a_model() {
+    fn acp_pinned_model_needs_the_flag_and_a_model() {
         let mut defaults = AcpAgentDefaults {
             model: Some("openai/gpt-5.5".to_string()),
             ..Default::default()
         };
-        // A plain default is not a pin.
         assert_eq!(defaults.pinned_model(), None);
         defaults.pin_model = true;
         assert_eq!(defaults.pinned_model().as_deref(), Some("openai/gpt-5.5"));
-        // The flag alone pins nothing: a blank model is unset, as everywhere.
-        defaults.model = Some(String::new());
-        assert_eq!(defaults.pinned_model(), None);
-        defaults.model = None;
-        assert_eq!(defaults.pinned_model(), None);
-    }
+        for blank in [Some(String::new()), None] {
+            defaults.model = blank;
+            assert_eq!(defaults.pinned_model(), None);
+        }
 
-    #[test]
-    fn acp_config_pinned_model_for_ignores_a_plain_default() {
         let mut config = AcpConfig::default();
         config.acp_defaults.insert(
             "opencode".to_string(),
@@ -4632,24 +4616,29 @@ mod tests {
         assert_eq!(config.pinned_model_for("gemini"), None);
     }
 
+    /// `is_empty` covers every field, so a default that only sets one of them
+    /// is still written out.
     #[test]
-    fn acp_defaults_mode_treats_empty_as_unset() {
-        let mut defaults = AcpAgentDefaults::default();
-        assert_eq!(defaults.mode(), None);
-        defaults.mode = Some(String::new());
-        assert_eq!(defaults.mode(), None);
-        defaults.mode = Some("plan".to_string());
-        assert_eq!(defaults.mode().as_deref(), Some("plan"));
-    }
+    fn acp_defaults_is_empty_covers_every_field() {
+        assert!(AcpAgentDefaults::default().is_empty());
 
-    #[test]
-    fn acp_defaults_model_treats_empty_as_unset() {
-        let mut defaults = AcpAgentDefaults::default();
-        assert_eq!(defaults.model(), None);
-        defaults.model = Some(String::new());
-        assert_eq!(defaults.model(), None);
-        defaults.model = Some("openai/gpt-5.5".to_string());
-        assert_eq!(defaults.model().as_deref(), Some("openai/gpt-5.5"));
+        let with_mode = AcpAgentDefaults {
+            mode: Some("plan".to_string()),
+            ..Default::default()
+        };
+        assert!(!with_mode.is_empty());
+
+        let mut with_map = AcpAgentDefaults::default();
+        with_map
+            .effort_by_model
+            .insert("gpt-5".to_string(), "high".to_string());
+        assert!(!with_map.is_empty());
+
+        let with_pin = AcpAgentDefaults {
+            pin_model: true,
+            ..Default::default()
+        };
+        assert!(!with_pin.is_empty());
     }
 
     /// Spawn resolution precedence: a pin replaces the request, an explicit
