@@ -532,6 +532,15 @@ mod tests {
         path
     }
 
+    /// A fresh `(tempdir, app dir, home)` triple with the app dir created.
+    fn dirs() -> (tempfile::TempDir, PathBuf, PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let app = dir.path().join("app");
+        let home = dir.path().join("home");
+        fs::create_dir_all(&app).unwrap();
+        (dir, app, home)
+    }
+
     const NO_GRACE: std::time::Duration = std::time::Duration::ZERO;
 
     fn gone(_: &str) -> Result<bool> {
@@ -544,10 +553,7 @@ mod tests {
 
     #[test]
     fn a_store_no_profile_claims_is_an_orphan_and_one_that_is_claimed_is_not() {
-        let dir = tempfile::tempdir().unwrap();
-        let app = dir.path().join("app");
-        let home = dir.path().join("home");
-        fs::create_dir_all(&app).unwrap();
+        let (_dir, app, home) = dirs();
         app_with_rows(&app, &["1111111111111111"]);
         store(&home, "1111111111111111", 10);
         let orphan = store(&home, "2222222222222222", 40);
@@ -608,10 +614,7 @@ mod tests {
 
     #[test]
     fn no_registry_at_all_fails_rather_than_reclaiming_every_store() {
-        let dir = tempfile::tempdir().unwrap();
-        let app = dir.path().join("app");
-        let home = dir.path().join("home");
-        fs::create_dir_all(&app).unwrap();
+        let (_dir, app, home) = dirs();
         store(&home, "2222222222222222", 40);
 
         let error = plan_in(&app, &[], &home, NO_GRACE, &gone).unwrap_err();
@@ -621,10 +624,7 @@ mod tests {
 
     #[test]
     fn a_live_orphan_is_preserved_and_never_removed() {
-        let dir = tempfile::tempdir().unwrap();
-        let app = dir.path().join("app");
-        let home = dir.path().join("home");
-        fs::create_dir_all(&app).unwrap();
+        let (_dir, app, home) = dirs();
         app_with_rows(&app, &[]);
         let path = store(&home, "2222222222222222", 40);
 
@@ -641,10 +641,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn a_symlinked_store_is_preserved_and_its_target_is_left_alone() {
-        let dir = tempfile::tempdir().unwrap();
-        let app = dir.path().join("app");
-        let home = dir.path().join("home");
-        fs::create_dir_all(&app).unwrap();
+        let (dir, app, home) = dirs();
         app_with_rows(&app, &[]);
         let target = dir.path().join("elsewhere");
         fs::create_dir_all(&target).unwrap();
@@ -665,10 +662,7 @@ mod tests {
 
     #[test]
     fn reclaiming_removes_the_orphan_and_reports_what_it_freed() {
-        let dir = tempfile::tempdir().unwrap();
-        let app = dir.path().join("app");
-        let home = dir.path().join("home");
-        fs::create_dir_all(&app).unwrap();
+        let (_dir, app, home) = dirs();
         app_with_rows(&app, &["1111111111111111"]);
         let kept = store(&home, "1111111111111111", 10);
         let orphan = store(&home, "2222222222222222", 40);
@@ -727,10 +721,7 @@ mod tests {
 
     #[test]
     fn a_store_being_created_is_preserved_until_the_grace_period_lapses() {
-        let dir = tempfile::tempdir().unwrap();
-        let app = dir.path().join("app");
-        let home = dir.path().join("home");
-        fs::create_dir_all(&app).unwrap();
+        let (_dir, app, home) = dirs();
         app_with_rows(&app, &[]);
         let seeding = store(&home, "2222222222222222", 40);
 
@@ -747,10 +738,7 @@ mod tests {
 
     #[test]
     fn a_store_claimed_after_the_scan_is_not_removed() {
-        let dir = tempfile::tempdir().unwrap();
-        let app = dir.path().join("app");
-        let home = dir.path().join("home");
-        fs::create_dir_all(&app).unwrap();
+        let (_dir, app, home) = dirs();
         app_with_rows(&app, &[]);
         let path = store(&home, "2222222222222222", 40);
 
@@ -833,10 +821,7 @@ mod tests {
 
     #[test]
     fn a_store_live_under_another_runtime_is_preserved() {
-        let dir = tempfile::tempdir().unwrap();
-        let app = dir.path().join("app");
-        let home = dir.path().join("home");
-        fs::create_dir_all(&app).unwrap();
+        let (_dir, app, home) = dirs();
         app_with_rows(&app, &[]);
         let path = store(&home, "2222222222222222", 40);
         let probes: Vec<Box<v027::RunningProbe<'_>>> =
@@ -922,10 +907,7 @@ mod tests {
 
     #[test]
     fn a_candidate_whose_container_appears_mid_pass_survives() {
-        let dir = tempfile::tempdir().unwrap();
-        let app = dir.path().join("app");
-        let home = dir.path().join("home");
-        fs::create_dir_all(&app).unwrap();
+        let (_dir, app, home) = dirs();
         app_with_rows(&app, &[]);
         let first = store(&home, "2222222222222222", 40);
         let second = store(&home, "3333333333333333", 40);
@@ -950,10 +932,7 @@ mod tests {
 
     #[test]
     fn a_directory_that_is_not_an_instance_id_is_never_touched() {
-        let dir = tempfile::tempdir().unwrap();
-        let app = dir.path().join("app");
-        let home = dir.path().join("home");
-        fs::create_dir_all(&app).unwrap();
+        let (_dir, app, home) = dirs();
         app_with_rows(&app, &[]);
         let staging = home
             .join(".claude")
