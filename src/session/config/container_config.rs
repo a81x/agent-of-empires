@@ -101,15 +101,12 @@ const AGENT_CONFIG_MOUNTS: &[AgentConfigMount] = &[
         // On macOS the OAuth token lives in the Keychain; it seeds the shared
         // .credentials.json so the container authenticates without re-login.
         keychain_credential: Some(("Claude Code-credentials", ".credentials.json")),
-        // Claude Code reads ~/.claude.json (home level, NOT inside ~/.claude/) for onboarding
-        // state. Seeding hasCompletedOnboarding skips the first-run wizard.
-        // Claude Code sets GIT_CONFIG_GLOBAL=/root/.sandbox-gitconfig when IS_SANDBOX=1;
-        // the file must exist or all git commands fail. The seeded credential helper
-        // lets `git push` to github.com authenticate automatically when GH_TOKEN is
-        // forwarded via `sandbox.environment` (e.g. "GH_TOKEN=$GH_TOKEN"). Without a
-        // helper, git ignores GH_TOKEN and prompts for a username; `gh auth setup-git`
-        // can't fix it in-container because the gitconfig is a single-file bind mount
-        // that can't be rewritten via atomic rename.
+        // ~/.claude.json sits at home level, not inside ~/.claude/; seeding
+        // hasCompletedOnboarding skips the first-run wizard. The gitconfig must
+        // exist because Claude Code points GIT_CONFIG_GLOBAL at it under
+        // IS_SANDBOX=1, and its credential helper is the only way a forwarded
+        // GH_TOKEN reaches `git push`: the file is a single-file bind mount, so
+        // `gh auth setup-git` cannot rewrite it in-container.
         home_seed_files: &[
             (".claude.json", r#"{"hasCompletedOnboarding":true}"#),
             (".sandbox-gitconfig", SANDBOX_GITCONFIG_SEED),
@@ -122,13 +119,10 @@ const AGENT_CONFIG_MOUNTS: &[AgentConfigMount] = &[
         tool_name: "opencode",
         host_rel: ".local/share/opencode",
         container_suffix: ".local/share/opencode",
-        // `skip_entries` prevents copying the host DB into the sandbox; a
-        // schema-drifted host DB would trigger drizzle migration failures
-        // against the sandboxed opencode. The sandboxed opencode creates its
-        // own DB in-container on first launch, which is always schema-consistent
-        // with that opencode. Do NOT wipe it on subsequent launches: it
-        // holds `ses_*` session identity and is the resume source of truth.
-        // See #2605.
+        // A schema-drifted host DB breaks drizzle migrations in-container, so it
+        // is never copied; the sandbox builds its own on first launch. That one
+        // must survive relaunches: it holds the `ses_*` identity resume reads
+        // (#2605).
         skip_entries: &[
             "sandbox",
             "opencode.db",
@@ -297,16 +291,11 @@ fn sync_agent_config(
         }
     }
 
-    // If the sandbox already has a "projects/" subdirectory, a prior container
-    // session ran and created state we must not overwrite (e.g. settings.json,
-    // statsig/, session metadata). Only seed files, copy_dirs and shared
-    // credential files are still synced; the general top-level file copy is skipped.
-    //
-    // Why "projects/"? Claude Code creates this directory on first run to store
-    // per-project session data. Its presence reliably indicates the container
-    // has been used before. If this sentinel changes upstream, container restarts
-    // would fall back to the old behavior of re-copying all host files (safe,
-    // just potentially overwriting container-side customizations).
+    // A "projects/" subdirectory means a prior container session left state
+    // (settings.json, statsig/, session metadata), so the general top-level copy
+    // is skipped; seeds, copy_dirs and shared credentials still sync. Claude Code
+    // creates the directory on first run, which is what makes it a reliable
+    // sentinel; if it ever moves, restarts only revert to re-copying host files.
     let has_prior_data = sandbox_dir.join("projects").exists();
     if has_prior_data {
         tracing::info!(target: "session.profile",
@@ -334,12 +323,10 @@ fn sync_agent_config(
         };
 
         if metadata.is_dir() {
-            // copy_dirs (e.g. plugins, skills) are host -> sandbox pushes. Like
-            // the general file copy below, skip them once the sandbox has prior
-            // session data: re-copying a large tree (plugins can hold full git
-            // clones) on every restart stalled startup for tens of seconds and
-            // would clobber container-side changes. A fresh sandbox still gets
-            // them on its first launch.
+            // copy_dirs push host trees into the sandbox, and plugins can hold
+            // full git clones. Skip them once there is prior session data:
+            // re-copying stalled startup for tens of seconds and clobbered
+            // container-side changes.
             if !has_prior_data && copy_dirs.iter().any(|&d| d == name_str.as_ref()) {
                 let dest = sandbox_dir.join(&name);
                 if let Err(e) = copy_dir_recursive(&entry.path(), &dest) {
@@ -479,13 +466,10 @@ fn copy_dir_recursive_inner(
     dest: &Path,
     visited: &mut std::collections::HashSet<PathBuf>,
 ) -> Result<()> {
-    // Break symlink cycles. We follow symlinks (a legitimately symlinked config
-    // dir should be copied), but a link that points back up its own tree would
-    // otherwise recurse forever; a real cycle under ~/.claude/plugins churned
-    // for 30s before aborting. Keying on the canonical (symlink-resolved) source
-    // path stops the second visit. A canonicalize failure (e.g. ELOOP) is
-    // exactly when we most need the guard, so skip the dir rather than descend
-    // blindly.
+    // Break symlink cycles. Symlinks are followed so a symlinked config dir is
+    // copied, but a link pointing back up its own tree recurses forever. Keying
+    // on the canonical source path stops the second visit; a canonicalize failure
+    // (ELOOP) is exactly when the guard matters, so skip rather than descend.
     match std::fs::canonicalize(src) {
         Ok(real) => {
             if !visited.insert(real) {
@@ -1150,14 +1134,10 @@ fn prepare_sandbox_dir_from(
 
     if host_dir.exists() {
         // Codex writes `trusted_hash` into `[hooks.state]` of the sandbox
-        // copy of `config.toml` when the user accepts a hook hash inside
-        // the container; that copy is overwritten on each
-        // `sync_agent_config` from the host. Snapshot here and restore
-        // after the sync so accepted hashes survive the host-to-sandbox
-        // refresh (the sandbox value wins by design, since trust is local
-        // to the container). The codex config lock is released between
-        // snapshot and restore; the sandbox path is process-private, so
-        // no concurrent writer is expected.
+        // config.toml when a hook hash is accepted in-container, and
+        // `sync_agent_config` overwrites that copy from the host. Snapshot and
+        // restore around the sync so the sandbox value wins: trust is local to
+        // the container, and the process-private path has no other writer.
         let preserved_codex_state = if agent_format_is_codex_json(mount.tool_name) {
             let sandbox_config = sandbox_dir.join("config.toml");
             crate::hooks::snapshot_codex_hooks_state(&sandbox_config)
@@ -1370,14 +1350,10 @@ pub(crate) fn compute_volume_paths_with_resolve(
     project_path: &Path,
     project_path_str: &str,
 ) -> Result<(Vec<VolumeMount>, String, MountResolve)> {
-    // Only look for a main repo if the project path itself has a .git entry (file or
-    // directory). This prevents git2::Repository::discover from walking up the directory
-    // tree and finding an unrelated ancestor repo (e.g., a dotfile-managed home directory),
-    // which would cause aoe to mount that ancestor -- potentially the user's entire $HOME --
-    // into the container.
-    //
-    // Legitimate git repos have a .git directory; worktrees have a .git file containing a
-    // gitdir pointer. Both cases are covered by this check.
+    // Only look for a main repo when the project path itself has a `.git` entry:
+    // a repo has a directory, a worktree a file holding a gitdir pointer. Without
+    // the check `Repository::discover` walks up into an unrelated ancestor repo
+    // (a dotfile-managed home) and mounts the whole of $HOME into the container.
     if project_path.join(".git").exists() {
         if let Ok(main_repo) = GitWorktree::find_main_repo(project_path) {
             // Canonicalize paths for reliable comparison (handles symlinks like /tmp -> /private/tmp)
@@ -2155,13 +2131,11 @@ pub(crate) fn build_container_config(
     );
     let config_tool = active_agent.map_or(agent_selection.tool, |agent| agent.name);
 
-    // Determine mount path(s) and working directory.
-    // For multi-repo workspaces, mount the workspace dir and all main repos.
-    // For bare repo worktrees, mount the entire bare repo and set working_dir to the worktree.
-    // For sibling worktrees, mount the main repo and worktree as separate volumes.
-    // A workspace resolve is always Resolved: compute_workspace_volume_paths derives
-    // its mounts from the stored `main_repo_path` of each repo and never consults
-    // `find_main_repo`, so it has no degraded fallback to report.
+    // A workspace mounts its own dir plus every main repo, a bare-repo worktree
+    // mounts the whole bare repo with working_dir inside it, and a sibling
+    // worktree mounts the main repo and the worktree separately. A workspace
+    // resolve is always Resolved: it derives mounts from each repo's stored
+    // `main_repo_path` and never falls back to `find_main_repo`.
     let (project_volumes, workspace_path, mount_resolve) = if let Some(ws_info) = workspace_info {
         let (volumes, path) = compute_workspace_volume_paths(project_path, ws_info)?;
         (volumes, path, MountResolve::Resolved)
@@ -2265,12 +2239,10 @@ pub(crate) fn build_container_config(
         }
     }
 
-    // Mount GCP credentials into the well-known ADC path for Claude+Vertex sessions.
-    // Gated on `tool == "claude"` because `CLAUDE_CODE_USE_VERTEX` is Claude-specific;
-    // there's no reason to expose GCP creds to other agents (opencode, codex, etc.)
-    // just because the user has the flag exported globally.
-    // `GOOGLE_APPLICATION_CREDENTIALS` is not forwarded as an env var; client libraries
-    // discover the well-known path automatically.
+    // Mount GCP credentials at the well-known ADC path for Claude+Vertex.
+    // `CLAUDE_CODE_USE_VERTEX` is Claude-specific, so a globally exported flag
+    // must not hand GCP creds to other agents. `GOOGLE_APPLICATION_CREDENTIALS`
+    // is not forwarded: client libraries find the well-known path themselves.
     if agent_selection.tool == "claude" && crate::session::environment::host_vertex_enabled() {
         let container_cred_path = format!(
             "{}/.config/gcloud/application_default_credentials.json",
