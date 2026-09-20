@@ -71,61 +71,27 @@ describe("service worker push handler (#2491)", () => {
     expect(showNotification).not.toHaveBeenCalled();
   });
 
-  it("closes matching notifications on a clear and shows nothing", async () => {
+  it("closes only notifications older than the clear's seq, for the cleared tag alone", async () => {
     const { handlers, showNotification, getNotifications, matchAll } = loadSw();
-    const closeA = vi.fn();
-    const closeB = vi.fn();
-    getNotifications.mockResolvedValue([
-      { data: { seq: 5 }, close: closeA },
-      { data: { seq: 6 }, close: closeB },
-    ]);
+    const closes = [vi.fn(), vi.fn(), vi.fn()];
+    getNotifications.mockResolvedValue([5, 6, 20].map((seq, i) => ({ data: { seq }, close: closes[i] })));
     await dispatchPush(handlers, { kind: "clear", tag: APPROVAL_TAG, seq: 10 });
     expect(getNotifications).toHaveBeenCalledWith({ tag: APPROVAL_TAG });
-    expect(closeA).toHaveBeenCalled();
-    expect(closeB).toHaveBeenCalled();
+    expect(getNotifications).not.toHaveBeenCalledWith({ tag: QUESTION_TAG });
+    expect(closes.map((c) => c.mock.calls.length)).toEqual([1, 1, 0]);
     expect(showNotification).not.toHaveBeenCalled();
     expect(matchAll).not.toHaveBeenCalled();
   });
 
-  it("does not close a newer notification than the clear's seq", async () => {
-    const { handlers, getNotifications } = loadSw();
-    const closeNewer = vi.fn();
-    const closeOlder = vi.fn();
-    getNotifications.mockResolvedValue([
-      { data: { seq: 20 }, close: closeNewer },
-      { data: { seq: 5 }, close: closeOlder },
-    ]);
-    await dispatchPush(handlers, { kind: "clear", tag: APPROVAL_TAG, seq: 10 });
-    expect(closeOlder).toHaveBeenCalled();
-    expect(closeNewer).not.toHaveBeenCalled();
-  });
-
-  it("still shows a fresh notification after a clear for the same tag", async () => {
-    const { handlers, showNotification, getNotifications } = loadSw();
-    getNotifications.mockResolvedValue([{ data: { seq: 1 }, close: vi.fn() }]);
-    await dispatchPush(handlers, { kind: "clear", tag: APPROVAL_TAG, seq: 1 });
-    await dispatchPush(handlers, { kind: "notify", title: "new", tag: APPROVAL_TAG, seq: 2 });
-    expect(showNotification).toHaveBeenCalledTimes(1);
-    expect(showNotification.mock.calls[0][1].tag).toBe(APPROVAL_TAG);
-  });
-
-  it("clears only the targeted (approval) tag, not the question tag", async () => {
-    const { handlers, getNotifications } = loadSw();
-    await dispatchPush(handlers, { kind: "clear", tag: APPROVAL_TAG, seq: 1 });
-    expect(getNotifications).toHaveBeenCalledWith({ tag: APPROVAL_TAG });
-    expect(getNotifications).not.toHaveBeenCalledWith({ tag: QUESTION_TAG });
-  });
-
-  it("drops an older notify delivered after a newer clear for the same tag", async () => {
+  it("drops a notify older than the last clear but still shows a newer one", async () => {
     const { handlers, showNotification } = loadSw();
     await dispatchPush(handlers, { kind: "clear", tag: APPROVAL_TAG, seq: 10 });
-    await dispatchPush(handlers, {
-      kind: "notify",
-      title: "stale",
-      tag: APPROVAL_TAG,
-      seq: 5,
-    });
+    await dispatchPush(handlers, { kind: "notify", title: "stale", tag: APPROVAL_TAG, seq: 5 });
     expect(showNotification).not.toHaveBeenCalled();
+
+    await dispatchPush(handlers, { kind: "notify", title: "new", tag: APPROVAL_TAG, seq: 11 });
+    expect(showNotification).toHaveBeenCalledTimes(1);
+    expect(showNotification.mock.calls[0][1].tag).toBe(APPROVAL_TAG);
   });
 
   it("ignores a clear with no tag without throwing or showing", async () => {
