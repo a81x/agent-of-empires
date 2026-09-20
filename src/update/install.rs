@@ -812,85 +812,54 @@ mod tests {
 
         #[test]
         #[serial]
-        fn runs_update_info_then_upgrade_aoe() {
-            let dir = TempDir::new().unwrap();
-            let log = write_recording_brew_shim(dir.path(), "1.5.2", None);
+        fn brew_upgrade_stops_at_the_first_failing_step() {
+            // (formula version, step the shim fails on, brew calls expected, error substrings)
+            let cases: [(&str, Option<&str>, &[&str], &[&str]); 4] = [
+                (
+                    "1.5.2",
+                    None,
+                    &["update", "info aoe --json=v2", "upgrade aoe"],
+                    &[],
+                ),
+                ("1.5.2", Some("update"), &["update"], &["brew update"]),
+                (
+                    "1.5.2",
+                    Some("upgrade"),
+                    &["update", "info aoe --json=v2", "upgrade aoe"],
+                    &["brew upgrade aoe"],
+                ),
+                (
+                    "1.5.1",
+                    None,
+                    &["update", "info aoe --json=v2"],
+                    &["v1.5.2", "Homebrew"],
+                ),
+            ];
+            for (formula_version, fail_on, expected_calls, expected_error) in cases {
+                let dir = TempDir::new().unwrap();
+                let log = write_recording_brew_shim(dir.path(), formula_version, fail_on);
 
-            let _path = crate::session::test_support::path_prepended(dir.path());
-            update_via_brew("1.5.2").expect("brew upgrade should succeed");
+                let _path = crate::session::test_support::path_prepended(dir.path());
+                let result = update_via_brew("1.5.2");
+                match expected_error {
+                    [] => {
+                        result.unwrap_or_else(|e| panic!("{formula_version} {fail_on:?}: {e}"));
+                    }
+                    needles => {
+                        let msg = result.expect_err("expected a failure").to_string();
+                        for needle in needles {
+                            assert!(msg.contains(needle), "{needle} missing from {msg}");
+                        }
+                    }
+                }
 
-            let invocations = std::fs::read_to_string(&log).unwrap();
-            let lines: Vec<_> = invocations.lines().collect();
-            assert_eq!(lines.len(), 3, "expected 3 brew calls; got {invocations:?}");
-            assert_eq!(lines[0], "update");
-            assert_eq!(lines[1], "info aoe --json=v2");
-            assert_eq!(lines[2], "upgrade aoe");
-        }
-
-        #[test]
-        #[serial]
-        fn brew_update_failure_aborts_before_upgrade() {
-            let dir = TempDir::new().unwrap();
-            let log = write_recording_brew_shim(dir.path(), "1.5.2", Some("update"));
-
-            let _path = crate::session::test_support::path_prepended(dir.path());
-            let err = update_via_brew("1.5.2");
-            let err = err.expect_err("brew update failure should propagate");
-            assert!(
-                err.to_string().contains("brew update"),
-                "expected `brew update` failure message; got: {err}"
-            );
-
-            let invocations = std::fs::read_to_string(&log).unwrap();
-            let lines: Vec<_> = invocations.lines().collect();
-            assert_eq!(
-                lines,
-                vec!["update"],
-                "info/upgrade should not run after update failure"
-            );
-        }
-
-        #[test]
-        #[serial]
-        fn brew_upgrade_failure_is_reported() {
-            let dir = TempDir::new().unwrap();
-            let log = write_recording_brew_shim(dir.path(), "1.5.2", Some("upgrade"));
-
-            let _path = crate::session::test_support::path_prepended(dir.path());
-            let err = update_via_brew("1.5.2");
-            let err = err.expect_err("brew upgrade failure should propagate");
-            assert!(
-                err.to_string().contains("brew upgrade aoe"),
-                "expected `brew upgrade aoe` failure message; got: {err}"
-            );
-
-            let invocations = std::fs::read_to_string(&log).unwrap();
-            let lines: Vec<_> = invocations.lines().collect();
-            assert_eq!(lines.len(), 3, "expected update, info, upgrade calls");
-        }
-
-        #[test]
-        #[serial]
-        fn bails_when_brew_formula_lags_target() {
-            let dir = TempDir::new().unwrap();
-            let log = write_recording_brew_shim(dir.path(), "1.5.1", None);
-
-            let _path = crate::session::test_support::path_prepended(dir.path());
-            let err = update_via_brew("1.5.2");
-            let err = err.expect_err("formula lag should fail loudly");
-            let msg = err.to_string();
-            assert!(
-                msg.contains("v1.5.2") && msg.to_lowercase().contains("homebrew"),
-                "expected formula-lag explanation; got: {msg}"
-            );
-
-            let invocations = std::fs::read_to_string(&log).unwrap();
-            let lines: Vec<_> = invocations.lines().collect();
-            assert_eq!(
-                lines,
-                vec!["update", "info aoe --json=v2"],
-                "upgrade should not run when brew is behind"
-            );
+                let invocations = std::fs::read_to_string(&log).unwrap();
+                assert_eq!(
+                    invocations.lines().collect::<Vec<_>>(),
+                    expected_calls,
+                    "{formula_version} {fail_on:?}"
+                );
+            }
         }
 
         #[test]
