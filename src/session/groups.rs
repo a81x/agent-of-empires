@@ -466,10 +466,10 @@ fn sort_groups_inner<T, N, P, A>(
 {
     match sort_order {
         SortOrder::Oldest => {
-            items.sort_by_key(|g| min_created_at_in_group(path(g), instances));
+            items.sort_by_key(|g| created_at_bounds(path(g), instances).1);
         }
         SortOrder::Newest => {
-            items.sort_by_key(|g| Reverse(max_created_at_in_group(path(g), instances)));
+            items.sort_by_key(|g| Reverse(created_at_bounds(path(g), instances).0));
         }
         SortOrder::LastActivity => {
             items.sort_by_key(|g| last_activity_group_key(path(g), instances));
@@ -510,25 +510,17 @@ fn has_live_favorite(path: &str, instances: &[Instance]) -> bool {
     group_members(path, instances).any(is_live_favorite)
 }
 
-/// Get the most recent created_at among all sessions (direct and nested) in a group.
-/// Returns DateTime::MIN_UTC if the group has no sessions.
-fn max_created_at_in_group(path: &str, instances: &[Instance]) -> DateTime<Utc> {
-    group_members(path, instances)
-        .map(|i| i.created_at)
-        .max()
-        .unwrap_or(DateTime::<Utc>::MIN_UTC)
+/// Newest and oldest `created_at` in a group, defaulted so an empty group sinks to
+/// the bottom of either ordering.
+fn created_at_bounds(path: &str, instances: &[Instance]) -> (DateTime<Utc>, DateTime<Utc>) {
+    let stamps = || group_members(path, instances).map(|i| i.created_at);
+    (
+        stamps().max().unwrap_or(DateTime::<Utc>::MIN_UTC),
+        stamps().min().unwrap_or(DateTime::<Utc>::MAX_UTC),
+    )
 }
 
-/// Get the oldest created_at among all sessions (direct and nested) in a group.
-/// Returns DateTime::MAX_UTC if the group has no sessions (so empty groups sink to the bottom).
-fn min_created_at_in_group(path: &str, instances: &[Instance]) -> DateTime<Utc> {
-    group_members(path, instances)
-        .map(|i| i.created_at)
-        .min()
-        .unwrap_or(DateTime::<Utc>::MAX_UTC)
-}
-
-/// Get the most recent last_accessed_at among all sessions (direct and nested) in a group.
+/// Most recent `last_accessed_at` among all sessions (direct and nested) in a group.
 fn max_last_accessed_in_group(path: &str, instances: &[Instance]) -> Option<DateTime<Utc>> {
     group_members(path, instances)
         .filter_map(|i| i.last_accessed_at)
@@ -755,10 +747,10 @@ pub fn flatten_tree_all_profiles(
     // their own profile's sessions.
     match sort_order {
         SortOrder::Oldest => {
-            all_roots.sort_by_key(|(_, g, insts)| min_created_at_in_group(&g.path, insts));
+            all_roots.sort_by_key(|(_, g, insts)| created_at_bounds(&g.path, insts).1);
         }
         SortOrder::Newest => {
-            all_roots.sort_by_key(|(_, g, insts)| Reverse(max_created_at_in_group(&g.path, insts)));
+            all_roots.sort_by_key(|(_, g, insts)| Reverse(created_at_bounds(&g.path, insts).0));
         }
         SortOrder::LastActivity => {
             all_roots.sort_by_key(|(_, g, insts)| last_activity_group_key(&g.path, insts));
@@ -910,72 +902,65 @@ fn count_sessions_in_group(path: &str, instances: &[Instance]) -> usize {
 
 /// Append the synthetic "Archived" section to `items`, pinned to the bottom of the sidebar across
 /// every sort mode.
+/// Append one flat, reverse-chronological section: its header, then its sessions
+/// unless the header is collapsed.
+fn append_section(
+    items: &mut Vec<Item>,
+    mut members: Vec<&Instance>,
+    path: &str,
+    name: &str,
+    collapsed: bool,
+    stamp: impl Fn(&Instance) -> Option<DateTime<Utc>>,
+) {
+    if members.is_empty() {
+        return;
+    }
+    members.sort_by_key(|i| Reverse(stamp(i)));
+    items.push(Item::Group {
+        path: path.to_string(),
+        name: name.to_string(),
+        depth: 0,
+        collapsed,
+        session_count: members.len(),
+        profile: None,
+        archived_at: None,
+    });
+    if collapsed {
+        return;
+    }
+    items.extend(members.into_iter().map(|inst| Item::Session {
+        id: inst.id.clone(),
+        depth: 1,
+    }));
+}
+
 pub fn append_archived_section(items: &mut Vec<Item>, instances: &[Instance], collapsed: bool) {
-    let mut archived: Vec<&Instance> = instances
+    let archived: Vec<&Instance> = instances
         .iter()
         .filter(|i| i.is_archived() && !i.is_trashed())
         .collect();
-    if archived.is_empty() {
-        return;
-    }
-    archived.sort_by_key(|i| Reverse(i.archived_at));
-
-    items.push(Item::Group {
-        path: ARCHIVED_SECTION_PATH.to_string(),
-        name: ARCHIVED_SECTION_NAME.to_string(),
-        depth: 0,
+    append_section(
+        items,
+        archived,
+        ARCHIVED_SECTION_PATH,
+        ARCHIVED_SECTION_NAME,
         collapsed,
-        session_count: archived.len(),
-        profile: None,
-        archived_at: None,
-    });
-
-    if collapsed {
-        return;
-    }
-
-    for inst in archived {
-        items.push(Item::Session {
-            id: inst.id.clone(),
-            depth: 1,
-        });
-    }
+        |i| i.archived_at,
+    );
 }
 
-/// Append the synthetic Trash section to `items`: a depth-0 header followed by every `is_trashed()`
-/// session, most-recently-trashed first (the row a user just deleted is the one they are most
-/// likely to want back).
 pub fn append_trash_section(items: &mut Vec<Item>, instances: &[Instance], collapsed: bool) {
-    let mut trashed: Vec<&Instance> = instances.iter().filter(|i| i.is_trashed()).collect();
-    if trashed.is_empty() {
-        return;
-    }
-    trashed.sort_by_key(|i| Reverse(i.trashed_at));
-
-    items.push(Item::Group {
-        path: TRASH_SECTION_PATH.to_string(),
-        name: TRASH_SECTION_NAME.to_string(),
-        depth: 0,
+    let trashed: Vec<&Instance> = instances.iter().filter(|i| i.is_trashed()).collect();
+    append_section(
+        items,
+        trashed,
+        TRASH_SECTION_PATH,
+        TRASH_SECTION_NAME,
         collapsed,
-        session_count: trashed.len(),
-        profile: None,
-        archived_at: None,
-    });
-
-    if collapsed {
-        return;
-    }
-
-    for inst in trashed {
-        items.push(Item::Session {
-            id: inst.id.clone(),
-            depth: 1,
-        });
-    }
+        |i| i.trashed_at,
+    );
 }
 
-/// Project-grouping variant of `append_archived_section`: nests archived sessions under a
-/// sub-header per project.
 pub fn append_archived_section_by_project(
     items: &mut Vec<Item>,
     instances: &[Instance],
