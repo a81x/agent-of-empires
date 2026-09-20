@@ -733,102 +733,65 @@ mod tests {
         assert_eq!(disk[0].resume_intent, ResumeIntent::Default);
     }
 
+    /// What the poller reports back for a pinned omp session.
+    enum Observation {
+        /// A generation-tagged sighting of some sid.
+        Omp(&'static str, &'static str),
+        /// A sighting from a build that did not tag generations.
+        LegacyOmp(&'static str),
+        /// A plain, unguarded sid sighting.
+        Plain(&'static str),
+    }
+
     #[test]
     #[serial]
-    fn stale_omp_generation_does_not_consume_pin() {
-        let temp = tempdir().unwrap();
-        let _guard = storage_home_guard(&temp);
-        let profile = "sync-omp-pin-stale";
+    fn only_an_exact_generation_match_consumes_an_omp_pin() {
         let sid = "019342ab-1234-7def-8901-abcdef012341";
-        let mut inst = pinned_omp_instance(profile, sid, "launch-current");
-        seed_instance_on_disk(profile, &inst);
-        attach_poller_with_omp_update(&mut inst, sid, "launch-stale");
+        let other = "019342ab-1234-7def-8901-abcdef012344";
+        // (profile, observation, the outcome bucket the session lands in)
+        let cases = [
+            (
+                "sync-omp-pin-stale",
+                Observation::Omp(sid, "launch-stale"),
+                "rolled_back",
+            ),
+            ("sync-omp-pin-legacy", Observation::LegacyOmp(sid), "none"),
+            ("sync-omp-pin-unguarded", Observation::Plain(sid), "none"),
+            (
+                "sync-omp-pin-mismatch",
+                Observation::Omp(other, "launch-current"),
+                "filtered",
+            ),
+        ];
+        for (profile, observation, bucket) in cases {
+            let temp = tempdir().unwrap();
+            let _guard = storage_home_guard(&temp);
+            let mut inst = pinned_omp_instance(profile, sid, "launch-current");
+            seed_instance_on_disk(profile, &inst);
+            match observation {
+                Observation::Omp(seen, generation) => {
+                    attach_poller_with_omp_update(&mut inst, seen, generation)
+                }
+                Observation::LegacyOmp(seen) => {
+                    attach_poller_with_legacy_omp_update(&mut inst, seen)
+                }
+                Observation::Plain(seen) => attach_poller_with_update(&mut inst, seen),
+            }
 
-        let file_watch = FileWatchService::noop();
-        let mut instances = vec![inst];
-        let outcome = drain_and_persist_session_ids(&mut instances, &file_watch);
+            let mut instances = vec![inst];
+            let outcome = drain_and_persist_session_ids(&mut instances, &FileWatchService::noop());
 
-        assert_eq!(outcome.rolled_back, vec![instances[0].id.clone()]);
-        assert_eq!(
-            instances[0].resume_intent,
-            ResumeIntent::Use(sid.to_string())
-        );
-        let disk = Storage::new_unwatched(profile).unwrap().load().unwrap();
-        assert_eq!(disk[0].resume_intent, ResumeIntent::Use(sid.to_string()));
-    }
-
-    #[test]
-    #[serial]
-    fn legacy_omp_observation_does_not_consume_pin() {
-        let temp = tempdir().unwrap();
-        let _guard = storage_home_guard(&temp);
-        let profile = "sync-omp-pin-legacy";
-        let sid = "019342ab-1234-7def-8901-abcdef012342";
-        let mut inst = pinned_omp_instance(profile, sid, "launch-current");
-        seed_instance_on_disk(profile, &inst);
-        attach_poller_with_legacy_omp_update(&mut inst, sid);
-
-        let file_watch = FileWatchService::noop();
-        let mut instances = vec![inst];
-        let outcome = drain_and_persist_session_ids(&mut instances, &file_watch);
-
-        assert!(!outcome.touched());
-        assert_eq!(
-            instances[0].resume_intent,
-            ResumeIntent::Use(sid.to_string())
-        );
-        let disk = Storage::new_unwatched(profile).unwrap().load().unwrap();
-        assert_eq!(disk[0].resume_intent, ResumeIntent::Use(sid.to_string()));
-    }
-
-    #[test]
-    #[serial]
-    fn unguarded_observation_does_not_consume_omp_pin() {
-        let temp = tempdir().unwrap();
-        let _guard = storage_home_guard(&temp);
-        let profile = "sync-omp-pin-unguarded";
-        let sid = "019342ab-1234-7def-8901-abcdef012349";
-        let mut inst = pinned_omp_instance(profile, sid, "launch-current");
-        seed_instance_on_disk(profile, &inst);
-        attach_poller_with_update(&mut inst, sid);
-
-        let file_watch = FileWatchService::noop();
-        let mut instances = vec![inst];
-        let outcome = drain_and_persist_session_ids(&mut instances, &file_watch);
-
-        assert!(!outcome.touched());
-        assert_eq!(
-            instances[0].resume_intent,
-            ResumeIntent::Use(sid.to_string())
-        );
-        let disk = Storage::new_unwatched(profile).unwrap().load().unwrap();
-        assert_eq!(disk[0].resume_intent, ResumeIntent::Use(sid.to_string()));
-    }
-
-    #[test]
-    #[serial]
-    fn contradictory_omp_observation_does_not_consume_pin() {
-        let temp = tempdir().unwrap();
-        let _guard = storage_home_guard(&temp);
-        let profile = "sync-omp-pin-mismatch";
-        let sid = "019342ab-1234-7def-8901-abcdef012343";
-        let other_sid = "019342ab-1234-7def-8901-abcdef012344";
-        let generation = "launch-current";
-        let mut inst = pinned_omp_instance(profile, sid, generation);
-        seed_instance_on_disk(profile, &inst);
-        attach_poller_with_omp_update(&mut inst, other_sid, generation);
-
-        let file_watch = FileWatchService::noop();
-        let mut instances = vec![inst];
-        let outcome = drain_and_persist_session_ids(&mut instances, &file_watch);
-
-        assert_eq!(outcome.filtered, vec![instances[0].id.clone()]);
-        assert_eq!(
-            instances[0].resume_intent,
-            ResumeIntent::Use(sid.to_string())
-        );
-        let disk = Storage::new_unwatched(profile).unwrap().load().unwrap();
-        assert_eq!(disk[0].resume_intent, ResumeIntent::Use(sid.to_string()));
+            let id = vec![instances[0].id.clone()];
+            match bucket {
+                "rolled_back" => assert_eq!(outcome.rolled_back, id, "{profile}"),
+                "filtered" => assert_eq!(outcome.filtered, id, "{profile}"),
+                _ => assert!(!outcome.touched(), "{profile}"),
+            }
+            let pinned = ResumeIntent::Use(sid.to_string());
+            assert_eq!(instances[0].resume_intent, pinned, "{profile}");
+            let disk = Storage::new_unwatched(profile).unwrap().load().unwrap();
+            assert_eq!(disk[0].resume_intent, pinned, "{profile}: on disk");
+        }
     }
 
     #[test]
