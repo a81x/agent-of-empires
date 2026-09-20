@@ -1117,18 +1117,16 @@ mod tests {
         assert_eq!(snippet.chars().count(), 120 + 1);
     }
 
+    /// The clear path reuses the tag helpers, so a drift here would silently fail to
+    /// close the matching notification (#2491). Both payloads carry `kind` and `seq`,
+    /// and a clear keeps title/body so a not-yet-updated service worker degrades to a
+    /// benign notification rather than a blank one.
     #[test]
-    fn attention_tags_are_session_scoped_and_kind_distinct() {
-        // The clear path reuses these helpers, so a drift here would
-        // silently fail to close the matching notification (#2491).
+    fn attention_payloads_are_session_scoped_and_kind_distinct() {
         assert_eq!(approval_tag("s1"), "acp-approval-s1");
         assert_eq!(question_tag("s1"), "acp-question-s1");
-        assert_ne!(approval_tag("s1"), question_tag("s1"));
-    }
 
-    #[test]
-    fn clear_payload_carries_kind_and_seq() {
-        let json = serde_json::to_value(AcpClearPayload {
+        let clear = serde_json::to_value(AcpClearPayload {
             kind: "clear",
             title: "Resolved",
             body: "Handled on another device",
@@ -1138,17 +1136,12 @@ mod tests {
             seq: 7,
         })
         .unwrap();
-        assert_eq!(json["kind"], "clear");
-        assert_eq!(json["tag"], "acp-approval-s1");
-        assert_eq!(json["seq"], 7);
-        // title/body are present so a not-yet-updated service worker
-        // degrades to a benign notification rather than a blank one.
-        assert_eq!(json["title"], "Resolved");
-    }
+        assert_eq!(clear["kind"], "clear");
+        assert_eq!(clear["tag"], "acp-approval-s1");
+        assert_eq!(clear["seq"], 7);
+        assert_eq!(clear["title"], "Resolved");
 
-    #[test]
-    fn notify_payload_tags_kind_notify() {
-        let json = serde_json::to_value(AcpNotifyPayload {
+        let notify = serde_json::to_value(AcpNotifyPayload {
             kind: "notify",
             title: "t".into(),
             body: "b".into(),
@@ -1158,8 +1151,9 @@ mod tests {
             seq: 3,
         })
         .unwrap();
-        assert_eq!(json["kind"], "notify");
-        assert_eq!(json["seq"], 3);
+        assert_eq!(notify["kind"], "notify");
+        assert_eq!(notify["tag"], "acp-question-s1");
+        assert_eq!(notify["seq"], 3);
     }
 
     #[tokio::test]
@@ -1189,39 +1183,20 @@ mod tests {
         assert!(matches!(*delivered.event, Event::ThinkingEnded));
     }
 
-    /// PONG_IDLE_TIMEOUT must outrun PING_INTERVAL by enough margin to tolerate at least
-    /// one missed round-trip.
+    /// The keepalive has to survive one missed round-trip and still tick well inside
+    /// Cloudflare's documented 100s WebSocket idle cap. The client staleness watchdog
+    /// matches the heartbeat frame byte for byte.
     #[test]
-    fn keepalive_pong_timeout_exceeds_ping_interval() {
-        assert!(
-            PONG_IDLE_TIMEOUT > PING_INTERVAL,
-            "PONG_IDLE_TIMEOUT ({:?}) must be longer than PING_INTERVAL ({:?})",
-            PONG_IDLE_TIMEOUT,
-            PING_INTERVAL,
-        );
-        // Allow at least two missed round-trips.
+    fn keepalive_intervals_and_heartbeat_frame_are_stable() {
         assert!(
             PONG_IDLE_TIMEOUT >= PING_INTERVAL * 2,
-            "PONG_IDLE_TIMEOUT should tolerate two missed pings",
+            "PONG_IDLE_TIMEOUT ({PONG_IDLE_TIMEOUT:?}) must tolerate two missed pings at \
+             PING_INTERVAL ({PING_INTERVAL:?})"
         );
-    }
-
-    /// Both keepalive intervals must stay well under Cloudflare's documented 100s WebSocket
-    /// idle timeout.
-    #[test]
-    fn keepalive_under_cloudflare_idle_cap() {
-        const CLOUDFLARE_IDLE_CAP: Duration = Duration::from_secs(100);
         assert!(
-            PING_INTERVAL < CLOUDFLARE_IDLE_CAP,
-            "PING_INTERVAL ({:?}) must be shorter than Cloudflare's 100s tunnel idle cap",
-            PING_INTERVAL,
+            PING_INTERVAL < Duration::from_secs(100),
+            "Cloudflare idle cap"
         );
-    }
-
-    /// The client staleness watchdog matches this exact byte string to distinguish a
-    /// keepalive tick from a real event frame.
-    #[test]
-    fn heartbeat_frame_shape_is_stable() {
         assert_eq!(heartbeat_frame(), r#"{"kind":"heartbeat"}"#);
     }
 
