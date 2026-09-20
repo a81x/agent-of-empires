@@ -609,92 +609,45 @@ exec /usr/bin/env -i PATH="$TARGET_PATH" SHELL="$FALLBACK_SHELL" "$@"
             crate::tmux::refresh_session_cache();
         }
 
-        fn cleanup(name: &str) {
-            let _ = crate::tmux::tmux_command()
-                .args(["kill-session", "-t", name])
-                .output();
-            crate::tmux::refresh_session_cache();
-        }
-
         #[test]
         #[serial_test::serial]
-        fn returns_false_when_no_session() {
-            if !tmux_available() {
-                eprintln!("Skipping: tmux not available");
-                return;
-            }
-            let inst = Instance::new("ktid_missing", "/tmp");
-            crate::tmux::refresh_session_cache();
-            assert!(!inst.kill_terminal_if_dead().unwrap());
-        }
-
-        #[test]
-        #[serial_test::serial]
-        fn returns_false_when_pane_alive() {
-            if !tmux_available() {
-                eprintln!("Skipping: tmux not available");
-                return;
-            }
-            let inst = Instance::new("ktid_alive", "/tmp");
-            let name = crate::tmux::TerminalSession::generate_name(&inst.id, &inst.title);
-            let _guard = crate::tmux::test_helpers::TmuxTestSession::from_name(name.clone());
-            spawn_remain_on_exit(&name, "sleep 30");
-            let pane = crate::tmux::test_helpers::only_pane_id(&name);
-            let session = inst.terminal_tmux_session().unwrap();
-            assert!(session.exists());
-            assert!(!session.is_pane_dead());
-
-            assert!(
-                !inst.kill_terminal_if_dead().unwrap(),
-                "live pane should not trigger a kill"
-            );
-            assert_eq!(crate::tmux::test_helpers::only_pane_id(&name), pane);
-            assert!(session.exists());
-            assert!(!session.is_pane_dead());
-        }
-
-        #[test]
-        #[serial_test::serial]
-        fn kills_dead_pane_session() {
+        fn only_a_dead_terminal_pane_is_killed() {
             use crate::tmux::test_helpers::{only_pane_id, wait_for_pane_dead, TmuxTestSession};
 
             if !tmux_available() {
                 eprintln!("Skipping: tmux not available");
                 return;
             }
-            let inst = Instance::new("ktid_dead", "/tmp");
-            let name = crate::tmux::TerminalSession::generate_name(&inst.id, &inst.title);
-            let _guard = TmuxTestSession::from_name(name.clone());
-            // `true` exits immediately.
-            spawn_remain_on_exit(&name, "true");
-            wait_for_pane_dead(&only_pane_id(&name));
 
-            let session = inst.terminal_tmux_session().unwrap();
+            let missing = Instance::new("ktid_missing", "/tmp");
+            crate::tmux::refresh_session_cache();
+            assert!(!missing.kill_terminal_if_dead().unwrap(), "no session");
+
+            let alive = Instance::new("ktid_alive", "/tmp");
+            let alive_name = crate::tmux::TerminalSession::generate_name(&alive.id, &alive.title);
+            let _alive = TmuxTestSession::from_name(alive_name.clone());
+            spawn_remain_on_exit(&alive_name, "sleep 30");
+            let pane = only_pane_id(&alive_name);
+            assert!(!alive.kill_terminal_if_dead().unwrap(), "live pane");
+            assert_eq!(only_pane_id(&alive_name), pane, "live pane survives");
+            let session = alive.terminal_tmux_session().unwrap();
+            assert!(session.exists() && !session.is_pane_dead());
+
+            let dead = Instance::new("ktid_dead", "/tmp");
+            let dead_name = crate::tmux::TerminalSession::generate_name(&dead.id, &dead.title);
+            let _dead = TmuxTestSession::from_name(dead_name.clone());
+            // `true` exits immediately; remain-on-exit keeps the session.
+            spawn_remain_on_exit(&dead_name, "true");
+            wait_for_pane_dead(&only_pane_id(&dead_name));
+            let session = dead.terminal_tmux_session().unwrap();
+            assert!(session.exists() && session.is_pane_dead());
+
+            assert!(dead.kill_terminal_if_dead().unwrap(), "dead pane is killed");
+            assert!(!dead.terminal_tmux_session().unwrap().exists());
             assert!(
-                session.exists(),
-                "session should still exist via remain-on-exit"
+                !dead.kill_terminal_if_dead().unwrap(),
+                "second call on a missing session"
             );
-            assert!(
-                session.is_pane_dead(),
-                "pane should be dead after `true` exits"
-            );
-
-            let killed = inst.kill_terminal_if_dead().unwrap();
-            assert!(
-                killed,
-                "kill_terminal_if_dead should return true for dead pane"
-            );
-
-            let session = inst.terminal_tmux_session().unwrap();
-            assert!(!session.exists(), "session should be gone after kill");
-
-            // Idempotent: second call on now-missing session returns false.
-            assert!(
-                !inst.kill_terminal_if_dead().unwrap(),
-                "second call on missing session should return false"
-            );
-
-            cleanup(&name);
         }
     }
 }

@@ -882,31 +882,20 @@ mod tests {
 
     #[traced_test]
     #[test]
-    fn passive_status_patch_logs_an_equal_timestamp_drop() {
+    fn passive_status_patch_logs_only_a_dropped_last_accessed_at() {
         tracing::callsite::rebuild_interest_cache();
         let ts = Utc::now();
         let mut disk = inst();
         disk.last_accessed_at = Some(ts);
+        // An equal timestamp is a no-op and says so; a newer one applies silently.
         disk.merge_passive_status_patch(&disk.id.clone(), &patch(Status::Idle, None, Some(ts)));
+        let newer = ts + chrono::Duration::minutes(1);
+        disk.merge_passive_status_patch(&disk.id.clone(), &patch(Status::Idle, None, Some(newer)));
+        assert_eq!(disk.last_accessed_at, Some(newer));
         logs_assert(|lines: &[&str]| match drop_log_count(lines) {
             1 => Ok(()),
             n => Err(format!("expected 1 drop event, got {n}")),
         });
-    }
-
-    #[traced_test]
-    #[test]
-    fn passive_status_patch_does_not_log_a_newer_timestamp() {
-        tracing::callsite::rebuild_interest_cache();
-        let newer = Utc::now();
-        let mut disk = inst();
-        disk.last_accessed_at = Some(newer - chrono::Duration::minutes(1));
-        disk.merge_passive_status_patch(&disk.id.clone(), &patch(Status::Idle, None, Some(newer)));
-        logs_assert(|lines: &[&str]| match drop_log_count(lines) {
-            0 => Ok(()),
-            n => Err(format!("expected 0 drop events, got {n}")),
-        });
-        assert_eq!(disk.last_accessed_at, Some(newer));
     }
 
     #[test]

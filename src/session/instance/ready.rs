@@ -130,32 +130,29 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_ensure_pane_ready_bails_on_creating() {
-        let mut inst = Instance::new("test", "/tmp/test");
-        inst.status = Status::Creating;
-        match inst.ensure_pane_ready() {
-            Err(EnsureReadyError::Transient(Status::Creating)) => {}
-            other => panic!("expected Transient(Creating), got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn test_ensure_pane_ready_bails_on_deleting() {
-        let mut inst = Instance::new("test", "/tmp/test");
-        inst.status = Status::Deleting;
-        match inst.ensure_pane_ready() {
-            Err(EnsureReadyError::Transient(Status::Deleting)) => {}
-            other => panic!("expected Transient(Deleting), got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn test_ensure_pane_ready_bails_on_structured() {
-        let mut inst = Instance::new("test", "/tmp/test");
-        inst.view = View::Structured;
-        match inst.ensure_pane_ready() {
-            Err(EnsureReadyError::StructuredView) => {}
-            other => panic!("expected StructuredView, got {other:?}"),
+    fn ensure_pane_ready_refuses_before_reaching_tmux() {
+        // (status, structured view, expected refusal)
+        let cases = [
+            (
+                Status::Creating,
+                false,
+                EnsureReadyError::Transient(Status::Creating),
+            ),
+            (
+                Status::Deleting,
+                false,
+                EnsureReadyError::Transient(Status::Deleting),
+            ),
+            (Status::Idle, true, EnsureReadyError::StructuredView),
+        ];
+        for (status, structured, want) in cases {
+            let mut inst = Instance::new("test", "/tmp/test");
+            inst.status = status;
+            if structured {
+                inst.view = View::Structured;
+            }
+            let error = inst.ensure_pane_ready().unwrap_err();
+            assert_eq!(format!("{error:?}"), format!("{want:?}"));
         }
     }
 
