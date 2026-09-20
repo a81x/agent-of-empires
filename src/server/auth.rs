@@ -850,7 +850,8 @@ mod tests {
         let from = |socket: &str, headers: &[(&str, &str)]| {
             let mut map = axum::http::HeaderMap::new();
             for (k, v) in headers {
-                map.insert(*k, v.parse().unwrap());
+                let name = axum::http::HeaderName::from_bytes(k.as_bytes()).unwrap();
+                map.insert(name, v.parse().unwrap());
             }
             resolve_client_ip(socket.parse().unwrap(), &map)
         };

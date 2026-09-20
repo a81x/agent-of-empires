@@ -284,7 +284,6 @@ pub(super) async fn instance_lock_in(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use crate::server::test_support;
 
     /// `idempotency_locks` must not grow for the daemon's lifetime.
