@@ -4,6 +4,8 @@
 //! needs to drive an aoe session as a controlled subagent, without a keyboard
 //! or websocket attach.
 
+use super::*;
+
 #[derive(Deserialize)]
 pub struct SendMessageRequest {
     pub message: String,
