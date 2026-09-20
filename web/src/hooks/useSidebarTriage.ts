@@ -17,6 +17,10 @@ export interface TriageResult {
   skipped?: boolean;
 }
 
+function reportFailure(result: TriageResult, message: string): void {
+  if (!result.ok && !result.skipped) reportError(message);
+}
+
 export function useSidebarTriage(workspaces: readonly Workspace[]) {
   const [overlay, setOverlay] = useState<Map<string, OptimisticTriage>>(() => new Map());
   const [trackedWorkspaces, setTrackedWorkspaces] = useState(workspaces);
@@ -38,125 +42,91 @@ export function useSidebarTriage(workspaces: readonly Workspace[]) {
     [overlay],
   );
 
-  const pin = useCallback(
-    async (ws: Workspace, pinned: boolean): Promise<TriageResult> => {
+  const triage = useCallback(
+    async (
+      ws: Workspace,
+      optimistic: Partial<OptimisticTriage>,
+      revert: Partial<OptimisticTriage>,
+      call: (sessionId: string) => Promise<unknown>,
+    ): Promise<TriageResult> => {
       const sessionId = ws.sessions[0]?.id;
       if (!sessionId) return { workspaceId: ws.id, ok: false, skipped: true };
-      setOverride(ws.id, { pinned });
-      const result = await setSessionPin(sessionId, pinned);
-      if (!result) {
-        setOverride(ws.id, { pinned: null });
-        return { workspaceId: ws.id, ok: false };
-      }
-      return { workspaceId: ws.id, ok: true };
+      setOverride(ws.id, optimistic);
+      if (await call(sessionId)) return { workspaceId: ws.id, ok: true };
+      setOverride(ws.id, revert);
+      return { workspaceId: ws.id, ok: false };
     },
     [setOverride],
+  );
+
+  const pin = useCallback(
+    (ws: Workspace, pinned: boolean) => triage(ws, { pinned }, { pinned: null }, (id) => setSessionPin(id, pinned)),
+    [triage],
   );
 
   const archive = useCallback(
-    async (ws: Workspace, archived: boolean): Promise<TriageResult> => {
-      const sessionId = ws.sessions[0]?.id;
-      if (!sessionId) return { workspaceId: ws.id, ok: false, skipped: true };
-      setOverride(ws.id, { archived });
-      const result = await setSessionArchive(sessionId, archived);
-      if (!result) {
-        setOverride(ws.id, { archived: null });
-        return { workspaceId: ws.id, ok: false };
-      }
-      return { workspaceId: ws.id, ok: true };
-    },
-    [setOverride],
+    (ws: Workspace, archived: boolean) =>
+      triage(ws, { archived }, { archived: null }, (id) => setSessionArchive(id, archived)),
+    [triage],
   );
 
   const snooze = useCallback(
-    async (ws: Workspace, minutes: number | null): Promise<TriageResult> => {
-      const sessionId = ws.sessions[0]?.id;
-      if (!sessionId) return { workspaceId: ws.id, ok: false, skipped: true };
-      const optimisticUntil = minutes == null ? null : makeOptimisticSnoozedUntil(minutes);
-      setOverride(ws.id, { snoozedUntil: optimisticUntil });
-      const result = await setSessionSnooze(sessionId, minutes);
-      if (!result) {
-        setOverride(ws.id, { snoozedUntil: undefined });
-        return { workspaceId: ws.id, ok: false };
-      }
-      return { workspaceId: ws.id, ok: true };
-    },
-    [setOverride],
+    (ws: Workspace, minutes: number | null) =>
+      triage(
+        ws,
+        { snoozedUntil: minutes == null ? null : makeOptimisticSnoozedUntil(minutes) },
+        { snoozedUntil: undefined },
+        (id) => setSessionSnooze(id, minutes),
+      ),
+    [triage],
   );
 
   const unread = useCallback(
-    async (ws: Workspace, markUnread: boolean): Promise<TriageResult> => {
-      const sessionId = ws.sessions[0]?.id;
-      if (!sessionId) return { workspaceId: ws.id, ok: false, skipped: true };
-      setOverride(ws.id, { unread: markUnread });
-      const result = await setSessionUnread(sessionId, markUnread);
-      if (!result) {
-        setOverride(ws.id, { unread: null });
-        return { workspaceId: ws.id, ok: false };
-      }
-      return { workspaceId: ws.id, ok: true };
-    },
-    [setOverride],
+    (ws: Workspace, markUnread: boolean) =>
+      triage(ws, { unread: markUnread }, { unread: null }, (id) => setSessionUnread(id, markUnread)),
+    [triage],
   );
 
   const pinToggle = useCallback(
     (ws: Workspace, pinned: boolean) => {
-      void pin(ws, pinned).then((r) => {
-        if (!r.ok && !r.skipped) {
-          reportError(pinned ? "Failed to pin session" : "Failed to unpin session");
-        }
-      });
+      void pin(ws, pinned).then((r) => reportFailure(r, pinned ? "Failed to pin session" : "Failed to unpin session"));
     },
     [pin],
   );
 
   const archiveToggle = useCallback(
     (ws: Workspace, archived: boolean) => {
-      void archive(ws, archived).then((r) => {
-        if (!r.ok && !r.skipped) {
-          reportError(archived ? "Failed to archive session" : "Failed to unarchive session");
-        }
-      });
+      void archive(ws, archived).then((r) =>
+        reportFailure(r, archived ? "Failed to archive session" : "Failed to unarchive session"),
+      );
     },
     [archive],
   );
 
   const snoozeOne = useCallback(
     (ws: Workspace, minutes: number | null) => {
-      void snooze(ws, minutes).then((r) => {
-        if (!r.ok && !r.skipped) {
-          reportError(minutes == null ? "Failed to unsnooze session" : "Failed to snooze session");
-        }
-      });
+      void snooze(ws, minutes).then((r) =>
+        reportFailure(r, minutes == null ? "Failed to unsnooze session" : "Failed to snooze session"),
+      );
     },
     [snooze],
   );
 
   const unreadToggle = useCallback(
     (ws: Workspace, markUnread: boolean) => {
-      void unread(ws, markUnread).then((r) => {
-        if (!r.ok && !r.skipped) {
-          reportError(markUnread ? "Failed to mark unread" : "Failed to mark read");
-        }
-      });
+      void unread(ws, markUnread).then((r) =>
+        reportFailure(r, markUnread ? "Failed to mark unread" : "Failed to mark read"),
+      );
     },
     [unread],
   );
 
   // Serial: each PATCH rewrites the profile's session list, so concurrent calls would race.
-  const runBulk = useCallback(
-    async (
-      workspaces: readonly Workspace[],
-      action: (ws: Workspace) => Promise<TriageResult>,
-    ): Promise<TriageResult[]> => {
-      const results: TriageResult[] = [];
-      for (const ws of workspaces) {
-        results.push(await action(ws));
-      }
-      return results;
-    },
-    [],
-  );
+  const runBulk = useCallback(async (wss: readonly Workspace[], action: (ws: Workspace) => Promise<TriageResult>) => {
+    const results: TriageResult[] = [];
+    for (const ws of wss) results.push(await action(ws));
+    return results;
+  }, []);
 
   const bulkPin = useCallback(
     (wss: readonly Workspace[], pinned: boolean) => runBulk(wss, (ws) => pin(ws, pinned)),
