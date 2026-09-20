@@ -50,7 +50,7 @@ aoe project add /path/to/repo        # CLI
 
 In the TUI, press `p` to open **Manage projects**, then `a` to add one. Once a project is registered, `b` starts a new session from it (this is why `b` reports "No Projects" until you have added at least one). See [Multi-Repo Workspaces](guides/multi-repo-workspaces.md#the-project-registry) for scopes and multi-repo sessions.
 
-A **group** is unrelated to projects. It is a label you assign to existing sessions to sort them in the sidebar (for example `fix` and `feature`), set from the session rename dialog or with `aoe group move`. Projects are where sessions start; groups are how sessions are bucketed once they exist. See the [Web Dashboard grouping section](guides/web/dashboard.md#sidebar-grouping-by-repo-by-group-or-both) for the grouping axes.
+A **group** is unrelated to projects. It is a label you assign to existing sessions to sort them in the sidebar (for example `fix` and `feature`), set from the session rename dialog or with `aoe group move`. Projects are where sessions start; groups are how sessions are bucketed once they exist. See the [Web Dashboard grouping section](guides/web/dashboard.md#sorting-and-grouping) for the grouping axes.
 
 ## Attach to a Session
 

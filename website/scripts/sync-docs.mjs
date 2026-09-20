@@ -31,7 +31,7 @@ const PAGES = [
     dest: "guides/diff-view.md",
     title: "Diff View",
     description:
-      "Review git changes and edit files directly from the Agent of Empires TUI.",
+      "Review a session's changes in the TUI and the web dashboard: split view, inline comments, and the per-repo base override.",
   },
   {
     source: "docs/guides/repo-config.md",
@@ -80,7 +80,7 @@ const PAGES = [
     dest: "guides/web/dashboard.md",
     title: "Dashboard & Workspaces",
     description:
-      "The web dashboard layout: workspace sidebar, status glyphs, the session-creation wizard, command palette, sidebar sort, and triage.",
+      "The web dashboard layout: workspace sidebar, session wizard, command palette, sort and grouping, triage, settings, and profiles.",
   },
   {
     source: "docs/guides/web/terminal.md",
@@ -88,20 +88,6 @@ const PAGES = [
     title: "Terminal View",
     description:
       "The browser agent and paired terminals: PTY relay, scrollback, reconnect behavior, WebSocket close codes, and read-only mode.",
-  },
-  {
-    source: "docs/guides/web/diff.md",
-    dest: "guides/web/diff.md",
-    title: "Web Diff View",
-    description:
-      "Review a session's changes from the browser: the flat / tree changed-files list, per-repo base override, and inline review comments.",
-  },
-  {
-    source: "docs/guides/web/settings.md",
-    dest: "guides/web/settings.md",
-    title: "Settings & Profiles",
-    description:
-      "The web settings tabs, the profile picker, connected-device tracking, and the step-up elevation gate for persisted config edits.",
   },
   {
     source: "docs/guides/worktrees.md",
