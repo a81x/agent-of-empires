@@ -50,9 +50,9 @@ const PAGES = [
   {
     source: "docs/guides/sandbox.md",
     dest: "guides/sandbox.md",
-    title: "Docker Sandbox: Quick Reference",
+    title: "Container Sandbox",
     description:
-      "Run AI coding agents in isolated Docker containers with Agent of Empires.",
+      "Run AI coding agents in isolated containers with Agent of Empires: Docker, Podman, or Apple Container.",
   },
   {
     source: "docs/guides/otari-telemetry.md",
@@ -243,20 +243,6 @@ const PAGES = [
     title: "Push Notifications",
     description:
       "Browser and PWA push notifications for Agent of Empires session status changes and structured view approvals.",
-  },
-  {
-    source: "docs/guides/podman.md",
-    dest: "guides/podman.md",
-    title: "Podman",
-    description:
-      "Run Agent of Empires sandboxes on Podman, a daemonless and rootless Docker alternative.",
-  },
-  {
-    source: "docs/guides/apple-containers.md",
-    dest: "guides/apple-containers.md",
-    title: "Apple Containers",
-    description:
-      "Run Agent of Empires sandboxes on Apple's native macOS container runtime on Apple silicon.",
   },
   {
     source: "docs/guides/configuration.md",

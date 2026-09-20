@@ -16,6 +16,8 @@ export default defineConfig({
     '/docs/cockpit/persistence/': '/docs/structured-view/',
     '/docs/cockpit/troubleshooting/': '/docs/structured-view/troubleshooting/',
     '/docs/cockpit/multi-agent/': '/docs/structured-view/',
+    '/guides/podman/': '/guides/sandbox/',
+    '/guides/apple-containers/': '/guides/sandbox/',
   },
   integrations: [
     sitemap({

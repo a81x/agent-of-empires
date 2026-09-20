@@ -122,7 +122,7 @@ Sandboxed sessions have their container removed and recreated, since bind mounts
 are fixed when the container is created and the container mounts the common
 ancestor of the workspace and every repo. Build caches (`target/`,
 `node_modules/`) go with the container under the default
-[volume ignores strategy](sandbox.md#volume-ignores-strategy-macosvirtiofs). Under
+[volume ignores strategy](sandbox.md#volume-ignores). Under
 `"named"` they are keyed on their container path, so they survive an attach that
 leaves that path alone. Attaching a repo from outside the current common ancestor
 moves every mount, so those caches start empty and the volumes they leave behind
@@ -204,7 +204,7 @@ Multi-repo sessions are bucketed into a single **Multi-repo** group at the botto
 ## Limitations
 
 - **One branch name per workspace**: every repo gets the same `-w <branch>` value.
-- **No agent-driven repo pull-in**: the agent cannot add a repo to its own session. You add one yourself, without losing the conversation, as described in [Add a repo to a session that already exists](#add-a-repo-to-a-session-that-already-exists).
+- **No agent-driven repo pull-in**: the agent cannot add a repo to its own session. You add one yourself, without losing the conversation, as described in [Add a repo to a session that already exists](#5-add-a-repo-to-a-session-that-already-exists).
 - **No saved workspace templates**: each session picks the repo set fresh.
 - **No per-repo PR tracking**: coordinated PR workflow happens outside AoE.
 
