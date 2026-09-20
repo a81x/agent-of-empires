@@ -5,15 +5,18 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { useRespawnSession } from "./useRespawnSession";
 
+function stubFetch(ok: boolean, status: number, text = "") {
+  vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok, status, text: () => Promise.resolve(text) }));
+}
+
+function renderRespawn(resetKey: string | null = "unknown") {
+  return renderHook(({ resetKey }: { resetKey: string | null }) => useRespawnSession("s1", resetKey), {
+    initialProps: { resetKey },
+  });
+}
+
 beforeEach(() => {
-  vi.stubGlobal(
-    "fetch",
-    vi.fn().mockResolvedValue({
-      ok: true,
-      status: 200,
-      text: () => Promise.resolve(""),
-    }),
-  );
+  stubFetch(true, 200);
 });
 
 afterEach(() => {
@@ -22,80 +25,29 @@ afterEach(() => {
 });
 
 describe("useRespawnSession resetKey", () => {
-  it("starts fresh for a second incident after a successful respawn", async () => {
-    const { result, rerender } = renderHook(({ resetKey }: { resetKey: string }) => useRespawnSession("s1", resetKey), {
-      initialProps: { resetKey: "reset-1" },
-    });
+  it.each([
+    ["a successful respawn", () => stubFetch(true, 200), "ok", "", ["reset-2"]],
+    ["a failed respawn", () => stubFetch(false, 500, "boom"), "failed", "boom", [null, "reset-2"]],
+    ["a second incident on the same key", () => stubFetch(false, 409, "busy"), "failed", "busy", [null, "unknown"]],
+  ] as [string, () => void, string, string, (string | null)[]][])(
+    "starts fresh for the next incident after %s",
+    async (_label, stub, settled, errorText, keysAfter) => {
+      stub();
+      const { result, rerender } = renderRespawn();
 
-    await act(async () => {
-      await result.current.respawn();
-    });
-    expect(result.current.state).toBe("ok");
+      await act(async () => {
+        await result.current.respawn();
+      });
+      expect(result.current.state).toBe(settled);
+      expect(result.current.error ?? "").toContain(errorText);
 
-    rerender({ resetKey: "reset-2" });
-
-    expect(result.current.state).toBe("idle");
-    expect(result.current.error).toBeNull();
-  });
-
-  it("starts fresh for a second incident after a failed respawn", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn().mockResolvedValue({
-        ok: false,
-        status: 500,
-        text: () => Promise.resolve("boom"),
-      }),
-    );
-    const { result, rerender } = renderHook(
-      ({ resetKey }: { resetKey: string | null }) => useRespawnSession("s1", resetKey),
-      {
-        initialProps: { resetKey: "reset-1" },
-      },
-    );
-
-    await act(async () => {
-      await result.current.respawn();
-    });
-    expect(result.current.state).toBe("failed");
-    expect(result.current.error).toContain("boom");
-
-    rerender({ resetKey: null });
-    expect(result.current.state).toBe("idle");
-    expect(result.current.error).toBeNull();
-
-    rerender({ resetKey: "reset-2" });
-    expect(result.current.state).toBe("idle");
-    expect(result.current.error).toBeNull();
-  });
-
-  it("starts fresh for a second incident that reuses the same key", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn().mockResolvedValue({
-        ok: false,
-        status: 409,
-        text: () => Promise.resolve("worker already running"),
-      }),
-    );
-    const { result, rerender } = renderHook(
-      ({ resetKey }: { resetKey: string | null }) => useRespawnSession("s1", resetKey),
-      {
-        initialProps: { resetKey: "unknown" as string | null },
-      },
-    );
-
-    await act(async () => {
-      await result.current.respawn();
-    });
-    expect(result.current.state).toBe("failed");
-
-    rerender({ resetKey: null });
-    rerender({ resetKey: "unknown" });
-
-    expect(result.current.state).toBe("idle");
-    expect(result.current.error).toBeNull();
-  });
+      for (const resetKey of keysAfter) {
+        rerender({ resetKey });
+        expect(result.current.state).toBe("idle");
+        expect(result.current.error).toBeNull();
+      }
+    },
+  );
 
   it.each([
     ["a null in between", [null, "unknown"] as (string | null)[]],
@@ -111,12 +63,7 @@ describe("useRespawnSession resetKey", () => {
           }),
       ),
     );
-    const { result, rerender } = renderHook(
-      ({ resetKey }: { resetKey: string | null }) => useRespawnSession("s1", resetKey),
-      {
-        initialProps: { resetKey: "unknown" as string | null },
-      },
-    );
+    const { result, rerender } = renderRespawn();
 
     let pending: Promise<boolean> | undefined;
     await act(async () => {
