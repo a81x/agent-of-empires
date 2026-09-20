@@ -1109,89 +1109,40 @@ mod tests {
 
     #[test]
     #[serial_test::serial]
-    fn sessions_list_exposes_archived_and_snoozed_flags() {
+    fn sessions_list_reports_dormancy_flags_and_honors_exclude() {
         use crate::session::{Instance, Storage};
 
         let tmp = tempfile::tempdir().unwrap();
         let _home = crate::session::test_support::isolate_app_dir_at(tmp.path());
+        let now = chrono::Utc::now();
+        let hour = chrono::Duration::hours(1);
+
+        let mut rows = Vec::new();
+        let mut seed = |title: &str, f: &dyn Fn(&mut Instance)| {
+            let mut inst = Instance::new(title, "/tmp/plugin-host-test");
+            f(&mut inst);
+            let id = inst.id.clone();
+            rows.push(inst);
+            id
+        };
+        let active_id = seed("active", &|_| {});
+        let archived_id = seed("archived", &|i| i.archived_at = Some(now));
+        let snoozed_id = seed("future-snooze", &|i| i.snoozed_until = Some(now + hour));
+        let woken_id = seed("past-snooze", &|i| i.snoozed_until = Some(now - hour));
+        let trashed_id = seed("trashed", &|i| i.trashed_at = Some(now));
 
         let storage = Storage::new_unwatched("default").unwrap();
-        let (archived_id, future_id, past_id) = storage
+        storage
             .update(|instances, _groups| {
-                let mut archived = Instance::new("archived", "/tmp/plugin-host-test");
-                archived.archived_at = Some(chrono::Utc::now());
-                let archived_id = archived.id.clone();
-
-                let mut future = Instance::new("future-snooze", "/tmp/plugin-host-test");
-                future.snoozed_until = Some(chrono::Utc::now() + chrono::Duration::hours(1));
-                let future_id = future.id.clone();
-
-                let mut past = Instance::new("past-snooze", "/tmp/plugin-host-test");
-                past.snoozed_until = Some(chrono::Utc::now() - chrono::Duration::hours(1));
-                let past_id = past.id.clone();
-
-                instances.push(archived);
-                instances.push(future);
-                instances.push(past);
-                Ok((archived_id, future_id, past_id))
+                instances.extend(rows.clone());
+                Ok(())
             })
             .unwrap();
 
         let state =
             HostApiState::open(&tmp.path().join("plugin_events.db"), "default", 100).unwrap();
-        let a = ctx(&[CAP_SESSION_READ]);
-
-        let list = dispatch(&state, &a, "sessions.list", &json!({})).unwrap();
-        let sessions = list["sessions"].as_array().unwrap();
-        let by_id = |id: &str| sessions.iter().find(|s| s["id"] == json!(id)).unwrap();
-
-        assert_eq!(by_id(&archived_id)["archived"], json!(true));
-        assert_eq!(by_id(&archived_id)["snoozed"], json!(false));
-
-        assert_eq!(by_id(&future_id)["snoozed"], json!(true));
-        assert_eq!(by_id(&future_id)["archived"], json!(false));
-
-        assert_eq!(by_id(&past_id)["snoozed"], json!(false));
-        assert_eq!(by_id(&past_id)["archived"], json!(false));
-    }
-
-    #[test]
-    #[serial_test::serial]
-    fn sessions_list_exclude_filters_server_side() {
-        use crate::session::{Instance, Storage};
-
-        let tmp = tempfile::tempdir().unwrap();
-        let _home = crate::session::test_support::isolate_app_dir_at(tmp.path());
-
-        let storage = Storage::new_unwatched("default").unwrap();
-        let (active_id, archived_id, snoozed_id, trashed_id) = storage
-            .update(|instances, _groups| {
-                let active = Instance::new("active", "/tmp/plugin-host-test");
-                let active_id = active.id.clone();
-
-                let mut archived = Instance::new("archived", "/tmp/plugin-host-test");
-                archived.archived_at = Some(chrono::Utc::now());
-                let archived_id = archived.id.clone();
-
-                let mut snoozed = Instance::new("snoozed", "/tmp/plugin-host-test");
-                snoozed.snoozed_until = Some(chrono::Utc::now() + chrono::Duration::hours(1));
-                let snoozed_id = snoozed.id.clone();
-
-                let mut trashed = Instance::new("trashed", "/tmp/plugin-host-test");
-                trashed.trashed_at = Some(chrono::Utc::now());
-                let trashed_id = trashed.id.clone();
-
-                instances.push(active);
-                instances.push(archived);
-                instances.push(snoozed);
-                instances.push(trashed);
-                Ok((active_id, archived_id, snoozed_id, trashed_id))
-            })
-            .unwrap();
-
-        let state =
-            HostApiState::open(&tmp.path().join("plugin_events.db"), "default", 100).unwrap();
-        let a = ctx(&[CAP_SESSION_READ]);
+        let reader = ctx(&[CAP_SESSION_READ]);
+        let list = |params: Value| dispatch(&state, &reader, "sessions.list", &params).unwrap();
         let ids = |v: &Value| -> Vec<String> {
             v["sessions"]
                 .as_array()
@@ -1200,78 +1151,70 @@ mod tests {
                 .map(|s| s["id"].as_str().unwrap().to_string())
                 .collect()
         };
+        let entry = |v: &Value, id: &str| {
+            v["sessions"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|s| s["id"] == json!(id))
+                .unwrap()
+                .clone()
+        };
 
-        let all = ids(&dispatch(&state, &a, "sessions.list", &json!({})).unwrap());
-        for id in [&active_id, &archived_id, &snoozed_id, &trashed_id] {
-            assert!(all.contains(id), "no-exclude list missing {id}");
+        let all = list(json!({}));
+        let all_ids = ids(&all);
+        for (label, id, archived, snoozed) in [
+            ("active", &active_id, false, false),
+            ("archived", &archived_id, true, false),
+            ("snoozed", &snoozed_id, false, true),
+            ("woken", &woken_id, false, false),
+        ] {
+            assert!(all_ids.contains(id), "no-exclude list missing {label}");
+            let row = entry(&all, id);
+            assert_eq!(row["archived"], json!(archived), "{label}");
+            assert_eq!(row["snoozed"], json!(snoozed), "{label}");
         }
+        assert!(all_ids.contains(&trashed_id));
 
-        let no_trash = dispatch(
-            &state,
-            &a,
-            "sessions.list",
-            &json!({ "exclude": ["trashed"] }),
-        )
-        .unwrap();
+        let no_trash = list(json!({ "exclude": ["trashed"] }));
         let no_trash_ids = ids(&no_trash);
         assert!(!no_trash_ids.contains(&trashed_id));
         assert!(no_trash_ids.contains(&archived_id));
         assert!(no_trash_ids.contains(&active_id));
-        let archived_entry = no_trash["sessions"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|s| s["id"] == json!(archived_id))
-            .unwrap();
-        assert_eq!(archived_entry["archived"], json!(true));
+        assert_eq!(
+            entry(&no_trash, &archived_id)["archived"],
+            json!(true),
+            "an excluded bucket must not flatten the flags of what survives"
+        );
 
-        let no_archived = ids(&dispatch(
-            &state,
-            &a,
-            "sessions.list",
-            &json!({ "exclude": ["archived"] }),
-        )
-        .unwrap());
+        let no_archived = ids(&list(json!({ "exclude": ["archived"] })));
         assert!(!no_archived.contains(&archived_id));
         assert!(no_archived.contains(&trashed_id));
 
-        let live = ids(&dispatch(
-            &state,
-            &a,
-            "sessions.list",
-            &json!({ "exclude": ["archived", "snoozed", "trashed"] }),
-        )
-        .unwrap());
+        let live = ids(&list(
+            json!({ "exclude": ["archived", "snoozed", "trashed"] }),
+        ));
         assert!(live.contains(&active_id));
+        assert!(live.contains(&woken_id), "an expired snooze is live again");
         for id in [&archived_id, &snoozed_id, &trashed_id] {
             assert!(!live.contains(id), "dormant {id} should be excluded");
         }
-
-        let seeded = [&active_id, &archived_id, &snoozed_id, &trashed_id];
-        storage
-            .update(|instances, _groups| {
-                instances.retain(|i| !seeded.iter().any(|id| **id == i.id));
-                Ok(())
-            })
-            .unwrap();
-    }
-
-    #[test]
-    #[serial_test::serial]
-    fn sessions_list_rejects_bad_exclude() {
-        let tmp = tempfile::tempdir().unwrap();
-        let state =
-            HostApiState::open(&tmp.path().join("plugin_events.db"), "default", 100).unwrap();
-        let a = ctx(&[CAP_SESSION_READ]);
 
         for bad in [
             json!({ "exclude": "trashed" }),
             json!({ "exclude": ["deleted"] }),
             json!({ "exclude": [1] }),
         ] {
-            let err = dispatch(&state, &a, "sessions.list", &bad).unwrap_err();
-            assert_eq!(err.code, codes::INVALID_PARAMS);
+            let err = dispatch(&state, &reader, "sessions.list", &bad).unwrap_err();
+            assert_eq!(err.code, codes::INVALID_PARAMS, "{bad}");
         }
+
+        storage
+            .update(|instances, _groups| {
+                instances.retain(|i| !rows.iter().any(|seeded| seeded.id == i.id));
+                Ok(())
+            })
+            .unwrap();
     }
 
     #[test]
