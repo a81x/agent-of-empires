@@ -815,17 +815,16 @@ mod tests {
     /// #1647: a loopback bypass is routine, so it must not be louder than debug.
     #[test]
     fn loopback_bypass_logs_at_debug() {
-        let loopback = ip("127.0.0.1");
-        for (target, emit) in [
-            (
-                "auth.passphrase",
-                &log_loopback_bypass_passphrase as &dyn Fn(IpAddr, &str),
-            ),
-            ("auth", &log_loopback_bypass_token),
-        ] {
-            let events = capture_events(|| emit(loopback, "/api/sessions"));
-            assert_eq!(events, vec![(tracing::Level::DEBUG, target.to_string())]);
-        }
+        let at = ip("127.0.0.1");
+        let debug = |target: &str| vec![(tracing::Level::DEBUG, target.to_string())];
+        assert_eq!(
+            capture_events(|| log_loopback_bypass_passphrase(at, "/api/sessions")),
+            debug("auth.passphrase")
+        );
+        assert_eq!(
+            capture_events(|| log_loopback_bypass_token(at, "/api/sessions")),
+            debug("auth")
+        );
     }
 
     #[test]

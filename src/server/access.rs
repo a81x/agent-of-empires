@@ -791,7 +791,7 @@ mod tests {
             StatusCode::FORBIDDEN,
             "forbidden: host or origin not allowed".to_string(),
         );
-        let local = &["localhost"][..];
+        let local: &[&str] = &["localhost"];
         let api = "/api/sessions";
 
         assert_eq!(probe(local, api, Some("evil.com"), None).await, denied);
