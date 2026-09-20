@@ -392,7 +392,7 @@ mod tests {
         assert_eq!(inst.pi_published_session_id(true), None);
         assert_eq!(inst.pi_published_session_path(), None);
 
-        let mut host = tool_instance("pi", "/tmp/pi-unresolvable");
+        let host = tool_instance("pi", "/tmp/pi-unresolvable");
         assert_eq!(
             host.pi_sidecar_source(),
             Some(SessionSidecarSource::HostHooks)
@@ -557,7 +557,7 @@ pi = "~/.pi-personal"
             "a path outside the bind cannot be mapped"
         );
 
-        let mut host_inst = tool_instance("pi", "/tmp/pi-ns");
+        let host_inst = tool_instance("pi", "/tmp/pi-ns");
         assert_eq!(
             host_inst.pi_host_view_of("/home/u/.pi/x.jsonl"),
             Some(std::path::PathBuf::from("/home/u/.pi/x.jsonl"))

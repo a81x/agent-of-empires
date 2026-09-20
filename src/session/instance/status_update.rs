@@ -103,6 +103,24 @@ impl Instance {
         }
     }
 
+    /// Latch an Error on a tmux failure, keeping any explanation already recorded.
+    fn latch_tmux_error(&mut self, message: &str) {
+        self.status = Status::Error;
+        if self.last_error.is_none() {
+            self.last_error = Some(message.to_string());
+        }
+        self.last_error_check = Some(std::time::Instant::now());
+    }
+
+    /// Explain a pane failure from what the pane last printed, keeping any explanation already
+    /// recorded.
+    fn explain_error_from_pane(&mut self, session: &tmux::Session) {
+        if self.last_error.is_none() {
+            let pane_content = session.capture_pane(20).unwrap_or_default();
+            self.last_error = Some(summarize_error_from_pane(&pane_content));
+        }
+    }
+
     pub(super) fn update_status_with_metadata_inner(
         &mut self,
         metadata: Option<&tmux::PaneMetadata>,
@@ -156,13 +174,9 @@ impl Instance {
                         "status '{}': tmux_session() failed, setting Error",
                         self.title
                     );
-                    self.status = Status::Error;
-                    if self.last_error.is_none() {
-                        self.last_error = Some(
-                            "Could not reach tmux. Is tmux still running on the host?".to_string(),
-                        );
-                    }
-                    self.last_error_check = Some(std::time::Instant::now());
+                    self.latch_tmux_error(
+                        "Could not reach tmux. Is tmux still running on the host?",
+                    );
                     return;
                 }
             },
@@ -176,11 +190,7 @@ impl Instance {
                     session.name()
                 );
                 self.unknown_since = None;
-                self.status = Status::Error;
-                if self.last_error.is_none() {
-                    self.last_error = Some(TMUX_SESSION_GONE_ERROR.to_string());
-                }
-                self.last_error_check = Some(std::time::Instant::now());
+                self.latch_tmux_error(TMUX_SESSION_GONE_ERROR);
                 return;
             }
             tmux::SessionExistence::Unknown => {
@@ -212,11 +222,7 @@ impl Instance {
                     window,
                     self.ever_confirmed_present
                 );
-                self.status = Status::Error;
-                if self.last_error.is_none() {
-                    self.last_error = Some(TMUX_SERVER_UNREACHABLE_ERROR.to_string());
-                }
-                self.last_error_check = Some(std::time::Instant::now());
+                self.latch_tmux_error(TMUX_SERVER_UNREACHABLE_ERROR);
                 return;
             }
             tmux::SessionExistence::Present => {
@@ -267,10 +273,7 @@ impl Instance {
         // reported hooks at all: a hookless agent's pane is allowed to end.
         if is_dead && hook.is_some() {
             self.status = Status::Error;
-            if self.last_error.is_none() {
-                let pane_content = session.capture_pane(20).unwrap_or_default();
-                self.last_error = Some(summarize_error_from_pane(&pane_content));
-            }
+            self.explain_error_from_pane(&session);
             return;
         }
 
@@ -302,10 +305,7 @@ impl Instance {
                 self.status = hook.status;
                 // An Error keeps its explanation, as the manifest path does.
                 if hook.status == Status::Error {
-                    if self.last_error.is_none() {
-                        let pane_content = session.capture_pane(20).unwrap_or_default();
-                        self.last_error = Some(summarize_error_from_pane(&pane_content));
-                    }
+                    self.explain_error_from_pane(&session);
                 } else {
                     self.last_error = None;
                 }

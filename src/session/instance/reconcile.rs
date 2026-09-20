@@ -114,492 +114,213 @@ mod tests {
     use serial_test::serial;
     use tempfile::tempdir;
 
-    #[test]
-    #[serial]
-    fn reconcile_from_disk_picks_up_peer_persist() {
-        let temp = tempdir().unwrap();
-        let _home_guard = crate::session::test_support::isolate_home(temp.path());
+    fn seeded(profile: &str, inst: &Instance) -> crate::session::storage::Storage {
+        seed_disk_for_sidecar_test(profile, inst);
+        crate::session::storage::Storage::new_unwatched(profile).unwrap()
+    }
 
-        let storage = crate::session::storage::Storage::new_unwatched("reconcile-test").unwrap();
-        let mut inst = Instance::new("title", "/tmp/x");
-        inst.source_profile = "reconcile-test".to_string();
-        inst.agent_session_id = Some("old-sid".to_string());
-        let id = inst.id.clone();
-        let on_disk = inst.clone();
+    fn disk_row(storage: &crate::session::storage::Storage, id: &str) -> Instance {
         storage
-            .update(|i, g| {
-                *i = vec![on_disk.clone()];
-                *g =
-                    crate::session::GroupTree::new_with_groups(std::slice::from_ref(&on_disk), &[])
-                        .get_all_groups();
-                Ok(())
-            })
-            .unwrap();
-
-        // Simulate a peer CLI `set-session-id` write to disk.
-        let _ = super::persist_session_to_storage(
-            "reconcile-test",
-            &id,
-            "new-sid",
-            Some("old-sid"),
-            &crate::file_watch::FileWatchService::noop(),
-        );
-
-        assert_eq!(inst.agent_session_id.as_deref(), Some("old-sid"));
-        inst.reconcile_from_disk();
-        assert_eq!(inst.agent_session_id.as_deref(), Some("new-sid"));
+            .load()
+            .unwrap()
+            .into_iter()
+            .find(|row| row.id == id)
+            .unwrap()
     }
 
     #[test]
     #[serial]
-    fn reconcile_from_disk_carries_poller_repair_backoff() {
-        let temp = tempdir().unwrap();
-        let _app_dir = crate::session::test_support::isolate_app_dir_at(temp.path());
+    fn reconcile_from_disk_picks_up_peer_writes() {
+        let cases: &[(&str, fn(&mut Instance), fn(&Instance))] = &[
+            (
+                "peer persist",
+                |row| row.agent_session_id = Some("new-sid".to_string()),
+                |inst| assert_eq!(inst.agent_session_id.as_deref(), Some("new-sid")),
+            ),
+            (
+                "peer clear",
+                |row| row.agent_session_id = None,
+                |inst| assert_eq!(inst.agent_session_id, None),
+            ),
+            (
+                "peer resume intent",
+                |row| row.resume_intent = ResumeIntent::Use("peer-pinned".to_string()),
+                |inst| {
+                    assert_eq!(
+                        inst.resume_intent,
+                        ResumeIntent::Use("peer-pinned".to_string())
+                    )
+                },
+            ),
+        ];
+        for (label, peer_write, expect) in cases {
+            let temp = tempdir().unwrap();
+            let _home_guard = crate::session::test_support::isolate_home(temp.path());
+            let profile = "reconcile-peer";
+            let mut inst = Instance::new(label, "/tmp/x");
+            inst.source_profile = profile.to_string();
+            inst.agent_session_id = Some("old-sid".to_string());
+            let storage = seeded(profile, &inst);
+            storage
+                .update(|rows, _| {
+                    peer_write(&mut rows[0]);
+                    Ok(())
+                })
+                .unwrap();
 
-        let storage = crate::session::storage::Storage::new_unwatched("reconcile-test").unwrap();
-        let mut inst = Instance::new("title", "/tmp/x");
-        inst.source_profile = "reconcile-test".to_string();
-        storage
-            .update(|i, g| {
-                *i = vec![inst.clone()];
-                *g = crate::session::GroupTree::new_with_groups(std::slice::from_ref(&inst), &[])
-                    .get_all_groups();
-                Ok(())
-            })
-            .unwrap();
+            inst.reconcile_from_disk();
+
+            expect(&inst);
+        }
+    }
+
+    /// Runtime-only (`#[serde(skip)]`) state is absent from the disk snapshot, so the reload has to
+    /// carry it across from memory.
+    #[test]
+    #[serial]
+    fn reconcile_from_disk_keeps_runtime_only_state() {
+        let temp = tempdir().unwrap();
+        let _home_guard = crate::session::test_support::isolate_home(temp.path());
+        let profile = "reconcile-runtime";
+        let mut inst = Instance::new("runtime state", "/tmp/x");
+        inst.source_profile = profile.to_string();
+        inst.sandbox_info = Some(test_sandbox("ctr", None));
+        seeded(profile, &inst);
 
         let now = std::time::Instant::now();
         inst.poller_repair.defer(now);
         inst.poller_repair.defer(now);
         assert!(!inst.poller_repair.due(now));
-
-        inst.reconcile_from_disk();
-
-        assert!(!inst.poller_repair.due(now));
-    }
-
-    #[test]
-    #[serial]
-    fn reconcile_from_disk_preserves_publisher_launch_proof() {
-        let temp = tempdir().unwrap();
-        let _home_guard = crate::session::test_support::isolate_home(temp.path());
-        let storage =
-            crate::session::storage::Storage::new_unwatched("reconcile-publisher").unwrap();
-        let mut inst = Instance::new("publisher proof", "/tmp/test");
-        inst.source_profile = "reconcile-publisher".to_string();
-        let on_disk = inst.clone();
-        storage
-            .update(|instances, groups| {
-                *instances = vec![on_disk.clone()];
-                *groups =
-                    crate::session::GroupTree::new_with_groups(std::slice::from_ref(&on_disk), &[])
-                        .get_all_groups();
-                Ok(())
-            })
-            .unwrap();
         inst.identity_publisher_launched = true;
-
-        inst.reconcile_from_disk();
-
-        assert!(inst.identity_publisher_launched);
-    }
-
-    #[test]
-    #[serial]
-    fn reconcile_from_disk_preserves_before_start_env() {
-        // `before_start_env` is `#[serde(skip)]`, so the disk snapshot has it empty.
-        let temp = tempdir().unwrap();
-        let _home_guard = crate::session::test_support::isolate_home(temp.path());
-
-        let storage =
-            crate::session::storage::Storage::new_unwatched("reconcile-before-start").unwrap();
-        let mut inst = Instance::new("title", "/tmp/x");
-        inst.source_profile = "reconcile-before-start".to_string();
-        inst.sandbox_info = Some(test_sandbox("ctr", None));
-        let on_disk = inst.clone();
-        storage
-            .update(|i, g| {
-                *i = vec![on_disk.clone()];
-                *g =
-                    crate::session::GroupTree::new_with_groups(std::slice::from_ref(&on_disk), &[])
-                        .get_all_groups();
-                Ok(())
-            })
-            .unwrap();
-
-        // Stamp a freshly-minted value into the in-memory cache only.
         inst.sandbox_info.as_mut().unwrap().before_start_env =
             vec![("GH_TOKEN".to_string(), "ghs_minted".to_string())];
-
-        inst.reconcile_from_disk();
-
-        assert_eq!(
-            inst.sandbox_info.as_ref().unwrap().before_start_env,
-            vec![("GH_TOKEN".to_string(), "ghs_minted".to_string())],
-            "live before_start_env must survive the pre-launch disk reload"
-        );
-    }
-
-    #[test]
-    #[serial]
-    fn reconcile_from_disk_preserves_unknown_streak_tracking() {
-        // `ever_confirmed_present` and `unknown_since` are both `#[serde(skip)]`, so the disk
-        // snapshot always has them at their defaults (`false` / `None`).
-        let temp = tempdir().unwrap();
-        let _home_guard = crate::session::test_support::isolate_home(temp.path());
-
-        let storage =
-            crate::session::storage::Storage::new_unwatched("reconcile-unknown-since").unwrap();
-        let mut inst = Instance::new("title", "/tmp/x");
-        inst.source_profile = "reconcile-unknown-since".to_string();
-        let on_disk = inst.clone();
-        storage
-            .update(|i, g| {
-                *i = vec![on_disk.clone()];
-                *g =
-                    crate::session::GroupTree::new_with_groups(std::slice::from_ref(&on_disk), &[])
-                        .get_all_groups();
-                Ok(())
-            })
-            .unwrap();
-
-        // Stamp the runtime tracking state into the in-memory instance
-        // only, mirroring what a live poll tick would have set.
         inst.ever_confirmed_present = true;
-        let unknown_since = std::time::Instant::now() - std::time::Duration::from_secs(5);
+        let unknown_since = now - std::time::Duration::from_secs(5);
         inst.unknown_since = Some(unknown_since);
 
         inst.reconcile_from_disk();
 
-        assert!(
-            inst.ever_confirmed_present,
-            "ever_confirmed_present must survive the pre-launch disk reload"
-        );
+        assert!(!inst.poller_repair.due(now), "poller backoff must survive");
+        assert!(inst.identity_publisher_launched);
         assert_eq!(
-            inst.unknown_since,
-            Some(unknown_since),
-            "unknown_since must survive the pre-launch disk reload"
+            inst.sandbox_info.as_ref().unwrap().before_start_env,
+            vec![("GH_TOKEN".to_string(), "ghs_minted".to_string())]
         );
+        assert!(inst.ever_confirmed_present);
+        assert_eq!(inst.unknown_since, Some(unknown_since));
     }
 
     #[test]
     #[serial]
-    fn reconcile_from_disk_picks_up_peer_clear() {
-        let temp = tempdir().unwrap();
-        let _home_guard = crate::session::test_support::isolate_home(temp.path());
+    fn reconcile_sidecar_adopts_only_an_unclaimed_fresh_conversation() {
+        struct Case {
+            label: &'static str,
+            tool: &'static str,
+            intent: ResumeIntent,
+            sidecar: Option<&'static str>,
+            exclude_sidecar: bool,
+            peer_sid: Option<&'static str>,
+            want: &'static str,
+        }
+        let case = |label, tool, sidecar| Case {
+            label,
+            tool,
+            intent: ResumeIntent::Default,
+            sidecar,
+            exclude_sidecar: false,
+            peer_sid: None,
+            want: "disk-sid",
+        };
+        let cases = [
+            Case {
+                want: SIDECAR_TEST_FRESH_UUID,
+                ..case(
+                    "claude adopts a fresh sidecar",
+                    "claude",
+                    Some(SIDECAR_TEST_FRESH_UUID),
+                )
+            },
+            Case {
+                want: "cursor-conversation-new",
+                ..case(
+                    "cursor adopts its published conversation",
+                    "cursor",
+                    Some("cursor-conversation-new"),
+                )
+            },
+            case(
+                "no identity sidecar backend",
+                "opencode",
+                Some(SIDECAR_TEST_FRESH_UUID),
+            ),
+            case("sidecar absent", "claude", None),
+            Case {
+                intent: ResumeIntent::Use("user-pinned".to_string()),
+                ..case("user pin", "claude", Some(SIDECAR_TEST_FRESH_UUID))
+            },
+            Case {
+                intent: ResumeIntent::Cleared,
+                ..case("cleared intent", "claude", Some(SIDECAR_TEST_FRESH_UUID))
+            },
+            Case {
+                exclude_sidecar: true,
+                ..case(
+                    "sid already excluded from capture",
+                    "claude",
+                    Some(SIDECAR_TEST_FRESH_UUID),
+                )
+            },
+            Case {
+                peer_sid: Some("peer-wrote-this"),
+                want: "peer-wrote-this",
+                ..case(
+                    "CAS skip reloads the peer write",
+                    "claude",
+                    Some(SIDECAR_TEST_FRESH_UUID),
+                )
+            },
+        ];
+        for c in cases {
+            let temp = tempdir().unwrap();
+            let _home_guard = crate::session::test_support::isolate_home(temp.path());
+            let profile = "sidecar-reconcile";
+            let mut inst = Instance::new(c.label, "/tmp/x");
+            inst.source_profile = profile.to_string();
+            inst.tool = c.tool.to_string();
+            inst.resume_intent = c.intent;
+            inst.agent_session_id = Some("disk-sid".to_string());
+            if c.exclude_sidecar {
+                inst.retroactive_capture_excludes
+                    .insert(SIDECAR_TEST_FRESH_UUID.to_string());
+            }
+            let storage = seeded(profile, &inst);
+            if let Some(peer) = c.peer_sid {
+                storage
+                    .update(|rows, _| {
+                        rows[0].agent_session_id = Some(peer.to_string());
+                        Ok(())
+                    })
+                    .unwrap();
+            }
+            let dir = c.sidecar.map(|sid| write_sidecar(&inst.id, sid));
 
-        let storage = crate::session::storage::Storage::new_unwatched("reconcile-clear").unwrap();
-        let mut inst = Instance::new("title", "/tmp/x");
-        inst.source_profile = "reconcile-clear".to_string();
-        inst.agent_session_id = Some("old-sid".to_string());
-        let on_disk = inst.clone();
-        storage
-            .update(|i, g| {
-                *i = vec![on_disk.clone()];
-                *g =
-                    crate::session::GroupTree::new_with_groups(std::slice::from_ref(&on_disk), &[])
-                        .get_all_groups();
-                Ok(())
-            })
-            .unwrap();
+            inst.reconcile_sidecar_into_disk();
 
-        storage
-            .update(|i, _g| {
-                i[0].agent_session_id = None;
-                Ok(())
-            })
-            .unwrap();
-
-        inst.reconcile_from_disk();
-        assert_eq!(inst.agent_session_id, None);
-    }
-
-    #[test]
-    #[serial]
-    fn reconcile_from_disk_picks_up_peer_resume_intent() {
-        let temp = tempdir().unwrap();
-        let _home_guard = crate::session::test_support::isolate_home(temp.path());
-
-        let storage = crate::session::storage::Storage::new_unwatched("intent-reconcile").unwrap();
-        let mut inst = Instance::new("title", "/tmp/x");
-        inst.source_profile = "intent-reconcile".to_string();
-        inst.resume_intent = ResumeIntent::Default;
-        let on_disk = inst.clone();
-        storage
-            .update(|i, g| {
-                *i = vec![on_disk.clone()];
-                *g =
-                    crate::session::GroupTree::new_with_groups(std::slice::from_ref(&on_disk), &[])
-                        .get_all_groups();
-                Ok(())
-            })
-            .unwrap();
-
-        storage
-            .update(|i, _g| {
-                i[0].resume_intent = ResumeIntent::Use("peer-pinned".to_string());
-                Ok(())
-            })
-            .unwrap();
-
-        assert_eq!(inst.resume_intent, ResumeIntent::Default);
-        inst.reconcile_from_disk();
-        assert_eq!(
-            inst.resume_intent,
-            ResumeIntent::Use("peer-pinned".to_string())
-        );
-    }
-
-    #[test]
-    #[serial]
-    fn reconcile_sidecar_adopts_fresh_sid_for_claude_default() {
-        let temp = tempdir().unwrap();
-        let _home_guard = crate::session::test_support::isolate_home(temp.path());
-
-        let profile = "sidecar-adopt";
-        let mut inst = Instance::new("title", "/tmp/x");
-        inst.source_profile = profile.to_string();
-        inst.tool = "claude".to_string();
-        inst.resume_intent = ResumeIntent::Default;
-        inst.agent_session_id = Some("stale-disk-sid".to_string());
-        seed_disk_for_sidecar_test(profile, &inst);
-
-        let dir = write_sidecar(&inst.id, SIDECAR_TEST_FRESH_UUID);
-
-        inst.reconcile_sidecar_into_disk();
-        std::fs::remove_dir_all(&dir).ok();
-
-        assert_eq!(
-            inst.agent_session_id.as_deref(),
-            Some(SIDECAR_TEST_FRESH_UUID)
-        );
-        let storage = crate::session::storage::Storage::new_unwatched(profile).unwrap();
-        let on_disk = storage
-            .load()
-            .unwrap()
-            .into_iter()
-            .find(|i| i.id == inst.id)
-            .unwrap();
-        assert_eq!(
-            on_disk.agent_session_id.as_deref(),
-            Some(SIDECAR_TEST_FRESH_UUID)
-        );
-    }
-
-    #[test]
-    #[serial]
-    fn reconcile_sidecar_adopts_published_cursor_conversation() {
-        let temp = tempdir().unwrap();
-        let _home_guard = crate::session::test_support::isolate_home(temp.path());
-
-        let profile = "cursor-sidecar-adopt";
-        let mut inst = Instance::new("title", "/tmp/x");
-        inst.source_profile = profile.to_string();
-        inst.tool = "cursor".to_string();
-        inst.resume_intent = ResumeIntent::Default;
-        inst.agent_session_id = Some("stale-disk-sid".to_string());
-        seed_disk_for_sidecar_test(profile, &inst);
-        let dir = write_sidecar(&inst.id, "cursor-conversation-new");
-
-        inst.reconcile_sidecar_into_disk();
-        std::fs::remove_dir_all(&dir).ok();
-
-        let storage = crate::session::storage::Storage::new_unwatched(profile).unwrap();
-        let on_disk = storage
-            .load()
-            .unwrap()
-            .into_iter()
-            .find(|row| row.id == inst.id)
-            .unwrap();
-        assert_eq!(
-            on_disk.agent_session_id.as_deref(),
-            Some("cursor-conversation-new")
-        );
-    }
-
-    #[test]
-    #[serial]
-    fn reconcile_sidecar_noop_without_identity_sidecar_backend() {
-        let temp = tempdir().unwrap();
-        let _home_guard = crate::session::test_support::isolate_home(temp.path());
-
-        let profile = "sidecar-noop-tool";
-        let mut inst = Instance::new("title", "/tmp/x");
-        inst.source_profile = profile.to_string();
-        inst.tool = "opencode".to_string();
-        inst.resume_intent = ResumeIntent::Default;
-        inst.agent_session_id = Some("disk-sid".to_string());
-        seed_disk_for_sidecar_test(profile, &inst);
-
-        let dir = write_sidecar(&inst.id, SIDECAR_TEST_FRESH_UUID);
-
-        inst.reconcile_sidecar_into_disk();
-        std::fs::remove_dir_all(&dir).ok();
-
-        assert_eq!(inst.agent_session_id.as_deref(), Some("disk-sid"));
-        let storage = crate::session::storage::Storage::new_unwatched(profile).unwrap();
-        let on_disk = storage
-            .load()
-            .unwrap()
-            .into_iter()
-            .find(|i| i.id == inst.id)
-            .unwrap();
-        assert_eq!(on_disk.agent_session_id.as_deref(), Some("disk-sid"));
-    }
-
-    #[test]
-    #[serial]
-    fn reconcile_sidecar_noop_when_intent_use() {
-        let temp = tempdir().unwrap();
-        let _home_guard = crate::session::test_support::isolate_home(temp.path());
-
-        let profile = "sidecar-noop-use";
-        let mut inst = Instance::new("title", "/tmp/x");
-        inst.source_profile = profile.to_string();
-        inst.tool = "claude".to_string();
-        inst.resume_intent = ResumeIntent::Use("user-pinned".to_string());
-        inst.agent_session_id = Some("disk-sid".to_string());
-        seed_disk_for_sidecar_test(profile, &inst);
-
-        let dir = write_sidecar(&inst.id, SIDECAR_TEST_FRESH_UUID);
-
-        inst.reconcile_sidecar_into_disk();
-        std::fs::remove_dir_all(&dir).ok();
-
-        assert_eq!(inst.agent_session_id.as_deref(), Some("disk-sid"));
-        let storage = crate::session::storage::Storage::new_unwatched(profile).unwrap();
-        let on_disk = storage
-            .load()
-            .unwrap()
-            .into_iter()
-            .find(|i| i.id == inst.id)
-            .unwrap();
-        assert_eq!(on_disk.agent_session_id.as_deref(), Some("disk-sid"));
-    }
-
-    #[test]
-    #[serial]
-    fn reconcile_sidecar_noop_when_intent_cleared() {
-        let temp = tempdir().unwrap();
-        let _home_guard = crate::session::test_support::isolate_home(temp.path());
-
-        let profile = "sidecar-noop-cleared";
-        let mut inst = Instance::new("title", "/tmp/x");
-        inst.source_profile = profile.to_string();
-        inst.tool = "claude".to_string();
-        inst.resume_intent = ResumeIntent::Cleared;
-        inst.agent_session_id = Some("disk-sid".to_string());
-        seed_disk_for_sidecar_test(profile, &inst);
-
-        let dir = write_sidecar(&inst.id, SIDECAR_TEST_FRESH_UUID);
-
-        inst.reconcile_sidecar_into_disk();
-        std::fs::remove_dir_all(&dir).ok();
-
-        assert_eq!(inst.agent_session_id.as_deref(), Some("disk-sid"));
-        let storage = crate::session::storage::Storage::new_unwatched(profile).unwrap();
-        let on_disk = storage
-            .load()
-            .unwrap()
-            .into_iter()
-            .find(|i| i.id == inst.id)
-            .unwrap();
-        assert_eq!(on_disk.agent_session_id.as_deref(), Some("disk-sid"));
-    }
-
-    #[test]
-    #[serial]
-    fn reconcile_sidecar_noop_when_sid_in_retroactive_excludes() {
-        let temp = tempdir().unwrap();
-        let _home_guard = crate::session::test_support::isolate_home(temp.path());
-
-        let profile = "sidecar-noop-excluded";
-        let mut inst = Instance::new("title", "/tmp/x");
-        inst.source_profile = profile.to_string();
-        inst.tool = "claude".to_string();
-        inst.resume_intent = ResumeIntent::Default;
-        inst.agent_session_id = Some("disk-sid".to_string());
-        inst.retroactive_capture_excludes
-            .insert(SIDECAR_TEST_FRESH_UUID.to_string());
-        seed_disk_for_sidecar_test(profile, &inst);
-
-        let dir = write_sidecar(&inst.id, SIDECAR_TEST_FRESH_UUID);
-
-        inst.reconcile_sidecar_into_disk();
-        std::fs::remove_dir_all(&dir).ok();
-
-        assert_eq!(inst.agent_session_id.as_deref(), Some("disk-sid"));
-        let storage = crate::session::storage::Storage::new_unwatched(profile).unwrap();
-        let on_disk = storage
-            .load()
-            .unwrap()
-            .into_iter()
-            .find(|i| i.id == inst.id)
-            .unwrap();
-        assert_eq!(on_disk.agent_session_id.as_deref(), Some("disk-sid"));
-    }
-
-    #[test]
-    #[serial]
-    fn reconcile_sidecar_noop_when_sidecar_absent() {
-        let temp = tempdir().unwrap();
-        let _home_guard = crate::session::test_support::isolate_home(temp.path());
-
-        let profile = "sidecar-absent";
-        let mut inst = Instance::new("title", "/tmp/x");
-        inst.source_profile = profile.to_string();
-        inst.tool = "claude".to_string();
-        inst.resume_intent = ResumeIntent::Default;
-        inst.agent_session_id = Some("disk-sid".to_string());
-        seed_disk_for_sidecar_test(profile, &inst);
-
-        inst.reconcile_sidecar_into_disk();
-
-        assert_eq!(inst.agent_session_id.as_deref(), Some("disk-sid"));
-        let storage = crate::session::storage::Storage::new_unwatched(profile).unwrap();
-        let on_disk = storage
-            .load()
-            .unwrap()
-            .into_iter()
-            .find(|i| i.id == inst.id)
-            .unwrap();
-        assert_eq!(on_disk.agent_session_id.as_deref(), Some("disk-sid"));
-    }
-
-    #[test]
-    #[serial]
-    fn reconcile_sidecar_reloads_on_cas_skip() {
-        let temp = tempdir().unwrap();
-        let _home_guard = crate::session::test_support::isolate_home(temp.path());
-
-        let profile = "sidecar-cas-skip";
-        let mut inst = Instance::new("title", "/tmp/x");
-        inst.source_profile = profile.to_string();
-        inst.tool = "claude".to_string();
-        inst.resume_intent = ResumeIntent::Default;
-        inst.agent_session_id = Some("memory-baseline".to_string());
-        seed_disk_for_sidecar_test(profile, &inst);
-
-        let storage = crate::session::storage::Storage::new_unwatched(profile).unwrap();
-        storage
-            .update(|i, _g| {
-                i[0].agent_session_id = Some("peer-wrote-this".to_string());
-                Ok(())
-            })
-            .unwrap();
-
-        let dir = write_sidecar(&inst.id, SIDECAR_TEST_FRESH_UUID);
-
-        inst.reconcile_sidecar_into_disk();
-        std::fs::remove_dir_all(&dir).ok();
-
-        assert_eq!(inst.agent_session_id.as_deref(), Some("peer-wrote-this"));
-        let on_disk = storage
-            .load()
-            .unwrap()
-            .into_iter()
-            .find(|i| i.id == inst.id)
-            .unwrap();
-        assert_eq!(on_disk.agent_session_id.as_deref(), Some("peer-wrote-this"));
+            if let Some(dir) = dir {
+                std::fs::remove_dir_all(&dir).ok();
+            }
+            assert_eq!(
+                inst.agent_session_id.as_deref(),
+                Some(c.want),
+                "{}",
+                c.label
+            );
+            assert_eq!(
+                disk_row(&storage, &inst.id).agent_session_id.as_deref(),
+                Some(c.want),
+                "{}",
+                c.label
+            );
+        }
     }
 }

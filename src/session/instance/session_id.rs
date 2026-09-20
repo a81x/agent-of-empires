@@ -37,7 +37,7 @@ impl Instance {
     }
 
     /// `mint_fresh_id` is the pre-mint seam for OpenCode preassignment and Pi pins.
-    fn acquire_session_id_with(
+    pub(super) fn acquire_session_id_with(
         &mut self,
         mint_fresh_id: &dyn Fn(&str) -> Option<String>,
     ) -> (Option<String>, bool) {
@@ -270,7 +270,7 @@ impl Instance {
     /// Whether to emit the `existing` resume arm. A Pi id AoE minted takes the
     /// pinning arm instead: `--session-id` recreates a never-prompted conversation
     /// that `--session` would exit 1 on. User pins keep `--session`.
-    fn resume_flag_arm_is_existing(
+    pub(super) fn resume_flag_arm_is_existing(
         &self,
         is_existing: bool,
         pi_pinnable: bool,

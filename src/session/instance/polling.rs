@@ -89,6 +89,13 @@ fn try_acquire_managed_capture_lease(
 }
 
 /// Use a unique live agent; paired-only or ambiguous live panes forbid fallback.
+fn log_observed_session_id(instance_id: &str) -> Box<dyn Fn(&str) + Send + 'static> {
+    let instance_id = instance_id.to_string();
+    Box::new(move |new_id| {
+        tracing::info!(target: "session.store", "Session ID observed for {}: {}", instance_id, new_id);
+    })
+}
+
 fn poller_seed_name(
     live: AgentSeed,
     derived: impl FnOnce() -> Option<String>,
@@ -357,10 +364,7 @@ impl Instance {
             } else {
                 Box::new(omp_poll_fn(self.id.clone(), extra_excludes))
             };
-            let log_id = self.id.clone();
-            let on_change: Box<dyn Fn(&str) + Send + 'static> = Box::new(move |new_id| {
-                tracing::info!(target: "session.store", "Session ID observed for {}: {}", log_id, new_id);
-            });
+            let on_change = log_observed_session_id(&self.id);
             let initial = initial_known.map(|sid| metadata.session_observation(sid));
             let spawn = poller.start_observations(instance_id, poll_fn, on_change, initial);
             return self.install_poller(poller, spawn);
@@ -372,10 +376,7 @@ impl Instance {
             };
             let inner = crate::session::capture::pi_sidecar_poll_fn(self.id.clone(), source);
             let poll_fn: crate::session::poller::SessionIdPollFn = Box::new(move |_| inner());
-            let log_id = self.id.clone();
-            let on_change: Box<dyn Fn(&str) + Send + 'static> = Box::new(move |new_id| {
-                tracing::info!(target: "session.store", "Session ID observed for {}: {}", log_id, new_id);
-            });
+            let on_change = log_observed_session_id(&self.id);
             let initial =
                 initial_known.map(crate::session::poller::SessionIdObservation::instance_sidecar);
             let spawn = poller.start_observations(instance_id, poll_fn, on_change, initial);
@@ -395,53 +396,51 @@ impl Instance {
                 let sidecar_id = self.id.clone();
                 Box::new(move || crate::hooks::read_hook_session_id(&sidecar_id))
             }
-            crate::agents::SessionCaptureBackend::Codex => {
+            store_backed @ (crate::agents::SessionCaptureBackend::Codex
+            | crate::agents::SessionCaptureBackend::Gemini
+            | crate::agents::SessionCaptureBackend::Hermes
+            | crate::agents::SessionCaptureBackend::Kimi) => {
                 let Some(store) = self.sandbox_capture_store_dir() else {
                     return PollerStart::NotApplicable;
                 };
-                Box::new(codex_poll_fn_sandboxed_store(
-                    store,
-                    self.container_workdir(),
-                    self.id.clone(),
-                    capture_floor,
-                    extra_excludes,
-                ))
-            }
-            crate::agents::SessionCaptureBackend::Gemini => {
-                let Some(store) = self.sandbox_capture_store_dir() else {
-                    return PollerStart::NotApplicable;
-                };
-                Box::new(gemini_poll_fn_sandboxed_store(
-                    store,
-                    self.container_workdir(),
-                    self.id.clone(),
-                    capture_floor,
-                    extra_excludes,
-                ))
-            }
-            crate::agents::SessionCaptureBackend::Hermes => {
-                let Some(store) = self.sandbox_capture_store_dir() else {
-                    return PollerStart::NotApplicable;
-                };
-                Box::new(hermes_poll_fn_sandboxed_store(
-                    store,
-                    self.container_workdir(),
-                    self.id.clone(),
-                    capture_floor,
-                    extra_excludes,
-                ))
-            }
-            crate::agents::SessionCaptureBackend::Kimi => {
-                let Some(store) = self.sandbox_capture_store_dir() else {
-                    return PollerStart::NotApplicable;
-                };
-                Box::new(kimi_poll_fn_sandboxed_store(
-                    store,
-                    self.container_workdir(),
-                    self.id.clone(),
-                    capture_floor_ms,
-                    extra_excludes,
-                ))
+                let workdir = self.container_workdir();
+                let id = self.id.clone();
+                match store_backed {
+                    crate::agents::SessionCaptureBackend::Codex => {
+                        Box::new(codex_poll_fn_sandboxed_store(
+                            store,
+                            workdir,
+                            id,
+                            capture_floor,
+                            extra_excludes,
+                        ))
+                    }
+                    crate::agents::SessionCaptureBackend::Gemini => {
+                        Box::new(gemini_poll_fn_sandboxed_store(
+                            store,
+                            workdir,
+                            id,
+                            capture_floor,
+                            extra_excludes,
+                        ))
+                    }
+                    crate::agents::SessionCaptureBackend::Hermes => {
+                        Box::new(hermes_poll_fn_sandboxed_store(
+                            store,
+                            workdir,
+                            id,
+                            capture_floor,
+                            extra_excludes,
+                        ))
+                    }
+                    _ => Box::new(kimi_poll_fn_sandboxed_store(
+                        store,
+                        workdir,
+                        id,
+                        capture_floor_ms,
+                        extra_excludes,
+                    )),
+                }
             }
             crate::agents::SessionCaptureBackend::PrimeAgent => {
                 let Some(plan) = prime_plan else {
@@ -472,10 +471,7 @@ impl Instance {
                 poll_fn
             };
 
-        let log_id = self.id.clone();
-        let on_change: Box<dyn Fn(&str) + Send + 'static> = Box::new(move |new_id| {
-            tracing::info!(target: "session.store", "Session ID observed for {}: {}", log_id, new_id);
-        });
+        let on_change = log_observed_session_id(&self.id);
         let spawn = poller.start(instance_id, poll_fn, on_change, initial_known);
         self.install_poller(poller, spawn)
     }

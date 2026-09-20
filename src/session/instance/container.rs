@@ -92,6 +92,30 @@ impl Instance {
         Ok(true)
     }
 
+    /// Adopt a reused container: its identity publisher counts only when the pane can reach it,
+    /// and the workdir it was built with is what gets pre-trusted.
+    fn finish_container_reuse(
+        &mut self,
+        container: &containers::DockerContainer,
+        config: &crate::containers::ContainerConfig,
+        detect_as: &str,
+    ) -> Result<()> {
+        self.identity_publisher_launched = config.identity_publisher_installed
+            && identity_publisher_mount_matches(container, config)?
+            && identity_publisher_dependencies_available(container)
+            && self.hook_session_publisher_allowed_by_argv();
+        self.backfill_container_workdir(container);
+        container_config::ensure_folder_trust_config_for_active_agent(
+            &self.tool,
+            Some(detect_as),
+            &self.source_profile,
+            &self.id,
+            &self.container_workdir(),
+            self.is_yolo_mode(),
+        );
+        Ok(())
+    }
+
     pub fn get_container_for_instance(&mut self) -> Result<containers::DockerContainer> {
         let image = self
             .sandbox_info
@@ -185,19 +209,7 @@ impl Instance {
                 fold,
             );
             let config = self.build_container_config_with(fold)?;
-            self.identity_publisher_launched = config.identity_publisher_installed
-                && identity_publisher_mount_matches(&container, &config)?
-                && identity_publisher_dependencies_available(&container)
-                && self.hook_session_publisher_allowed_by_argv();
-            self.backfill_container_workdir(&container);
-            container_config::ensure_folder_trust_config_for_active_agent(
-                &self.tool,
-                Some(detect_as.as_str()),
-                &self.source_profile,
-                &self.id,
-                &self.container_workdir(),
-                self.is_yolo_mode(),
-            );
+            self.finish_container_reuse(&container, &config, &detect_as)?;
             return Ok(container);
         }
 
@@ -232,19 +244,7 @@ impl Instance {
                 } else {
                     container_config::place_shadowed_credential_mountpoints(&config);
                     container.start()?;
-                    self.identity_publisher_launched = config.identity_publisher_installed
-                        && identity_publisher_mount_matches(&container, &config)?
-                        && identity_publisher_dependencies_available(&container)
-                        && self.hook_session_publisher_allowed_by_argv();
-                    self.backfill_container_workdir(&container);
-                    container_config::ensure_folder_trust_config_for_active_agent(
-                        &self.tool,
-                        Some(detect_as.as_str()),
-                        &self.source_profile,
-                        &self.id,
-                        &self.container_workdir(),
-                        self.is_yolo_mode(),
-                    );
+                    self.finish_container_reuse(&container, &config, &detect_as)?;
                     return Ok(container);
                 }
             }

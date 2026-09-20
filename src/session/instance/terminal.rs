@@ -557,30 +557,13 @@ exec /usr/bin/env -i PATH="$TARGET_PATH" SHELL="$FALLBACK_SHELL" "$@"
     }
 
     #[test]
-    fn test_has_terminal_false_by_default() {
-        let inst = Instance::new("test", "/tmp/test");
-        assert!(!inst.has_terminal());
-    }
-
-    #[test]
-    fn test_has_terminal_true_when_created() {
+    fn has_terminal_requires_a_created_terminal() {
         let mut inst = Instance::new("test", "/tmp/test");
+        assert!(!inst.has_terminal(), "no terminal_info");
+        inst.terminal_info = Some(TerminalInfo { created: false });
+        assert!(!inst.has_terminal(), "terminal never created");
         inst.terminal_info = Some(TerminalInfo { created: true });
         assert!(inst.has_terminal());
-    }
-
-    #[test]
-    fn test_terminal_info_none_means_no_terminal() {
-        let inst = Instance::new("test", "/tmp/test");
-        assert!(inst.terminal_info.is_none());
-        assert!(!inst.has_terminal());
-    }
-
-    #[test]
-    fn test_terminal_info_created_false_means_no_terminal() {
-        let mut inst = Instance::new("test", "/tmp/test");
-        inst.terminal_info = Some(TerminalInfo { created: false });
-        assert!(!inst.has_terminal());
     }
 
     mod kill_terminal_if_dead {
