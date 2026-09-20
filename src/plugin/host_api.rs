@@ -1046,40 +1046,21 @@ mod tests {
         let state =
             HostApiState::open(&tmp.path().join("plugin_events.db"), "default", 100).unwrap();
         let a = ctx(&[CAP_SESSION_READ, CAP_SESSION_WRITE]);
+        let meta = |c: &PluginRpcContext, method: &str, extra: Value| {
+            let mut params = json!({"session_id": session_id, "key": "k"});
+            for (k, v) in extra.as_object().expect("object").clone() {
+                params[k] = v;
+            }
+            dispatch(&state, c, method, &params).unwrap()
+        };
 
-        dispatch(
-            &state,
-            &a,
-            "session.meta.set",
-            &json!({"session_id": session_id, "key": "k", "value": 42}),
-        )
-        .unwrap();
-        let got = dispatch(
-            &state,
-            &a,
-            "session.meta.get",
-            &json!({"session_id": session_id, "key": "k"}),
-        )
-        .unwrap();
-        assert_eq!(got["value"], json!(42));
+        meta(&a, "session.meta.set", json!({ "value": 42 }));
+        assert_eq!(meta(&a, "session.meta.get", json!({}))["value"], json!(42));
 
-        let lose = dispatch(
-            &state,
-            &a,
-            "session.meta.cas",
-            &json!({"session_id": session_id, "key": "k", "expected": 0, "value": 99}),
-        )
-        .unwrap();
+        let lose = meta(&a, "session.meta.cas", json!({"expected": 0, "value": 99}));
         assert_eq!(lose["swapped"], json!(false));
         assert_eq!(lose["current"], json!(42));
-
-        let win = dispatch(
-            &state,
-            &a,
-            "session.meta.cas",
-            &json!({"session_id": session_id, "key": "k", "expected": 42, "value": 99}),
-        )
-        .unwrap();
+        let win = meta(&a, "session.meta.cas", json!({"expected": 42, "value": 99}));
         assert_eq!(win["swapped"], json!(true));
 
         let b = PluginRpcContext {
@@ -1088,14 +1069,11 @@ mod tests {
             ui_contributions: HashSet::new(),
             ui_generation: 0,
         };
-        let other = dispatch(
-            &state,
-            &b,
-            "session.meta.get",
-            &json!({"session_id": session_id, "key": "k"}),
-        )
-        .unwrap();
-        assert_eq!(other["value"], json!(null));
+        assert_eq!(
+            meta(&b, "session.meta.get", json!({}))["value"],
+            json!(null),
+            "session meta is namespaced per plugin"
+        );
 
         let list = dispatch(&state, &a, "sessions.list", &json!({})).unwrap();
         let sessions = list["sessions"].as_array().unwrap();
