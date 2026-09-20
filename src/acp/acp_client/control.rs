@@ -17,8 +17,8 @@ use super::lifecycle::TerminalClaim;
 use super::rate_limit::classify_rate_limit_error;
 use super::runner::runner_socket_deadline;
 
-/// Cancel a socket handshake if its constructor is dropped before completion.
-/// Closing the exact runner control channel cancels only that runner.
+/// Cancels a socket handshake abandoned mid-construction. Closing this exact
+/// channel cancels only its own runner.
 pub(super) struct ShutdownControlOnDrop(pub(super) Option<Arc<DaemonControlClient>>);
 
 impl Drop for ShutdownControlOnDrop {
@@ -28,10 +28,9 @@ impl Drop for ShutdownControlOnDrop {
         }
     }
 }
-/// Client for a v3 runner control socket. The runner owns the handshake and
-/// turn. `PromptStarted` binds the local waiter to the runner's request id,
-/// and only its matching completion resolves it; before any local prompt, a
-/// waiterless completion finishes an adopted turn.
+/// The runner owns the handshake and the turn. `PromptStarted` binds the local
+/// waiter to the runner's request id, and only that id's completion resolves
+/// it; before any local prompt, a waiterless completion ends an adopted turn.
 pub(super) struct DaemonControlClient {
     write: Arc<Mutex<tokio::net::unix::OwnedWriteHalf>>,
     handshake_rx: Mutex<mpsc::Receiver<ControlBody>>,
@@ -42,21 +41,20 @@ pub(super) struct DaemonControlClient {
 enum PromptCompletion {
     Adopted,
     Pending {
-        // No completion may resolve this waiter before its attachment-scoped
-        // acknowledgement arrives, including retained history read during send.
+        // `None` until `PromptStarted`, so retained history read during send
+        // cannot resolve this waiter.
         prompt_req_id: Option<i64>,
         tx: oneshot::Sender<control_protocol::PromptOutcome>,
     },
-    // Keep local ownership after delivery: a retained completion can arrive
-    // before the prompt loop receives its outcome and clears prompt_in_flight.
+    // Kept after delivery: a retained completion can arrive before the prompt
+    // loop receives its outcome and clears prompt_in_flight.
     LocalIdle,
 }
 
-/// The control channel carries all non-handshake ACP traffic (#2977): the
-/// crate connection speaks over a synthetic duplex and this maps ids at the
-/// boundary. Reverse (runner to crate) calls get synthetic JSON-RPC ids;
-/// forward (crate to runner) requests get runner `call_id`s. The two id
-/// spaces must never cross.
+/// The crate connection speaks over a synthetic duplex, and this maps ids at
+/// the boundary (#2977). Reverse (runner to crate) calls get synthetic
+/// JSON-RPC ids, forward ones get runner `call_id`s, and the two id spaces
+/// must never cross.
 #[derive(Default)]
 struct ShimCorrelation {
     reverse: HashMap<i64, u64>,
@@ -106,8 +104,8 @@ impl DaemonControlClient {
             .map_err(|e| AcpError::Spawn(format!("control write failed: {e}")))
     }
 
-    /// A `HandshakeFailed` becomes the reconstructed agent error, matching
-    /// direct stdio.
+    /// A `HandshakeFailed` reconstructs the agent's own error, as direct stdio
+    /// would.
     pub(super) async fn initialize(
         &self,
         request: serde_json::Value,
@@ -598,8 +596,8 @@ pub(super) async fn connect_runner_control_v3(
     ))
 }
 
-/// `Stopped` reason for an adopted turn's runner-reported outcome. Known ACP
-/// stop reasons are kept verbatim; everything else ends as `prompt_complete`.
+/// Known ACP stop reasons pass through verbatim; anything else ends as
+/// `prompt_complete`.
 pub(super) fn control_outcome_reason(
     outcome: &crate::acp::control_protocol::PromptOutcome,
 ) -> String {
