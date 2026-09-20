@@ -145,31 +145,8 @@ fn read_environment_from_toml(path: &Path) -> Option<Vec<String>> {
 mod tests {
     use super::*;
     use crate::hooks::{hook_command, HookInstallTarget};
-    use crate::session::test_support::EnvGuard;
+    use crate::migrations::hook_fixtures::{setup_dirs, unset_agent_home_env};
     use std::fs;
-    use tempfile::TempDir;
-
-    /// Clears CODEX_HOME, CLAUDE_CONFIG_DIR, etc. for the test duration so
-    /// the migration's path resolution sees only the explicit fixtures in
-    /// `home` / `app_dir`.
-    fn unset_agent_home_env() -> EnvGuard {
-        EnvGuard::unset(&[
-            "CODEX_HOME",
-            "CLAUDE_CONFIG_DIR",
-            "CURSOR_CONFIG_DIR",
-            "GEMINI_CONFIG_DIR",
-            "QWEN_CONFIG_DIR",
-        ])
-    }
-
-    fn setup_dirs() -> (TempDir, PathBuf, PathBuf) {
-        let tmp = TempDir::new().unwrap();
-        let home = tmp.path().join("home");
-        let app_dir = tmp.path().join("app");
-        fs::create_dir_all(&home).unwrap();
-        fs::create_dir_all(&app_dir).unwrap();
-        (tmp, home, app_dir)
-    }
 
     /// Build a TOML fixture with one AoE-marked `SessionStart` hook.
     /// Uses the live `hook_command` so the planted bytes

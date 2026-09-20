@@ -862,31 +862,49 @@ mod tests {
         assert!(!result);
     }
 
+    /// Each stderr classifier fires on the wording git uses, including the
+    /// `GitError`-wrapped form callers actually see, and on nothing else.
     #[test]
-    fn test_is_permission_error_matches() {
-        assert!(is_permission_error("Permission denied (os error 13)"));
-        assert!(is_permission_error("operation not permitted"));
-        assert!(is_permission_error("Access is denied"));
-        assert!(!is_permission_error("file not found"));
+    fn stderr_classifiers_match_only_their_own_failure() {
+        const DIRTY: &str =
+            "fatal: '/tmp/wt' contains modified or untracked files, use --force to delete it";
+        const SUBMODULE: &str =
+            "fatal: working trees containing submodules cannot be moved or removed";
+        const MISSING: &str = "fatal: '/tmp/wt/.aoe-trash/abc' is not a working tree";
+        let cases: [(fn(&str) -> bool, &str, bool); 14] = [
+            (is_permission_error, "Permission denied (os error 13)", true),
+            (is_permission_error, "operation not permitted", true),
+            (is_permission_error, "Access is denied", true),
+            (is_permission_error, "file not found", false),
+            (is_submodule_blocker, SUBMODULE, true),
+            (
+                is_submodule_blocker,
+                "Git worktree command failed: fatal: working trees containing submodules cannot be moved or removed",
+                true,
+            ),
+            (is_submodule_blocker, "permission denied", false),
+            (is_submodule_blocker, DIRTY, false),
+            (is_dirty_worktree_error, DIRTY, true),
+            (is_dirty_worktree_error, "permission denied", false),
+            (is_dirty_worktree_error, "file not found", false),
+            (is_not_a_worktree_error, MISSING, true),
+            (
+                is_not_a_worktree_error,
+                "Git worktree command failed: fatal: '/tmp/wt' is not a working tree",
+                true,
+            ),
+            (is_not_a_worktree_error, DIRTY, false),
+        ];
+        for (classify, stderr, expected) in cases {
+            assert_eq!(classify(stderr), expected, "{stderr}");
+        }
     }
 
     #[test]
-    fn test_is_submodule_blocker_matches_git_message() {
-        assert!(is_submodule_blocker(
-            "fatal: working trees containing submodules cannot be moved or removed"
-        ));
-        assert!(is_submodule_blocker(
-            "Git worktree command failed: fatal: working trees containing submodules cannot be moved or removed"
-        ));
-        assert!(!is_submodule_blocker("permission denied"));
-        assert!(!is_submodule_blocker(
-            "contains modified or untracked files"
-        ));
-    }
-
-    #[test]
-    fn test_read_linked_worktree_name_parses_gitdir_line() {
+    fn read_linked_worktree_name_needs_a_gitdir_pointer() {
         let dir = tempfile::TempDir::new().unwrap();
+        assert!(read_linked_worktree_name(dir.path()).is_none());
+
         let wt = dir.path().join("wt");
         std::fs::create_dir(&wt).unwrap();
         std::fs::write(
@@ -898,12 +916,6 @@ mod tests {
             read_linked_worktree_name(&wt),
             Some("feature-foo".to_string())
         );
-    }
-
-    #[test]
-    fn test_read_linked_worktree_name_returns_none_without_dotgit() {
-        let dir = tempfile::TempDir::new().unwrap();
-        assert!(read_linked_worktree_name(dir.path()).is_none());
     }
 
     #[test]
@@ -948,30 +960,6 @@ mod tests {
         );
         assert!(!modules_dir.exists(), "modules dir should be removed");
         assert!(!wt.exists(), "worktree dir should be removed");
-    }
-
-    #[test]
-    fn test_is_dirty_worktree_error_matches_git_message() {
-        assert!(is_dirty_worktree_error(
-            "fatal: '/tmp/wt' contains modified or untracked files, use --force to delete it"
-        ));
-        assert!(!is_dirty_worktree_error("permission denied"));
-        assert!(!is_dirty_worktree_error("file not found"));
-    }
-
-    #[test]
-    fn test_is_not_a_worktree_error_matches_git_message() {
-        assert!(is_not_a_worktree_error(
-            "fatal: '/tmp/wt/.aoe-trash/abc' is not a working tree"
-        ));
-        // The wrapped form callers actually see through GitError.
-        assert!(is_not_a_worktree_error(
-            "Git worktree command failed: fatal: '/tmp/wt' is not a working tree"
-        ));
-        assert!(!is_not_a_worktree_error("permission denied"));
-        assert!(!is_not_a_worktree_error(
-            "fatal: '/tmp/wt' contains modified or untracked files"
-        ));
     }
 
     /// A trashed worktree whose git admin entry went missing (pruned, or the
@@ -1100,45 +1088,21 @@ mod tests {
         );
         assert!(dirty.iter().any(|s| s.starts_with("untracked ")));
         assert!(dirty.iter().any(|s| s.starts_with("modified ")));
+
+        let not_a_repo = tempfile::TempDir::new().unwrap();
+        assert!(list_dirty_files(not_a_repo.path()).is_empty());
     }
 
     #[test]
-    fn test_list_dirty_files_returns_empty_for_non_repo() {
-        let dir = tempfile::TempDir::new().unwrap();
-        assert!(list_dirty_files(dir.path()).is_empty());
-    }
-
-    #[test]
-    fn test_dirty_worktree_message_some_when_untracked() {
+    fn dirty_worktree_message_describes_only_a_dirty_tree() {
         let (_dir, repo_path) = init_repo_with_commit();
+        assert!(dirty_worktree_message(&repo_path).is_none(), "clean tree");
+
         std::fs::write(repo_path.join("scratch.log"), "data").unwrap();
-
-        let msg =
-            dirty_worktree_message(&repo_path).expect("dirty worktree should produce message");
-        assert!(
-            msg.contains("modified or untracked files"),
-            "message should describe dirty state: {}",
-            msg
-        );
-        assert!(
-            msg.contains("--force"),
-            "message should mention --force: {}",
-            msg
-        );
-        assert!(
-            msg.contains("scratch.log"),
-            "message should list the dirty path: {}",
-            msg
-        );
-    }
-
-    #[test]
-    fn test_dirty_worktree_message_none_when_clean() {
-        let (_dir, repo_path) = init_repo_with_commit();
-        assert!(
-            dirty_worktree_message(&repo_path).is_none(),
-            "clean worktree should produce no message"
-        );
+        let msg = dirty_worktree_message(&repo_path).expect("dirty tree");
+        for expected in ["modified or untracked files", "--force", "scratch.log"] {
+            assert!(msg.contains(expected), "{expected} missing from {msg}");
+        }
     }
 
     #[test]
@@ -1153,16 +1117,13 @@ mod tests {
         assert!(enriched.contains(stderr));
         assert!(enriched.contains("Uncommitted changes"));
         assert!(enriched.contains("scratch.log"));
-    }
 
-    #[test]
-    fn test_enrich_worktree_remove_error_passes_through_unrelated_errors() {
-        let (_dir, repo_path) = init_repo_with_commit();
-        std::fs::write(repo_path.join("scratch.log"), "data").unwrap();
-
-        let stderr = "fatal: permission denied";
-        let enriched = enrich_worktree_remove_error(stderr, &repo_path);
-        assert_eq!(enriched, stderr);
+        // An unrelated failure is passed through untouched.
+        let unrelated = "fatal: permission denied";
+        assert_eq!(
+            enrich_worktree_remove_error(unrelated, &repo_path),
+            unrelated
+        );
     }
 
     #[test]
@@ -1177,114 +1138,111 @@ mod tests {
         assert!(enriched.contains("and 5 more"));
     }
 
-    /// Mirrors the user's nested template `../{repo-name}-worktrees/{branch}/{repo-name}`
-    /// where the worktree leaf is two levels below a `<repo>-worktrees` base.
-    /// After removing the leaf, both intermediate dirs should also be cleaned.
-    #[test]
-    fn test_prune_empty_parent_dirs_climbs_through_nested_template() {
+    /// Lay out `dirs` and `files` under a fresh tempdir, remove `leaf` as
+    /// `git worktree remove` would, then prune upward from it.
+    fn pruned(
+        dirs: &[&str],
+        files: &[&str],
+        leaf: &str,
+        main_repo: &str,
+    ) -> (tempfile::TempDir, std::path::PathBuf) {
         let dir = tempfile::TempDir::new().unwrap();
-        let main_repo = dir.path().join("clawbolt-premium");
-        let base = dir.path().join("clawbolt-premium-worktrees");
-        let branch_dir = base.join("feature-foo");
-        let worktree = branch_dir.join("clawbolt-premium");
-        std::fs::create_dir_all(&main_repo).unwrap();
-        std::fs::create_dir_all(&worktree).unwrap();
-
-        // Simulate the leaf having just been removed by `git worktree remove`.
-        std::fs::remove_dir(&worktree).unwrap();
-        assert!(branch_dir.exists());
-
-        prune_empty_parent_dirs(&worktree, &main_repo);
-
-        assert!(!branch_dir.exists(), "branch wrapper dir should be gone");
-        assert!(!base.exists(), "worktrees base dir should be gone");
-        assert!(main_repo.exists(), "main repo must be untouched");
+        for d in dirs {
+            std::fs::create_dir_all(dir.path().join(d)).unwrap();
+        }
+        for f in files {
+            std::fs::write(dir.path().join(f), "junk").unwrap();
+        }
+        let leaf = dir.path().join(leaf);
+        std::fs::remove_dir_all(&leaf).unwrap();
+        prune_empty_parent_dirs(&leaf, &dir.path().join(main_repo));
+        (dir, leaf)
     }
 
-    /// `on_create` hooks sometimes drop a sibling repo next to the worktree
-    /// (e.g. an OSS pin clone). After deleting the worktree, that sibling
-    /// keeps the wrapper non-empty and we MUST leave it alone.
+    /// The wrappers `git worktree add` created for a nested path template are
+    /// climbed only while they are empty. Anything still occupied, the main
+    /// repo, and a stray file all stop the climb, and `remove_dir` is never
+    /// allowed to become a recursive delete.
     #[test]
-    fn test_prune_empty_parent_dirs_preserves_non_empty_wrapper() {
-        let dir = tempfile::TempDir::new().unwrap();
-        let main_repo = dir.path().join("clawbolt-premium");
-        let base = dir.path().join("clawbolt-premium-worktrees");
-        let branch_dir = base.join("feature-foo");
-        let worktree = branch_dir.join("clawbolt-premium");
-        let sibling = branch_dir.join("clawbolt"); // orphan from on_create hook
-        std::fs::create_dir_all(&main_repo).unwrap();
-        std::fs::create_dir_all(&worktree).unwrap();
-        std::fs::create_dir_all(&sibling).unwrap();
-        std::fs::write(sibling.join("README.md"), "oss pin").unwrap();
-
-        std::fs::remove_dir_all(&worktree).unwrap();
-
-        prune_empty_parent_dirs(&worktree, &main_repo);
-
-        assert!(
-            branch_dir.exists(),
-            "wrapper must survive non-empty sibling"
+    fn prune_empty_parent_dirs_climbs_only_through_empty_wrappers() {
+        type Case = (
+            &'static str,
+            &'static [&'static str],
+            &'static [&'static str],
+            &'static str,
+            &'static str,
+            &'static [&'static str],
+            &'static [&'static str],
         );
-        assert!(sibling.exists(), "sibling repo must not be touched");
-    }
-
-    /// Default template `../{repo-name}-worktrees/{branch}` keeps the
-    /// `<repo>-worktrees` base shared across multiple sessions. If another
-    /// branch's worktree is still there, we must stop at the base.
-    #[test]
-    fn test_prune_empty_parent_dirs_stops_at_shared_base() {
-        let dir = tempfile::TempDir::new().unwrap();
-        let main_repo = dir.path().join("clawbolt-premium");
-        let base = dir.path().join("clawbolt-premium-worktrees");
-        let deleted_wt = base.join("feature-foo");
-        let other_wt = base.join("feature-bar");
-        std::fs::create_dir_all(&main_repo).unwrap();
-        std::fs::create_dir_all(&deleted_wt).unwrap();
-        std::fs::create_dir_all(&other_wt).unwrap();
-
-        std::fs::remove_dir(&deleted_wt).unwrap();
-
-        prune_empty_parent_dirs(&deleted_wt, &main_repo);
-
-        assert!(base.exists(), "shared base must survive other worktrees");
-        assert!(other_wt.exists(), "other worktree must be untouched");
-    }
-
-    /// Bare-repo template `./{branch}` puts the worktree inside the main repo.
-    /// We must never remove the main repo or any of its ancestors.
-    #[test]
-    fn test_prune_empty_parent_dirs_refuses_to_climb_into_main_repo() {
-        let dir = tempfile::TempDir::new().unwrap();
-        let main_repo = dir.path().join("bare-repo");
-        let worktree = main_repo.join("feature-foo");
-        std::fs::create_dir_all(&worktree).unwrap();
-
-        std::fs::remove_dir(&worktree).unwrap();
-
-        prune_empty_parent_dirs(&worktree, &main_repo);
-
-        assert!(main_repo.exists(), "main repo must be untouched");
-    }
-
-    /// If the wrapper isn't actually empty for any reason (race, leftover
-    /// metadata file, FS quirk), `remove_dir` returns ENOTEMPTY and we stop.
-    /// Don't ever fall through to recursive deletion.
-    #[test]
-    fn test_prune_empty_parent_dirs_never_recurses() {
-        let dir = tempfile::TempDir::new().unwrap();
-        let main_repo = dir.path().join("repo");
-        let wrapper = dir.path().join("wrapper");
-        let worktree = wrapper.join("wt");
-        let stray = wrapper.join("DS_Store_or_similar");
-        std::fs::create_dir_all(&main_repo).unwrap();
-        std::fs::create_dir_all(&worktree).unwrap();
-        std::fs::write(&stray, "junk").unwrap();
-
-        std::fs::remove_dir(&worktree).unwrap();
-
-        prune_empty_parent_dirs(&worktree, &main_repo);
-
-        assert!(wrapper.exists(), "wrapper with stray file must survive");
-        assert!(stray.exists(), "stray file must not be touched");
+        let cases: [Case; 5] = [
+            (
+                "../{repo}-worktrees/{branch}/{repo}: climbs to the base",
+                &["repo", "repo-worktrees/feature-foo/repo"],
+                &[],
+                "repo-worktrees/feature-foo/repo",
+                "repo",
+                &["repo-worktrees/feature-foo", "repo-worktrees"],
+                &["repo"],
+            ),
+            (
+                "a sibling an on_create hook cloned keeps the wrapper",
+                &[
+                    "repo",
+                    "repo-worktrees/feature-foo/repo",
+                    "repo-worktrees/feature-foo/oss-pin",
+                ],
+                &["repo-worktrees/feature-foo/oss-pin/README.md"],
+                "repo-worktrees/feature-foo/repo",
+                "repo",
+                &[],
+                &[
+                    "repo-worktrees/feature-foo",
+                    "repo-worktrees/feature-foo/oss-pin",
+                ],
+            ),
+            (
+                "../{repo}-worktrees/{branch}: the base is shared with other sessions",
+                &[
+                    "repo",
+                    "repo-worktrees/feature-foo",
+                    "repo-worktrees/feature-bar",
+                ],
+                &[],
+                "repo-worktrees/feature-foo",
+                "repo",
+                &[],
+                &["repo-worktrees", "repo-worktrees/feature-bar"],
+            ),
+            (
+                "./{branch}: the worktree sits inside the main repo",
+                &["bare-repo/feature-foo"],
+                &[],
+                "bare-repo/feature-foo",
+                "bare-repo",
+                &[],
+                &["bare-repo"],
+            ),
+            (
+                "a stray file makes the wrapper non-empty",
+                &["repo", "wrapper/wt"],
+                &["wrapper/.DS_Store"],
+                "wrapper/wt",
+                "repo",
+                &[],
+                &["wrapper", "wrapper/.DS_Store"],
+            ),
+        ];
+        for (label, dirs, files, leaf, main_repo, gone, kept) in cases {
+            let (dir, _leaf) = pruned(dirs, files, leaf, main_repo);
+            for path in gone {
+                assert!(!dir.path().join(path).exists(), "{label}: {path} survived");
+            }
+            for path in kept {
+                assert!(
+                    dir.path().join(path).exists(),
+                    "{label}: {path} was removed"
+                );
+            }
+        }
     }
 }

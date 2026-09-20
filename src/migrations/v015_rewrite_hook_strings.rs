@@ -143,45 +143,15 @@ fn read_environment_from_toml(path: &Path) -> Option<Vec<String>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::session::test_support::EnvGuard;
+    use crate::migrations::hook_fixtures::{setup_dirs, unset_agent_home_env, write_json};
     use serde_json::Value;
     use std::fs;
-    use tempfile::TempDir;
 
     /// A pre-#1803 unquoted, unguarded `mkdir`/`printf` snippet. Contains the
     /// `aoe-hooks` substring via the path, so `is_aoe_hook_command` flags it.
     const LEGACY_STATUS_CMD: &str = "sh -c '[ -n \"$AOE_INSTANCE_ID\" ] || exit 0; \
         mkdir -p /tmp/aoe-hooks/$AOE_INSTANCE_ID && \
         printf running > /tmp/aoe-hooks/$AOE_INSTANCE_ID/status'";
-
-    /// Clears CODEX_HOME, CLAUDE_CONFIG_DIR, etc. for the test duration so
-    /// the migration's path resolution sees only the explicit fixtures in
-    /// `home` / `app_dir`.
-    fn unset_agent_home_env() -> EnvGuard {
-        EnvGuard::unset(&[
-            "CODEX_HOME",
-            "CLAUDE_CONFIG_DIR",
-            "CURSOR_CONFIG_DIR",
-            "GEMINI_CONFIG_DIR",
-            "QWEN_CONFIG_DIR",
-        ])
-    }
-
-    fn setup_dirs() -> (TempDir, std::path::PathBuf, std::path::PathBuf) {
-        let tmp = TempDir::new().unwrap();
-        let home = tmp.path().join("home");
-        let app_dir = tmp.path().join("app");
-        fs::create_dir_all(&home).unwrap();
-        fs::create_dir_all(&app_dir).unwrap();
-        (tmp, home, app_dir)
-    }
-
-    fn write_json(path: &Path, value: &Value) {
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent).unwrap();
-        }
-        fs::write(path, serde_json::to_string_pretty(value).unwrap()).unwrap();
-    }
 
     /// Assert every AoE-marked command in a Claude-shape settings file is
     /// byte-equal to the live install path's canonical output for its

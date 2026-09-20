@@ -1,14 +1,9 @@
-//! Data migrations for handling breaking changes across versions.
-//!
-//! Each migration is a one-time transformation that runs when upgrading from
-//! an older version. Migrations are numbered sequentially and run in order.
-//!
-//! To add a new migration:
-//! 1. Create a new module `vNNN_description.rs`
-//! 2. Implement the migration function
-//! 3. Add it to the `MIGRATIONS` array below
+//! One-time transformations of persisted data, run in order on upgrade. See
+//! `docs/development/adding-a-migration.md` to add one.
 
+mod config_file;
 pub mod progress;
+mod sessions_file;
 mod store_fs;
 mod v001_xdg_linux;
 mod v002_seed_sandbox_from_volumes;
@@ -38,6 +33,46 @@ mod v025_reenable_confirm_delete;
 mod v026_repoint_acp_default_agent;
 pub(crate) mod v027_isolate_sandbox_stores;
 mod v028_clear_archived_live_status;
+
+/// Fixtures shared by the migrations that rewrite agent hook files.
+#[cfg(test)]
+mod hook_fixtures {
+    use crate::session::test_support::EnvGuard;
+    use serde_json::Value;
+    use std::fs;
+    use std::path::{Path, PathBuf};
+    use tempfile::TempDir;
+
+    /// Clear every agent config-dir override, so a migration's path
+    /// resolution sees only the fixtures under `home` and `app_dir`.
+    pub(super) fn unset_agent_home_env() -> EnvGuard {
+        EnvGuard::unset(&[
+            "CODEX_HOME",
+            "CLAUDE_CONFIG_DIR",
+            "CURSOR_CONFIG_DIR",
+            "GEMINI_CONFIG_DIR",
+            "QWEN_CONFIG_DIR",
+        ])
+    }
+
+    /// A tempdir holding an empty `home` and app dir.
+    pub(super) fn setup_dirs() -> (TempDir, PathBuf, PathBuf) {
+        let tmp = TempDir::new().unwrap();
+        let home = tmp.path().join("home");
+        let app_dir = tmp.path().join("app");
+        fs::create_dir_all(&home).unwrap();
+        fs::create_dir_all(&app_dir).unwrap();
+        (tmp, home, app_dir)
+    }
+
+    /// Write `value` as pretty JSON, creating the parent directory.
+    pub(super) fn write_json(path: &Path, value: &Value) {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).unwrap();
+        }
+        fs::write(path, serde_json::to_string_pretty(value).unwrap()).unwrap();
+    }
+}
 
 use anyhow::Result;
 use std::fs;

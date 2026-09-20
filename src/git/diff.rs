@@ -995,26 +995,25 @@ mod tests {
     }
 
     #[test]
-    fn test_check_merge_base_status_ok_when_common_ancestor_exists() {
-        let (dir, _repo) = setup_branching_repo();
-        // Feature branch and main share a common ancestor, so no warning
-        let status = check_merge_base_status(dir.path(), "main");
-        assert!(
-            status.is_none(),
-            "Expected no warning when merge-base exists, got: {:?}",
-            status
-        );
-    }
-
-    #[test]
-    fn test_check_merge_base_status_warns_on_missing_branch() {
-        let (dir, _repo) = setup_test_repo();
-        let status = check_merge_base_status(dir.path(), "nonexistent-branch");
-        assert!(status.is_some(), "Expected warning for missing branch");
-        assert!(
-            status.unwrap().contains("not found"),
-            "Warning should mention branch not found"
-        );
+    fn check_merge_base_status_warns_only_where_no_base_exists() {
+        let (branching, _repo) = setup_branching_repo();
+        let (plain, _repo) = setup_test_repo();
+        let cases = [
+            // A shared ancestor, and HEAD against itself, both diff cleanly.
+            (branching.path(), "main", None),
+            (plain.path(), "HEAD", None),
+            (plain.path(), "nonexistent-branch", Some("not found")),
+        ];
+        for (repo, base, expected) in cases {
+            let status = check_merge_base_status(repo, base);
+            match expected {
+                None => assert!(status.is_none(), "{base}: {status:?}"),
+                Some(text) => assert!(
+                    status.as_deref().is_some_and(|s| s.contains(text)),
+                    "{base}: {status:?}"
+                ),
+            }
+        }
     }
 
     #[test]
@@ -1050,26 +1049,6 @@ mod tests {
             status.unwrap().contains("No common ancestor"),
             "Warning should mention no common ancestor"
         );
-    }
-
-    #[test]
-    fn test_check_merge_base_status_ok_same_commit() {
-        let (dir, _repo) = setup_test_repo();
-        // Comparing HEAD against HEAD -- same commit, no warning
-        let status = check_merge_base_status(dir.path(), "HEAD");
-        assert!(
-            status.is_none(),
-            "Expected no warning when comparing same commit, got: {:?}",
-            status
-        );
-    }
-
-    #[test]
-    fn test_file_status_indicator() {
-        assert_eq!(FileStatus::Added.indicator(), 'A');
-        assert_eq!(FileStatus::Modified.indicator(), 'M');
-        assert_eq!(FileStatus::Deleted.indicator(), 'D');
-        assert_eq!(FileStatus::Renamed.indicator(), 'R');
     }
 
     #[test]
@@ -1201,47 +1180,27 @@ mod tests {
     }
 
     #[test]
-    fn test_list_branches() {
+    fn branch_listing_sees_local_branches_and_the_default() {
         let (dir, repo) = setup_test_repo();
-
-        // Create another branch
-        let head = repo.head().unwrap();
-        let commit = head.peel_to_commit().unwrap();
+        let commit = repo.head().unwrap().peel_to_commit().unwrap();
         repo.branch("feature", &commit, false).unwrap();
 
         let branches = list_branches(dir.path()).unwrap();
-        assert!(!branches.is_empty());
+        assert!(branches.iter().any(|b| b == "feature"), "{branches:?}");
+        assert!(branches.contains(&get_default_branch(dir.path()).unwrap()));
     }
 
     #[test]
-    fn test_get_default_branch() {
-        let (dir, _repo) = setup_test_repo();
-        // Should return the current branch (usually "master" for git init)
-        let branch = get_default_branch(dir.path());
-        assert!(branch.is_ok());
-    }
-
-    #[test]
-    fn test_validate_ref_accepts_existing_branch() {
+    fn validate_ref_accepts_only_a_resolvable_ref() {
         let (dir, repo) = setup_test_repo();
-        let head_name = repo.head().unwrap().shorthand().unwrap().to_string();
-        validate_ref(dir.path(), &head_name).expect("HEAD branch should resolve");
-    }
+        let head = repo.head().unwrap().shorthand().unwrap().to_string();
+        validate_ref(dir.path(), &head).expect("the HEAD branch resolves");
+        assert!(validate_ref(dir.path(), "definitely-does-not-exist").is_err());
 
-    #[test]
-    fn test_validate_ref_rejects_missing_branch() {
-        let (dir, _repo) = setup_test_repo();
-        let err = validate_ref(dir.path(), "definitely-does-not-exist");
-        assert!(err.is_err(), "missing ref should not resolve");
-    }
-
-    #[test]
-    fn test_validate_ref_rejects_non_repo() {
-        let dir = TempDir::new().unwrap();
-        let err = validate_ref(dir.path(), "main");
+        let bare = TempDir::new().unwrap();
         assert!(
-            err.is_err(),
-            "validate_ref against non-repo path should error"
+            validate_ref(bare.path(), "main").is_err(),
+            "a path that is not a repo resolves nothing"
         );
     }
 

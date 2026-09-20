@@ -4,37 +4,22 @@
 //! defaults into saved configs, so the footer advertised an exit that did not
 //! work. Any other value is a user choice and stays.
 
-use anyhow::{Context, Result};
-use std::fs;
-use std::path::PathBuf;
-use tracing::{debug, info};
+use super::config_file;
+use anyhow::Result;
+use std::path::Path;
+use tracing::info;
 
 pub fn run() -> Result<()> {
     let app_dir = crate::session::get_app_dir()?;
-
-    let global_config = app_dir.join("config.toml");
-    migrate_config_file(&global_config)?;
-
-    let profiles_dir = app_dir.join("profiles");
-    if profiles_dir.exists() {
-        for entry in fs::read_dir(&profiles_dir)? {
-            let entry = entry?;
-            if entry.path().is_dir() {
-                let profile_config = entry.path().join("config.toml");
-                migrate_config_file(&profile_config)?;
-            }
-        }
+    for path in config_file::all_configs(&app_dir)? {
+        migrate_config_file(&path)?;
     }
-
     Ok(())
 }
 
-/// Normalize a chord-list string for comparison against the known
-/// stuck defaults. tmux-style specs are case-insensitive on the
-/// modifier and the letter; the comma-separated form tolerates
-/// whitespace around each piece. Long-form modifier names
-/// (`Ctrl+`, `Ctrl-`) collapse to the short form so equivalent
-/// representations are caught.
+/// Fold a chord spec to the form [`STUCK_DEFAULTS`] is written in: the
+/// modifier and letter are case-insensitive, whitespace around each piece is
+/// tolerated, and `Ctrl+` / `Ctrl-` are the long spelling of `c-`.
 fn normalize(spec: &str) -> String {
     spec.chars()
         .filter(|c| !c.is_whitespace())
@@ -44,9 +29,8 @@ fn normalize(spec: &str) -> String {
         .replace("ctrl-", "c-")
 }
 
-/// Known stuck defaults that this migration should drop. Adding more
-/// here as future defaults turn out not to work is the right place;
-/// migration tests below cover each addition.
+/// The defaults this drops. A future default that turns out not to work is
+/// added here, with a case in the tests below.
 const STUCK_DEFAULTS: &[&str] = &["c-q,c-]", "c-q,c-\\"];
 
 fn is_stuck_default(value: &str) -> bool {
@@ -54,60 +38,32 @@ fn is_stuck_default(value: &str) -> bool {
     STUCK_DEFAULTS.contains(&normalized.as_str())
 }
 
-fn migrate_config_file(path: &PathBuf) -> Result<()> {
-    if !path.exists() {
-        debug!("Config file {} does not exist, skipping", path.display());
-        return Ok(());
-    }
-
-    let content = fs::read_to_string(path)?;
-    let mut doc: toml::Table = content
-        .parse()
-        .with_context(|| format!("Failed to parse {} during v010 migration", path.display()))?;
-
-    let Some(session) = doc.get_mut("session").and_then(|s| s.as_table_mut()) else {
-        debug!("No [session] section in {}, skipping", path.display());
-        return Ok(());
-    };
-
-    let Some(chord_value) = session.get("live_send_exit_chord").cloned() else {
-        debug!("No live_send_exit_chord in {}, skipping", path.display());
-        return Ok(());
-    };
-
-    let Some(chord_str) = chord_value.as_str() else {
-        debug!(
-            "live_send_exit_chord in {} is not a string, skipping",
+fn migrate_config_file(path: &Path) -> Result<()> {
+    config_file::rewrite_strict(path, |doc| {
+        let Some(session) = doc.get_mut("session").and_then(|s| s.as_table_mut()) else {
+            return false;
+        };
+        let stuck = session
+            .get("live_send_exit_chord")
+            .and_then(|v| v.as_str())
+            .is_some_and(is_stuck_default);
+        if !stuck {
+            return false;
+        }
+        info!(
+            "Dropping stuck live_send_exit_chord from {} (chord removed from default)",
             path.display()
         );
-        return Ok(());
-    };
-
-    if !is_stuck_default(chord_str) {
-        debug!(
-            "live_send_exit_chord in {} is customized ({:?}), leaving alone",
-            path.display(),
-            chord_str
-        );
-        return Ok(());
-    }
-
-    info!(
-        "Dropping stuck live_send_exit_chord = {:?} from {} (chord removed from default)",
-        chord_str,
-        path.display()
-    );
-    session.remove("live_send_exit_chord");
-
-    let new_content = toml::to_string_pretty(&doc)?;
-    crate::session::atomic_write(path, new_content.as_bytes())?;
-
-    Ok(())
+        session.remove("live_send_exit_chord");
+        true
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
+    use std::path::PathBuf;
 
     fn write(content: &str) -> (tempfile::TempDir, PathBuf) {
         let dir = tempfile::TempDir::new().unwrap();

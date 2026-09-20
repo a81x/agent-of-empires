@@ -7,10 +7,11 @@
 //! live tmux by design, so that Error can only be the spurious transition.
 //! A sessions.json that fails to parse is logged and skipped.
 
+use super::sessions_file;
 use anyhow::Result;
 use std::fs;
 use std::path::Path;
-use tracing::{debug, info};
+use tracing::info;
 
 pub fn run() -> Result<()> {
     let app_dir = crate::session::get_app_dir()?;
@@ -18,59 +19,24 @@ pub fn run() -> Result<()> {
 }
 
 pub(crate) fn run_in(app_dir: &Path) -> Result<()> {
-    let profiles_dir = app_dir.join("profiles");
-    if profiles_dir.exists() {
-        for entry in fs::read_dir(&profiles_dir)? {
-            let entry = entry?;
-            if entry.path().is_dir() {
-                clear_archived_error(&entry.path().join("sessions.json"))?;
+    for path in sessions_file::session_files(app_dir)? {
+        if !path.exists() {
+            continue;
+        }
+        let healed = sessions_file::heal_rows(&path, &fs::read_to_string(&path)?, |row| {
+            let spurious =
+                sessions_file::is_archived(row) && sessions_file::status(row) == Some("error");
+            if spurious {
+                sessions_file::settle_to_idle(row);
             }
+            spurious
+        })?;
+        if healed > 0 {
+            info!(
+                "v016: cleared spurious archived Error on {healed} session(s) in {} (#2206)",
+                path.display()
+            );
         }
-    }
-    // Legacy top-level sessions.json (pre-profiles layout).
-    clear_archived_error(&app_dir.join("sessions.json"))?;
-    Ok(())
-}
-
-/// Demote any archived session still persisted at `status = "error"` back to
-/// `"idle"`. Leaves non-archived rows and archived rows in any other status
-/// untouched.
-fn clear_archived_error(path: &Path) -> Result<()> {
-    if !path.exists() {
-        return Ok(());
-    }
-    let content = fs::read_to_string(path)?;
-    let mut value: serde_json::Value = match serde_json::from_str(&content) {
-        Ok(v) => v,
-        Err(e) => {
-            debug!("v016: failed to parse {}: {e}, skipping", path.display());
-            return Ok(());
-        }
-    };
-
-    let mut healed = 0usize;
-    if let Some(array) = value.as_array_mut() {
-        for instance in array.iter_mut() {
-            if let Some(obj) = instance.as_object_mut() {
-                let archived = obj.get("archived_at").is_some_and(|v| !v.is_null());
-                let errored = obj.get("status").and_then(|v| v.as_str()) == Some("error");
-                if archived && errored {
-                    obj.insert(
-                        "status".to_string(),
-                        serde_json::Value::String("idle".to_string()),
-                    );
-                    healed += 1;
-                }
-            }
-        }
-    }
-
-    if healed > 0 {
-        crate::session::atomic_write(path, serde_json::to_string_pretty(&value)?.as_bytes())?;
-        info!(
-            "v016: cleared spurious archived Error on {healed} session(s) in {} (#2206)",
-            path.display()
-        );
     }
     Ok(())
 }
