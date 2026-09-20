@@ -2,10 +2,9 @@ import { test, expect, observeFor } from "./helpers/mockedTest";
 import type { Page } from "@playwright/test";
 import { clickSidebarSession, openMobileSidebar } from "./helpers/sidebar";
 import { mockTerminalApis, seedSettings, fireTouches, type MockHandle } from "./helpers/terminal-mocks";
+import { DESKTOP, iPhone13 } from "./helpers/viewports";
 import {
-  DESKTOP,
   expectScrollMode,
-  iPhone13,
   liveContent,
   liveMatches,
   liveTexts,

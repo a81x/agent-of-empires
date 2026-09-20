@@ -1,14 +1,9 @@
-// Shared setup for the mocked live-terminal specs: device descriptors, the
-// session boot, and the locators/byte readers the assertions key on.
+// Shared setup for the mocked live-terminal specs: the session boot, and the
+// locators and byte readers the assertions key on.
 
-import { devices, expect, type Page } from "@playwright/test";
+import { expect, type Page } from "@playwright/test";
 import { clickSidebarSession, openMobileSidebar } from "./sidebar";
 import { makeLiveFrame, mockTerminalApis, seedSettings, type MockHandle } from "./terminal-mocks";
-
-/** iPhone 13 minus `defaultBrowserType`, which `test.use` inside a describe forbids. */
-export const iPhone13 = (({ defaultBrowserType: _browser, ...rest }) => rest)(devices["iPhone 13"]);
-
-export const DESKTOP = { viewport: { width: 1280, height: 800 }, hasTouch: false };
 
 export const scroller = (page: Page) => page.locator("[data-live-terminal] > div").first();
 export const liveContent = (page: Page) => page.locator("[data-live-content]");
