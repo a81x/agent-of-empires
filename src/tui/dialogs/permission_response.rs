@@ -140,14 +140,9 @@ impl PermissionResponseDialog {
     }
 
     pub fn render(&mut self, frame: &mut Frame, area: Rect, theme: &Theme) {
-        let dialog_area = super::centered_rect(area, 56, 9);
-        frame.render_widget(Clear, dialog_area);
-
         let block =
             super::toned_dialog_block(" Respond to Permission Prompt ", theme.accent, theme.accent);
-
-        let inner = block.inner(dialog_area);
-        frame.render_widget(block, dialog_area);
+        let (_, inner) = super::render_dialog_frame(frame, area, 56, 9, block);
 
         let chunks = Layout::default()
             .direction(Direction::Vertical)

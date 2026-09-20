@@ -105,14 +105,14 @@ impl NewSessionDialog {
             .sum();
         let dialog_height = fields_height + 4; // +2 border, +2 margin
 
-        let dialog_area = crate::tui::dialogs::centered_rect(area, dialog_width, dialog_height);
-
-        frame.render_widget(Clear, dialog_area);
-
         let block = crate::tui::dialogs::dialog_block(" New Session ", theme);
-
-        let inner = block.inner(dialog_area);
-        frame.render_widget(block, dialog_area);
+        let (_, inner) = crate::tui::dialogs::render_dialog_frame(
+            frame,
+            area,
+            dialog_width,
+            dialog_height,
+            block,
+        );
 
         let chunks = Layout::default()
             .direction(Direction::Vertical)
@@ -692,14 +692,14 @@ impl NewSessionDialog {
             .sum();
         let dialog_height = fields_height + 4;
 
-        let dialog_area = crate::tui::dialogs::centered_rect(area, dialog_width, dialog_height);
-
-        frame.render_widget(Clear, dialog_area);
-
         let block = crate::tui::dialogs::dialog_block(" Sandbox Configuration ", theme);
-
-        let inner = block.inner(dialog_area);
-        frame.render_widget(block, dialog_area);
+        let (_, inner) = crate::tui::dialogs::render_dialog_frame(
+            frame,
+            area,
+            dialog_width,
+            dialog_height,
+            block,
+        );
 
         let chunks = Layout::default()
             .direction(Direction::Vertical)
@@ -809,14 +809,14 @@ impl NewSessionDialog {
 
         let title = " Worktree Configuration ";
 
-        let dialog_area = crate::tui::dialogs::centered_rect(area, dialog_width, dialog_height);
-
-        frame.render_widget(Clear, dialog_area);
-
         let block = crate::tui::dialogs::dialog_block(title, theme);
-
-        let inner = block.inner(dialog_area);
-        frame.render_widget(block, dialog_area);
+        let (_, inner) = crate::tui::dialogs::render_dialog_frame(
+            frame,
+            area,
+            dialog_width,
+            dialog_height,
+            block,
+        );
 
         let chunks = Layout::default()
             .direction(Direction::Vertical)
@@ -1261,18 +1261,18 @@ impl NewSessionDialog {
             + if has_sandbox { 3 } else { 0 }
             + if show_sandbox_options_help { 12 } else { 0 };
 
-        let dialog_area = crate::tui::dialogs::centered_rect(area, dialog_width, dialog_height);
-
-        frame.render_widget(Clear, dialog_area);
-
         let block = crate::tui::dialogs::toned_dialog_block(
             " New Session Help ",
             theme.border,
             theme.title,
         );
-
-        let inner = block.inner(dialog_area);
-        frame.render_widget(block, dialog_area);
+        let (_, inner) = crate::tui::dialogs::render_dialog_frame(
+            frame,
+            area,
+            dialog_width,
+            dialog_height,
+            block,
+        );
 
         let mut lines: Vec<Line> = Vec::new();
 

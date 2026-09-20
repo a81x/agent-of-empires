@@ -278,12 +278,9 @@ impl ProjectsDialog {
             0
         };
         let dialog_height: u16 = list_height + 9 + adding_extra;
-        let dialog_area = super::centered_rect(area, dialog_width, dialog_height);
-        frame.render_widget(Clear, dialog_area);
-
         let block = super::dialog_block(" Projects ", theme);
-        let inner = block.inner(dialog_area);
-        frame.render_widget(block, dialog_area);
+        let (_, inner) =
+            super::render_dialog_frame(frame, area, dialog_width, dialog_height, block);
 
         let constraints = vec![
             Constraint::Length(list_height),

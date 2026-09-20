@@ -208,13 +208,9 @@ impl ProfilePickerDialog {
         let dialog_height = (list_height + 5).min(area.height);
         let dialog_width: u16 = 40;
 
-        let dialog_area = super::centered_rect(area, dialog_width, dialog_height);
-        frame.render_widget(Clear, dialog_area);
-
         let block = super::dialog_block(" Profiles ", theme);
-
-        let inner = block.inner(dialog_area);
-        frame.render_widget(block, dialog_area);
+        let (_, inner) =
+            super::render_dialog_frame(frame, area, dialog_width, dialog_height, block);
 
         let chunks = Layout::default()
             .direction(Direction::Vertical)
@@ -310,13 +306,9 @@ impl ProfilePickerDialog {
         // name(1) + spacer(1) + error_lines + hint(1) + borders(2) + margin(2)
         let dialog_height: u16 = if has_error { 7 + error_lines } else { 7 };
 
-        let dialog_area = super::centered_rect(area, dialog_width, dialog_height);
-        frame.render_widget(Clear, dialog_area);
-
         let block = super::dialog_block(" New Profile ", theme);
-
-        let inner = block.inner(dialog_area);
-        frame.render_widget(block, dialog_area);
+        let (_, inner) =
+            super::render_dialog_frame(frame, area, dialog_width, dialog_height, block);
 
         let mut constraints = vec![
             Constraint::Length(1), // "Name:" label + input
@@ -367,13 +359,9 @@ impl ProfilePickerDialog {
         let dialog_height: u16 = 8;
         let dialog_width: u16 = 40;
 
-        let dialog_area = super::centered_rect(area, dialog_width, dialog_height);
-        frame.render_widget(Clear, dialog_area);
-
         let block = super::toned_dialog_block(" Delete Profile ", theme.error, theme.error);
-
-        let inner = block.inner(dialog_area);
-        frame.render_widget(block, dialog_area);
+        let (_, inner) =
+            super::render_dialog_frame(frame, area, dialog_width, dialog_height, block);
 
         let chunks = Layout::default()
             .direction(Direction::Vertical)

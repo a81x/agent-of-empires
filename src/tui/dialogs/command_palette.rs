@@ -278,11 +278,6 @@ impl CommandPaletteDialog {
         self.visible_item_rows.clear();
         let dialog_width: u16 = area.width.saturating_sub(8).clamp(40, 70);
         let dialog_height: u16 = area.height.saturating_sub(6).clamp(10, 20);
-        let dialog_area = super::centered_rect(area, dialog_width, dialog_height);
-        self.dialog_area = dialog_area;
-
-        frame.render_widget(Clear, dialog_area);
-
         let block = Block::default()
             .style(Style::default().bg(theme.background))
             .borders(Borders::ALL)
@@ -292,9 +287,9 @@ impl CommandPaletteDialog {
                 " Commands ",
                 Style::default().fg(theme.title).bold(),
             ));
-
-        let inner = block.inner(dialog_area);
-        frame.render_widget(block, dialog_area);
+        let (dialog_area, inner) =
+            super::render_dialog_frame(frame, area, dialog_width, dialog_height, block);
+        self.dialog_area = dialog_area;
 
         let chunks = Layout::default()
             .direction(Direction::Vertical)

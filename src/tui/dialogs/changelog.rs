@@ -159,15 +159,10 @@ impl ChangelogDialog {
     pub fn render(&mut self, frame: &mut Frame, area: Rect, theme: &Theme) {
         let dialog_width = (area.width * 80 / 100).clamp(60, 100);
         let dialog_height = (area.height * 80 / 100).clamp(16, 40);
-        let dialog_area = super::centered_rect(area, dialog_width, dialog_height);
-        self.dialog_area = dialog_area;
-
-        frame.render_widget(Clear, dialog_area);
-
         let block = super::toned_dialog_block(" What's New ", theme.accent, theme.accent);
-
-        let inner = block.inner(dialog_area);
-        frame.render_widget(block, dialog_area);
+        let (dialog_area, inner) =
+            super::render_dialog_frame(frame, area, dialog_width, dialog_height, block);
+        self.dialog_area = dialog_area;
 
         let chunks = Layout::default()
             .direction(Direction::Vertical)

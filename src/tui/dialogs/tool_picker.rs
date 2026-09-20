@@ -78,20 +78,14 @@ impl ToolPickerDialog {
     pub fn render(&mut self, frame: &mut Frame, area: Rect, theme: &Theme) {
         let width = 50u16.min(area.width.saturating_sub(4));
         let height = (self.items.len() as u16 + 3).min(area.height.saturating_sub(4));
-        let dialog_area = centered_rect(area, width, height);
-        self.dialog_area = dialog_area;
-
-        frame.render_widget(Clear, dialog_area);
-
         let block = Block::default()
             .title(" Tool Sessions ")
             .title_style(Style::default().fg(theme.title))
             .borders(Borders::ALL)
             .border_style(Style::default().fg(theme.accent))
             .style(Style::default().bg(theme.background));
-
-        let inner = block.inner(dialog_area);
-        frame.render_widget(block, dialog_area);
+        let (dialog_area, inner) = super::render_dialog_frame(frame, area, width, height, block);
+        self.dialog_area = dialog_area;
 
         let chunks = Layout::default()
             .direction(Direction::Vertical)

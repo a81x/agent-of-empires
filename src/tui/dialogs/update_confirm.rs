@@ -93,14 +93,8 @@ impl UpdateConfirmDialog {
 
     pub fn render(&mut self, frame: &mut Frame, area: Rect, theme: &Theme) {
         let height = if self.needs_sudo { 11 } else { 10 };
-        let dialog_area = super::centered_rect(area, 60, height);
-
-        frame.render_widget(Clear, dialog_area);
-
         let block = super::toned_dialog_block(" Update aoe ", theme.waiting, theme.waiting);
-
-        let inner = block.inner(dialog_area);
-        frame.render_widget(block, dialog_area);
+        let (_, inner) = super::render_dialog_frame(frame, area, 60, height, block);
 
         let chunks = Layout::default()
             .direction(Direction::Vertical)

@@ -116,14 +116,10 @@ impl AttachProjectDialog {
         // Two extra rows over the list: the restart warning and the key hint.
         let dialog_height: u16 = (self.options.len().max(3) as u16 + 6).min(20);
 
-        let dialog_area = super::centered_rect(area, dialog_width, dialog_height);
-        self.dialog_area = dialog_area;
-        frame.render_widget(Clear, dialog_area);
-
         let block = super::dialog_block(format!(" Add Project to {} ", self.session_title), theme);
-
-        let inner = block.inner(dialog_area);
-        frame.render_widget(block, dialog_area);
+        let (dialog_area, inner) =
+            super::render_dialog_frame(frame, area, dialog_width, dialog_height, block);
+        self.dialog_area = dialog_area;
 
         let chunks = Layout::default()
             .direction(Direction::Vertical)

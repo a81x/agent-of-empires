@@ -84,9 +84,6 @@ impl WorktreeNameDialog {
     }
 
     pub fn render(&mut self, frame: &mut Frame, area: Rect, theme: &Theme) {
-        let dialog_area = super::centered_rect(area, 54, 13);
-        frame.render_widget(Clear, dialog_area);
-
         let block = Block::default()
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded)
@@ -94,8 +91,7 @@ impl WorktreeNameDialog {
             .border_style(Style::default().fg(theme.accent))
             .title(" Edit Workdir Name ")
             .title_style(Style::default().fg(theme.title).bold());
-        let inner = block.inner(dialog_area);
-        frame.render_widget(block, dialog_area);
+        let (_, inner) = super::render_dialog_frame(frame, area, 54, 13, block);
 
         let chunks = Layout::default()
             .direction(Direction::Vertical)

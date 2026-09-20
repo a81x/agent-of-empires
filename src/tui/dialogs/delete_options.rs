@@ -309,14 +309,9 @@ impl UnifiedDeleteDialog {
             7
         };
 
-        let dialog_area = super::centered_rect(area, dialog_width, dialog_height);
-
-        frame.render_widget(Clear, dialog_area);
-
         let block = super::toned_dialog_block(" Delete Session ", theme.error, theme.error);
-
-        let inner = block.inner(dialog_area);
-        frame.render_widget(block, dialog_area);
+        let (_, inner) =
+            super::render_dialog_frame(frame, area, dialog_width, dialog_height, block);
 
         let mut constraints = vec![
             Constraint::Length(1), // message

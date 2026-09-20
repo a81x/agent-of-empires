@@ -128,16 +128,11 @@ impl InfoDialog {
     }
 
     pub fn render(&mut self, frame: &mut Frame, area: Rect, theme: &Theme) {
-        let dialog_area = super::centered_rect(area, self.width, self.height);
-        self.dialog_area = dialog_area;
-
-        frame.render_widget(Clear, dialog_area);
-
         let block =
             super::toned_dialog_block(format!(" {} ", self.title), theme.border, theme.title);
-
-        let inner = block.inner(dialog_area);
-        frame.render_widget(block, dialog_area);
+        let (dialog_area, inner) =
+            super::render_dialog_frame(frame, area, self.width, self.height, block);
+        self.dialog_area = dialog_area;
 
         let chunks = Layout::default()
             .direction(Direction::Vertical)

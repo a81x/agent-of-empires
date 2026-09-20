@@ -206,14 +206,9 @@ impl RepoTrustDialog {
 
         let dialog_width = 64.min(area.width.saturating_sub(4));
         let dialog_height = (content_height + 6).min(area.height.saturating_sub(4));
-        let dialog_area = super::centered_rect(area, dialog_width, dialog_height);
-
-        frame.render_widget(Clear, dialog_area);
-
         let block = super::toned_dialog_block(" Repository Trust ", theme.accent, theme.accent);
-
-        let inner = block.inner(dialog_area);
-        frame.render_widget(block, dialog_area);
+        let (_, inner) =
+            super::render_dialog_frame(frame, area, dialog_width, dialog_height, block);
 
         let chunks = Layout::default()
             .direction(Direction::Vertical)

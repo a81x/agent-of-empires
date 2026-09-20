@@ -471,14 +471,8 @@ impl RenameDialog {
 
         let dialog_width = 50;
         let height = 15 + if show_toggle { 1 } else { 0 } + if show_warning { 2 } else { 0 };
-        let dialog_area = super::centered_rect(area, dialog_width, height);
-
-        frame.render_widget(Clear, dialog_area);
-
         let block = super::dialog_block(" Edit Session ", theme);
-
-        let inner = block.inner(dialog_area);
-        frame.render_widget(block, dialog_area);
+        let (_, inner) = super::render_dialog_frame(frame, area, dialog_width, height, block);
 
         // Fixed rows first (current values, spacer, the three input fields),
         // then the optional branch toggle / warning, then spacer + hint. The
@@ -609,18 +603,13 @@ impl RenameDialog {
         let dialog_width = 50;
         let has_error = self.validation_error.is_some();
         let dialog_height = if has_error { 16 } else { 13 };
-        let dialog_area = super::centered_rect(area, dialog_width, dialog_height);
-
-        frame.render_widget(Clear, dialog_area);
-
         let block = Block::default()
             .borders(Borders::ALL)
             .border_style(Style::default().fg(theme.accent))
             .title(" Rename Group ")
             .title_style(Style::default().fg(theme.title).bold());
-
-        let inner = block.inner(dialog_area);
-        frame.render_widget(block, dialog_area);
+        let (_, inner) =
+            super::render_dialog_frame(frame, area, dialog_width, dialog_height, block);
 
         let mut constraints = vec![
             Constraint::Length(1), // Current group

@@ -80,13 +80,8 @@ impl SnoozeDurationDialog {
 
     pub fn render(&mut self, frame: &mut Frame, area: Rect, theme: &Theme) {
         self.row_rects.clear();
-        let dialog_area = super::centered_rect(area, 52, 14);
-        frame.render_widget(Clear, dialog_area);
-
         let block = super::toned_dialog_block(" Snooze ", theme.waiting, theme.waiting);
-
-        let inner = block.inner(dialog_area);
-        frame.render_widget(block, dialog_area);
+        let (_, inner) = super::render_dialog_frame(frame, area, 52, 14, block);
 
         let chunks = Layout::default()
             .direction(Direction::Vertical)
