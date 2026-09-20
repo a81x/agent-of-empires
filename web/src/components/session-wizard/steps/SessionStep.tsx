@@ -1,6 +1,5 @@
-import { useEffect, useRef, useState } from "react";
-import { fetchBranches } from "../../../lib/api";
-import type { BranchInfo } from "../../../lib/api";
+import { useRef, useState } from "react";
+import { useBranchSuggestions } from "./branchSuggestions";
 import { ToggleRow } from "./Toggle";
 
 interface WizardData {
@@ -91,34 +90,10 @@ export function SessionStep({ data, onChange }: Props) {
 /** Collapsed base-branch combobox; blank means the repo default. */
 function BaseBranchPicker({ data, onChange }: { data: WizardData; onChange: (field: string, value: unknown) => void }) {
   const [open, setOpen] = useState(false);
-  const [branches, setBranches] = useState<BranchInfo[] | null>(null);
   const [highlightIdx, setHighlightIdx] = useState(0);
   const [hasFocus, setHasFocus] = useState(false);
   const blurTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const branchLoadKey = open ? data.path : null;
-  const [trackedBranchLoadKey, setTrackedBranchLoadKey] = useState(branchLoadKey);
-  if (branchLoadKey !== trackedBranchLoadKey) {
-    setTrackedBranchLoadKey(branchLoadKey);
-    setBranches(null);
-    setHighlightIdx(0);
-  }
-  const loading = open && branches === null;
-
-  useEffect(() => {
-    if (!open || !data.path) return;
-    let cancelled = false;
-    fetchBranches(data.path, true).then((rows) => {
-      if (!cancelled) {
-        setBranches(rows ?? []);
-      }
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, [open, data.path]);
-
-  const query = data.baseBranch.trim().toLowerCase();
-  const suggestions = (branches ?? []).filter((b) => !query || b.name.toLowerCase().includes(query)).slice(0, 8);
+  const { loading, suggestions } = useBranchSuggestions(data.path, open, data.baseBranch, 8);
 
   const choose = (name: string) => {
     onChange("baseBranch", name);

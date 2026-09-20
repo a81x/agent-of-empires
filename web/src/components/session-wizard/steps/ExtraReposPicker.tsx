@@ -1,5 +1,5 @@
-import { useEffect, useState } from "react";
-import { fetchBranches, type BranchInfo } from "../../../lib/api";
+import { useState } from "react";
+import { useBranchSuggestions } from "./branchSuggestions";
 import { ProjectSearchList } from "./ProjectSearchList";
 import { useProjectPicker } from "./projectPicker";
 
@@ -26,22 +26,8 @@ function RepoBaseInput({
   value: string;
   onChange: (value: string) => void;
 }) {
-  const [branches, setBranches] = useState<BranchInfo[] | null>(null);
   const [focused, setFocused] = useState(false);
-
-  useEffect(() => {
-    if (!focused || branches !== null) return;
-    let cancelled = false;
-    fetchBranches(repoPath, true).then((rows) => {
-      if (!cancelled) setBranches(rows ?? []);
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, [focused, branches, repoPath]);
-
-  const query = value.trim().toLowerCase();
-  const suggestions = (branches ?? []).filter((b) => !query || b.name.toLowerCase().includes(query)).slice(0, 6);
+  const { suggestions } = useBranchSuggestions(repoPath, focused, value, 6);
 
   return (
     <div className="relative flex-1 min-w-0">
