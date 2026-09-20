@@ -175,7 +175,7 @@
       "kind": "vitest",
       "risk": "high",
       "specs": ["src/hooks/useLiveTerminal.patch.test.ts"],
-      "components": ["web/src/hooks/useLiveTerminal.ts"]
+      "components": ["web/src/hooks/useLiveTerminal.ts", "web/src/components/live-terminal/TermRow.tsx"]
     },
     {
       "id": "terminal.live-alt-screen-scroll",
@@ -710,7 +710,7 @@
         "src/hooks/__tests__/useCommandActions.test.tsx",
         "src/lib/__tests__/shortcuts.test.ts"
       ],
-      "components": ["web/src/components/WorkspaceSidebar.tsx"]
+      "components": ["web/src/components/WorkspaceSidebar.tsx", "web/src/components/sidebar/RowBadges.tsx"]
     },
     {
       "id": "app-shell.mobile-chrome-collapse",
@@ -1193,7 +1193,11 @@
       "kind": "mocked-playwright",
       "risk": "medium",
       "specs": ["tests/sidebar-grouping.spec.ts"],
-      "components": ["web/src/components/WorkspaceSidebar.tsx"]
+      "components": [
+        "web/src/components/WorkspaceSidebar.tsx",
+        "web/src/components/sidebar/SidebarGroupHeader.tsx",
+        "web/src/components/sidebar/GroupLists.tsx"
+      ]
     },
     {
       "id": "sidebar.compact-mode",
@@ -1270,7 +1274,7 @@
       "kind": "mocked-playwright",
       "risk": "medium",
       "specs": ["tests/sidebar-project-row.spec.ts"],
-      "components": ["web/src/components/WorkspaceSidebar.tsx"]
+      "components": ["web/src/components/WorkspaceSidebar.tsx", "web/src/components/sidebar/SessionRow.tsx"]
     },
     {
       "id": "sidebar.project-row-header",
@@ -1291,7 +1295,7 @@
       "kind": "vitest",
       "risk": "medium",
       "specs": ["src/components/__tests__/WorkspaceSidebarTrash.test.tsx"],
-      "components": ["web/src/components/WorkspaceSidebar.tsx"]
+      "components": ["web/src/components/WorkspaceSidebar.tsx", "web/src/components/sidebar/TrashMenu.tsx"]
     },
     {
       "id": "sidebar.trash-order",
@@ -1312,7 +1316,7 @@
       "kind": "mocked-playwright",
       "risk": "medium",
       "specs": ["tests/sidebar-reorder-stationary-click-navigates.spec.ts"],
-      "components": ["web/src/components/WorkspaceSidebar.tsx"]
+      "components": ["web/src/components/WorkspaceSidebar.tsx", "web/src/components/sidebar/Sortable.tsx"]
     },
     {
       "id": "sidebar.reorder-tiny-drag-noop",
@@ -1456,7 +1460,8 @@
       "components": [
         "web/src/components/WorkspaceSidebar.tsx",
         "web/src/components/SidebarSortPicker.tsx",
-        "web/src/components/Tooltip.tsx"
+        "web/src/components/Tooltip.tsx",
+        "web/src/components/sidebar/SidebarToolbar.tsx"
       ]
     },
     {
@@ -1557,7 +1562,11 @@
       "kind": "live-playwright",
       "risk": "high",
       "specs": ["tests/live/session-rename.spec.ts", "tests/live/session-delete.spec.ts"],
-      "components": ["web/src/components/DeleteSessionDialog.tsx", "web/src/components/WorkspaceSidebar.tsx"]
+      "components": [
+        "web/src/components/DeleteSessionDialog.tsx",
+        "web/src/components/WorkspaceSidebar.tsx",
+        "web/src/components/Dialog.tsx"
+      ]
     },
     {
       "id": "session.trash",
@@ -3448,7 +3457,7 @@
       "kind": "vitest",
       "risk": "medium",
       "specs": ["src/components/__tests__/SnoozeModal.test.tsx"],
-      "components": ["web/src/components/WorkspaceSidebar.tsx"]
+      "components": ["web/src/components/WorkspaceSidebar.tsx", "web/src/components/sidebar/SnoozeModal.tsx"]
     },
     {
       "id": "triage.empty-group-hide",
@@ -3462,7 +3471,11 @@
       "kind": "vitest",
       "risk": "medium",
       "specs": ["src/components/__tests__/WorkdirNameEdit.test.tsx"],
-      "components": ["web/src/components/WorkspaceSidebar.tsx", "web/src/lib/api.ts"]
+      "components": [
+        "web/src/components/WorkspaceSidebar.tsx",
+        "web/src/lib/api.ts",
+        "web/src/components/sidebar/WorkdirNameModal.tsx"
+      ]
     },
     {
       "id": "sidebar.rename-success-warning",
@@ -3476,7 +3489,11 @@
       "kind": "vitest",
       "risk": "high",
       "specs": ["src/components/__tests__/AddProjectAction.test.tsx"],
-      "components": ["web/src/components/WorkspaceSidebar.tsx", "web/src/lib/api.ts"]
+      "components": [
+        "web/src/components/WorkspaceSidebar.tsx",
+        "web/src/lib/api.ts",
+        "web/src/components/sidebar/AddProjectModal.tsx"
+      ]
     },
     {
       "id": "sidebar.add-project-daemon",
@@ -3490,7 +3507,12 @@
       "kind": "vitest",
       "risk": "medium",
       "specs": ["src/lib/__tests__/menuPosition.test.ts", "tests/sidebar-context-menu-clamp.spec.ts"],
-      "components": ["web/src/lib/menuPosition.ts", "web/src/components/WorkspaceSidebar.tsx"]
+      "components": [
+        "web/src/lib/menuPosition.ts",
+        "web/src/components/WorkspaceSidebar.tsx",
+        "web/src/components/ContextMenu.tsx",
+        "web/src/components/sidebar/SessionRowMenu.tsx"
+      ]
     },
     {
       "id": "triage.session-row-chips",
