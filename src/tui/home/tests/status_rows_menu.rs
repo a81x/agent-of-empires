@@ -41,13 +41,10 @@ fn wants_text_selection_tracks_copy_friendly_surfaces() {
 #[serial]
 fn apply_status_update_propagates_idle_entered_at_into_live_instance() {
     use crate::session::Status;
-    use crate::tui::status_poller::{IdleIntent, StatusUpdate};
+    use crate::tui::status_poller::IdleIntent;
 
     let mut env = create_test_env_with_sessions(1);
-    let id = match env.view.flat_items.first() {
-        Some(Item::Session { id, .. }) => id.clone(),
-        _ => panic!("expected the fixture to seed a single Session item"),
-    };
+    let id = session_id_at(&env.view, 0).expect("a seeded session row");
 
     // The instance was just created (Idle, no transition observed yet).
     assert_eq!(env.view.get_instance(&id).unwrap().idle_entered_at, None);
@@ -56,16 +53,8 @@ fn apply_status_update_propagates_idle_entered_at_into_live_instance() {
     // wrapper writes `idle_entered_at` on the clone, and the apply path must carry that
     // timestamp into the live instance.
     let now = chrono::Utc::now();
-    env.view.apply_one_status_update(StatusUpdate {
-        id: id.clone(),
-        status: Status::Idle,
-        last_error: None,
-        idle_entered_at: IdleIntent::Set(now),
-        last_accessed_at: None,
-        pane_dead: false,
-        live_status_baseline: None,
-        detection: None,
-    });
+    env.view
+        .apply_one_status_update(status_update(&id, Status::Idle, IdleIntent::Set(now)));
 
     let inst = env.view.get_instance(&id).unwrap();
     assert_eq!(inst.status, Status::Idle);
@@ -82,10 +71,7 @@ fn apply_status_update_propagates_live_status_baseline_from_poller() {
     use crate::tui::status_poller::{poll_statuses_once, StatusPollState};
 
     let mut env = create_test_env_with_sessions(1);
-    let id = match env.view.flat_items.first() {
-        Some(Item::Session { id, .. }) => id.clone(),
-        _ => panic!("expected the fixture to seed a single Session item"),
-    };
+    let id = session_id_at(&env.view, 0).expect("a seeded session row");
     assert_eq!(
         env.view.get_instance(&id).unwrap().live_status_baseline,
         None,
@@ -137,10 +123,7 @@ fn poll_cycles_confirm_an_unwitnessed_idle_through_the_status_update() {
     }
 
     let mut env = create_test_env_with_sessions(1);
-    let id = match env.view.flat_items.first() {
-        Some(Item::Session { id, .. }) => id.clone(),
-        _ => panic!("expected the fixture to seed a single Session item"),
-    };
+    let id = session_id_at(&env.view, 0).expect("a seeded session row");
 
     let session_name = {
         let inst = env.view.get_instance(&id).unwrap();
@@ -216,13 +199,10 @@ fn poll_cycles_confirm_an_unwitnessed_idle_through_the_status_update() {
 #[serial]
 fn apply_status_update_preserves_idle_entered_at_on_keep() {
     use crate::session::Status;
-    use crate::tui::status_poller::{IdleIntent, StatusUpdate};
+    use crate::tui::status_poller::IdleIntent;
 
     let mut env = create_test_env_with_sessions(1);
-    let id = match env.view.flat_items.first() {
-        Some(Item::Session { id, .. }) => id.clone(),
-        _ => panic!("expected the fixture to seed a single Session item"),
-    };
+    let id = session_id_at(&env.view, 0).expect("a seeded session row");
 
     // Seed a real `idle_entered_at` on the live instance, as if the
     // main-thread poller had already observed an Idle transition.
@@ -233,16 +213,8 @@ fn apply_status_update_preserves_idle_entered_at_on_keep() {
 
     // Then apply a `Keep` update, mirroring an `attached_status_hooks`
     // snapshot from a watcher clone that never polled.
-    env.view.apply_one_status_update(StatusUpdate {
-        id: id.clone(),
-        status: Status::Idle,
-        last_error: None,
-        idle_entered_at: IdleIntent::Keep,
-        last_accessed_at: None,
-        pane_dead: false,
-        live_status_baseline: None,
-        detection: None,
-    });
+    env.view
+        .apply_one_status_update(status_update(&id, Status::Idle, IdleIntent::Keep));
 
     assert_eq!(
         env.view.get_instance(&id).unwrap().idle_entered_at,
@@ -261,22 +233,13 @@ fn apply_status_update_persists_genuine_transition_to_disk() {
     use crate::tui::status_poller::{IdleIntent, StatusUpdate};
 
     let mut env = create_test_env_with_sessions(1);
-    let id = match env.view.flat_items.first() {
-        Some(Item::Session { id, .. }) => id.clone(),
-        _ => panic!("expected the fixture to seed a single Session item"),
-    };
+    let id = session_id_at(&env.view, 0).expect("a seeded session row");
     assert_eq!(env.view.get_instance(&id).unwrap().status, Status::Idle);
 
     let now = chrono::Utc::now();
     env.view.apply_one_status_update(StatusUpdate {
-        id: id.clone(),
-        status: Status::Running,
-        last_error: None,
-        idle_entered_at: IdleIntent::Clear,
         last_accessed_at: Some(now),
-        pane_dead: false,
-        live_status_baseline: None,
-        detection: None,
+        ..status_update(&id, Status::Running, IdleIntent::Clear)
     });
 
     let reloaded = Storage::new_unwatched("test").unwrap().load().unwrap();
@@ -293,26 +256,15 @@ fn apply_status_update_persists_genuine_transition_to_disk() {
 #[serial]
 fn apply_status_update_clears_idle_entered_at_on_idle_to_running() {
     use crate::session::Status;
-    use crate::tui::status_poller::{IdleIntent, StatusUpdate};
+    use crate::tui::status_poller::IdleIntent;
 
     let mut env = create_test_env_with_sessions(1);
-    let id = match env.view.flat_items.first() {
-        Some(Item::Session { id, .. }) => id.clone(),
-        _ => panic!("expected the fixture to seed a single Session item"),
-    };
+    let id = session_id_at(&env.view, 0).expect("a seeded session row");
 
     // Seed: session is Idle with a freshness timestamp set.
     let stop_time = chrono::Utc::now() - chrono::Duration::seconds(60);
-    env.view.apply_one_status_update(StatusUpdate {
-        id: id.clone(),
-        status: Status::Idle,
-        last_error: None,
-        idle_entered_at: IdleIntent::Set(stop_time),
-        last_accessed_at: None,
-        pane_dead: false,
-        live_status_baseline: None,
-        detection: None,
-    });
+    env.view
+        .apply_one_status_update(status_update(&id, Status::Idle, IdleIntent::Set(stop_time)));
     assert_eq!(
         env.view.get_instance(&id).unwrap().idle_entered_at,
         Some(stop_time)
@@ -321,16 +273,8 @@ fn apply_status_update_clears_idle_entered_at_on_idle_to_running() {
     // Transition Idle -> Running. The poller's wrapper clears `idle_entered_at` on the
     // clone for non-Idle states, and the apply path must honor that or a Running session
     // would still claim a freshness age.
-    env.view.apply_one_status_update(StatusUpdate {
-        id: id.clone(),
-        status: Status::Running,
-        last_error: None,
-        idle_entered_at: IdleIntent::Clear,
-        last_accessed_at: None,
-        pane_dead: false,
-        live_status_baseline: None,
-        detection: None,
-    });
+    env.view
+        .apply_one_status_update(status_update(&id, Status::Running, IdleIntent::Clear));
 
     let inst = env.view.get_instance(&id).unwrap();
     assert_eq!(inst.status, Status::Running);
@@ -350,10 +294,7 @@ fn archived_running_session_renders_stopped_icon_not_spinner() {
     use crate::tui::home::ICON_STOPPED;
 
     let mut env = create_test_env_with_sessions(1);
-    let id = match env.view.flat_items.first() {
-        Some(Item::Session { id, .. }) => id.clone(),
-        _ => panic!("expected one session"),
-    };
+    let id = session_id_at(&env.view, 0).expect("a seeded session row");
 
     // Archive the session AND keep its underlying status as Running so the
     // spinner branch would fire in the absence of the override.
@@ -403,13 +344,10 @@ fn archived_running_session_renders_stopped_icon_not_spinner() {
 #[serial]
 fn apply_status_update_skips_terminal_states() {
     use crate::session::Status;
-    use crate::tui::status_poller::{IdleIntent, StatusUpdate};
+    use crate::tui::status_poller::IdleIntent;
 
     let mut env = create_test_env_with_sessions(1);
-    let id = match env.view.flat_items.first() {
-        Some(Item::Session { id, .. }) => id.clone(),
-        _ => panic!("expected the fixture to seed a single Session item"),
-    };
+    let id = session_id_at(&env.view, 0).expect("a seeded session row");
 
     // Move the session into a terminal state that the apply path is
     // supposed to leave alone.
@@ -417,16 +355,8 @@ fn apply_status_update_skips_terminal_states() {
         .mutate_instance(&id, |inst| inst.status = Status::Deleting);
     let stale_ts = chrono::Utc::now() - chrono::Duration::seconds(10);
 
-    env.view.apply_one_status_update(StatusUpdate {
-        id: id.clone(),
-        status: Status::Idle,
-        last_error: None,
-        idle_entered_at: IdleIntent::Set(stale_ts),
-        last_accessed_at: None,
-        pane_dead: false,
-        live_status_baseline: None,
-        detection: None,
-    });
+    env.view
+        .apply_one_status_update(status_update(&id, Status::Idle, IdleIntent::Set(stale_ts)));
 
     // Status and timestamp should both stay untouched.
     let inst = env.view.get_instance(&id).unwrap();
@@ -441,10 +371,7 @@ fn apply_stop_results_transitions_instance_to_stopped() {
     use crate::tui::stop_poller::StopRequest;
 
     let mut env = create_test_env_with_sessions(1);
-    let id = match env.view.flat_items.first() {
-        Some(Item::Session { id, .. }) => id.clone(),
-        _ => panic!("expected the fixture to seed a single Session item"),
-    };
+    let id = session_id_at(&env.view, 0).expect("a seeded session row");
 
     // Pretend the session is live, then dispatch the stop to the background poller exactly
     // as Action::StopSession does. The fixture has no pane or sandbox, so perform_stop
@@ -478,13 +405,10 @@ fn apply_stop_results_transitions_instance_to_stopped() {
 fn apply_status_update_runs_status_hook_on_transition() {
     use crate::session::Status;
     use crate::status_hooks::{take_recorded_launches, StatusHookConfig};
-    use crate::tui::status_poller::{IdleIntent, StatusUpdate};
+    use crate::tui::status_poller::IdleIntent;
 
     let mut env = create_test_env_with_sessions(1);
-    let id = match env.view.flat_items.first() {
-        Some(Item::Session { id, .. }) => id.clone(),
-        _ => panic!("expected the fixture to seed a single Session item"),
-    };
+    let id = session_id_at(&env.view, 0).expect("a seeded session row");
     env.view.status_hook_config = StatusHookConfig {
         enabled: true,
         on_waiting: Some("notify-waiting".to_string()),
@@ -493,16 +417,8 @@ fn apply_status_update_runs_status_hook_on_transition() {
     };
     take_recorded_launches();
 
-    env.view.apply_one_status_update(StatusUpdate {
-        id: id.clone(),
-        status: Status::Waiting,
-        last_error: None,
-        idle_entered_at: IdleIntent::Clear,
-        last_accessed_at: None,
-        pane_dead: false,
-        live_status_baseline: None,
-        detection: None,
-    });
+    env.view
+        .apply_one_status_update(status_update(&id, Status::Waiting, IdleIntent::Clear));
 
     let launches = take_recorded_launches();
     assert_eq!(launches.len(), 2);
@@ -544,13 +460,10 @@ fn all_profiles_status_hook_lookup_uses_cache() {
 fn apply_status_update_does_not_run_status_hook_for_same_status() {
     use crate::session::Status;
     use crate::status_hooks::{take_recorded_launches, StatusHookConfig};
-    use crate::tui::status_poller::{IdleIntent, StatusUpdate};
+    use crate::tui::status_poller::IdleIntent;
 
     let mut env = create_test_env_with_sessions(1);
-    let id = match env.view.flat_items.first() {
-        Some(Item::Session { id, .. }) => id.clone(),
-        _ => panic!("expected the fixture to seed a single Session item"),
-    };
+    let id = session_id_at(&env.view, 0).expect("a seeded session row");
     env.view.status_hook_config = StatusHookConfig {
         enabled: true,
         on_change: Some("notify-change".to_string()),
@@ -558,16 +471,8 @@ fn apply_status_update_does_not_run_status_hook_for_same_status() {
     };
     take_recorded_launches();
 
-    env.view.apply_one_status_update(StatusUpdate {
-        id,
-        status: Status::Idle,
-        last_error: None,
-        idle_entered_at: IdleIntent::Keep,
-        last_accessed_at: None,
-        pane_dead: false,
-        live_status_baseline: None,
-        detection: None,
-    });
+    env.view
+        .apply_one_status_update(status_update(&id, Status::Idle, IdleIntent::Keep));
 
     assert!(take_recorded_launches().is_empty());
 }
@@ -577,13 +482,10 @@ fn apply_status_update_does_not_run_status_hook_for_same_status() {
 fn apply_status_updates_without_hooks_does_not_run_status_hook() {
     use crate::session::Status;
     use crate::status_hooks::{take_recorded_launches, StatusHookConfig};
-    use crate::tui::status_poller::{IdleIntent, StatusUpdate};
+    use crate::tui::status_poller::IdleIntent;
 
     let mut env = create_test_env_with_sessions(1);
-    let id = match env.view.flat_items.first() {
-        Some(Item::Session { id, .. }) => id.clone(),
-        _ => panic!("expected the fixture to seed a single Session item"),
-    };
+    let id = session_id_at(&env.view, 0).expect("a seeded session row");
     env.view.status_hook_config = StatusHookConfig {
         enabled: true,
         on_waiting: Some("notify-waiting".to_string()),
@@ -592,16 +494,11 @@ fn apply_status_updates_without_hooks_does_not_run_status_hook() {
     take_recorded_launches();
 
     env.view
-        .apply_status_updates_without_hooks(vec![StatusUpdate {
-            id: id.clone(),
-            status: Status::Waiting,
-            last_error: None,
-            idle_entered_at: IdleIntent::Clear,
-            last_accessed_at: None,
-            pane_dead: false,
-            live_status_baseline: None,
-            detection: None,
-        }]);
+        .apply_status_updates_without_hooks(vec![status_update(
+            &id,
+            Status::Waiting,
+            IdleIntent::Clear,
+        )]);
 
     assert_eq!(env.view.get_instance(&id).unwrap().status, Status::Waiting);
     assert!(take_recorded_launches().is_empty());
@@ -614,10 +511,7 @@ fn set_instance_status_runs_status_hook_on_transition() {
     use crate::status_hooks::{take_recorded_launches, StatusHookConfig};
 
     let mut env = create_test_env_with_sessions(1);
-    let id = match env.view.flat_items.first() {
-        Some(Item::Session { id, .. }) => id.clone(),
-        _ => panic!("expected the fixture to seed a single Session item"),
-    };
+    let id = session_id_at(&env.view, 0).expect("a seeded session row");
     env.view.status_hook_config = StatusHookConfig {
         enabled: true,
         on_error: Some("notify-error".to_string()),

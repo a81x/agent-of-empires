@@ -117,6 +117,25 @@ fn cursor_session_id(view: &HomeView) -> Option<String> {
     session_id_at(view, view.cursor)
 }
 
+/// A `StatusUpdate` carrying the three fields the apply-path tests vary; everything else
+/// takes the "producer had nothing to say" value.
+fn status_update(
+    id: &str,
+    status: Status,
+    idle_entered_at: crate::tui::status_poller::IdleIntent,
+) -> crate::tui::status_poller::StatusUpdate {
+    crate::tui::status_poller::StatusUpdate {
+        id: id.to_string(),
+        status,
+        last_error: None,
+        idle_entered_at,
+        last_accessed_at: None,
+        pane_dead: false,
+        live_status_baseline: None,
+        detection: None,
+    }
+}
+
 fn instance_in(title: &str, path: &str, group: &str) -> Instance {
     let mut inst = Instance::new(title, path);
     inst.group_path = group.to_string();

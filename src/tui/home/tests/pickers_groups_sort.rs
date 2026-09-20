@@ -48,6 +48,45 @@ fn test_uppercase_p_picker_switch_profile() {
     assert!(view.profile_picker_dialog.is_none());
 }
 
+/// Shift+T attaches the paired terminal from either view without changing the view mode,
+/// so it stays the one-key path to the shell whatever the preview is showing.
+/// Every overlay that takes the keyboard registers with `has_dialog`, which the mouse,
+/// scroll and shortcut gates all read.
+#[test]
+#[serial]
+fn test_has_dialog_includes_overlays() {
+    use crate::tui::settings::SettingsView;
+
+    let env = create_test_env_empty();
+    let mut view = env.view;
+    assert!(!view.has_dialog());
+
+    view.info_dialog = Some(InfoDialog::new("Test", "Test message"));
+    assert!(view.has_dialog(), "info dialog");
+    view.info_dialog = None;
+
+    view.settings_view = Some(SettingsView::new("test", None).unwrap());
+    assert!(view.has_dialog(), "settings view");
+}
+
+#[test]
+#[serial]
+fn test_shift_t_attaches_terminal_from_either_view() {
+    let env = create_test_env_with_sessions(1);
+    let mut view = env.view;
+    assert_eq!(view.view_mode, ViewMode::Structured);
+
+    let action = view.handle_key(key(KeyCode::Char('T')), None);
+    assert!(matches!(action, Some(Action::AttachTerminal(_, _))));
+    assert_eq!(view.view_mode, ViewMode::Structured);
+
+    view.handle_key(key(KeyCode::Char('t')), None);
+    assert_eq!(view.view_mode, ViewMode::Terminal);
+    let action = view.handle_key(key(KeyCode::Char('T')), None);
+    assert!(matches!(action, Some(Action::AttachTerminal(_, _))));
+    assert_eq!(view.view_mode, ViewMode::Terminal);
+}
+
 #[test]
 #[serial]
 fn test_t_toggles_view_mode() {
@@ -139,36 +178,6 @@ fn test_enter_returns_attach_terminal_in_terminal_view() {
 
 #[test]
 #[serial]
-fn test_shift_t_attaches_terminal_from_structured_view() {
-    let env = create_test_env_with_sessions(1);
-    let mut view = env.view;
-
-    // Should be in Structured view by default
-    assert_eq!(view.view_mode, ViewMode::Structured);
-
-    // Shift+T should return AttachTerminal without switching view mode
-    let action = view.handle_key(key(KeyCode::Char('T')), None);
-    assert!(matches!(action, Some(Action::AttachTerminal(_, _))));
-    assert_eq!(view.view_mode, ViewMode::Structured);
-}
-
-#[test]
-#[serial]
-fn test_shift_t_attaches_terminal_from_terminal_view() {
-    let env = create_test_env_with_sessions(1);
-    let mut view = env.view;
-
-    // Switch to Terminal view
-    view.handle_key(key(KeyCode::Char('t')), None);
-    assert_eq!(view.view_mode, ViewMode::Terminal);
-
-    // Shift+T should also work from Terminal view
-    let action = view.handle_key(key(KeyCode::Char('T')), None);
-    assert!(matches!(action, Some(Action::AttachTerminal(_, _))));
-}
-
-#[test]
-#[serial]
 fn test_shift_t_noop_with_no_sessions() {
     let env = create_test_env_empty();
     let mut view = env.view;
@@ -192,32 +201,6 @@ fn test_d_shows_info_dialog_in_terminal_view() {
     view.handle_key(key(KeyCode::Char('d')), None);
     assert!(view.info_dialog.is_some());
     assert!(view.unified_delete_dialog.is_none());
-}
-
-#[test]
-#[serial]
-fn test_has_dialog_includes_info_dialog() {
-    let env = create_test_env_empty();
-    let mut view = env.view;
-
-    assert!(!view.has_dialog());
-
-    view.info_dialog = Some(InfoDialog::new("Test", "Test message"));
-    assert!(view.has_dialog());
-}
-
-#[test]
-#[serial]
-fn test_has_dialog_includes_settings_view() {
-    use crate::tui::settings::SettingsView;
-
-    let env = create_test_env_empty();
-    let mut view = env.view;
-
-    assert!(!view.has_dialog());
-
-    view.settings_view = Some(SettingsView::new("test", None).unwrap());
-    assert!(view.has_dialog());
 }
 
 #[test]
@@ -1179,49 +1162,27 @@ fn test_derived_group_collapsed_prunes_stale_paths() {
     }
 }
 
+/// `shrink_list` / `grow_list` step the list width by 5 from its default and clamp at the
+/// 10 / 80 bounds the keyboard `<` and `>` share.
 #[test]
 #[serial]
-fn test_list_width_default() {
-    let env = create_test_env_empty();
-    assert_eq!(env.view.list_width, 35);
-}
-
-#[test]
-#[serial]
-fn test_shrink_list() {
+fn test_list_width_steps_and_clamps() {
     let mut env = create_test_env_empty();
+    assert_eq!(env.view.list_width, 35);
     env.view.shrink_list();
     assert_eq!(env.view.list_width, 30);
-}
-
-#[test]
-#[serial]
-fn test_grow_list() {
-    let mut env = create_test_env_empty();
     env.view.grow_list();
-    assert_eq!(env.view.list_width, 40);
-}
+    assert_eq!(env.view.list_width, 35);
 
-#[test]
-#[serial]
-fn test_shrink_list_clamps_at_minimum() {
-    let mut env = create_test_env_empty();
     env.view.list_width = 12;
     env.view.shrink_list();
-    assert_eq!(env.view.list_width, 10);
     env.view.shrink_list();
-    assert_eq!(env.view.list_width, 10);
-}
+    assert_eq!(env.view.list_width, 10, "shrink clamps at the minimum");
 
-#[test]
-#[serial]
-fn test_grow_list_clamps_at_maximum() {
-    let mut env = create_test_env_empty();
     env.view.list_width = 78;
     env.view.grow_list();
-    assert_eq!(env.view.list_width, 80);
     env.view.grow_list();
-    assert_eq!(env.view.list_width, 80);
+    assert_eq!(env.view.list_width, 80, "grow clamps at the maximum");
 }
 
 #[test]
@@ -1240,15 +1201,6 @@ fn test_gt_grows_list() {
     assert_eq!(env.view.list_width, 35);
     env.view.handle_key(key(KeyCode::Char('>')), None);
     assert_eq!(env.view.list_width, 40);
-}
-
-#[test]
-#[serial]
-fn test_sort_order_defaults_to_newest() {
-    use crate::session::config::SortOrder;
-
-    let env = create_test_env_with_mixed_sessions();
-    assert_eq!(env.view.sort_order, SortOrder::Newest);
 }
 
 /// The picker must not offer a repo the session already has, since the attach would be
