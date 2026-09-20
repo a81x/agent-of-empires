@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { render, screen, waitFor, act } from "@testing-library/react";
 
 import type { SessionResponse } from "../../lib/types";
+import { makeSession as baseSession } from "./fixtures";
 
 // ── Mock the chain of dependencies the component pulls in so the render stops at the early-return without trying
 // to mount a real terminal or open a WebSocket.
@@ -57,28 +58,8 @@ vi.mock("../../hooks/useMobileKeyboard", () => ({
 
 import { TerminalView } from "../TerminalView";
 
-function makeSession(overrides: Partial<SessionResponse> = {}): SessionResponse {
-  return {
-    id: "sess-1",
-    title: "test-session",
-    project_path: "/tmp/test",
-    group_path: "/tmp",
-    tool: "claude",
-    status: "Running",
-    yolo_mode: false,
-    created_at: new Date().toISOString(),
-    last_accessed_at: null,
-    last_error: null,
-    branch: null,
-    main_repo_path: null,
-    is_sandboxed: false,
-    has_terminal: true,
-    profile: "default",
-    workspace_repos: [],
-    claude_fullscreen: false,
-    ...overrides,
-  } as SessionResponse;
-}
+const makeSession = (overrides: Partial<SessionResponse> = {}) =>
+  baseSession({ id: "sess-1", title: "test-session", project_path: "/tmp/test", status: "Running", ...overrides });
 
 afterEach(() => {
   ensureSession.mockReset();

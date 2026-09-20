@@ -3,6 +3,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import type { SessionResponse } from "../../lib/types";
+import { makeSession as baseSession } from "./fixtures";
 
 vi.mock("../TerminalView", () => ({
   TerminalView: ({ session, active }: { session: SessionResponse; active: boolean }) => (
@@ -19,39 +20,7 @@ afterEach(() => {
   cleanup();
 });
 
-function makeSession(id: string): SessionResponse {
-  return {
-    id,
-    title: id,
-    project_path: `/tmp/${id}`,
-    group_path: "/tmp",
-    tool: "claude",
-    status: "Running",
-    yolo_mode: false,
-    created_at: new Date().toISOString(),
-    last_accessed_at: null,
-    idle_entered_at: null,
-    last_error: null,
-    branch: null,
-    main_repo_path: null,
-    is_sandboxed: false,
-    favorited: false,
-    has_managed_worktree: false,
-    has_terminal: true,
-    profile: "default",
-    cleanup_defaults: {
-      delete_worktree: false,
-      delete_branch: false,
-      delete_sandbox: false,
-    },
-    remote_owner: null,
-    notify_on_waiting: null,
-    notify_on_idle: null,
-    notify_on_error: null,
-    claude_fullscreen: false,
-    workspace_repos: [],
-  };
-}
+const makeSession = (id: string) => baseSession({ id, title: id, project_path: `/tmp/${id}`, status: "Running" });
 
 describe("TerminalSessionStack", () => {
   it("renders only the active session when persistence is disabled", () => {

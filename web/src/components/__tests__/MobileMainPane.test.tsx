@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen } from "@testing-library/react";
 
 import type { SessionResponse } from "../../lib/types";
+import { makeSession as baseSession } from "./fixtures";
 import type { useDiffComments } from "../../hooks/useDiffComments";
 
 vi.mock("../TerminalSessionStack", () => ({
@@ -34,27 +35,8 @@ vi.mock("../acp/StructuredView", () => ({
 
 import { MobileMainPane } from "../MobileMainPane";
 
-function session(overrides: Partial<SessionResponse> = {}): SessionResponse {
-  return {
-    id: "s1",
-    title: "t",
-    project_path: "/tmp/t",
-    group_path: "/tmp",
-    tool: "claude",
-    status: "Running",
-    yolo_mode: false,
-    created_at: new Date().toISOString(),
-    last_accessed_at: null,
-    last_error: null,
-    branch: null,
-    main_repo_path: null,
-    is_sandboxed: false,
-    has_terminal: true,
-    profile: "default",
-    workspace_repos: [],
-    ...overrides,
-  } as SessionResponse;
-}
+const session = (overrides: Partial<SessionResponse> = {}) =>
+  baseSession({ id: "s1", title: "t", project_path: "/tmp/t", status: "Running", ...overrides });
 
 function makeStore(overrides: Partial<ReturnType<typeof useDiffComments>> = {}): ReturnType<typeof useDiffComments> {
   return {
