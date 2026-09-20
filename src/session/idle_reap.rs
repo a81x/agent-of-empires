@@ -138,34 +138,37 @@ mod tests {
     #[test]
     fn should_auto_stop_session_cases() {
         let n = now();
-        // (case, status, idle entered ago, last accessed ago, attached, threshold, expected)
-        let cases: &[(&str, Status, Option<i64>, Option<i64>, bool, u32, bool)] = &[
-            ("disabled threshold", Status::Idle, Some(36000), None, false, 0, false),
-            ("running", Status::Running, Some(36000), None, false, 60, false),
-            ("waiting", Status::Waiting, Some(36000), None, false, 60, false),
-            ("error", Status::Error, Some(36000), None, false, 60, false),
-            ("attached", Status::Idle, Some(36000), None, true, 60, false),
-            ("never entered idle", Status::Idle, None, None, false, 60, false),
-            ("past threshold", Status::Idle, Some(120), None, false, 60, true),
-            ("within threshold", Status::Idle, Some(30), None, false, 60, false),
-            ("exactly at threshold", Status::Idle, Some(60), None, false, 60, true),
-            ("access after idle entry re-anchors", Status::Idle, Some(7200), Some(10), false, 60, false),
-            ("access before idle entry does not", Status::Idle, Some(120), Some(18000), false, 60, true),
-            ("anchor in the future (clock skew)", Status::Idle, Some(-60), None, false, 60, false),
+        let idle = Status::Idle;
+        // (status, idle-entered secs ago, last-accessed secs ago, attached, threshold, stop?)
+        let cases: &[(Status, Option<i64>, Option<i64>, bool, u32, bool)] = &[
+            (idle, Some(36000), None, false, 0, false),
+            (Status::Running, Some(36000), None, false, 60, false),
+            (Status::Waiting, Some(36000), None, false, 60, false),
+            (Status::Error, Some(36000), None, false, 60, false),
+            (idle, Some(36000), None, true, 60, false),
+            (idle, None, None, false, 60, false),
+            (idle, Some(120), None, false, 60, true),
+            (idle, Some(30), None, false, 60, false),
+            (idle, Some(60), None, false, 60, true),
+            // A later access re-anchors the idle window; an earlier one does not.
+            (idle, Some(7200), Some(10), false, 60, false),
+            (idle, Some(120), Some(18000), false, 60, true),
+            // Anchor in the future (clock skew).
+            (idle, Some(-60), None, false, 60, false),
         ];
-        for &(case, status, entered, accessed, attached, threshold, expected) in cases {
-            let ago = |secs: i64| n - Duration::seconds(secs);
+        for &(status, entered, accessed, attached, secs, stop) in cases {
+            let ago = |s: i64| n - Duration::seconds(s);
+            let got = should_auto_stop_session(
+                n,
+                status,
+                entered.map(ago),
+                accessed.map(ago),
+                attached,
+                secs,
+            );
             assert_eq!(
-                should_auto_stop_session(
-                    n,
-                    status,
-                    entered.map(ago),
-                    accessed.map(ago),
-                    attached,
-                    threshold,
-                ),
-                expected,
-                "{case}"
+                got, stop,
+                "{status:?} {entered:?} {accessed:?} {attached} {secs}"
             );
         }
     }

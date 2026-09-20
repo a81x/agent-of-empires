@@ -229,20 +229,27 @@ pub fn app_dir_exists() -> bool {
     get_app_dir_path().map(|p| p.exists()).unwrap_or(false)
 }
 
-fn get_app_dir_path() -> Result<PathBuf> {
+/// The app dir of one build namespace, named by its XDG-layout and home-dotfile directory names.
+fn app_dir_for(xdg_name: &str, other_name: &str) -> Option<PathBuf> {
     #[cfg(target_os = "linux")]
-    let dir = xdg_config_base()?.join(APP_DIR_NAME_XDG);
-
+    {
+        let _ = other_name;
+        xdg_config_base().ok().map(|base| base.join(xdg_name))
+    }
     #[cfg(target_os = "macos")]
-    let dir = macos_app_dir(APP_DIR_NAME_XDG, APP_DIR_NAME_OTHER)
-        .ok_or_else(|| anyhow::anyhow!("Cannot find home directory"))?;
-
+    {
+        macos_app_dir(xdg_name, other_name)
+    }
     #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-    let dir = dirs::home_dir()
-        .ok_or_else(|| anyhow::anyhow!("Cannot find home directory"))?
-        .join(APP_DIR_NAME_OTHER);
+    {
+        let _ = xdg_name;
+        dirs::home_dir().map(|home| home.join(other_name))
+    }
+}
 
-    Ok(dir)
+fn get_app_dir_path() -> Result<PathBuf> {
+    app_dir_for(APP_DIR_NAME_XDG, APP_DIR_NAME_OTHER)
+        .ok_or_else(|| anyhow::anyhow!("Cannot find home directory"))
 }
 
 /// Detect the first-launch case where a debug build is being run on a machine that has populated
@@ -252,19 +259,8 @@ pub fn debug_namespace_drift() -> Option<(PathBuf, PathBuf)> {
         return None;
     }
 
-    #[cfg(target_os = "linux")]
-    let release_dir = xdg_config_base().ok()?.join("agent-of-empires");
-    #[cfg(target_os = "macos")]
-    let release_dir = macos_app_dir("agent-of-empires", ".agent-of-empires")?;
-    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-    let release_dir = dirs::home_dir()?.join(".agent-of-empires");
-
-    #[cfg(target_os = "linux")]
-    let dev_dir = xdg_config_base().ok()?.join(APP_DIR_NAME_XDG);
-    #[cfg(target_os = "macos")]
-    let dev_dir = macos_app_dir(APP_DIR_NAME_XDG, APP_DIR_NAME_OTHER)?;
-    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-    let dev_dir = dirs::home_dir()?.join(APP_DIR_NAME_OTHER);
+    let release_dir = app_dir_for("agent-of-empires", ".agent-of-empires")?;
+    let dev_dir = app_dir_for(APP_DIR_NAME_XDG, APP_DIR_NAME_OTHER)?;
 
     let release_populated = fs::read_dir(&release_dir)
         .map(|mut entries| entries.next().is_some())
@@ -285,20 +281,7 @@ pub(crate) fn sibling_namespace_app_dir() -> Option<PathBuf> {
     } else {
         ("agent-of-empires-dev", ".agent-of-empires-dev")
     };
-    #[cfg(target_os = "linux")]
-    {
-        let _ = other;
-        xdg_config_base().ok().map(|base| base.join(xdg))
-    }
-    #[cfg(target_os = "macos")]
-    {
-        macos_app_dir(xdg, other)
-    }
-    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-    {
-        let _ = xdg;
-        dirs::home_dir().map(|home| home.join(other))
-    }
+    app_dir_for(xdg, other)
 }
 
 /// Format the user-facing warning shown when `debug_namespace_drift()` fires.
@@ -1077,6 +1060,16 @@ mod tests {
                 "",
                 &["Unrecognized keys in global config", "sandbox.privildged"],
             ),
+            (
+                "unknown profile key",
+                None,
+                Some("[sandbox]\nprivildged = true\n"),
+                "default",
+                &[
+                    "Unrecognized keys in profile config 'default'",
+                    "sandbox.privildged",
+                ],
+            ),
         ];
         for (case, global, profile, arg, fragments) in cases {
             let _temp = seed_configs(*global, *profile);
@@ -1102,64 +1095,32 @@ mod tests {
 
     #[test]
     #[serial_test::serial]
-    fn test_collect_startup_config_warnings_allows_documented_map_sections() {
-        let temp = isolate_app_dir();
-        let dir = app_dir(&temp);
-        fs::write(
-            dir.join("config.toml"),
-            "[session]\n\
-             custom_agents = { myagent = \"true\" }\n\
-             [agents.claude.status_map]\n\
-             SessionStart = \"running\"\n\
-             [tools.lazygit]\n\
-             command = \"lazygit\"\n\
-             [plugins.\"aoe.web\"]\n\
-             enabled = true\n",
-        )
-        .unwrap();
-
-        let warning = collect_startup_config_warnings("");
-        assert!(
-            warning.is_none(),
-            "documented map-key sections must not produce a warning, got: {warning:?}"
+    fn documented_map_sections_pass_but_a_typo_inside_one_still_flags() {
+        let _temp = seed_configs(
+            Some(
+                "[session]\n\
+                 custom_agents = { myagent = \"true\" }\n\
+                 [agents.claude.status_map]\n\
+                 SessionStart = \"running\"\n\
+                 [tools.lazygit]\n\
+                 command = \"lazygit\"\n\
+                 [plugins.\"aoe.web\"]\n\
+                 enabled = true\n",
+            ),
+            None,
         );
-    }
+        let warning = collect_startup_config_warnings("");
+        assert!(warning.is_none(), "documented map keys: got {warning:?}");
 
-    #[test]
-    #[serial_test::serial]
-    fn test_collect_startup_config_warnings_flags_typo_inside_map_entry() {
-        let temp = isolate_app_dir();
-        let dir = app_dir(&temp);
-        fs::write(
-            dir.join("config.toml"),
-            "[agents.claude]\nstatus_maap = { foo = \"bar\" }\n",
-        )
-        .unwrap();
-
+        let _temp = seed_configs(
+            Some("[agents.claude]\nstatus_maap = { foo = \"bar\" }\n"),
+            None,
+        );
         let warning = collect_startup_config_warnings("").expect("expected a warning");
         assert!(
             warning.contains("agents.claude.status_maap"),
-            "typo inside a map entry should still flag, got: {warning}"
+            "got {warning}"
         );
-    }
-
-    #[test]
-    #[serial_test::serial]
-    fn test_collect_startup_config_warnings_flags_unknown_key_in_profile() {
-        let temp = isolate_app_dir();
-        let dir = app_dir(&temp);
-        let profile_dir = dir.join("profiles").join("default");
-        fs::create_dir_all(&profile_dir).unwrap();
-        fs::write(
-            profile_dir.join("config.toml"),
-            "[sandbox]\nprivildged = true\n",
-        )
-        .unwrap();
-
-        let warning =
-            collect_startup_config_warnings("default").expect("expected a profile warning");
-        assert!(warning.contains("Unrecognized keys in profile config 'default'"));
-        assert!(warning.contains("sandbox.privildged"));
     }
 
     fn release_dir_in(root: impl AsRef<Path>) -> PathBuf {
@@ -1322,15 +1283,11 @@ mod tests {
     }
 
     #[test]
-    fn test_validate_profile_name_accepts_normal_names() {
+    fn validate_profile_name_accepts_existing_dirs_and_rejects_traversal() {
         for name in ["work", "personal", "client-a", ".hidden", "1", "main"] {
             validate_profile_name(name)
                 .unwrap_or_else(|e| panic!("expected {name:?} to validate: {e}"));
         }
-    }
-
-    #[test]
-    fn test_validate_profile_name_rejects_traversal_and_separators() {
         for bad in ["", "..", ".", "/etc", "a/b", "a\\b", "all", "ALL"] {
             validate_profile_name(bad)
                 .err()
@@ -1339,7 +1296,7 @@ mod tests {
     }
 
     #[test]
-    fn test_validate_new_profile_name_accepts_typical_names() {
+    fn validate_new_profile_name_gates_creation_more_tightly() {
         for name in [
             "default",
             "work",
@@ -1352,10 +1309,6 @@ mod tests {
             validate_new_profile_name(name)
                 .unwrap_or_else(|e| panic!("expected {name:?} to pass create gate: {e}"));
         }
-    }
-
-    #[test]
-    fn test_validate_new_profile_name_rejects_stray_shapes() {
         for bad in [
             "work 0123456789abcdef Some Title",
             "ZZTEST spaced name",
@@ -1372,8 +1325,7 @@ mod tests {
                 .err()
                 .unwrap_or_else(|| panic!("expected create gate to reject {bad:?}"));
         }
-        let too_long = "a".repeat(65);
-        validate_new_profile_name(&too_long).expect_err("65-char name must be rejected");
+        validate_new_profile_name(&"a".repeat(65)).expect_err("65 chars is too long");
     }
 
     #[test]
