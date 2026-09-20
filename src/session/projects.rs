@@ -473,50 +473,31 @@ mod tests {
     }
 
     #[test]
-    fn unpopulated_projects_skips_populated_and_keys_on_path() {
+    fn unpopulated_projects_keeps_pinned_empty_projects_by_path() {
+        let pinned =
+            |name: &str, path: &str, scope| Project::new(name, path, scope).with_pinned(true);
         let registered = vec![
-            Project::new("alpha", "/work/alpha", ProjectScope::Global).with_pinned(true),
-            Project::new("beta", "/work/beta", ProjectScope::Global).with_pinned(true),
-            Project::new("beta-other", "/other/beta", ProjectScope::Profile).with_pinned(true),
-        ];
-        let populated: HashSet<String> = ["alpha".to_string()].into_iter().collect();
-
-        let empties = unpopulated_projects(&populated, &registered);
-        let paths: Vec<&str> = empties.iter().map(|p| p.path.as_str()).collect();
-        assert_eq!(paths, vec!["/work/beta", "/other/beta"]);
-        assert!(empties.iter().all(|p| p.label == "beta"));
-    }
-
-    #[test]
-    fn unpopulated_projects_dedupes_same_path() {
-        let registered = vec![
-            Project::new("beta", "/work/beta", ProjectScope::Global).with_pinned(true),
-            Project::new("beta", "/work/beta", ProjectScope::Profile).with_pinned(true),
-        ];
-        let populated: HashSet<String> = HashSet::new();
-        let empties = unpopulated_projects(&populated, &registered);
-        assert_eq!(empties.len(), 1);
-        assert_eq!(empties[0].path, "/work/beta");
-    }
-
-    #[test]
-    fn unpopulated_projects_empty_when_all_populated() {
-        let registered =
-            vec![Project::new("alpha", "/work/alpha", ProjectScope::Global).with_pinned(true)];
-        let populated: HashSet<String> = ["alpha".to_string()].into_iter().collect();
-        assert!(unpopulated_projects(&populated, &registered).is_empty());
-    }
-
-    #[test]
-    fn unpopulated_projects_skips_unpinned() {
-        let registered = vec![
-            Project::new("pinned", "/work/pinned", ProjectScope::Global).with_pinned(true),
+            pinned("alpha", "/work/alpha", ProjectScope::Global),
+            pinned("beta", "/work/beta", ProjectScope::Global),
+            pinned("beta", "/work/beta", ProjectScope::Profile),
+            pinned("beta-other", "/other/beta", ProjectScope::Profile),
             Project::new("saved", "/work/saved", ProjectScope::Global),
         ];
-        let populated: HashSet<String> = HashSet::new();
+        let populated: HashSet<String> = ["alpha".to_string()].into_iter().collect();
+
         let empties = unpopulated_projects(&populated, &registered);
         let paths: Vec<&str> = empties.iter().map(|p| p.path.as_str()).collect();
-        assert_eq!(paths, vec!["/work/pinned"]);
+        assert_eq!(
+            paths,
+            vec!["/work/beta", "/other/beta"],
+            "populated and unpinned drop out; the same path appears once"
+        );
+        assert!(empties.iter().all(|p| p.label == "beta"));
+
+        let all_populated: HashSet<String> = ["beta".to_string(), "alpha".to_string()]
+            .into_iter()
+            .collect();
+        assert!(unpopulated_projects(&all_populated, &registered).is_empty());
     }
 
     #[test]

@@ -602,38 +602,27 @@ mod tests {
     }
 
     #[test]
-    fn orphaned_agent_process_alive_false_when_no_process_matches() {
+    fn orphaned_agent_process_alive_is_false_without_a_matching_live_process() {
+        let pid = std::process::id();
         let mut inst = Instance::new("absent", "/tmp/test");
-        inst.id = format!("absent{:012}", std::process::id());
-        inst.agent_session_id = None;
-        assert!(
-            !orphaned_agent_process_alive(&inst),
-            "no matching live process (no sid) must allow recovery",
-        );
-
+        inst.id = format!("absent{pid:012}");
         inst.tool = "opencode".to_string();
-        inst.agent_session_id = Some(format!(
-            "11111111-1111-4111-8111-{:012}",
-            std::process::id()
-        ));
-        assert!(
-            !orphaned_agent_process_alive(&inst),
-            "no matching live process must allow recovery",
-        );
-    }
-
-    // A too-short session id is not trusted as a cmdline needle; with no live process carrying the
-    // env id either, the guard returns `false`.
-    #[test]
-    fn orphaned_agent_process_alive_ignores_short_sid() {
-        let mut inst = Instance::new("short-sid", "/tmp/test");
-        inst.id = format!("shortsid{:012}", std::process::id());
-        inst.tool = "opencode".to_string();
-        inst.agent_session_id = Some("short".into());
-        assert!(
-            !orphaned_agent_process_alive(&inst),
-            "a sub-{ORPHAN_SCAN_MIN_SID_LEN}-char sid must not be trusted, and nothing else matches",
-        );
+        // (case, agent session id)
+        for (case, sid) in [
+            ("no sid at all", None),
+            (
+                "a sid no process carries",
+                Some(format!("11111111-1111-4111-8111-{pid:012}")),
+            ),
+            // Too short to trust as a cmdline needle, and nothing carries the env id either.
+            (
+                "a sub-ORPHAN_SCAN_MIN_SID_LEN sid",
+                Some("short".to_string()),
+            ),
+        ] {
+            inst.agent_session_id = sid;
+            assert!(!orphaned_agent_process_alive(&inst), "{case}");
+        }
     }
 
     #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -847,15 +836,29 @@ mod tests {
         assert!(second.is_some(), "re-acquisition after drop should succeed");
     }
 
+    fn hook_timeout(cmd: &str, timeout_secs: u64) -> anyhow::Error {
+        anyhow::Error::new(super::super::config::repo_config::HookTimeout {
+            cmd: cmd.to_string(),
+            timeout_secs,
+        })
+    }
+
     #[test]
-    fn format_recovery_last_error_renders_hook_timeout_with_on_launch_prefix() {
-        let err = anyhow::Error::new(super::super::config::repo_config::HookTimeout {
-            cmd: "sleep 60".to_string(),
-            timeout_secs: 30,
-        });
+    fn format_recovery_last_error_classifies_a_hook_timeout_anywhere_in_the_chain() {
         assert_eq!(
-            format_recovery_last_error(&err),
+            format_recovery_last_error(&hook_timeout("sleep 60", 30)),
             "on_launch hook timed out after 30s: sleep 60",
+        );
+        assert_eq!(
+            format_recovery_last_error(
+                &hook_timeout("echo hi && sleep 60", 12).context("recovery cascade tier 1")
+            ),
+            "on_launch hook timed out after 12s: echo hi && sleep 60",
+            "a later `.context(..)` wrap must not hide the timeout",
+        );
+        assert_eq!(
+            format_recovery_last_error(&anyhow::anyhow!("tmux session is gone")),
+            "recovery cascade: tmux session is gone",
         );
     }
 
@@ -863,12 +866,8 @@ mod tests {
     fn stamp_recovery_error_sets_error_status_and_operator_fields() {
         let mut inst = Instance::new("timeout", "/tmp/test");
         let before = std::time::Instant::now();
-        let err = anyhow::Error::new(super::super::config::repo_config::HookTimeout {
-            cmd: "sleep 60".to_string(),
-            timeout_secs: 30,
-        });
 
-        stamp_recovery_error(&mut inst, &err);
+        stamp_recovery_error(&mut inst, &hook_timeout("sleep 60", 30));
 
         assert_eq!(inst.status, super::super::Status::Error);
         assert_eq!(
@@ -879,31 +878,6 @@ mod tests {
             inst.last_error_check
                 .is_some_and(|checked| checked >= before),
             "last_error_check must arm sticky error handling",
-        );
-    }
-
-    #[test]
-    fn format_recovery_last_error_falls_back_to_recovery_cascade_wrapper() {
-        let err = anyhow::anyhow!("tmux session is gone");
-        assert_eq!(
-            format_recovery_last_error(&err),
-            "recovery cascade: tmux session is gone",
-        );
-    }
-
-    // A future `.context("...")` wrap somewhere in the cascade must not regress the timeout
-    // classification: the helper walks the full chain, not just the root, so a contextualized
-    // `HookTimeout` still produces the timeout-shaped message.
-    #[test]
-    fn format_recovery_last_error_walks_chain_through_context() {
-        let err = anyhow::Error::new(super::super::config::repo_config::HookTimeout {
-            cmd: "echo hi && sleep 60".to_string(),
-            timeout_secs: 12,
-        })
-        .context("recovery cascade tier 1");
-        assert_eq!(
-            format_recovery_last_error(&err),
-            "on_launch hook timed out after 12s: echo hi && sleep 60",
         );
     }
 }

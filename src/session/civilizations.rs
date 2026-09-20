@@ -161,68 +161,47 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_to_roman() {
-        assert_eq!(to_roman(1), "I");
-        assert_eq!(to_roman(2), "II");
-        assert_eq!(to_roman(3), "III");
-        assert_eq!(to_roman(4), "IV");
-        assert_eq!(to_roman(5), "V");
-        assert_eq!(to_roman(9), "IX");
-        assert_eq!(to_roman(10), "X");
-        assert_eq!(to_roman(49), "XLIX");
-        assert_eq!(to_roman(50), "L");
-        assert_eq!(to_roman(100), "C");
-        assert_eq!(to_roman(500), "D");
-        assert_eq!(to_roman(1000), "M");
+    fn to_roman_cases() {
+        for (n, want) in [
+            (1, "I"),
+            (4, "IV"),
+            (9, "IX"),
+            (49, "XLIX"),
+            (50, "L"),
+            (100, "C"),
+            (500, "D"),
+            (1000, "M"),
+        ] {
+            assert_eq!(to_roman(n), want);
+        }
     }
 
     #[test]
-    fn test_generate_random_title_returns_civ() {
+    fn generated_titles_avoid_taken_names_then_fall_back_to_suffixes() {
         let title = generate_random_title(&[]);
         assert!(CIVILIZATIONS.contains(&title.as_str()));
-    }
 
-    #[test]
-    fn test_generate_random_title_avoids_existing() {
         let existing = vec!["Britons", "Franks", "Vikings"];
-        let title = generate_random_title(&existing);
-        assert!(!existing.contains(&title.as_str()));
-    }
+        assert!(!existing.contains(&generate_random_title(&existing).as_str()));
 
-    #[test]
-    fn test_generate_random_title_with_all_taken_uses_roman_numerals() {
-        let existing: Vec<&str> = CIVILIZATIONS.to_vec();
-        let title = generate_random_title(&existing);
-        assert!(title.contains(" II"));
-    }
+        let all: Vec<&str> = CIVILIZATIONS.to_vec();
+        assert!(generate_random_title(&all).contains(" II"));
 
-    #[test]
-    fn test_generate_random_title_filtered_skips_unavailable_civ() {
-        let existing: Vec<&str> = CIVILIZATIONS
+        let all_but_tatars: Vec<&str> = CIVILIZATIONS
             .iter()
             .copied()
             .filter(|civ| *civ != "Tatars")
             .collect();
+        let filtered = generate_random_title_filtered(&all_but_tatars, |c| c == "Tatars")
+            .expect("a suffixed civilization is still available");
+        assert_ne!(filtered, "Tatars");
+        assert!(filtered.contains(" II"), "got: {filtered}");
 
-        let title = generate_random_title_filtered(&existing, |candidate| candidate == "Tatars")
-            .expect("filtered title should fall back to a suffixed civilization");
-
-        assert_ne!(title, "Tatars");
-        assert!(
-            title.contains(" II"),
-            "expected suffixed fallback after the only bare civ was filtered, got: {title}"
-        );
+        assert!(generate_random_title_filtered(&[], |_| true).is_none());
     }
 
     #[test]
-    fn test_generate_random_title_filtered_returns_none_when_exhausted() {
-        let title = generate_random_title_filtered(&[], |_| true);
-
-        assert!(title.is_none());
-    }
-
-    #[test]
-    fn test_is_default_civ_name() {
+    fn is_default_civ_name_cases() {
         assert!(is_default_civ_name("Vikings"));
         assert!(is_default_civ_name("  Vikings  "));
         assert!(is_default_civ_name("Britons II"));
