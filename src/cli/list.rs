@@ -436,48 +436,31 @@ mod tests {
     }
 
     #[test]
-    fn state_tag_covers_the_three_states() {
-        let live = Instance::new("live", "/repo");
-        assert_eq!(state_tag(&live), "live");
-
-        let mut archived = Instance::new("archived", "/repo");
-        archived.archive();
-        assert_eq!(state_tag(&archived), "archived");
-
-        let mut trashed = Instance::new("trashed", "/repo");
-        trashed.trash();
-        assert_eq!(state_tag(&trashed), "trashed");
-    }
-
-    #[test]
-    fn session_json_exposes_state_and_trashed_at_for_a_trashed_row() {
-        let mut inst = Instance::new("z", "/repo");
-        inst.trash();
-        let json = session_json(&inst, "p");
-        assert_eq!(json.state, "trashed");
-        assert!(json.trashed_at.is_some());
-        assert!(json.archived_at.is_none());
-    }
-
-    #[test]
-    fn session_json_exposes_state_and_archived_at_for_an_archived_row() {
-        let mut inst = Instance::new("z", "/repo");
-        inst.archive();
-        let json = session_json(&inst, "p");
-        assert_eq!(json.state, "archived");
-        assert!(json.archived_at.is_some());
-        assert!(json.trashed_at.is_none());
-    }
-
-    #[test]
-    fn session_json_omits_absent_timestamps_and_keeps_state_alive() {
-        let inst = Instance::new("z", "/repo");
-        let json = session_json(&inst, "p");
+    fn session_json_reports_state_and_only_the_timestamps_that_apply() {
+        let plain = Instance::new("z", "/repo");
+        assert_eq!(state_tag(&plain), "live");
+        let json = session_json(&plain, "p");
         assert_eq!(json.state, "live");
         let serialized = serde_json::to_string(&json).unwrap();
         assert!(!serialized.contains("trashed_at"));
         assert!(!serialized.contains("archived_at"));
         assert!(serialized.contains("\"state\":\"live\""));
+
+        let mut archived = Instance::new("z", "/repo");
+        archived.archive();
+        assert_eq!(state_tag(&archived), "archived");
+        let json = session_json(&archived, "p");
+        assert_eq!(json.state, "archived");
+        assert!(json.archived_at.is_some());
+        assert!(json.trashed_at.is_none());
+
+        let mut trashed = Instance::new("z", "/repo");
+        trashed.trash();
+        assert_eq!(state_tag(&trashed), "trashed");
+        let json = session_json(&trashed, "p");
+        assert_eq!(json.state, "trashed");
+        assert!(json.trashed_at.is_some());
+        assert!(json.archived_at.is_none());
     }
 
     #[test]
@@ -485,83 +468,91 @@ mod tests {
         let now = chrono::Utc::now();
         let future = now + chrono::Duration::minutes(15);
         let past = now - chrono::Duration::minutes(15);
-
-        let mut snoozed = Instance::new("z", "/repo");
-        snoozed.snoozed_until = Some(future);
-
-        let mut expired = Instance::new("z", "/repo");
-        expired.snoozed_until = Some(past);
-
-        let mut pinned = Instance::new("z", "/repo");
-        pinned.pinned_at = Some(now);
-
-        let mut both = Instance::new("z", "/repo");
-        both.pinned_at = Some(now);
-        both.snoozed_until = Some(future);
-
-        let mut sunk = Instance::new("z", "/repo");
-        sunk.archived_at = Some(now);
-        sunk.snoozed_until = Some(future);
-
-        let mut trashed_snoozed = Instance::new("z", "/repo");
-        trashed_snoozed.snooze(30);
-        trashed_snoozed.trash();
-
-        let mut trashed_pinned = Instance::new("z", "/repo");
-        trashed_pinned.pin();
-        trashed_pinned.trash();
-
-        let mut archived_pinned = Instance::new("z", "/repo");
-        archived_pinned.archived_at = Some(now);
-        archived_pinned.pinned_at = Some(now);
-
-        let plain = Instance::new("z", "/repo");
-
-        let cases = [
-            ("active snooze", &snoozed, true, false, "live"),
-            ("expired snooze", &expired, false, false, "live"),
-            ("pinned", &pinned, false, true, "live"),
-            ("plain row", &plain, false, false, "live"),
-            ("snoozed and archived", &sunk, true, false, "archived"),
-            ("pinned and snoozed", &both, true, true, "live"),
-            (
-                "trashed and snoozed",
-                &trashed_snoozed,
-                true,
-                false,
-                "trashed",
-            ),
-            (
-                "trashed and pinned",
-                &trashed_pinned,
-                false,
-                true,
-                "trashed",
-            ),
-            (
-                "pinned and archived",
-                &archived_pinned,
-                false,
-                true,
-                "archived",
-            ),
-        ];
-        for (label, inst, want_snooze, want_pin, want_state) in cases {
-            let value = serde_json::to_value(session_json(inst, "p")).unwrap();
-            assert_eq!(
+        let row = |f: &dyn Fn(&mut Instance)| {
+            let mut inst = Instance::new("z", "/repo");
+            f(&mut inst);
+            inst
+        };
+        let check = |label: &str, f: &dyn Fn(&mut Instance), snooze: bool, pin: bool, state| {
+            let value = serde_json::to_value(session_json(&row(f), "p")).unwrap();
+            let seen = (
                 value.get("snoozed_until").is_some(),
-                want_snooze,
-                "{label}: {value}"
-            );
-            assert_eq!(
                 value.get("pinned_at").is_some(),
-                want_pin,
-                "{label}: {value}"
+                value["state"].as_str(),
             );
-            assert_eq!(value["state"].as_str(), Some(want_state), "{label}");
-        }
+            assert_eq!(seen, (snooze, pin, Some(state)), "{label}: {value}");
+        };
 
-        let active = serde_json::to_value(session_json(&snoozed, "p")).unwrap();
+        check("plain row", &|_| {}, false, false, "live");
+        check(
+            "active snooze",
+            &|i| i.snoozed_until = Some(future),
+            true,
+            false,
+            "live",
+        );
+        check(
+            "expired snooze",
+            &|i| i.snoozed_until = Some(past),
+            false,
+            false,
+            "live",
+        );
+        check("pinned", &|i| i.pinned_at = Some(now), false, true, "live");
+        check(
+            "snoozed and archived",
+            &|i| {
+                i.archived_at = Some(now);
+                i.snoozed_until = Some(future);
+            },
+            true,
+            false,
+            "archived",
+        );
+        check(
+            "pinned and snoozed",
+            &|i| {
+                i.pinned_at = Some(now);
+                i.snoozed_until = Some(future);
+            },
+            true,
+            true,
+            "live",
+        );
+        check(
+            "trashed and snoozed",
+            &|i| {
+                i.snooze(30);
+                i.trash();
+            },
+            true,
+            false,
+            "trashed",
+        );
+        check(
+            "trashed and pinned",
+            &|i| {
+                i.pin();
+                i.trash();
+            },
+            false,
+            true,
+            "trashed",
+        );
+        check(
+            "pinned and archived",
+            &|i| {
+                i.archived_at = Some(now);
+                i.pinned_at = Some(now);
+            },
+            false,
+            true,
+            "archived",
+        );
+
+        let active =
+            serde_json::to_value(session_json(&row(&|i| i.snoozed_until = Some(future)), "p"))
+                .unwrap();
         assert_eq!(
             active["snoozed_until"],
             serde_json::to_value(future).unwrap()
