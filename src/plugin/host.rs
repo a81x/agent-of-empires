@@ -938,67 +938,88 @@ command = ["sleep", "600"]
         host.shutdown().await;
     }
 
-    fn set(ids: &[&str]) -> HashSet<String> {
-        ids.iter().map(|s| s.to_string()).collect()
-    }
-
     #[test]
-    fn plan_reconcile_launches_missing() {
-        let (launch, teardown, truncated) =
-            plan_reconcile(&set(&["a", "b"]), &set(&[]), &set(&[]), MAX_WORKERS);
-        assert_eq!(launch, vec!["a".to_string(), "b".to_string()]);
-        assert!(teardown.is_empty());
-        assert!(!truncated);
-    }
+    fn plan_reconcile_launches_missing_tears_down_extras_and_respects_the_cap() {
+        let set = |ids: &[&str]| -> HashSet<String> { ids.iter().map(|s| s.to_string()).collect() };
+        // name, desired, running, crashed, cap, launch, teardown, truncated
+        let cases: [(
+            &str,
+            &[&str],
+            &[&str],
+            &[&str],
+            usize,
+            &[&str],
+            &[&str],
+            bool,
+        ); 5] = [
+            (
+                "launches missing",
+                &["a", "b"],
+                &[],
+                &[],
+                MAX_WORKERS,
+                &["a", "b"],
+                &[],
+                false,
+            ),
+            (
+                "tears down extras",
+                &["a"],
+                &["a", "b"],
+                &[],
+                MAX_WORKERS,
+                &[],
+                &["b"],
+                false,
+            ),
+            (
+                "idempotent",
+                &["a"],
+                &["a"],
+                &[],
+                MAX_WORKERS,
+                &[],
+                &[],
+                false,
+            ),
+            (
+                "skips crashed",
+                &["a"],
+                &[],
+                &["a"],
+                MAX_WORKERS,
+                &[],
+                &[],
+                false,
+            ),
+            (
+                "cap truncates",
+                &["a", "b", "c"],
+                &[],
+                &[],
+                2,
+                &["a", "b"],
+                &[],
+                true,
+            ),
+        ];
+        for (name, desired, running, crashed, cap, want_launch, want_teardown, want_truncated) in
+            cases
+        {
+            let (launch, teardown, truncated) =
+                plan_reconcile(&set(desired), &set(running), &set(crashed), cap);
+            assert_eq!(launch, want_launch, "{name}");
+            assert_eq!(teardown, want_teardown, "{name}");
+            assert_eq!(truncated, want_truncated, "{name}");
+        }
 
-    #[test]
-    fn plan_reconcile_tears_down_extras() {
-        let (launch, teardown, truncated) =
-            plan_reconcile(&set(&["a"]), &set(&["a", "b"]), &set(&[]), MAX_WORKERS);
-        assert!(launch.is_empty());
-        assert_eq!(teardown, vec!["b".to_string()]);
-        assert!(!truncated);
-    }
-
-    #[test]
-    fn plan_reconcile_idempotent() {
-        let (launch, teardown, truncated) =
-            plan_reconcile(&set(&["a"]), &set(&["a"]), &set(&[]), MAX_WORKERS);
-        assert!(launch.is_empty());
-        assert!(teardown.is_empty());
-        assert!(!truncated);
-    }
-
-    #[test]
-    fn plan_reconcile_skips_crashed() {
-        let (launch, teardown, truncated) =
-            plan_reconcile(&set(&["a"]), &set(&[]), &set(&["a"]), MAX_WORKERS);
-        assert!(launch.is_empty(), "crashed plugin must not be relaunched");
-        assert!(teardown.is_empty());
-        assert!(!truncated);
-    }
-
-    #[test]
-    fn plan_reconcile_cap_truncates() {
-        let (launch, teardown, truncated) =
-            plan_reconcile(&set(&["a", "b", "c"]), &set(&[]), &set(&[]), 2);
-        assert_eq!(launch, vec!["a".to_string(), "b".to_string()]);
-        assert!(teardown.is_empty());
-        assert!(truncated);
-    }
-
-    #[test]
-    fn crash_tombstone_cleared_on_disable_allows_retry() {
         let mut crashed = set(&["a"]);
-
-        let desired_off = set(&[]);
-        crashed.retain(|id| desired_off.contains(id));
+        crashed.retain(|id| set(&[]).contains(id));
         assert!(
             crashed.is_empty(),
             "disable must forget the crash tombstone"
         );
-
         let (launch, _, _) = plan_reconcile(&set(&["a"]), &set(&[]), &crashed, MAX_WORKERS);
-        assert_eq!(launch, vec!["a".to_string()]);
+        assert_eq!(launch, vec!["a".to_string()], "a retry is allowed after it");
     }
 }
