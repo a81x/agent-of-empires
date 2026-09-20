@@ -691,6 +691,21 @@ mod tests {
         }
     }
 
+    fn row(id: &str, title: &str, is_orphan: bool) -> Row {
+        Row {
+            id: id.to_string(),
+            title: title.to_string(),
+            substrate: Substrate::Tmux,
+            state: "running",
+            pid: None,
+            age_secs: None,
+            agent: String::new(),
+            is_orphan,
+            acp_extra: None,
+            started_at: 0,
+        }
+    }
+
     #[test]
     fn normalize_tmux_state_maps_every_status() {
         assert_eq!(normalize_tmux_state(Status::Running), "running");
@@ -724,160 +739,112 @@ mod tests {
     }
 
     #[test]
-    fn merge_matches_tmux_by_truncated_id_suffix() {
+    fn merge_joins_each_substrate_to_its_instance() {
         let instances = vec![inst("abcd1234ef567890", "My Session")];
         let tmux = vec![tmux_state("aoe_My_Session_abcd1234", Status::Running)];
         let rows = merge_rows(&instances, &tmux, vec![], 2000, SubstrateFilter::All, false);
         assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].id, "abcd1234ef567890");
+        assert_eq!(
+            rows[0].id, "abcd1234ef567890",
+            "tmux joins on the id suffix"
+        );
         assert_eq!(rows[0].title, "My Session");
-        assert!(!rows[0].is_orphan);
         assert_eq!(rows[0].state, "running");
         assert_eq!(rows[0].age_secs, Some(1000));
+        assert!(!rows[0].is_orphan);
+
+        let instances = vec![inst("full-session-id-1234", "Structured")];
+        let acp = vec![acp_state("full-session-id-1234", "attached", 500)];
+        let rows = merge_rows(&instances, &[], acp, 2000, SubstrateFilter::All, false);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(
+            rows[0].substrate,
+            Substrate::Acp,
+            "acp joins on the full id"
+        );
+        assert_eq!(rows[0].title, "Structured");
+        assert_eq!(rows[0].pid, Some(7));
+        assert_eq!(rows[0].age_secs, Some(1000));
+        assert!(!rows[0].is_orphan);
     }
 
     #[test]
-    fn merge_flags_tmux_session_without_instance_as_orphan() {
+    fn records_without_an_instance_are_orphans_shown_only_with_dead() {
         let tmux = vec![tmux_state("aoe_Ghost_99999999", Status::Running)];
-        let hidden = merge_rows(&[], &tmux, vec![], 2000, SubstrateFilter::All, false);
-        assert!(hidden.is_empty(), "orphan is hidden without --dead");
+        assert!(
+            merge_rows(&[], &tmux, vec![], 2000, SubstrateFilter::All, false).is_empty(),
+            "orphan is hidden without --dead"
+        );
         let shown = merge_rows(&[], &tmux, vec![], 2000, SubstrateFilter::All, true);
         assert_eq!(shown.len(), 1);
         assert!(shown[0].is_orphan);
         assert_eq!(shown[0].id, "99999999");
         assert_eq!(shown[0].age_secs, Some(500));
-    }
 
-    #[test]
-    fn merge_matches_acp_by_full_session_id() {
-        let instances = vec![inst("full-session-id-1234", "Structured")];
-        let acp = vec![acp_state("full-session-id-1234", "attached", 500)];
-        let rows = merge_rows(&instances, &[], acp, 2000, SubstrateFilter::All, false);
-        assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].substrate, Substrate::Acp);
-        assert_eq!(rows[0].title, "Structured");
-        assert!(!rows[0].is_orphan);
-        assert_eq!(rows[0].pid, Some(7));
-        assert_eq!(rows[0].age_secs, Some(1000));
-    }
-
-    #[test]
-    fn merge_flags_acp_record_without_instance_as_orphan() {
-        assert!(merge_rows(
-            &[],
-            &[],
-            vec![acp_state("gone", "attached", 500)],
-            1,
-            SubstrateFilter::All,
-            false
-        )
-        .is_empty());
-        let shown = merge_rows(
-            &[],
-            &[],
-            vec![acp_state("gone", "attached", 500)],
-            2000,
-            SubstrateFilter::All,
-            true,
-        );
+        let acp = || vec![acp_state("gone", "attached", 500)];
+        assert!(merge_rows(&[], &[], acp(), 1, SubstrateFilter::All, false).is_empty());
+        let shown = merge_rows(&[], &[], acp(), 2000, SubstrateFilter::All, true);
         assert_eq!(shown.len(), 1);
         assert!(shown[0].is_orphan);
         assert_eq!(shown[0].age_secs, Some(1500));
     }
 
     #[test]
-    fn filter_hides_dead_by_default_and_reveals_with_flag() {
+    fn filters_hide_dead_rows_and_select_one_substrate() {
         let instances = vec![inst("abcd1234ef567890", "Dead One")];
         let tmux = vec![tmux_state("aoe_Dead_One_abcd1234", Status::Error)];
-        let hidden = merge_rows(&instances, &tmux, vec![], 0, SubstrateFilter::All, false);
-        assert!(hidden.is_empty(), "dead is hidden by default");
+        assert!(
+            merge_rows(&instances, &tmux, vec![], 0, SubstrateFilter::All, false).is_empty(),
+            "dead is hidden by default"
+        );
         let shown = merge_rows(&instances, &tmux, vec![], 0, SubstrateFilter::All, true);
         assert_eq!(shown.len(), 1);
         assert_eq!(shown[0].state, "dead");
         assert!(!shown[0].is_orphan);
-    }
 
-    #[test]
-    fn filter_by_substrate_selects_one_side() {
         let instances = vec![inst("abcd1234ef567890", "T"), inst("acp-id-1", "A")];
         let tmux = vec![tmux_state("aoe_T_abcd1234", Status::Running)];
-        let only_tmux = merge_rows(
-            &instances,
-            &tmux,
-            vec![acp_state("acp-id-1", "attached", 0)],
-            0,
-            SubstrateFilter::Tmux,
-            false,
-        );
-        assert_eq!(only_tmux.len(), 1);
-        assert_eq!(only_tmux[0].substrate, Substrate::Tmux);
-        let only_acp = merge_rows(
-            &instances,
-            &tmux,
-            vec![acp_state("acp-id-1", "attached", 0)],
-            0,
-            SubstrateFilter::Acp,
-            false,
-        );
-        assert_eq!(only_acp.len(), 1);
-        assert_eq!(only_acp[0].substrate, Substrate::Acp);
-    }
+        let acp = || vec![acp_state("acp-id-1", "attached", 0)];
+        for (filter, expected) in [
+            (SubstrateFilter::Tmux, Substrate::Tmux),
+            (SubstrateFilter::Acp, Substrate::Acp),
+        ] {
+            let rows = merge_rows(&instances, &tmux, acp(), 0, filter, false);
+            assert_eq!(rows.len(), 1);
+            assert_eq!(rows[0].substrate, expected);
+        }
 
-    #[test]
-    fn acp_filter_with_dead_reveals_dead_acp_orphan() {
+        let dead_acp = || vec![acp_state("gone", "dead", 0)];
         assert!(
-            merge_rows(
-                &[],
-                &[],
-                vec![acp_state("gone", "dead", 0)],
-                0,
-                SubstrateFilter::Acp,
-                false
-            )
-            .is_empty(),
+            merge_rows(&[], &[], dead_acp(), 0, SubstrateFilter::Acp, false).is_empty(),
             "a dead acp orphan is hidden under --acp without --dead"
         );
-        let shown = merge_rows(
-            &[],
-            &[],
-            vec![acp_state("gone", "dead", 0)],
-            0,
-            SubstrateFilter::Acp,
-            true,
-        );
+        let shown = merge_rows(&[], &[], dead_acp(), 0, SubstrateFilter::Acp, true);
         assert_eq!(shown.len(), 1);
         assert_eq!(shown[0].substrate, Substrate::Acp);
         assert_eq!(shown[0].state, "dead");
     }
 
     #[test]
-    fn merge_sorts_tmux_before_acp() {
-        let instances = vec![inst("abcd1234ef567890", "Zeta"), inst("acp-id-1", "Alpha")];
-        let tmux = vec![tmux_state("aoe_Zeta_abcd1234", Status::Running)];
-        let acp = vec![acp_state("acp-id-1", "attached", 0)];
-        let rows = merge_rows(&instances, &tmux, acp, 0, SubstrateFilter::All, false);
-        assert_eq!(rows.len(), 2);
-        assert_eq!(rows[0].substrate, Substrate::Tmux);
-        assert_eq!(rows[1].substrate, Substrate::Acp);
-    }
-
-    #[test]
-    fn merge_sort_tiebreaks_by_title_then_id() {
+    fn merge_sorts_tmux_first_then_by_title_and_id() {
         let instances = vec![
             inst("2222aaaabbbbcccc", "Same"),
             inst("1111aaaabbbbcccc", "Same"),
             inst("3333ffff00001111", "Alpha"),
+            inst("acp-id-1", "Alpha"),
         ];
         let tmux = vec![
             tmux_state("aoe_Same_2222aaaa", Status::Running),
             tmux_state("aoe_Same_1111aaaa", Status::Running),
             tmux_state("aoe_Alpha_3333ffff", Status::Running),
         ];
-        let rows = merge_rows(&instances, &tmux, vec![], 0, SubstrateFilter::All, false);
-        assert_eq!(rows.len(), 3);
+        let acp = vec![acp_state("acp-id-1", "attached", 0)];
+        let rows = merge_rows(&instances, &tmux, acp, 0, SubstrateFilter::All, false);
+        assert_eq!(rows.len(), 4);
         assert_eq!(rows[0].title, "Alpha");
         assert_eq!(rows[1].id, "1111aaaabbbbcccc");
         assert_eq!(rows[2].id, "2222aaaabbbbcccc");
+        assert_eq!(rows[3].substrate, Substrate::Acp, "acp sorts after tmux");
     }
 
     #[test]
@@ -896,10 +863,7 @@ mod tests {
         assert_eq!(row["age_secs"], 1000);
         assert_eq!(row["agent"], "claude");
         assert_eq!(row.as_object().unwrap().len(), 6);
-    }
 
-    #[test]
-    fn render_json_empty_is_array() {
         assert!(rows_json(&[]).is_empty());
         assert_eq!(serde_json::to_string(&rows_json(&[])).unwrap(), "[]");
     }
@@ -910,56 +874,33 @@ mod tests {
         let tmux = vec![tmux_state("aoe_My_Session_abcd1234", Status::Running)];
         let rows = merge_rows(&instances, &tmux, vec![], 2000, SubstrateFilter::All, false);
         let table = render_table(&rows);
-        assert!(table.contains("SESSION"));
-        assert!(table.contains("SUBSTRATE"));
-        assert!(table.contains("----"), "header underline present");
-        assert!(table.contains("abcd1234"));
-        assert!(table.contains("tmux"));
-        assert!(table.contains("running"));
-        assert!(table.contains("claude"));
+        for cell in [
+            "SESSION",
+            "SUBSTRATE",
+            "----",
+            "abcd1234",
+            "tmux",
+            "running",
+            "claude",
+        ] {
+            assert!(table.contains(cell), "table missing {cell}: {table}");
+        }
     }
 
     #[test]
-    fn session_cell_truncates_long_title() {
-        let row = Row {
-            id: "abcd1234ef567890".to_string(),
-            title: "A very long session title that exceeds the budget".to_string(),
-            substrate: Substrate::Tmux,
-            state: "running",
-            pid: None,
-            age_secs: None,
-            agent: String::new(),
-            is_orphan: false,
-            acp_extra: None,
-            started_at: 0,
-        };
-        let cell = session_cell(&row);
+    fn session_cell_truncates_long_titles_and_drops_orphan_titles() {
+        let cell = session_cell(&row(
+            "abcd1234ef567890",
+            "A very long session title that exceeds the budget",
+            false,
+        ));
         assert!(cell.starts_with("abcd1234 "));
-        assert!(
-            cell.contains("..."),
-            "long title is truncated with an ellipsis"
-        );
+        assert!(cell.contains("..."), "long title is truncated: {cell}");
         assert!(
             !cell.contains("exceeds the budget"),
-            "the tail of an over-budget title is dropped"
+            "the tail of an over-budget title is dropped: {cell}"
         );
-    }
-
-    #[test]
-    fn session_cell_omits_title_for_orphan() {
-        let row = Row {
-            id: "99999999".to_string(),
-            title: String::new(),
-            substrate: Substrate::Tmux,
-            state: "running",
-            pid: None,
-            age_secs: None,
-            agent: String::new(),
-            is_orphan: true,
-            acp_extra: None,
-            started_at: 0,
-        };
-        assert_eq!(session_cell(&row), "99999999");
+        assert_eq!(session_cell(&row("99999999", "", true)), "99999999");
     }
 
     #[test]
@@ -968,7 +909,7 @@ mod tests {
         let acp = vec![acp_state("acp-id-1", "attached", 0)];
         let rows = merge_rows(&instances, &[], acp, 2000, SubstrateFilter::Acp, false);
         let acp_table = render_table_acp(&rows);
-        for header in [
+        for cell in [
             "SESSION",
             "SUBSTRATE",
             "STATE",
@@ -977,26 +918,21 @@ mod tests {
             "MODEL",
             "CWD",
             "SOCKET",
+            "1.9.5+gabc123",
+            "/tmp/w.sock",
+            "/repo",
+            "claude-opus-4-7",
         ] {
-            assert!(
-                acp_table.contains(header),
-                "acp table missing {header} column"
-            );
+            assert!(acp_table.contains(cell), "acp table missing {cell}");
         }
-        assert!(acp_table.contains("1.9.5+gabc123"), "BUILD cell rendered");
-        assert!(acp_table.contains("/tmp/w.sock"), "SOCKET cell rendered");
-        assert!(acp_table.contains("/repo"), "CWD cell rendered");
-        assert!(acp_table.contains("claude-opus-4-7"), "MODEL cell rendered");
 
         let core = render_table(&rows);
-        assert!(
-            !core.contains("BUILD"),
-            "core view must not unlock ACP columns"
-        );
-        assert!(
-            !core.contains("SOCKET"),
-            "core view must not unlock ACP columns"
-        );
+        for hidden in ["BUILD", "SOCKET"] {
+            assert!(
+                !core.contains(hidden),
+                "core view must not unlock ACP columns"
+            );
+        }
     }
 
     #[test]

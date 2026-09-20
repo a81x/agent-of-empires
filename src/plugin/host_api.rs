@@ -879,16 +879,11 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let cron = ctx_for("cron", &[CAP_WORKER]);
         let other = ctx_for("other", &[CAP_WORKER]);
+        let key = || json!({"key": "watermark"});
         {
             let state = state(tmp.path());
-            let got = dispatch(
-                &state,
-                &cron,
-                "plugin.storage.get",
-                &json!({"key": "watermark"}),
-            )
-            .unwrap();
-            assert_eq!(got, json!({ "value": Value::Null }));
+            let get = |c| dispatch(&state, c, "plugin.storage.get", &key()).unwrap();
+            assert_eq!(get(&cron), json!({ "value": Value::Null }));
 
             dispatch(
                 &state,
@@ -897,31 +892,14 @@ mod tests {
                 &json!({"key": "watermark", "value": {"seq": 7}}),
             )
             .unwrap();
-            let got = dispatch(
-                &state,
-                &cron,
-                "plugin.storage.get",
-                &json!({"key": "watermark"}),
-            )
-            .unwrap();
-            assert_eq!(got, json!({ "value": {"seq": 7} }));
+            assert_eq!(get(&cron), json!({ "value": {"seq": 7} }));
+            assert_eq!(
+                get(&other),
+                json!({ "value": Value::Null }),
+                "storage is namespaced per plugin"
+            );
 
-            let got = dispatch(
-                &state,
-                &other,
-                "plugin.storage.get",
-                &json!({"key": "watermark"}),
-            )
-            .unwrap();
-            assert_eq!(got, json!({ "value": Value::Null }));
-
-            let removed = dispatch(
-                &state,
-                &cron,
-                "plugin.storage.remove",
-                &json!({"key": "watermark"}),
-            )
-            .unwrap();
+            let removed = dispatch(&state, &cron, "plugin.storage.remove", &key()).unwrap();
             assert_eq!(removed, json!({ "removed": true }));
             dispatch(
                 &state,
@@ -932,14 +910,8 @@ mod tests {
             .unwrap();
         }
         let state = state(tmp.path());
-        let got = dispatch(
-            &state,
-            &cron,
-            "plugin.storage.get",
-            &json!({"key": "watermark"}),
-        )
-        .unwrap();
-        assert_eq!(got, json!({ "value": "kept" }));
+        let got = dispatch(&state, &cron, "plugin.storage.get", &key()).unwrap();
+        assert_eq!(got, json!({ "value": "kept" }), "storage survives a reopen");
     }
 
     #[test]
@@ -947,42 +919,23 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let state = state(tmp.path());
         let c = ctx(&[CAP_WORKER]);
+        let cas = |params: Value| dispatch(&state, &c, "plugin.storage.cas", &params);
 
-        let out = dispatch(
-            &state,
-            &c,
-            "plugin.storage.cas",
-            &json!({"key": "k", "expected": null, "value": 1}),
-        )
-        .unwrap();
-        assert_eq!(out, json!({ "swapped": true, "current": 1 }));
+        let cases = [
+            (json!({"key": "k", "expected": null, "value": 1}), true, 1),
+            (json!({"key": "k", "expected": 99, "value": 2}), false, 1),
+            (json!({"key": "k", "expected": 1, "value": 2}), true, 2),
+        ];
+        for (params, swapped, current) in cases {
+            assert_eq!(
+                cas(params.clone()).unwrap(),
+                json!({ "swapped": swapped, "current": current }),
+                "{params}"
+            );
+        }
 
-        let out = dispatch(
-            &state,
-            &c,
-            "plugin.storage.cas",
-            &json!({"key": "k", "expected": 99, "value": 2}),
-        )
-        .unwrap();
-        assert_eq!(out, json!({ "swapped": false, "current": 1 }));
-
-        let out = dispatch(
-            &state,
-            &c,
-            "plugin.storage.cas",
-            &json!({"key": "k", "expected": 1, "value": 2}),
-        )
-        .unwrap();
-        assert_eq!(out, json!({ "swapped": true, "current": 2 }));
-
-        let err = dispatch(
-            &state,
-            &c,
-            "plugin.storage.cas",
-            &json!({"key": "k", "value": 3}),
-        )
-        .unwrap_err();
-        assert_eq!(err.code, codes::INVALID_PARAMS);
+        let err = cas(json!({"key": "k", "value": 3})).unwrap_err();
+        assert_eq!(err.code, codes::INVALID_PARAMS, "expected is required");
     }
 
     #[test]
@@ -990,42 +943,27 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let state = state(tmp.path());
         let c = ctx(&[CAP_WORKER]);
-
-        let big = "x".repeat(STORAGE_MAX_VALUE_BYTES + 1);
-        let err = dispatch(
-            &state,
-            &c,
-            "plugin.storage.set",
-            &json!({"key": "k", "value": big}),
-        )
-        .unwrap_err();
-        assert_eq!(err.code, codes::FORBIDDEN);
-        assert_eq!(err.data.as_ref().unwrap()["kind"], "storage_quota_exceeded");
-
-        for i in 0..STORAGE_MAX_KEYS {
+        let set = |key: String, value: Value| {
             dispatch(
                 &state,
                 &c,
                 "plugin.storage.set",
-                &json!({"key": format!("k{i}"), "value": i}),
+                &json!({"key": key, "value": value}),
             )
-            .unwrap();
-        }
-        let err = dispatch(
-            &state,
-            &c,
-            "plugin.storage.set",
-            &json!({"key": "overflow", "value": 1}),
-        )
-        .unwrap_err();
+        };
+
+        let big = "x".repeat(STORAGE_MAX_VALUE_BYTES + 1);
+        let err = set("k".into(), json!(big)).unwrap_err();
+        assert_eq!(err.code, codes::FORBIDDEN);
         assert_eq!(err.data.as_ref().unwrap()["kind"], "storage_quota_exceeded");
-        dispatch(
-            &state,
-            &c,
-            "plugin.storage.set",
-            &json!({"key": "k0", "value": "updated"}),
-        )
-        .unwrap();
+
+        for i in 0..STORAGE_MAX_KEYS {
+            set(format!("k{i}"), json!(i)).unwrap();
+        }
+        let err = set("overflow".into(), json!(1)).unwrap_err();
+        assert_eq!(err.data.as_ref().unwrap()["kind"], "storage_quota_exceeded");
+        set("k0".into(), json!("updated"))
+            .expect("an existing key may still be rewritten at the key cap");
     }
 
     #[test]
@@ -1405,41 +1343,47 @@ mod tests {
     }
 
     #[test]
-    fn ui_state_set_requires_declared_slot() {
+    fn ui_state_set_gates_slot_capability_and_payload() {
         let tmp = tempfile::tempdir().unwrap();
         let state = state(tmp.path());
+        let set =
+            |c: &PluginRpcContext, params: Value| dispatch(&state, c, "ui.state.set", &params);
         let c = ui_ctx(&state, &[CAP_WORKER], UiSlot::StatusBar, "main");
-        let err = dispatch(
-            &state,
-            &c,
-            "ui.state.set",
-            &json!({"slot": "row-badge", "id": "main", "session_id": "s1", "payload": {"text": "x"}}),
-        )
-        .unwrap_err();
-        assert_eq!(err.code, codes::FORBIDDEN);
 
-        dispatch(
-            &state,
+        let rejected = [
+            (
+                "slot the plugin did not declare",
+                json!({"slot": "row-badge", "id": "main", "session_id": "s1", "payload": {"text": "x"}}),
+                codes::FORBIDDEN,
+            ),
+            (
+                "slot the host does not know",
+                json!({"slot": "sidebar", "id": "main", "payload": {"text": "x"}}),
+                codes::INVALID_PARAMS,
+            ),
+            (
+                "payload missing its required text",
+                json!({"slot": "status-bar", "id": "main", "payload": {"tone": "info"}}),
+                codes::INVALID_PARAMS,
+            ),
+        ];
+        for (name, params, code) in rejected {
+            assert_eq!(set(&c, params).unwrap_err().code, code, "{name}");
+        }
+
+        set(
             &c,
-            "ui.state.set",
-            &json!({"slot": "status-bar", "id": "main", "payload": {"text": "ok", "tone": "success"}}),
+            json!({"slot": "status-bar", "id": "main", "payload": {"text": "ok", "tone": "success"}}),
         )
         .unwrap();
         let snap = state.ui_snapshot();
         assert_eq!(snap.entries.len(), 1);
         assert_eq!(snap.entries[0].payload["text"], json!("ok"));
-    }
 
-    #[test]
-    fn ui_state_set_needs_worker_capability() {
-        let tmp = tempfile::tempdir().unwrap();
-        let state = state(tmp.path());
-        let c = ui_ctx(&state, &[], UiSlot::StatusBar, "main");
-        let err = dispatch(
-            &state,
-            &c,
-            "ui.state.set",
-            &json!({"slot": "status-bar", "id": "main", "payload": {"text": "x"}}),
+        let without_worker = ui_ctx(&state, &[], UiSlot::StatusBar, "main");
+        let err = set(
+            &without_worker,
+            json!({"slot": "status-bar", "id": "main", "payload": {"text": "x"}}),
         )
         .unwrap_err();
         assert_eq!(err.code, codes::FORBIDDEN);
@@ -1449,24 +1393,14 @@ mod tests {
     fn ui_notify_requires_notifications_capability() {
         let tmp = tempfile::tempdir().unwrap();
         let state = state(tmp.path());
+        let params = json!({"title": "Build failed", "tone": "danger"});
+
         let c = ui_ctx(&state, &[CAP_WORKER], UiSlot::Notification, "n");
-        let err = dispatch(
-            &state,
-            &c,
-            "ui.notify",
-            &json!({"title": "Build failed", "tone": "danger"}),
-        )
-        .unwrap_err();
+        let err = dispatch(&state, &c, "ui.notify", &params).unwrap_err();
         assert_eq!(err.code, codes::FORBIDDEN);
 
         let c = ui_ctx(&state, &[CAP_NOTIFICATIONS], UiSlot::Notification, "n");
-        let ok = dispatch(
-            &state,
-            &c,
-            "ui.notify",
-            &json!({"title": "Build failed", "tone": "danger"}),
-        )
-        .unwrap();
+        let ok = dispatch(&state, &c, "ui.notify", &params).unwrap();
         assert_eq!(ok["seq"], json!(1));
         assert_eq!(state.ui_snapshot().notifications.len(), 1);
     }
@@ -1475,33 +1409,23 @@ mod tests {
     fn ui_open_url_requires_browser_open_and_validates_scheme() {
         let tmp = tempfile::tempdir().unwrap();
         let state = state(tmp.path());
+        let open = |c: &PluginRpcContext, url: &str| {
+            dispatch(&state, c, "ui.open_url", &json!({ "url": url }))
+        };
+
         let c = ui_ctx(&state, &[CAP_WORKER], UiSlot::Notification, "n");
-        let err = dispatch(
-            &state,
-            &c,
-            "ui.open_url",
-            &json!({"url": "https://example.com"}),
-        )
-        .unwrap_err();
-        assert_eq!(err.code, codes::FORBIDDEN);
+        assert_eq!(
+            open(&c, "https://example.com").unwrap_err().code,
+            codes::FORBIDDEN
+        );
 
         let c = ui_ctx(&state, &[CAP_BROWSER_OPEN], UiSlot::Notification, "n");
-        let err = dispatch(
-            &state,
-            &c,
-            "ui.open_url",
-            &json!({"url": "file:///etc/passwd"}),
-        )
-        .unwrap_err();
-        assert_eq!(err.code, codes::INVALID_PARAMS);
+        assert_eq!(
+            open(&c, "file:///etc/passwd").unwrap_err().code,
+            codes::INVALID_PARAMS
+        );
 
-        let ok = dispatch(
-            &state,
-            &c,
-            "ui.open_url",
-            &json!({"url": "https://example.com/pr/1"}),
-        )
-        .unwrap();
+        let ok = open(&c, "https://example.com/pr/1").unwrap();
         assert_eq!(ok["seq"], json!(1));
         let notifs = state.ui_snapshot().notifications;
         assert_eq!(notifs.len(), 1);
@@ -1509,63 +1433,26 @@ mod tests {
     }
 
     #[test]
-    fn ui_state_set_rejects_unknown_slot_and_bad_payload() {
-        let tmp = tempfile::tempdir().unwrap();
-        let state = state(tmp.path());
-        let c = ui_ctx(&state, &[CAP_WORKER], UiSlot::StatusBar, "main");
-        let err = dispatch(
-            &state,
-            &c,
-            "ui.state.set",
-            &json!({"slot": "sidebar", "id": "main", "payload": {"text": "x"}}),
-        )
-        .unwrap_err();
-        assert_eq!(err.code, codes::INVALID_PARAMS);
-        let err = dispatch(
-            &state,
-            &c,
-            "ui.state.set",
-            &json!({"slot": "status-bar", "id": "main", "payload": {"tone": "info"}}),
-        )
-        .unwrap_err();
-        assert_eq!(err.code, codes::INVALID_PARAMS);
-    }
-
-    #[test]
     fn composer_action_draft_operation_requires_composer_write() {
         let tmp = tempfile::tempdir().unwrap();
         let state = state(tmp.path());
+        let action = |draft: bool| {
+            let mut payload = json!({"label": "Voice", "method": "voice.start"});
+            if draft {
+                payload["draft_operation"] =
+                    json!({"kind": "insert-text", "id": "op-1", "text": "hello"});
+            }
+            json!({
+                "slot": "composer-action",
+                "id": "voice",
+                "session_id": "s1",
+                "payload": payload
+            })
+        };
+
         let c = ui_ctx(&state, &[CAP_WORKER], UiSlot::ComposerAction, "voice");
-
-        dispatch(
-            &state,
-            &c,
-            "ui.state.set",
-            &json!({
-                "slot": "composer-action",
-                "id": "voice",
-                "session_id": "s1",
-                "payload": {"label": "Voice", "method": "voice.start"}
-            }),
-        )
-        .unwrap();
-
-        let err = dispatch(
-            &state,
-            &c,
-            "ui.state.set",
-            &json!({
-                "slot": "composer-action",
-                "id": "voice",
-                "session_id": "s1",
-                "payload": {
-                    "label": "Voice",
-                    "method": "voice.start",
-                    "draft_operation": {"kind": "insert-text", "id": "op-1", "text": "hello"}
-                }
-            }),
-        )
-        .unwrap_err();
+        dispatch(&state, &c, "ui.state.set", &action(false)).unwrap();
+        let err = dispatch(&state, &c, "ui.state.set", &action(true)).unwrap_err();
         assert_eq!(err.code, codes::FORBIDDEN);
 
         let c = ui_ctx(
@@ -1574,21 +1461,6 @@ mod tests {
             UiSlot::ComposerAction,
             "voice",
         );
-        dispatch(
-            &state,
-            &c,
-            "ui.state.set",
-            &json!({
-                "slot": "composer-action",
-                "id": "voice",
-                "session_id": "s1",
-                "payload": {
-                    "label": "Voice",
-                    "method": "voice.start",
-                    "draft_operation": {"kind": "insert-text", "id": "op-1", "text": "hello"}
-                }
-            }),
-        )
-        .unwrap();
+        dispatch(&state, &c, "ui.state.set", &action(true)).unwrap();
     }
 }
