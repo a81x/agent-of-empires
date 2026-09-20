@@ -453,220 +453,79 @@ fn sort_indices_by_group(entries: &[PaletteCommand]) -> Vec<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crossterm::event::KeyModifiers;
+    use crate::tui::dialogs::test_keys::{ctrl_key, key};
     use std::collections::HashSet;
-
-    fn ke(code: KeyCode) -> KeyEvent {
-        KeyEvent::new(code, KeyModifiers::NONE)
-    }
 
     fn make_dialog() -> CommandPaletteDialog {
         CommandPaletteDialog::new(builtin_commands(false))
     }
 
+    fn type_query(dialog: &mut CommandPaletteDialog, text: &str) {
+        for c in text.chars() {
+            dialog.handle_key(key(KeyCode::Char(c)));
+        }
+    }
+
+    fn command<'a>(cmds: &'a [PaletteCommand], id: &str) -> &'a PaletteCommand {
+        cmds.iter()
+            .find(|c| c.id == id)
+            .unwrap_or_else(|| panic!("builtin commands must include {id:?}"))
+    }
+
     #[test]
-    fn empty_query_shows_all_entries_grouped() {
+    fn a_query_ranks_the_entry_it_names_first() {
+        // No query lists everything, led by the lowest-order group.
         let dialog = make_dialog();
         assert_eq!(dialog.matches.len(), dialog.entries.len());
-        // First match should be in the Actions group (lowest order).
-        let first = &dialog.entries[dialog.matches[0]];
-        assert_eq!(first.group, PaletteGroup::Actions);
-    }
-
-    #[test]
-    fn fuzzy_filters_to_matching_entries() {
-        let mut dialog = make_dialog();
-        dialog.handle_key(ke(KeyCode::Char('r')));
-        dialog.handle_key(ke(KeyCode::Char('e')));
-        dialog.handle_key(ke(KeyCode::Char('n')));
-        // "ren" should match "Rename or move to group" near the top.
-        let top = &dialog.entries[dialog.matches[0]];
-        assert!(
-            top.title.to_lowercase().contains("rename"),
-            "got: {}",
-            top.title
+        assert_eq!(
+            dialog.entries[dialog.matches[0]].group,
+            PaletteGroup::Actions
         );
-    }
 
-    #[test]
-    fn live_send_entry_is_bound_to_tab_with_dedicated_payload() {
-        // Regression guard: the live-send palette entry must keep its
-        // hotkey label and dedicated payload variant. A future rebinding
-        // (e.g., moving Tab elsewhere) or accidentally regressing the
-        // payload to `Key(Tab)` would break strict-mode users who reach
-        // live-send only through the palette.
-        let cmds = builtin_commands(false);
-        let entry = cmds
-            .iter()
-            .find(|c| c.id == "live-send")
-            .expect("builtin commands must include 'live-send'");
-        assert_eq!(entry.hotkey, "Tab");
-        assert!(
-            matches!(&entry.payload, PaletteAction::LiveSend),
-            "live-send entry must dispatch PaletteAction::LiveSend"
-        );
-    }
-
-    #[test]
-    fn picker_entries_invoke_their_actions() {
-        // The sort and group picker palette entries route through
-        // `Invoke(ActionId::…)` so `run_action` opens the picker directly.
-        // Previously these synthesized `Key('o')` / `Key('g')`, which the
-        // strict-mode typing-guard would have swallowed.
-        let cmds = builtin_commands(true);
-        let sort = cmds
-            .iter()
-            .find(|c| c.id == "pick-sort")
-            .expect("builtin commands must include 'pick-sort'");
-        assert!(
-            matches!(&sort.payload, PaletteAction::Invoke(ActionId::SortPicker)),
-            "sort-picker entry must Invoke(SortPicker)"
-        );
-        let group = cmds
-            .iter()
-            .find(|c| c.id == "pick-group-by")
-            .expect("builtin commands must include 'pick-group-by'");
-        assert!(
-            matches!(&group.payload, PaletteAction::Invoke(ActionId::GroupBy)),
-            "group-picker entry must Invoke(GroupBy)"
-        );
-    }
-
-    #[test]
-    fn keywords_match_searches() {
-        // "Move session to group" complaint from issue #889: searching for
-        // "move" should surface the rename entry via its keyword.
-        let mut dialog = make_dialog();
-        for c in "move".chars() {
-            dialog.handle_key(ke(KeyCode::Char(c)));
+        // (query, id of the entry it should surface). "move" only matches the
+        // rename entry through its keywords.
+        for (query, id) in [("ren", "rename"), ("move", "rename")] {
+            let mut dialog = make_dialog();
+            type_query(&mut dialog, query);
+            assert!(!dialog.matches.is_empty(), "{query} matched nothing");
+            assert_eq!(dialog.entries[dialog.matches[0]].id, id, "{query}");
         }
-        assert!(!dialog.matches.is_empty(), "'move' should match something");
-        let top = &dialog.entries[dialog.matches[0]];
-        assert_eq!(top.id, "rename");
-    }
 
-    #[test]
-    fn enter_submits_payload() {
+        // A query that matches nothing leaves the list empty, and Enter on it
+        // cancels rather than panicking.
         let mut dialog = make_dialog();
-        // Filter to a known entry so we control which payload comes back.
-        for c in "settings".chars() {
-            dialog.handle_key(ke(KeyCode::Char(c)));
-        }
-        let result = dialog.handle_key(ke(KeyCode::Enter));
-        match result {
-            DialogResult::Submit(PaletteAction::Invoke(id)) => {
-                assert_eq!(id, ActionId::Settings);
-            }
-            _ => panic!("expected Submit(Invoke(Settings))"),
-        }
-    }
-
-    #[test]
-    fn esc_cancels() {
-        let mut dialog = make_dialog();
-        let result = dialog.handle_key(ke(KeyCode::Esc));
-        assert!(matches!(result, DialogResult::Cancel));
-    }
-
-    #[test]
-    fn ctrl_k_toggles_closed() {
-        let mut dialog = make_dialog();
-        let ctrl_k = KeyEvent::new(KeyCode::Char('k'), KeyModifiers::CONTROL);
-        assert!(matches!(dialog.handle_key(ctrl_k), DialogResult::Cancel));
-        // Same with uppercase K (some terminals send Ctrl+Shift+K as `K`).
-        let ctrl_shift_k = KeyEvent::new(KeyCode::Char('K'), KeyModifiers::CONTROL);
+        type_query(&mut dialog, "zzzqxqxq");
+        assert!(dialog.matches.is_empty());
         assert!(matches!(
-            dialog.handle_key(ctrl_shift_k),
+            dialog.handle_key(key(KeyCode::Enter)),
             DialogResult::Cancel
         ));
     }
 
     #[test]
-    fn navigation_clamps() {
+    fn enter_submits_the_entry_payload_and_the_close_keys_cancel() {
         let mut dialog = make_dialog();
-        // Up at top stays at 0.
-        dialog.handle_key(ke(KeyCode::Up));
-        assert_eq!(dialog.selected, 0);
-
-        // Walk to the bottom, then Down should clamp.
-        let len = dialog.matches.len();
-        for _ in 0..len + 5 {
-            dialog.handle_key(ke(KeyCode::Down));
+        type_query(&mut dialog, "settings");
+        match dialog.handle_key(key(KeyCode::Enter)) {
+            DialogResult::Submit(PaletteAction::Invoke(id)) => assert_eq!(id, ActionId::Settings),
+            _ => panic!("expected Submit(Invoke(Settings))"),
         }
-        assert_eq!(dialog.selected, len - 1);
-    }
 
-    #[test]
-    fn no_match_query_shows_empty() {
+        // Esc closes, and so does Ctrl+K again, in either case the terminal
+        // may send it in.
         let mut dialog = make_dialog();
-        for c in "zzzqxqxq".chars() {
-            dialog.handle_key(ke(KeyCode::Char(c)));
-        }
-        assert!(dialog.matches.is_empty());
-        // Enter on empty result should cancel rather than panic.
-        let result = dialog.handle_key(ke(KeyCode::Enter));
-        assert!(matches!(result, DialogResult::Cancel));
-    }
-
-    #[test]
-    fn hotkey_labels_follow_strict_mode() {
-        // Picks one entry whose label moves under strict mode and one whose
-        // binding gets relocated to Ctrl. Catches regressions where strict
-        // mode was forgotten when adding a new entry.
-        let normal = builtin_commands(false);
-        let strict = builtin_commands(true);
-
-        let new_normal = normal.iter().find(|c| c.id == "new-session").unwrap();
-        let new_strict = strict.iter().find(|c| c.id == "new-session").unwrap();
-        assert_eq!(new_normal.hotkey, "n");
-        assert_eq!(new_strict.hotkey, "N");
-
-        let diff_normal = normal.iter().find(|c| c.id == "diff").unwrap();
-        let diff_strict = strict.iter().find(|c| c.id == "diff").unwrap();
-        assert_eq!(diff_normal.hotkey, "D");
-        assert_eq!(diff_strict.hotkey, "Ctrl+D");
-
-        // Bindings without a strict variant (Enter, w, ?, P) stay the same.
-        let attach_normal = normal.iter().find(|c| c.id == "attach").unwrap();
-        let attach_strict = strict.iter().find(|c| c.id == "attach").unwrap();
-        assert_eq!(attach_normal.hotkey, "Enter");
-        assert_eq!(attach_strict.hotkey, "Enter");
-    }
-
-    #[test]
-    fn typing_a_cheat_code_submits_a_cheat_payload() {
-        let mut dialog = make_dialog();
-        // Intermediate prefixes are not a full match and keep the palette open.
-        for c in "wolol".chars() {
+        assert!(matches!(
+            dialog.handle_key(key(KeyCode::Esc)),
+            DialogResult::Cancel
+        ));
+        for c in ['k', 'K'] {
             assert!(matches!(
-                dialog.handle_key(ke(KeyCode::Char(c))),
-                DialogResult::Continue
+                dialog.handle_key(ctrl_key(KeyCode::Char(c))),
+                DialogResult::Cancel
             ));
         }
-        // Completing the code fires the cheat and closes the palette.
-        match dialog.handle_key(ke(KeyCode::Char('o'))) {
-            DialogResult::Submit(PaletteAction::Cheat(message)) => {
-                assert!(message.contains("converts to your cause"), "got: {message}");
-            }
-            _ => panic!("expected Submit(Cheat) after typing a full cheat code"),
-        }
-    }
 
-    #[test]
-    fn ordinary_query_does_not_trigger_a_cheat() {
-        let mut dialog = make_dialog();
-        for c in "settings".chars() {
-            assert!(matches!(
-                dialog.handle_key(ke(KeyCode::Char(c))),
-                DialogResult::Continue
-            ));
-        }
-    }
-
-    #[test]
-    fn jump_to_cursor_payload_round_trips() {
-        // Build a custom palette with one dynamic jump entry so we can
-        // exercise the JumpToCursor path the same way real session items do.
+        // A dynamic session entry round-trips its cursor index.
         let entries = vec![PaletteCommand {
             id: "jump-test",
             title: "Jump to my-session".to_string(),
@@ -675,55 +534,113 @@ mod tests {
             hotkey: String::new(),
             payload: PaletteAction::JumpToCursor(7),
         }];
-        let mut dialog = CommandPaletteDialog::new(entries);
-        let result = dialog.handle_key(ke(KeyCode::Enter));
-        match result {
+        match CommandPaletteDialog::new(entries).handle_key(key(KeyCode::Enter)) {
             DialogResult::Submit(PaletteAction::JumpToCursor(idx)) => assert_eq!(idx, 7),
             _ => panic!("expected JumpToCursor"),
         }
     }
 
-    /// Registry actions that intentionally have no palette command. Anything
-    /// not listed here must carry palette metadata in the registry; the palette
-    /// is generated from that metadata, so this is the one place "added an
-    /// action, forgot the palette" can still slip through.
+    #[test]
+    fn navigation_clamps_at_both_ends() {
+        let mut dialog = make_dialog();
+        dialog.handle_key(key(KeyCode::Up));
+        assert_eq!(dialog.selected, 0);
+
+        let len = dialog.matches.len();
+        for _ in 0..len + 5 {
+            dialog.handle_key(key(KeyCode::Down));
+        }
+        assert_eq!(dialog.selected, len - 1);
+    }
+
+    #[test]
+    fn entries_keep_their_dedicated_payloads_and_strict_mode_labels() {
+        let normal = builtin_commands(false);
+        let strict = builtin_commands(true);
+
+        // Live-send and the two pickers must dispatch their own payloads. A
+        // synthesized keypress would be swallowed by strict mode's
+        // typing-guard, which is the only way those users reach them.
+        assert_eq!(command(&normal, "live-send").hotkey, "Tab");
+        assert!(matches!(
+            command(&normal, "live-send").payload,
+            PaletteAction::LiveSend
+        ));
+        assert!(matches!(
+            command(&strict, "pick-sort").payload,
+            PaletteAction::Invoke(ActionId::SortPicker)
+        ));
+        assert!(matches!(
+            command(&strict, "pick-group-by").payload,
+            PaletteAction::Invoke(ActionId::GroupBy)
+        ));
+
+        // (id, normal label, strict label). A binding with no strict variant
+        // keeps its label.
+        for (id, want_normal, want_strict) in [
+            ("new-session", "n", "N"),
+            ("diff", "D", "Ctrl+D"),
+            ("attach", "Enter", "Enter"),
+        ] {
+            assert_eq!(command(&normal, id).hotkey, want_normal, "{id}");
+            assert_eq!(command(&strict, id).hotkey, want_strict, "{id}");
+        }
+    }
+
+    #[test]
+    fn a_full_cheat_code_fires_its_toast_and_nothing_else_does() {
+        let mut dialog = make_dialog();
+        // A prefix is not a match, so the palette stays open.
+        for c in "wolol".chars() {
+            assert!(matches!(
+                dialog.handle_key(key(KeyCode::Char(c))),
+                DialogResult::Continue
+            ));
+        }
+        match dialog.handle_key(key(KeyCode::Char('o'))) {
+            DialogResult::Submit(PaletteAction::Cheat(message)) => {
+                assert!(message.contains("converts to your cause"), "got: {message}");
+            }
+            _ => panic!("expected Submit(Cheat) after a full cheat code"),
+        }
+
+        let mut dialog = make_dialog();
+        for c in "settings".chars() {
+            assert!(matches!(
+                dialog.handle_key(key(KeyCode::Char(c))),
+                DialogResult::Continue
+            ));
+        }
+    }
+
+    /// Registry actions that intentionally have no palette command.
     const PALETTE_EXEMPT: &[(ActionId, &str)] = &[
-        (
-            ActionId::Quit,
-            "intentionally excluded from the palette; q is quick-exit, doesn't need discovery",
-        ),
+        (ActionId::Quit, "q is quick-exit and needs no discovery"),
         (
             ActionId::ToolPicker,
-            "Tool-view toggle; tool sessions get dynamic palette entries instead",
+            "tool sessions get dynamic palette entries instead",
         ),
-        (
-            ActionId::SearchStart,
-            "search activation; modal trigger, not an action",
-        ),
-        (
-            ActionId::Update,
-            "update-banner action; meta key, surfaced via the banner",
-        ),
+        (ActionId::SearchStart, "a modal trigger, not an action"),
+        (ActionId::Update, "surfaced via the update banner"),
         (
             ActionId::ToggleContainer,
             "only valid on a sandboxed session in Terminal view",
         ),
         (
             ActionId::SearchNext,
-            "search-cycle; only meaningful while a search is active",
+            "only meaningful while a search is active",
         ),
         (
             ActionId::ToggleProjectPin,
-            "only valid on a project header in project view; reached via the header context menu and `p`",
+            "only valid on a project header, reached via its context menu and `p`",
         ),
     ];
 
-    /// Drift guard. The palette is generated from `bindings::BINDINGS`, so a
-    /// binding either exposes palette metadata (and thus a command) or is on
-    /// the exempt list. Catches "added an action, forgot to decide whether it
-    /// belongs in the palette."
+    /// Drift guard in both directions: the palette is generated from
+    /// `bindings::BINDINGS`, so every binding either carries palette metadata
+    /// or sits on the exempt list, and no exemption outlives its action.
     #[test]
-    fn registry_actions_have_palette_or_are_exempt() {
+    fn every_registry_action_is_in_the_palette_or_exempt() {
         let exempt: HashSet<ActionId> = PALETTE_EXEMPT.iter().map(|(id, _)| *id).collect();
         let missing: Vec<ActionId> = bindings::BINDINGS
             .iter()
@@ -732,17 +649,10 @@ mod tests {
             .collect();
         assert!(
             missing.is_empty(),
-            "registry actions with no palette metadata and not in PALETTE_EXEMPT: {:?}\n\
-             Add a PaletteMeta to the binding in home/bindings.rs, or add the action to \
-             PALETTE_EXEMPT here with a note.",
-            missing
+            "no palette metadata and not in PALETTE_EXEMPT: {missing:?}. Add a \
+             PaletteMeta to the binding in home/bindings.rs, or list it here."
         );
-    }
 
-    /// Reverse drift: an exempt action that no longer exists or that gained
-    /// palette metadata (so the exemption is now stale/contradictory).
-    #[test]
-    fn palette_exempt_entries_are_still_exempt() {
         let stale: Vec<ActionId> = PALETTE_EXEMPT
             .iter()
             .map(|(id, _)| *id)
@@ -756,50 +666,42 @@ mod tests {
         assert!(
             stale.is_empty(),
             "PALETTE_EXEMPT lists actions that no longer exist or now have palette \
-             metadata: {:?}. Remove them from PALETTE_EXEMPT.",
-            stale
+             metadata: {stale:?}. Remove them."
         );
     }
 
     #[test]
-    fn truncate_handles_multibyte_chars() {
-        // Naive byte slicing would panic mid-emoji; this exercises the
-        // dynamic "Jump to session: 😀 my-session" rendering path.
-        let s = "😀 my-session-with-a-long-title";
-        // No-op when string already fits.
-        assert_eq!(truncate_with_ellipsis(s, 100), s);
-        // Truncation lands on a char boundary and appends ellipsis.
-        let out = truncate_with_ellipsis(s, 5);
+    fn truncation_cuts_on_display_width_not_bytes() {
+        // The dynamic "Jump to session: 😀 my-session" rows make naive byte
+        // slicing a panic, and a wide char overflowing the row a real case.
+        let emoji = "😀 my-session-with-a-long-title";
+        // (input, max_cols, output)
+        let cases: &[(&str, usize, &str)] = &[
+            (emoji, 100, emoji),
+            // A budget too small for even one char returns the original
+            // rather than a useless lone ellipsis.
+            (emoji, 1, emoji),
+            ("hello world", 7, "hello …"),
+            // "ab😀cd": the emoji takes two cells, so neither a 3- nor a
+            // 4-column budget leaves room for it once the ellipsis is
+            // reserved.
+            ("ab😀cd", 3, "ab…"),
+            ("ab😀cd", 4, "ab…"),
+            // Each CJK char is two cells, so a 5-column budget fits two.
+            ("中文测试abc", 5, "中文…"),
+            // Zero columns renders nothing rather than overflowing the row.
+            ("anything", 0, ""),
+        ];
+        for (input, max_cols, want) in cases {
+            let out = truncate_with_ellipsis(input, *max_cols);
+            assert_eq!(out, *want, "{input:?} at {max_cols}");
+            if out != *input {
+                assert!(out.width() <= *max_cols, "{out:?} overflows {max_cols}");
+            }
+        }
+
+        let out = truncate_with_ellipsis(emoji, 5);
         assert!(out.ends_with('…'), "got {out:?}");
         assert!(out.width() <= 5);
-        // Tiny budget returns the original to avoid producing useless "…".
-        assert_eq!(truncate_with_ellipsis(s, 1), s);
-        // Pure ASCII still works.
-        assert_eq!(truncate_with_ellipsis("hello world", 7), "hello …");
-
-        // Cut budget that lands mid-emoji under any naive char/byte impl:
-        // "ab😀cd" is bytes [a, b, 0xF0,0x9F,0x98,0x80, c, d] and the emoji
-        // takes 2 display cols. With max_cols=3, budget=2 cells, the function
-        // must keep "ab" + ellipsis (the emoji would push to 4 cells).
-        let cut = truncate_with_ellipsis("ab😀cd", 3);
-        assert_eq!(cut, "ab…");
-        assert!(cut.width() <= 3);
-
-        // Max_cols=4 leaves no room for the emoji either (a=1 + b=1 + 😀=2
-        // = 4, but we need 1 cell reserved for ellipsis -> budget=3, and
-        // a+b+😀 = 4 overflows it). Should still keep "ab".
-        let cut = truncate_with_ellipsis("ab😀cd", 4);
-        assert_eq!(cut, "ab…");
-
-        // CJK width: each char is 2 cells. With max_cols=5 (budget=4) we
-        // keep two CJK chars + ellipsis.
-        let cut = truncate_with_ellipsis("中文测试abc", 5);
-        assert_eq!(cut, "中文…");
-        assert!(cut.width() <= 5);
-
-        // Zero-budget returns empty (the surrounding layout will allocate no
-        // visible cells). Previously this returned the full string and
-        // overflowed the row.
-        assert_eq!(truncate_with_ellipsis("anything", 0), "");
     }
 }
