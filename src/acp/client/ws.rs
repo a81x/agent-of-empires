@@ -296,9 +296,10 @@ fn ws_url(endpoint: &DaemonEndpoint, session_id: &str, since: u64, forward_frame
     if let Some(token) = endpoint.resolved_token() {
         params.push(format!("token={token}"));
     }
-    match params.is_empty() {
-        true => format!("{base}{path}"),
-        false => format!("{base}{path}?{}", params.join("&")),
+    if params.is_empty() {
+        format!("{base}{path}")
+    } else {
+        format!("{base}{path}?{}", params.join("&"))
     }
 }
 

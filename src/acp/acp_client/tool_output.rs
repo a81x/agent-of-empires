@@ -159,9 +159,10 @@ pub(super) fn extract_tool_output_blocks(
             _ => {}
         }
     }
-    match has_media {
-        true => out,
-        false => Vec::new(),
+    if has_media {
+        out
+    } else {
+        Vec::new()
     }
 }
 
