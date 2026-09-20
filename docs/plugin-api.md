@@ -2,16 +2,9 @@
 
 The field-by-field reference for `aoe-plugin.toml`, the manifest every Agent of
 Empires plugin ships. The schema lives in the `aoe-plugin-api` crate
-(`PluginManifest`) and is the source of truth; this page documents it for plugin
-authors. The host parses the manifest strictly (unknown keys are rejected), so
-every key here maps to a schema field.
-
-For a guided introduction see [Writing Plugins](development/writing-plugins.md).
-To scaffold a working plugin, use the starter template:
-
-```sh
-cookiecutter gh:agent-of-empires/plugin-template
-```
+(`PluginManifest`) and is the source of truth; the host parses it strictly, so
+unknown keys are rejected and every key here maps to a schema field. For a
+guided introduction, see [Writing Plugins](development/writing-plugins.md).
 
 ## Versioning
 
@@ -107,7 +100,10 @@ description = "Show the status summary."
 | `description` | string | no | Help text. |
 | `action` | table | no | A client-executed action. Requires `api_version >= 6` and the `browser_open` capability. |
 
-### Command action
+A command `action` is a client-executed action instead of a worker call. The
+only `kind` is `open-ui-link`, which opens the `href` from the plugin's own
+`(slot, id)` UI-state entry in the browser, with no worker round-trip; that pair
+must match a declared `[[ui]]` entry on a per-session slot.
 
 ```toml
 [commands.action]
@@ -115,10 +111,6 @@ kind = "open-ui-link"
 slot = "row-badge"
 id = "my_badge"
 ```
-
-The only `kind` is `open-ui-link`: it opens the `href` from the plugin's own
-`(slot, id)` UI-state entry in the browser, with no worker round-trip. That pair
-must match a declared `[[ui]]` entry on a per-session slot.
 
 ## Keybinds
 
@@ -143,12 +135,10 @@ stored under `[plugins."<id>".settings]`. The worker reads them via the
 [[settings]]
 key = "refresh_secs"
 label = "Refresh interval (seconds)"
-description = "How often the worker polls."
 type = "integer"
 default = 120
 min = 0
 max = 86400
-advanced = true
 ```
 
 | Key | Type | Required | Notes |
@@ -214,28 +204,18 @@ on edit or reorder, so a worker can track an entry across edits.
 ```toml
 [[settings]]
 key = "jobs"
-label = "Scheduled jobs"
 type = "object_list"
 item_id_key = "id"
 max_items = 50
 
 [[settings.fields]]
 key = "agent_id"
-label = "Agent"
 type = "dynamic_select"
 option_source = "acp.agents"
 required = true
 
 [[settings.fields]]
-key = "model_id"
-label = "Model"
-type = "dynamic_select"
-option_source = "acp.models"
-depends_on = ["agent_id"]
-
-[[settings.fields]]
 key = "schedule"
-label = "Schedule"
 type = "cron"
 required = true
 ```
@@ -357,8 +337,7 @@ id = "my_pane"
 
 ### Pane payload
 
-A `pane` entry renders a dockable tool-window. The worker pushes it with
-`ui.state.set`:
+A `pane` entry renders a dockable tool-window, pushed with `ui.state.set`:
 
 ```json
 {
@@ -461,54 +440,33 @@ hrefs, and tooltips, and stacking `columns`) but cannot fire an action, so
 
 ### Composer action payload
 
-A `composer-action` entry renders a host-owned button in the web dashboard ACP
-composer. The worker pushes it with `ui.state.set`:
+A `composer-action` entry renders a host-owned button in the dashboard's ACP
+composer, pushed with `ui.state.set`. `label` and `method` are required;
+`icon`, `tooltip`, `tone`, and `disabled` are optional.
+
+```json
+{ "label": "Dictate", "method": "dictation.start", "icon": "mic" }
+```
+
+On click the dashboard POSTs `method` to `/api/plugins/{id}/action` with the
+active `session_id`. With `composer.read` the forwarded params also carry
+`{ "composer": { "text", "selection_start", "selection_end" } }`, a
+click-scoped snapshot of the draft; without it the server strips that snapshot
+before forwarding.
+
+To mutate the draft, include a `draft_operation` in the pushed payload, which
+requires `composer.write`:
 
 ```json
 {
   "label": "Dictate",
   "method": "dictation.start",
-  "icon": "mic",
-  "tooltip": "Start dictation",
-  "tone": "info",
-  "disabled": false
-}
-```
-
-`label` and `method` are required. On click, the dashboard POSTs `method` to
-`/api/plugins/{id}/action` with the active `session_id`. When the plugin has
-`composer.read`, the forwarded params include:
-
-```json
-{
-  "composer": {
-    "text": "current draft",
-    "selection_start": 0,
-    "selection_end": 5
-  }
-}
-```
-
-Without `composer.read`, the server strips that snapshot before forwarding the
-action to the worker.
-
-To mutate the draft, include a `draft_operation` in the pushed payload. This
-requires `composer.write`.
-
-```json
-{
-  "label": "Dictate",
-  "method": "dictation.start",
-  "draft_operation": {
-    "kind": "insert-text",
-    "id": "transcript-1",
-    "text": "Hello from dictation."
-  }
+  "draft_operation": { "kind": "insert-text", "id": "transcript-1", "text": "Hello." }
 }
 ```
 
 `kind` is `insert-text`, `replace-selection`, or `set-text`. `id` must be stable
-and non-empty; the web dashboard applies each operation id once so a persistent
+and non-empty: the dashboard applies each operation id once, so a persistent
 UI-state entry cannot replay the edit on every poll.
 
 ## Status
