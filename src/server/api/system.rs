@@ -1971,22 +1971,6 @@ mod tests {
     }
 
     #[test]
-    fn custom_agent_entries_never_serialize_command_values() {
-        let entries = build_custom_agent_infos(
-            &custom_agents(&[("remote-agent", "ssh -t prod.example claude")]),
-            &HashMap::new(),
-            &HashMap::new(),
-            &unrestricted(),
-        );
-
-        let json = serde_json::to_string(&entries).unwrap();
-        assert!(json.contains("remote-agent"));
-        assert!(!json.contains("ssh"));
-        assert!(!json.contains("prod.example"));
-        assert!(!json.contains("claude"));
-    }
-
-    #[test]
     fn serialized_custom_agent_response_contains_no_command_or_detect_as_data() {
         let entries = build_custom_agent_infos(
             &custom_agents(&[("remote-agent", "ssh -t prod.example claude")]),
@@ -2177,23 +2161,18 @@ mod tests {
         assert!(!value.to_string().contains("ocp run sp"));
     }
 
+    /// A name outside `list_available_sounds()` is refused, traversal included,
+    /// and a 404 that still streamed a body would be worse than the wrong
+    /// status.
     #[tokio::test]
-    async fn serve_sound_file_rejects_unknown_name() {
-        let resp = serve_sound_file(axum::extract::Path("does-not-exist-xyz.wav".to_string()))
-            .await
-            .into_response();
-        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
-    }
-
-    #[tokio::test]
-    async fn serve_sound_file_rejects_path_traversal() {
-        let resp = serve_sound_file(axum::extract::Path("../../../etc/passwd".to_string()))
-            .await
-            .into_response();
-        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
-        // A NOT_FOUND that still streamed a body would be worse than the wrong
-        // status, so assert the body is empty.
-        let body = to_bytes(resp.into_body(), 1024).await.unwrap();
-        assert!(body.is_empty(), "unexpected body bytes: {body:?}");
+    async fn serve_sound_file_rejects_names_outside_the_sounds_dir() {
+        for name in ["does-not-exist-xyz.wav", "../../../etc/passwd"] {
+            let resp = serve_sound_file(axum::extract::Path(name.to_string()))
+                .await
+                .into_response();
+            assert_eq!(resp.status(), StatusCode::NOT_FOUND, "{name}");
+            let body = to_bytes(resp.into_body(), 1024).await.unwrap();
+            assert!(body.is_empty(), "{name}: unexpected body bytes: {body:?}");
+        }
     }
 }
