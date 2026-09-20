@@ -1,19 +1,13 @@
 import { test, expect } from "./helpers/mockedTest";
 import { openLiveSession, scroller } from "./helpers/liveTerminal";
 import { devices, type Page } from "@playwright/test";
-import { clickSidebarSession, openMobileSidebar } from "./helpers/sidebar";
-import {
-  mockTerminalApis,
-  installTerminalSpies,
-  seedSettings,
-  fireTouches,
-  type MockHandle,
-} from "./helpers/terminal-mocks";
+import { mockTerminalApis, installTerminalSpies, fireTouches, type MockHandle } from "./helpers/terminal-mocks";
 
 // Mobile scrollback on the live view is native scrolling over rendered history, never tmux copy-mode.
 test.use({ ...devices["iPhone 13"] });
 
-const openSession = (page: Page, handle: MockHandle) => openLiveSession(page, handle, { mobile: true, settings: null });
+const openSession = (page: Page, handle: MockHandle) =>
+  openLiveSession(page, handle, { mobile: true, settings: { mobileFontSize: 14 } });
 
 async function liveLineHeight(page: Page) {
   return scroller(page).evaluate((el) => {
@@ -46,9 +40,6 @@ test.describe("Mobile live-view scrollback", () => {
   test("keeps recent scrollback loaded at the live edge so a scroll-up is not blank", async ({ page }) => {
     await installTerminalSpies(page);
     const handle = await mockTerminalApis(page);
-    await page.goto("/");
-    await seedSettings(page, { mobileFontSize: 14 });
-    await page.reload();
     await openSession(page, handle);
 
     // The live-edge window includes more than a screenful of history, so scrolling up lands on text.
@@ -86,9 +77,6 @@ test.describe("Mobile live-view scrollback", () => {
   test("reading a deep history mounts only a window of rows (virtualized)", async ({ page }) => {
     await installTerminalSpies(page);
     const handle = await mockTerminalApis(page, { liveHistory: 600 });
-    await page.goto("/");
-    await seedSettings(page, { mobileFontSize: 14 });
-    await page.reload();
     await openSession(page, handle);
 
     await scroller(page).evaluate((el) => {
@@ -122,9 +110,6 @@ test.describe("Mobile live-view scrollback", () => {
   test("jumping to the bottom while reading does not show a blank spacer frame", async ({ page }) => {
     await installTerminalSpies(page);
     const handle = await mockTerminalApis(page, { liveHistory: 600 });
-    await page.goto("/");
-    await seedSettings(page, { mobileFontSize: 14 });
-    await page.reload();
     await openSession(page, handle);
     await expect.poll(() => page.locator("[data-live-content]").innerText()).toContain("$ ready");
 
@@ -153,9 +138,6 @@ test.describe("Mobile live-view scrollback", () => {
   test("scrolling up shows Back to live; tapping it returns to the bottom", async ({ page }) => {
     await installTerminalSpies(page);
     const handle = await mockTerminalApis(page);
-    await page.goto("/");
-    await seedSettings(page, { mobileFontSize: 14 });
-    await page.reload();
     await openSession(page, handle);
 
     await expect(page.getByRole("button", { name: "Back to live" })).toHaveCount(0);
@@ -179,9 +161,6 @@ test.describe("Mobile live-view scrollback", () => {
   test("scrolling requests a bigger capture window instead of wheel escapes", async ({ page }) => {
     await installTerminalSpies(page);
     const handle = await mockTerminalApis(page);
-    await page.goto("/");
-    await seedSettings(page, { mobileFontSize: 14 });
-    await page.reload();
     await openSession(page, handle);
 
     const before = textMessages(handle).filter((m) => m.includes('"type":"window"')).length;
@@ -203,9 +182,6 @@ test.describe("Mobile live-view scrollback", () => {
   test("incoming frames never move the scroll position while reading", async ({ page }) => {
     await installTerminalSpies(page);
     const handle = await mockTerminalApis(page);
-    await page.goto("/");
-    await seedSettings(page, { mobileFontSize: 14 });
-    await page.reload();
     await openSession(page, handle);
 
     // Streaming frames must not snap a scroll that has started, via pinning or scroll anchoring.
@@ -230,9 +206,6 @@ test.describe("Mobile live-view scrollback", () => {
   test("a streamed frame never snaps a reader off the live edge back to the bottom", async ({ page }) => {
     await installTerminalSpies(page);
     const handle = await mockTerminalApis(page);
-    await page.goto("/");
-    await seedSettings(page, { mobileFontSize: 14 });
-    await page.reload();
     await openSession(page, handle);
 
     // Momentum continues after the finger lifts, so off the live edge a streamed frame must never pin to the bottom.
@@ -272,9 +245,6 @@ test.describe("Mobile live-view scrollback", () => {
   test("a real touch flick into scrollback is not yanked back by streaming frames", async ({ page }) => {
     await installTerminalSpies(page);
     const handle = await mockTerminalApis(page);
-    await page.goto("/");
-    await seedSettings(page, { mobileFontSize: 14 });
-    await page.reload();
     await openSession(page, handle);
 
     await touchFlickUp(page, 220);
@@ -305,9 +275,6 @@ test.describe("Mobile live-view scrollback", () => {
   test("a frame does not snap a one-line scroll-up back to the live edge", async ({ page }) => {
     await installTerminalSpies(page);
     const handle = await mockTerminalApis(page);
-    await page.goto("/");
-    await seedSettings(page, { mobileFontSize: 14 });
-    await page.reload();
     await openSession(page, handle);
 
     // A scroll-up inside the 1.5-line at-bottom tolerance must stay detached (the dead-zone stutter).
@@ -332,9 +299,6 @@ test.describe("Mobile live-view scrollback", () => {
   test("a streamed frame does not pin away the first pixels of an upward flick", async ({ page }) => {
     await installTerminalSpies(page);
     const handle = await mockTerminalApis(page);
-    await page.goto("/");
-    await seedSettings(page, { mobileFontSize: 14 });
-    await page.reload();
     await openSession(page, handle);
 
     // iOS momentum starts slowly: pixel-by-pixel upward movement inside the 2px latch must accumulate, not pin.
@@ -356,9 +320,6 @@ test.describe("Mobile live-view scrollback", () => {
   test("a touch-drag switches to the anchored reading window immediately", async ({ page }) => {
     await installTerminalSpies(page);
     const handle = await mockTerminalApis(page);
-    await page.goto("/");
-    await seedSettings(page, { mobileFontSize: 14 });
-    await page.reload();
     await openSession(page, handle);
 
     // Dragging (not tapping) switches to the anchored reading window so rows stop sliding under the finger.
@@ -378,9 +339,6 @@ test.describe("Mobile live-view scrollback", () => {
   test("reading keeps the stream flowing (no hold/freeze)", async ({ page }) => {
     await installTerminalSpies(page);
     const handle = await mockTerminalApis(page);
-    await page.goto("/");
-    await seedSettings(page, { mobileFontSize: 14 });
-    await page.reload();
     await openSession(page, handle);
 
     // Reading never freezes the pane: no hold is sent, only an idle cadence.

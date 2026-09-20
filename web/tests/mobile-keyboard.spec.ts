@@ -57,7 +57,8 @@ async function simulateKeyboardClose(page: Page) {
   });
 }
 
-const openSession = (page: Page, handle: MockHandle) => openLiveSession(page, handle, { mobile: true, settings: null });
+const openSession = (page: Page, handle: MockHandle, settings: Parameters<typeof seedSettings>[1] | null = null) =>
+  openLiveSession(page, handle, { mobile: true, settings });
 
 async function getKeyboardState(page: Page) {
   return page.evaluate(() => {
@@ -77,11 +78,8 @@ test.describe("Mobile keyboard detection and layout", () => {
   async function setupAndOpen(page: Page) {
     const handle = await mockTerminalApis(page);
     await page.route("**/api/sessions/*/ensure", (r) => r.fulfill({ json: { ok: true } }));
-    await page.goto("/");
     // Disable auto-open-on-select so the keyboard starts closed; this suite covers detection, layout, and the FAB.
-    await seedSettings(page, { mobileFontSize: 10, autoOpenKeyboard: false });
-    await page.reload();
-    await openSession(page, handle);
+    await openSession(page, handle, { mobileFontSize: 10, autoOpenKeyboard: false });
   }
 
   test("mobile shell is fixed and rejects document-level scroll", async ({ page }) => {
@@ -164,11 +162,8 @@ test.describe("Mobile keyboard detection and layout", () => {
   test("Claude terminal selection keeps the keyboard closed", async ({ page }) => {
     const handle = await mockTerminalApis(page);
     await page.route("**/api/sessions/*/ensure", (r) => r.fulfill({ json: { ok: true } }));
-    await page.goto("/");
     // Claude's alternate-screen startup drops the first iOS input, so the selection stays a monitoring view until the keyboard opens.
-    await seedSettings(page, { mobileFontSize: 10, autoOpenKeyboard: true });
-    await page.reload();
-    await openSession(page, handle);
+    await openSession(page, handle, { mobileFontSize: 10, autoOpenKeyboard: true });
     await expect(page.getByRole("button", { name: "Open keyboard" })).toBeVisible();
   });
 
@@ -248,7 +243,6 @@ test.describe("Mobile proxy input keydown handling", () => {
   async function setupProxySession(page: Page) {
     const handle = await mockTerminalApis(page);
     await page.route("**/api/sessions/*/ensure", (r) => r.fulfill({ json: { ok: true } }));
-    await page.goto("/");
     await openSession(page, handle);
     return handle;
   }
@@ -279,7 +273,6 @@ test.describe("Mobile proxy input keydown handling", () => {
 
   test("reselecting the active session preserves keyboard-proxy input", async ({ page }) => {
     const terminal = await mockTerminalApis(page, { tool: "codex" });
-    await page.goto("/");
     await openSession(page, terminal);
 
     await openMobileSidebar(page);
@@ -313,7 +306,6 @@ test.describe("Mobile keyboard hooks ordering", () => {
 
     const handle = await mockTerminalApis(page);
     await page.route("**/api/sessions/*/ensure", (r) => r.fulfill({ json: { ok: true } }));
-    await page.goto("/");
     await openSession(page, handle);
 
     const hookErrors = errors.filter((e) => e.includes("hook") || e.includes("Hook"));
@@ -326,7 +318,6 @@ test.describe("Mobile keyboard hooks ordering", () => {
 
     const handle = await mockTerminalApis(page);
     await page.route("**/api/sessions/*/ensure", (r) => r.fulfill({ json: { ok: true } }));
-    await page.goto("/");
     await openSession(page, handle);
 
     await simulateKeyboardOpen(page, 300);

@@ -1,7 +1,6 @@
 import { test, expect, observeFor } from "./helpers/mockedTest";
 import { openLiveSession } from "./helpers/liveTerminal";
 import { devices, type Page } from "@playwright/test";
-import { clickSidebarSession, openMobileSidebar } from "./helpers/sidebar";
 import { mockTerminalApis, type MockHandle } from "./helpers/terminal-mocks";
 
 // #1432: the soft keyboard shrinks the mobile terminal visually but never resizes tmux (that flashed and clipped
@@ -81,7 +80,6 @@ const openSession = (page: Page, handle: MockHandle) => openLiveSession(page, ha
 test.describe("Keyboard auto-resize (#1432)", () => {
   test("Safari mode: keyboard insets the pane but never resizes tmux", async ({ page }) => {
     const handle = await mockTerminalApis(page);
-    await page.goto("/");
     await openSession(page, handle);
 
     const baselineCount = extractResizes(handle).length;
@@ -109,7 +107,6 @@ test.describe("Keyboard auto-resize (#1432)", () => {
 
   test("Safari mode: opening the keyboard returns a scrollback reader to the visible prompt", async ({ page }) => {
     const handle = await mockTerminalApis(page);
-    await page.goto("/");
     await openSession(page, handle);
 
     // Opening the keyboard is an intent to type, so it returns to the prompt from a reading position.
@@ -141,7 +138,6 @@ test.describe("Keyboard auto-resize (#1432)", () => {
 
   test("PWA mode: dvh shrink owns the layout; no inset, no tmux resize", async ({ page }) => {
     const handle = await mockTerminalApis(page);
-    await page.goto("/");
     await openSession(page, handle);
 
     const baselineCount = extractResizes(handle).length;
@@ -165,7 +161,6 @@ test.describe("Keyboard auto-resize (#1432)", () => {
 
   test("App root is NOT pinned for live-view sessions (dvh shrink wanted)", async ({ page }) => {
     const handle = await mockTerminalApis(page);
-    await page.goto("/");
     await openSession(page, handle);
 
     const rootInlineHeight = await page.evaluate(() => {
@@ -188,7 +183,6 @@ test.describe("Keyboard auto-resize (#1432)", () => {
         // ignore
       }
     });
-    await page.goto("/");
     await openSession(page, handle);
 
     const rootPaddingBottom = await page.evaluate(() => {
