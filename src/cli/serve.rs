@@ -356,7 +356,7 @@ pub fn pid_file_path() -> Result<PathBuf> {
     Ok(dir.join("serve.pid"))
 }
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ServeLaunch {
     pub schema: u32,
     pub pid: u32,
@@ -1643,21 +1643,7 @@ mod tests {
         let launch = sample_launch();
         let json = serde_json::to_string(&launch).expect("serialize");
         let back: ServeLaunch = serde_json::from_str(&json).expect("deserialize");
-        assert_eq!(back.pid, launch.pid);
-        assert_eq!(back.instance_id, launch.instance_id);
-        assert_eq!(back.profile, launch.profile);
-        assert_eq!(back.host, launch.host);
-        assert_eq!(back.port, launch.port);
-        assert_eq!(back.auth_mode, launch.auth_mode);
-        assert_eq!(back.behind_proxy, launch.behind_proxy);
-        assert_eq!(back.read_only, launch.read_only);
-        assert_eq!(back.cityhall, launch.cityhall);
-        assert_eq!(back.remote, launch.remote);
-        assert_eq!(back.tunnel_name, launch.tunnel_name);
-        assert_eq!(back.tunnel_url, launch.tunnel_url);
-        assert_eq!(back.no_tailscale, launch.no_tailscale);
-        assert_eq!(back.allowed_host, launch.allowed_host);
-        assert_eq!(back.allowed_origin, launch.allowed_origin);
+        assert_eq!(back, launch);
     }
 
     #[test]
@@ -1687,58 +1673,52 @@ mod tests {
     }
 
     #[test]
-    fn behind_proxy_without_allowed_host_errors_at_startup() {
+    fn behind_proxy_needs_an_allowed_host_unless_remote() {
         let err = validate_behind_proxy_allowlist(true, false, &[])
             .expect_err("behind-proxy with no allowed host must be rejected");
         assert!(err.to_string().contains("--allowed-host"));
-    }
-
-    #[test]
-    fn behind_proxy_with_allowed_host_ok() {
         validate_behind_proxy_allowlist(true, false, &["aoe.example.com".to_string()])
             .expect("behind-proxy with an allowed host starts");
-    }
-
-    #[test]
-    fn behind_proxy_remote_is_exempt_from_allowed_host() {
         validate_behind_proxy_allowlist(true, true, &[])
             .expect("remote auto-injects the tunnel host, so no flag is required");
     }
 
     #[test]
-    fn schemeless_allowed_origin_errors_at_startup() {
-        assert!(validate_allowed_origins(&["aoe.example.com:8443".to_string()]).is_err());
-        assert!(validate_allowed_origins(&["".to_string()]).is_err());
-    }
-
-    #[test]
-    fn hostless_allowed_origin_errors_at_startup() {
-        assert!(validate_allowed_origins(&["https://".to_string()]).is_err());
-        assert!(validate_allowed_origins(&["https:///".to_string()]).is_err());
-        assert!(validate_allowed_origins(&["https://:8443".to_string()]).is_err());
-    }
-
-    #[test]
-    fn malformed_allowed_origin_errors_at_startup() {
-        assert!(validate_allowed_origins(&["https://aoe.example.com/app".to_string()]).is_err());
-        assert!(validate_allowed_origins(&["https://aoe.example.com?x".to_string()]).is_err());
-        assert!(validate_allowed_origins(&["https://user@aoe.example.com".to_string()]).is_err());
-    }
-
-    #[test]
-    fn scheme_qualified_allowed_origin_ok() {
+    fn allowed_origins_need_a_scheme_a_host_and_nothing_else() {
+        for origin in [
+            "aoe.example.com:8443",
+            "",
+            "https://",
+            "https:///",
+            "https://:8443",
+            "https://aoe.example.com/app",
+            "https://aoe.example.com?x",
+            "https://user@aoe.example.com",
+            "http://0.0.0.0:8080",
+            "https://[::]",
+            "http://169.254.169.254",
+            "https://[fe80::1]:8443",
+            "http://224.0.0.1",
+        ] {
+            assert!(
+                validate_allowed_origins(&[origin.to_string()]).is_err(),
+                "{origin:?} must be rejected"
+            );
+        }
         validate_allowed_origins(&[
             "https://aoe.example.com:8443".to_string(),
             "http://localhost:3000".to_string(),
             "HTTPS://aoe.example.com".to_string(),
             "https://aoe.example.com/".to_string(),
             "https://[::1]".to_string(),
+            "http://127.0.0.1:3000".to_string(),
+            "https://192.168.1.5:8443".to_string(),
         ])
-        .expect("full scheme://host[:port] origins (incl. IPv6, trailing slash) are accepted");
+        .expect("scheme://host[:port] origins, IPv6 and routable literals included, are accepted");
     }
 
     #[test]
-    fn allowed_hosts_accept_bare_host_and_port() {
+    fn allowed_hosts_take_a_bare_authority_and_reject_untrusted_literals() {
         validate_allowed_hosts(&[
             "aoe.example.com".to_string(),
             "aoe.example.com:8443".to_string(),
@@ -1749,10 +1729,7 @@ mod tests {
             "::1".to_string(),
         ])
         .expect("a bare host or host:port (incl. IPv6 and loopback) is a valid --allowed-host");
-    }
 
-    #[test]
-    fn allowed_hosts_reject_untrusted_ip_literals() {
         for host in [
             "0.0.0.0",
             "0.0.0.0:8080",
@@ -1764,49 +1741,19 @@ mod tests {
             "::ffff:169.254.169.254",
             "224.0.0.1",
             "ff02::1",
+            "https://aoe.example.com",
+            "aoe.example.com/app",
+            "aoe.example.com?x",
+            "user@aoe.example.com",
+            ":8080",
+            ":",
+            "   ",
         ] {
             assert!(
                 validate_allowed_hosts(&[host.to_string()]).is_err(),
-                "{host} must be rejected as an untrusted IP literal"
+                "{host:?} must be rejected"
             );
         }
-    }
-
-    #[test]
-    fn allowed_origins_reject_untrusted_ip_literals() {
-        for origin in [
-            "http://0.0.0.0:8080",
-            "https://[::]",
-            "http://169.254.169.254",
-            "https://[fe80::1]:8443",
-            "http://224.0.0.1",
-        ] {
-            assert!(
-                validate_allowed_origins(&[origin.to_string()]).is_err(),
-                "{origin} must be rejected as an untrusted IP-literal origin"
-            );
-        }
-        validate_allowed_origins(&[
-            "http://127.0.0.1:3000".to_string(),
-            "https://[::1]".to_string(),
-            "https://192.168.1.5:8443".to_string(),
-        ])
-        .expect("loopback and routable IP-literal origins stay valid");
-    }
-
-    #[test]
-    fn allowed_hosts_reject_malformed_authorities() {
-        assert!(validate_allowed_hosts(&["https://aoe.example.com".to_string()]).is_err());
-        assert!(validate_allowed_hosts(&["aoe.example.com/app".to_string()]).is_err());
-        assert!(validate_allowed_hosts(&["aoe.example.com?x".to_string()]).is_err());
-        assert!(validate_allowed_hosts(&["user@aoe.example.com".to_string()]).is_err());
-        assert!(validate_allowed_hosts(&[":8080".to_string()]).is_err());
-        assert!(validate_allowed_hosts(&[":".to_string()]).is_err());
-    }
-
-    #[test]
-    fn allowed_hosts_reject_empty() {
-        assert!(validate_allowed_hosts(&["   ".to_string()]).is_err());
     }
 
     #[test]
