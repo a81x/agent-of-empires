@@ -1796,10 +1796,7 @@
       "id": "diff-comments.storage-cleanup",
       "kind": "vitest",
       "risk": "medium",
-      "specs": [
-        "src/components/diff/comments/storage.test.ts",
-        "src/hooks/useDiffComments.rtl.test.tsx"
-      ],
+      "specs": ["src/components/diff/comments/storage.test.ts", "src/hooks/useDiffComments.rtl.test.tsx"],
       "components": ["web/src/components/diff/comments/storage.ts"]
     },
     {
