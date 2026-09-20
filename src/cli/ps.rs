@@ -1,16 +1,4 @@
 //! `aoe ps`: a substrate-agnostic runtime view of in-flight sessions.
-//!
-//! One row per running session across two substrates: `tmux` (agent panes
-//! tracked through the tmux session cache and pane metadata) and `acp` (the
-//! structured-view workers in the on-disk worker registry). It is additive and
-//! read-only: it never mutates session storage or the worker registry, and
-//! every substrate probe is fail-soft, so a dead tmux server or an unreadable
-//! registry degrades to fewer rows rather than a non-zero exit.
-//!
-//! The pure layer (`merge_rows`, `normalize_*`, `format_age`, `filter_rows`,
-//! `render_*`) takes only in-memory structs and is unit-tested without any
-//! tmux, disk, or network access. The impure `run` shell gathers the substrate
-//! snapshots and feeds them to the pure layer.
 
 use anyhow::Result;
 use clap::Args;
@@ -27,12 +15,6 @@ const COL_AGE: usize = 6;
 const COL_AGENT: usize = 14;
 const TITLE_BUDGET: usize = 20;
 
-// ACP-only columns unlocked by `aoe ps --acp`. COL_CWD mirrors COL_SESSION so a
-// path gets the same room as a session cell; SOCKET renders last and unbounded.
-// COL_BUILD fits a full build version plus the `(stale)` marker: a package
-// version paired with a 12-char sha is 20 chars ("1.14.0+g46c8908c1cd2") and
-// " (stale)" is 8 more. The 24 that `aoe acp ps` used truncated the marker off
-// the realistic case, which defeated the column's purpose (#1754).
 const COL_BUILD: usize = 28;
 const COL_MODEL: usize = 20;
 const COL_CWD: usize = 30;
@@ -92,20 +74,12 @@ enum SubstrateFilter {
     Acp,
 }
 
-/// Canonical session identity from storage: the join key for both substrates.
-/// `created_at_epoch` (Unix seconds) is the single uniform AGE source, so a
-/// matched row's AGE means the same thing (session age) regardless of substrate.
 struct InstanceRow {
     id: String,
     title: String,
     created_at_epoch: u64,
 }
 
-/// A tmux substrate probe. `session_name` is the full tmux name, which embeds
-/// only the 8-char truncated id suffix (`{PREFIX}{title}_{id8}`), so the merge
-/// joins it back to an `InstanceRow` by that suffix, not the full id.
-/// `activity_epoch` is only the AGE fallback for orphans (a matched row's AGE
-/// comes from the instance's `created_at`).
 struct TmuxState {
     session_name: String,
     status: Status,
@@ -114,9 +88,6 @@ struct TmuxState {
     agent: String,
 }
 
-/// ACP-only columns, present only on acp-substrate rows. tmux rows carry
-/// `None`, so the default core view never renders them. These come straight
-/// off the worker registry record, so an acp orphan still carries them.
 struct AcpExtra {
     build_version: String,
     build_stale: bool,
@@ -128,12 +99,6 @@ struct AcpExtra {
     detached_at: Option<u64>,
 }
 
-/// An acp substrate probe. `state` is pre-normalized by
-/// [`crate::process::worker_registry::worker_state_label`], so this struct
-/// carries no ACP types and the merge stays generic.
-/// `session_id` is the full id (`== Instance.id`). `started_at` is only the AGE
-/// fallback for orphans (see `TmuxState`). `acp_extra` carries the ACP-only
-/// columns unlocked by `aoe ps --acp`.
 struct AcpState {
     session_id: String,
     pid: u32,
@@ -143,9 +108,6 @@ struct AcpState {
     acp_extra: Option<AcpExtra>,
 }
 
-/// One output row. `id` is the full session id for a matched row; for an orphan
-/// it is the best identity available (the tmux 8-char id suffix, or the
-/// registry `session_id`), since no matching instance exists.
 struct Row {
     id: String,
     title: String,
@@ -155,17 +117,10 @@ struct Row {
     age_secs: Option<u64>,
     agent: String,
     is_orphan: bool,
-    // Substrate-specific extras. Only `acp_extra` exists today (populated for
-    // acp rows, `None` for tmux). A future `--tmux` column unlock would add a
-    // parallel `tmux_extra` here and a matching `render_table_tmux`.
     acp_extra: Option<AcpExtra>,
-    // The worker's boot epoch, carried onto the row so the `--acp --json`
-    // superset can serialize it without a second copy on `AcpExtra`. Read only
-    // by `acp_rows_json` (acp rows), which is why tmux rows leave it 0.
     started_at: u64,
 }
 
-/// Map a tmux-derived [`Status`] to the substrate-agnostic output vocabulary.
 fn normalize_tmux_state(status: Status) -> &'static str {
     match status {
         Status::Running => "running",
@@ -185,16 +140,10 @@ fn format_age(age_secs: Option<u64>) -> String {
     }
 }
 
-/// The 8-char truncated id a tmux session name ends with, i.e. the segment
-/// after the final `_` in `{PREFIX}{sanitized_title}_{truncate_id(id, 8)}`.
 fn tmux_id_suffix(session_name: &str) -> Option<&str> {
     session_name.rsplit_once('_').map(|(_, suffix)| suffix)
 }
 
-/// Join both substrate snapshots against the canonical instances and produce
-/// the filtered, sorted rows. tmux matches by 8-char id suffix (the name only
-/// carries the truncated id); acp matches by full session id. A substrate entry
-/// with no matching instance is an orphan, shown only when `include_dead`.
 fn merge_rows(
     instances: &[InstanceRow],
     tmux_states: &[TmuxState],
@@ -207,8 +156,6 @@ fn merge_rows(
 
     for st in tmux_states {
         let suffix = tmux_id_suffix(&st.session_name);
-        // On an 8-char id collision `find` takes the first match; the tmux name
-        // only carries id8, so nothing more precise is available anyway.
         let matched =
             suffix.and_then(|s| instances.iter().find(|i| super::truncate_id(&i.id, 8) == s));
         let (id, title, is_orphan, age_secs) = match matched {
@@ -273,10 +220,6 @@ fn merge_rows(
     filter_rows(rows, filter, include_dead)
 }
 
-/// Apply the substrate filter and the dead/orphan gate, then sort for a stable
-/// output (tmux before acp, then title, then id). The deprecated `aoe acp ps`
-/// sorted by `started_at`; the deprecation notice promises set equivalence, not
-/// order, so `aoe ps --acp` intentionally keeps this unified ordering instead.
 fn filter_rows(rows: Vec<Row>, filter: SubstrateFilter, include_dead: bool) -> Vec<Row> {
     let mut out: Vec<Row> = rows
         .into_iter()
@@ -297,8 +240,6 @@ fn filter_rows(rows: Vec<Row>, filter: SubstrateFilter, include_dead: bool) -> V
     out
 }
 
-/// Stable JSON schema for one row. `session` is the full id for a matched row,
-/// else the orphan's best-available identity (see [`Row`]).
 #[derive(Serialize)]
 struct RowJson {
     session: String,
@@ -309,9 +250,6 @@ struct RowJson {
     agent: String,
 }
 
-/// Project rows into the serializable schema. Kept separate from the print so
-/// the schema is unit-testable and `run` can route through the shared
-/// `output::print_json` helper.
 fn rows_json(rows: &[Row]) -> Vec<RowJson> {
     rows.iter()
         .map(|r| RowJson {
@@ -325,7 +263,6 @@ fn rows_json(rows: &[Row]) -> Vec<RowJson> {
         .collect()
 }
 
-/// The SESSION cell: short id plus a truncated title (id only for orphans).
 fn session_cell(row: &Row) -> String {
     let short = super::truncate_id(&row.id, 8);
     if row.title.is_empty() {
@@ -381,10 +318,6 @@ fn render_table(rows: &[Row]) -> String {
     out
 }
 
-/// Render the BUILD cell. An empty `build_version` (a legacy record written
-/// before the field existed) shows `<legacy>`; any worker whose build differs
-/// from the running daemon's is tagged `(stale)` so a not-yet-respawned worker
-/// is visible rather than silent. See #1754.
 fn render_build_cell(build_version: &str, stale: bool) -> String {
     let base = if build_version.is_empty() {
         "<legacy>"
@@ -398,10 +331,6 @@ fn render_build_cell(build_version: &str, stale: bool) -> String {
     }
 }
 
-/// Render the `aoe ps --acp` table: the core columns as a prefix (so a reader's
-/// mental model transfers from the default view), then the ACP-only columns
-/// BUILD, MODEL, CWD, and SOCKET appended. A future `--tmux` unlock would add a
-/// parallel `render_table_tmux` appending tmux-only columns to the same prefix.
 fn render_table_acp(rows: &[Row]) -> String {
     use std::fmt::Write;
     let mut out = String::new();
@@ -440,16 +369,10 @@ fn render_table_acp(rows: &[Row]) -> String {
                 + COL_BUILD
                 + COL_MODEL
                 + COL_CWD
-                // SOCKET renders unbounded, so it has no column budget to add;
-                // spanning its header keeps the underline as wide as the header
-                // row, matching `render_table`'s trailing AGENT.
                 + "SOCKET".len()
                 + 9
         )
     );
-    // Select acp rows with their extras in one step, mirroring `acp_rows_json`:
-    // only acp rows carry `acp_extra`, and only acp rows reach this renderer, so
-    // the filter is total in practice and no per-row skip clutters the body.
     for (r, e) in rows.iter().filter_map(|r| Some((r, r.acp_extra.as_ref()?))) {
         let pid = r
             .pid
@@ -486,15 +409,9 @@ fn render_table_acp(rows: &[Row]) -> String {
     out
 }
 
-/// Schema for `aoe ps --acp --json`: every key the removed `aoe acp ps --json`
-/// emitted (identical names, types, semantics) plus `substrate`, `state`,
-/// `age_secs`, and `model`. Keeping the old names means a migrating script only
-/// changes its argv and its sort, not its field access.
 #[derive(Serialize)]
 struct AcpRowJson {
     session_id: String,
-    // Always `Some` for an acp row (merge_rows sets `pid: Some(st.pid)`), so it
-    // serializes as a number, as the old `aoe acp ps --json` `pid` did.
     pid: Option<u32>,
     alive: bool,
     agent: String,
@@ -508,8 +425,6 @@ struct AcpRowJson {
     substrate: &'static str,
     state: &'static str,
     age_secs: Option<u64>,
-    /// Absent on the old schema, but the `--acp` table has always shown a MODEL
-    /// column; omitting it here would leave a field visible only to humans.
     model: Option<String>,
 }
 
@@ -548,11 +463,6 @@ fn load_instances(profile: &str, profile_explicit: bool) -> Vec<Instance> {
     for name in &profiles {
         if let Ok(storage) = Storage::open_unwatched(name) {
             if let Ok((mut instances, _)) = storage.load_with_groups() {
-                // `load_with_groups` does not stamp the source profile (it is
-                // `#[serde(default, skip_serializing)]`), so set it here the way
-                // the serve loader does. The status poll keys the profile-scoped
-                // status-rule registry on it; without it a profile's rules would
-                // install and look up under the empty profile and never match.
                 for inst in &mut instances {
                     inst.source_profile = name.clone();
                 }
@@ -563,9 +473,6 @@ fn load_instances(profile: &str, profile_explicit: bool) -> Vec<Instance> {
     out
 }
 
-/// Restrict orphan detection to agent sessions. Terminal, tool, and container
-/// terminal sessions share the `aoe_` root prefix but are auxiliary panes, not
-/// agent sessions, so they must not surface as `aoe ps` rows.
 fn is_agent_session_name(name: &str) -> bool {
     name.starts_with(crate::tmux::SESSION_PREFIX)
         && !name.starts_with(crate::tmux::TERMINAL_PREFIX)
@@ -576,10 +483,6 @@ fn is_agent_session_name(name: &str) -> bool {
 fn collect_tmux_states(instances: &mut [Instance]) -> Vec<TmuxState> {
     use std::collections::HashSet;
 
-    // The poll below never loads config, so install the declarative status-rule
-    // registry once per distinct profile up front; otherwise a rules-having
-    // custom agent reports Idle. The registry is keyed by profile, so each
-    // install replaces only that profile's entries.
     {
         let mut resolved: HashSet<&str> = HashSet::new();
         for inst in instances.iter() {
@@ -692,17 +595,9 @@ pub async fn run(profile: &str, profile_explicit: bool, args: PsArgs) -> Result<
         SubstrateFilter::All
     };
 
-    // `--profile` scopes only the instance load: an explicit profile lists that
-    // one, otherwise every profile. The worker registry is global (no profile
-    // field), so acp workers whose session belongs to an unlisted profile fail
-    // the id-join and surface as orphans, hidden unless `--dead`.
     let mut instances = load_instances(profile, profile_explicit);
     let now = now_secs();
 
-    // Probe only the substrate the filter keeps: `filter_rows` discards the
-    // other, so collecting it is wasted work (a tmux server round-trip, or a
-    // registry read). acp rows never read tmux-mutated instance status, so
-    // skipping the tmux probe under `--acp` does not change their output.
     let tmux_states = if matches!(filter, SubstrateFilter::Acp) {
         Vec::new()
     } else {
@@ -755,9 +650,6 @@ pub async fn run(profile: &str, profile_explicit: bool, args: PsArgs) -> Result<
 mod tests {
     use super::*;
 
-    // A fixed session creation epoch so AGE assertions are deterministic; kept
-    // distinct from the tmux activity epoch below to prove matched rows take
-    // their AGE from `created_at`, not the substrate-native fallback.
     const CREATED_AT: u64 = 1000;
     const ACTIVITY: i64 = 1500;
 
@@ -841,7 +733,6 @@ mod tests {
         assert_eq!(rows[0].title, "My Session");
         assert!(!rows[0].is_orphan);
         assert_eq!(rows[0].state, "running");
-        // AGE is now - created_at (1000), NOT now - activity (1500).
         assert_eq!(rows[0].age_secs, Some(1000));
     }
 
@@ -854,7 +745,6 @@ mod tests {
         assert_eq!(shown.len(), 1);
         assert!(shown[0].is_orphan);
         assert_eq!(shown[0].id, "99999999");
-        // Orphans have no instance, so AGE falls back to tmux activity (1500).
         assert_eq!(shown[0].age_secs, Some(500));
     }
 
@@ -868,7 +758,6 @@ mod tests {
         assert_eq!(rows[0].title, "Structured");
         assert!(!rows[0].is_orphan);
         assert_eq!(rows[0].pid, Some(7));
-        // AGE is now - created_at (1000), NOT now - started_at (1500).
         assert_eq!(rows[0].age_secs, Some(1000));
     }
 
@@ -893,7 +782,6 @@ mod tests {
         );
         assert_eq!(shown.len(), 1);
         assert!(shown[0].is_orphan);
-        // Orphans fall back to the worker's started_at (500).
         assert_eq!(shown[0].age_secs, Some(1500));
     }
 
@@ -969,16 +857,12 @@ mod tests {
         let acp = vec![acp_state("acp-id-1", "attached", 0)];
         let rows = merge_rows(&instances, &tmux, acp, 0, SubstrateFilter::All, false);
         assert_eq!(rows.len(), 2);
-        // tmux sorts ahead of acp even though its title ("Zeta") sorts after
-        // the acp row's title ("Alpha"): substrate is the primary sort key.
         assert_eq!(rows[0].substrate, Substrate::Tmux);
         assert_eq!(rows[1].substrate, Substrate::Acp);
     }
 
     #[test]
     fn merge_sort_tiebreaks_by_title_then_id() {
-        // Same substrate: title is the secondary key, id the tertiary. Two rows
-        // share the title "Same" to force the id tiebreak.
         let instances = vec![
             inst("2222aaaabbbbcccc", "Same"),
             inst("1111aaaabbbbcccc", "Same"),
@@ -1011,7 +895,6 @@ mod tests {
         assert_eq!(row["pid"], 42);
         assert_eq!(row["age_secs"], 1000);
         assert_eq!(row["agent"], "claude");
-        // Exactly the six documented keys, no more.
         assert_eq!(row.as_object().unwrap().len(), 6);
     }
 
@@ -1118,9 +1001,6 @@ mod tests {
 
     #[test]
     fn acp_table_renders_orphan_row_with_absent_model_as_dash() {
-        // An orphan (no matching instance) with model=None and a legacy
-        // (empty) build_version still renders every ACP cell: `-` for the
-        // absent model, `<legacy> (stale)` for the empty build.
         let mut acp = acp_state("gone", "attached", 500);
         if let Some(extra) = acp.acp_extra.as_mut() {
             extra.model = None;
@@ -1135,8 +1015,6 @@ mod tests {
             table.contains("<legacy> (stale)"),
             "empty build shows <legacy>"
         );
-        // Target the MODEL cell by its own column width so a regression to an
-        // empty field fails here, and a dash in AGE or PID cannot satisfy it.
         let model_cell = format!("{:<width$}", "-", width = COL_MODEL);
         assert!(
             table.contains(&model_cell),
@@ -1144,10 +1022,6 @@ mod tests {
         );
     }
 
-    /// `aoe ps --acp --json` is the only remaining machine-readable view of the
-    /// worker registry, so its key set is the migration contract for scripts
-    /// that used `aoe acp ps --json` (#3023). Driven from a real `WorkerRecord`
-    /// so the record-derived values, not just the key names, are pinned.
     #[test]
     fn acp_json_schema_carries_every_old_key_plus_the_additions() {
         use crate::process::worker_registry::WorkerRecord;
@@ -1167,8 +1041,6 @@ mod tests {
             None,
         );
         let instances = vec![inst("acp-id-1", "Structured")];
-        // `--dead` semantics: the record is not live here (no socket peer), and
-        // the old command listed the registry unfiltered.
         let rows = merge_rows(
             &instances,
             &[],
@@ -1203,11 +1075,8 @@ mod tests {
             ],
             "the 11 keys `aoe acp ps --json` emitted, plus substrate/state/age_secs/model"
         );
-        // Values that come off the record, so a rewiring of the merge is caught.
         assert_eq!(obj["session_id"], "acp-id-1");
         assert_eq!(obj["pid"], 7);
-        // `agent` carries the record's `agent_name` (the adapter), not its
-        // `agent_key`, as the old schema did.
         assert_eq!(obj["agent"], "claude-agent-acp");
         assert_eq!(obj["model"], "claude-opus-4-7");
         assert_eq!(obj["socket"], "/tmp/w.sock");
@@ -1217,17 +1086,11 @@ mod tests {
         assert!(obj["detached_at"].is_null());
     }
 
-    /// Story 3: the BUILD column surfaces the worker build version, tags a
-    /// build-stale worker, and renders an empty (legacy) version as
-    /// `<legacy>`. See #1754.
     #[test]
     fn render_build_cell_cases() {
         let cases = [
-            // Current build: bare version, no marker.
             ("1.9.5+gabc123", false, "1.9.5+gabc123"),
-            // Stale build: version plus marker.
             ("1.9.4+gdeadbe", true, "1.9.4+gdeadbe (stale)"),
-            // Legacy record (field absent on disk): placeholder, always stale.
             ("", true, "<legacy> (stale)"),
         ];
         for (version, stale, expected) in cases {
@@ -1235,10 +1098,6 @@ mod tests {
         }
     }
 
-    /// C1 regression guard: `load_instances` must stamp `source_profile` on
-    /// each loaded instance. The status poll keys the profile-scoped
-    /// status-rule registry on it; if it stayed empty, a profile's rules would
-    /// install and look up under the empty profile and never match in `aoe ps`.
     #[test]
     #[serial_test::serial]
     fn load_instances_stamps_source_profile() {

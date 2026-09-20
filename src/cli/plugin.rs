@@ -1,5 +1,4 @@
 //! `aoe plugin`: plugin management (list, info, enable, disable, install,
-//! update, uninstall).
 
 use anyhow::Result;
 use clap::Subcommand;
@@ -154,10 +153,6 @@ fn run_info(id: &str) -> Result<()> {
     if !m.keybinds.is_empty() {
         println!("  keybinds:");
         for kb in &m.keybinds {
-            // A core binding on the same chord always wins; flag the conflict so
-            // the author knows the plugin keybind will never fire (#2094).
-            // An unparseable key is skipped by the TUI resolver, so flag it
-            // here rather than print it as if it were usable.
             let note = match crate::tui::home::bindings::parse_chord(&kb.key) {
                 Some(c) if crate::tui::home::bindings::core_shadows(&c) => "  (shadowed by core)",
                 Some(_) => "",
@@ -192,9 +187,6 @@ fn format_report(report: &crate::plugin::install::InstallReport, verb: &str) -> 
     } else {
         out.push_str(&report.capabilities.join(", "));
     }
-    // Surface inactivity whenever the grant did not cover the install, including
-    // the empty-capabilities case (declining a UI-only manifest change leaves a
-    // plugin ungranted with no capabilities to list).
     if !report.granted {
         out.push_str(" (not granted, plugin inactive)");
     } else if !report.capabilities.is_empty() {
@@ -318,8 +310,6 @@ mod tests {
 
     #[test]
     fn inactive_with_no_capabilities_still_warns() {
-        // An ungranted update with no capabilities (e.g. a declined UI-only
-        // manifest change) must still flag that the plugin is inactive.
         let report = InstallReport {
             id: "acme.foo".into(),
             version: "0.1.0".into(),

@@ -1,10 +1,4 @@
 //! Hidden `aoe __extract-session-id` subcommand.
-//!
-//! Reads an agent hook payload from stdin, extracts the configured top-level
-//! native identity field, validates its shell-safe storage form, and writes it
-//! atomically through the hardened hook sidecar. Hooks fired by a nested agent
-//! that inherited the pane's identity variables are ignored. Hook failures never
-//! block agents. Stdin is capped at 1 MiB to bound memory.
 
 use std::io::Read;
 
@@ -44,10 +38,6 @@ pub async fn run(args: ExtractSessionIdArgs) -> Result<()> {
     Ok(())
 }
 
-/// Every process the pane agent starts inherits `AOE_AGENT_PID` and
-/// `AOE_AGENT_BIN`, including another agent run from its shell tool, so the
-/// hook belongs to the pane only when the walk up to the launched pid passes
-/// at most one agent process. Panes launched without them keep writing.
 fn fired_by_pane_agent() -> bool {
     let agent_pid = std::env::var("AOE_AGENT_PID")
         .ok()
@@ -76,7 +66,6 @@ fn walk_reaches_single_agent(
     let mut agents = 0;
     for hop in 0..MAX_ANCESTORS {
         let Some((ppid, argv0)) = parent_and_argv0(pid) else {
-            // No readable process table proves nothing, so keep the write.
             return hop == 0;
         };
         if std::path::Path::new(&argv0)
@@ -155,7 +144,6 @@ mod tests {
 
     #[test]
     fn only_the_pane_agent_owns_the_hook() {
-        // (pid, ppid, argv0) from the hook's parent shell upward.
         type Chain = &'static [(u32, u32, &'static str)];
         let cases: [(&str, u32, Chain, bool); 7] = [
             ("direct launch", 9, &[(10, 9, "sh"), (9, 1, "claude")], true),

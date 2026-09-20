@@ -39,15 +39,11 @@ pub mod worktree;
 
 pub use definition::{command_name, Cli, Commands, CLI_COMMAND_NAMES};
 
-/// Whether CLI stdout should contain ANSI color. Color is terminal-only and
-/// follows the NO_COLOR convention (only a non-empty value disables it).
 pub(crate) fn color_enabled() -> bool {
     use std::io::IsTerminal;
     std::io::stdout().is_terminal() && std::env::var_os("NO_COLOR").is_none_or(|v| v.is_empty())
 }
 
-/// One rendered lifecycle-notice line for CLI listings. Amber on a color-
-/// capable terminal; plain text otherwise, so pipes and CI logs stay clean.
 pub(crate) fn lifecycle_notice_line(indent: &str, notice: &str) -> String {
     if color_enabled() {
         format!("{indent}\x1b[33m⚠ {notice}\x1b[0m")
@@ -60,16 +56,10 @@ use crate::session::Instance;
 use anyhow::{bail, Result};
 
 pub fn resolve_session<'a>(identifier: &str, instances: &'a [Instance]) -> Result<&'a Instance> {
-    // Try exact ID match. Exact matches always win over prefix matches and
-    // can never be ambiguous (IDs are unique).
     if let Some(inst) = instances.iter().find(|i| i.id == identifier) {
         return Ok(inst);
     }
 
-    // Try ID prefix match. If more than one session has an ID starting with
-    // `identifier`, fail loudly instead of silently mutating the first one.
-    // Mutating commands (archive, kill, snooze) could otherwise act on the
-    // wrong session when the user provides a too-short prefix.
     let prefix_matches: Vec<&Instance> = instances
         .iter()
         .filter(|i| i.id.starts_with(identifier))
@@ -92,12 +82,10 @@ pub fn resolve_session<'a>(identifier: &str, instances: &'a [Instance]) -> Resul
         }
     }
 
-    // Try exact title match
     if let Some(inst) = instances.iter().find(|i| i.title == identifier) {
         return Ok(inst);
     }
 
-    // Try path match
     if let Some(inst) = instances.iter().find(|i| i.project_path == identifier) {
         return Ok(inst);
     }
@@ -105,19 +93,6 @@ pub fn resolve_session<'a>(identifier: &str, instances: &'a [Instance]) -> Resul
     bail!("Session not found: {}", identifier)
 }
 
-/// Best-effort deletion of a structured-view session's durable transcript
-/// (the ACP event-store rows under `<app_dir>/acp_events.db`) during a CLI
-/// permanent purge (`aoe rm --purge`, `aoe session empty-trash`). The serve
-/// daemon does this through its supervisor; the CLI has no live worker, so it
-/// opens the event store directly. It cannot send the adapter `session/delete`
-/// RPC the daemon sends (that needs a running worker), but deleting the local
-/// UI transcript stops purged rows from orphaning. No-op when the store does
-/// not exist; a failure to open or write it returns `Err` so callers keep the
-/// session row rather than orphan its transcript. See #2489, #2524.
-///
-/// The delete is idempotent and deliberately does NOT gate on
-/// `Instance::is_structured()`: deleting zero rows for a terminal session is
-/// harmless, and the old guard orphaned transcripts (#2524).
 pub(crate) fn purge_acp_transcript(inst: &Instance) -> Result<()> {
     let app_dir = crate::session::get_app_dir()
         .map_err(|e| anyhow::anyhow!("acp transcript purge: resolve app dir: {e}"))?;
@@ -128,26 +103,14 @@ pub(crate) fn purge_acp_transcript(inst: &Instance) -> Result<()> {
     purge_acp_transcript_rows(&db_path, &inst.id)
 }
 
-/// Delete a session's rows from the ACP event store at `db_path`, removing both
-/// the event rows and their attachment blobs (mirrors
-/// `crate::events::delete_topic`'s cascade so no orphaned bytes are left).
-/// A missing table means the store predates it: nothing to purge.
 fn purge_acp_transcript_rows(db_path: &std::path::Path, session_id: &str) -> Result<()> {
     let mut conn = rusqlite::Connection::open(db_path)
         .map_err(|e| anyhow::anyhow!("acp transcript purge: open event store: {e}"))?;
-    // A running daemon may hold the store open; wait briefly rather than fail.
     conn.busy_timeout(std::time::Duration::from_secs(5))
         .map_err(|e| anyhow::anyhow!("acp transcript purge: set busy_timeout: {e}"))?;
-    // Both deletes run in one transaction so the purge is all-or-nothing: if the
-    // attachments delete fails after the events delete, the dropped `tx` rolls
-    // both back and the caller keeps the session row for retry rather than
-    // leaving the transcript half removed.
     let tx = conn
         .transaction()
         .map_err(|e| anyhow::anyhow!("acp transcript purge: begin transaction: {e}"))?;
-    // Table names come from the same `crate::events::Schema` the store is
-    // opened with, so they cannot drift; `session_id` is bound, so the
-    // `format!` only interpolates a validated constant.
     let schema = crate::events::Schema::new("acp")
         .map_err(|e| anyhow::anyhow!("acp transcript purge: schema: {e}"))?;
     for table in [schema.events_table(), schema.attachments_table()] {
@@ -169,16 +132,9 @@ fn purge_acp_transcript_rows(db_path: &std::path::Path, session_id: &str) -> Res
     Ok(())
 }
 
-/// Aggregated `empty-trash` outcome across per-session purge transactions.
-/// Named rather than positional because every field is a `usize`.
 pub(crate) struct EmptyTrashOutcome {
-    /// Successfully-purged rows dropped from storage.
     pub removed: usize,
-    /// Rows a peer restored AFTER our teardown began (orphan-risk; the caller
-    /// warns). Kept, not dropped.
     pub restored_after_teardown: usize,
-    /// Rows WE claimed whose teardown/transcript purge failed and are still
-    /// trashed: genuinely kept for retry (distinct from peer restores).
     pub kept_for_retry: usize,
 }
 
@@ -201,10 +157,6 @@ pub fn truncate_id(id: &str, max_len: usize) -> &str {
     }
 }
 
-/// Resolve `identifier` and run `f` on the matching instance. Designed for
-/// use inside `Storage::update`'s closure: find + mutate is atomic under
-/// both lock layers. Delegates to `resolve_session`, so ambiguous prefixes
-/// error rather than silently picking the first match.
 pub(crate) fn patch_instance<F, R>(instances: &mut [Instance], identifier: &str, f: F) -> Result<R>
 where
     F: FnOnce(&mut Instance) -> Result<R>,
@@ -239,8 +191,6 @@ mod tests {
 
     #[test]
     fn truncate_id_multibyte_does_not_panic_and_respects_char_boundary() {
-        // "café" is 4 chars / 5 bytes. The naive byte-slice version would have
-        // panicked on max_len=4 mid-codepoint.
         assert_eq!(truncate_id("café", 3), "caf");
         assert_eq!(truncate_id("café", 4), "café");
         assert_eq!(truncate_id("café", 10), "café");
@@ -297,9 +247,6 @@ mod tests {
         assert_eq!(v[1].title, "renamed");
     }
 
-    // #2534: a purge keeps a targeted row only when it was trashed at snapshot
-    // time but is no longer trashed (restored mid-purge); every other case
-    // drops it (still trashed, or a direct live purge with no restore to lose).
     #[test]
     fn purge_keeps_only_rows_restored_after_a_trashed_snapshot() {
         assert!(purge_restored_row_must_be_kept(true, false));
@@ -308,9 +255,6 @@ mod tests {
         assert!(!purge_restored_row_must_be_kept(false, true));
     }
 
-    // #2524: the purge path used to be unreachable, orphaning transcripts.
-    // The row delete must drop both the event rows and their attachment blobs
-    // for the target session only.
     #[test]
     fn purge_acp_transcript_rows_deletes_only_target_session() {
         let dir = tempfile::tempdir().unwrap();
@@ -354,13 +298,10 @@ mod tests {
         assert_eq!(kept_events, 1, "other session must be untouched");
     }
 
-    // A store that predates a table (or any expected table missing) is not an
-    // error: there is simply nothing to purge.
     #[test]
     fn purge_acp_transcript_rows_tolerates_missing_table() {
         let dir = tempfile::tempdir().unwrap();
         let db_path = dir.path().join("acp_events.db");
-        // Open creates an empty db with neither acp_events nor acp_attachments.
         rusqlite::Connection::open(&db_path).unwrap();
         purge_acp_transcript_rows(&db_path, "whatever").unwrap();
     }
