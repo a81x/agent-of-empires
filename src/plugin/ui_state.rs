@@ -1132,29 +1132,22 @@ mod tests {
     fn pane_payload_cap_is_larger_than_other_slots() {
         let s = store();
         let g = s.begin_generation("acme.kit");
-        let big = "x".repeat(40 * 1024);
-        set(
-            &s,
-            g,
-            UiSlot::Pane,
-            "gh",
-            Some("s1"),
-            json!({"blocks": [{"kind": "note", "text": big}]}),
-        )
-        .unwrap();
-        let too_big = "x".repeat(64 * 1024);
-        assert!(matches!(
+        let pane = |text: String| {
             set(
                 &s,
                 g,
                 UiSlot::Pane,
                 "gh",
                 Some("s1"),
-                json!({"blocks": [{"kind": "note", "text": too_big}]})
-            ),
+                json!({"blocks": [{"kind": "note", "text": text}]}),
+            )
+        };
+
+        pane("x".repeat(40 * 1024)).expect("40 KiB fits in a pane");
+        assert!(matches!(
+            pane("x".repeat(64 * 1024)),
             Err(UiError::BadRequest(_))
         ));
-        let over_badge = "x".repeat(9 * 1024);
         assert!(matches!(
             set(
                 &s,
@@ -1162,112 +1155,58 @@ mod tests {
                 UiSlot::RowBadge,
                 "b",
                 Some("s1"),
-                json!({"text": over_badge})
+                json!({"text": "x".repeat(9 * 1024)})
             ),
             Err(UiError::BadRequest(_))
         ));
     }
 
     #[test]
-    fn per_scope_quota_blocks_only_that_scope() {
+    fn per_scope_quota_blocks_only_that_scope_and_frees_on_remove() {
         let s = store();
         let g = s.begin_generation("acme.kit");
-        for i in 0..MAX_ENTRIES_PER_SCOPE {
+        let badge = |id: &str, session: &str| {
             set(
                 &s,
                 g,
                 UiSlot::RowBadge,
-                &format!("b{i}"),
-                Some("s1"),
+                id,
+                Some(session),
                 json!({"text": "x"}),
             )
-            .unwrap();
+        };
+
+        for i in 0..MAX_ENTRIES_PER_SCOPE {
+            badge(&format!("b{i}"), "s1").unwrap();
         }
-        assert_eq!(
-            set(
-                &s,
-                g,
-                UiSlot::RowBadge,
-                "overflow",
-                Some("s1"),
-                json!({"text": "x"})
-            ),
-            Err(UiError::QuotaExceeded)
-        );
-        set(
-            &s,
-            g,
-            UiSlot::RowBadge,
-            "b0",
-            Some("s2"),
-            json!({"text": "x"}),
-        )
-        .unwrap();
-        set(
-            &s,
-            g,
-            UiSlot::RowBadge,
-            "b0",
-            Some("s1"),
-            json!({"text": "y"}),
-        )
-        .unwrap();
+        assert_eq!(badge("overflow", "s1"), Err(UiError::QuotaExceeded));
+        badge("b0", "s2").expect("another scope has its own budget");
+        badge("b0", "s1").expect("rewriting an existing key is not a new entry");
+
+        s.remove("acme.kit", g, UiSlot::RowBadge, "b0", Some("s1"))
+            .unwrap();
+        badge("replacement", "s1").expect("removing an entry frees its scope slot");
     }
 
     #[test]
     fn per_plugin_backstop_bounds_fabricated_scopes() {
         let s = store();
         let g = s.begin_generation("acme.kit");
-        for i in 0..MAX_ENTRIES_PER_PLUGIN {
+        let badge = |session: &str| {
             set(
                 &s,
                 g,
                 UiSlot::RowBadge,
                 "b",
-                Some(&format!("s{i}")),
+                Some(session),
                 json!({"text": "x"}),
             )
-            .unwrap();
-        }
-        assert_eq!(
-            set(
-                &s,
-                g,
-                UiSlot::RowBadge,
-                "b",
-                Some("overflow"),
-                json!({"text": "x"})
-            ),
-            Err(UiError::QuotaExceeded)
-        );
-    }
+        };
 
-    #[test]
-    fn removing_entry_frees_scope_capacity() {
-        let s = store();
-        let g = s.begin_generation("acme.kit");
-        for i in 0..MAX_ENTRIES_PER_SCOPE {
-            set(
-                &s,
-                g,
-                UiSlot::RowBadge,
-                &format!("b{i}"),
-                Some("s1"),
-                json!({"text": "x"}),
-            )
-            .unwrap();
+        for i in 0..MAX_ENTRIES_PER_PLUGIN {
+            badge(&format!("s{i}")).unwrap();
         }
-        s.remove("acme.kit", g, UiSlot::RowBadge, "b0", Some("s1"))
-            .unwrap();
-        set(
-            &s,
-            g,
-            UiSlot::RowBadge,
-            "replacement",
-            Some("s1"),
-            json!({"text": "x"}),
-        )
-        .unwrap();
+        assert_eq!(badge("overflow"), Err(UiError::QuotaExceeded));
     }
 
     #[test]
