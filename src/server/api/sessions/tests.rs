@@ -151,13 +151,7 @@ async fn rename_session_rejects_tied_drifted_path_collision() {
     existing.source_profile = "default".to_string();
     let mut drifted = Instance::new("main branch", "/tmp/worktrees/drifted");
     drifted.source_profile = "default".to_string();
-    drifted.worktree_info = Some(crate::session::WorktreeInfo {
-        branch: "main-branch".to_string(),
-        main_repo_path: "/tmp/repo".to_string(),
-        managed_by_aoe: true,
-        created_at: chrono::Utc::now(),
-        base_branch: None,
-    });
+    drifted.worktree_info = Some(worktree("main-branch", "/tmp/repo".to_string(), None));
     let drifted_id = drifted.id.clone();
     let (_storage, state) = build_rename_test_state(
         vec![existing.clone(), drifted.clone()],
@@ -540,6 +534,20 @@ fn make_test_instance() -> Instance {
     inst.status = Status::Running;
     inst.group_path = "work/projects".to_string();
     inst
+}
+
+fn worktree(
+    branch: &str,
+    main_repo_path: impl Into<String>,
+    base_branch: Option<&str>,
+) -> crate::session::WorktreeInfo {
+    crate::session::WorktreeInfo {
+        branch: branch.to_string(),
+        main_repo_path: main_repo_path.into(),
+        managed_by_aoe: true,
+        created_at: chrono::Utc::now(),
+        base_branch: base_branch.map(str::to_string),
+    }
 }
 
 // Regression witness for #2603: the ACP-capability overlay and the
@@ -1199,7 +1207,7 @@ fn public_create_session_error_hides_unsafe_messages() {
 }
 
 #[test]
-fn session_response_from_instance() {
+fn session_response_projects_core_instance_fields() {
     let inst = make_test_instance();
     let resp = SessionResponse::from_instance(&inst, false);
 
@@ -1216,7 +1224,6 @@ fn session_response_from_instance() {
 #[test]
 fn session_response_status_variants() {
     let mut inst = make_test_instance();
-
     for (status, expected) in [
         (Status::Running, "Running"),
         (Status::Waiting, "Waiting"),
@@ -1236,56 +1243,44 @@ fn session_response_status_variants() {
 #[test]
 fn session_response_dormant_reflects_shown_dormant() {
     let mut inst = make_test_instance();
-
-    // Live idle: not dormant.
     inst.status = Status::Idle;
     assert!(!SessionResponse::from_instance(&inst, false).dormant);
 
-    // Idle-reaped (marker set, status left Idle): dormant.
     inst.mark_idle_dormant();
     assert!(SessionResponse::from_instance(&inst, false).dormant);
 
-    // Deliberate stop (marker set AND Stopped): reports NOT dormant so the
-    // dashboard keeps the neutral Stopped dot. See #2250.
+    // A deliberate stop keeps the neutral Stopped dot rather than dormant (#2250).
     inst.status = Status::Stopped;
     assert!(!SessionResponse::from_instance(&inst, false).dormant);
 }
 
 #[test]
-fn session_response_branch_from_worktree() {
+fn session_response_surfaces_worktree_branch_and_bases() {
     let mut inst = make_test_instance();
-    assert!(SessionResponse::from_instance(&inst, false)
-        .branch
-        .is_none());
+    let resp = SessionResponse::from_instance(&inst, false);
+    assert!(resp.branch.is_none());
+    assert!(resp.base_branch.is_none());
 
-    inst.worktree_info = Some(crate::session::WorktreeInfo {
-        branch: "feature/test".to_string(),
-        main_repo_path: "/tmp/repo".to_string(),
-        managed_by_aoe: true,
-        created_at: chrono::Utc::now(),
-        base_branch: None,
-    });
+    inst.worktree_info = Some(worktree("feature/test", "/tmp/repo", None));
+    let resp = SessionResponse::from_instance(&inst, false);
+    assert_eq!(resp.branch.as_deref(), Some("feature/test"));
+    assert!(resp.base_branch.is_none());
+
+    inst.worktree_info = Some(worktree("feature/test", "/tmp/repo", Some("release-1.2")));
     assert_eq!(
         SessionResponse::from_instance(&inst, false)
-            .branch
+            .base_branch
             .as_deref(),
-        Some("feature/test")
-    );
-}
-
-#[test]
-fn session_response_surfaces_base_branch_override() {
-    let mut inst = make_test_instance();
-    // Default: no override -> field omitted from JSON.
-    let json = serde_json::to_value(SessionResponse::from_instance(&inst, false)).unwrap();
-    assert!(
-        json.get("base_branch_override").is_none(),
-        "base_branch_override should be omitted when None, got: {json}"
+        Some("release-1.2")
     );
 
     inst.base_branch_override = Some("upstream/main".to_string());
-    let resp = SessionResponse::from_instance(&inst, false);
-    assert_eq!(resp.base_branch_override.as_deref(), Some("upstream/main"));
+    assert_eq!(
+        SessionResponse::from_instance(&inst, false)
+            .base_branch_override
+            .as_deref(),
+        Some("upstream/main")
+    );
 }
 
 #[test]
@@ -1375,13 +1370,11 @@ fn diff_repos_of_scopes_bases_per_workspace_repo() {
     // override IS the session-level field.
     let mut single = make_test_instance();
     single.base_branch_override = Some("upstream/main".to_string());
-    single.worktree_info = Some(crate::session::WorktreeInfo {
-        branch: "feature/x".to_string(),
-        main_repo_path: "/src/only".to_string(),
-        managed_by_aoe: true,
-        created_at: chrono::Utc::now(),
-        base_branch: Some("develop".to_string()),
-    });
+    single.worktree_info = Some(worktree(
+        "feature/x",
+        "/src/only".to_string(),
+        Some("develop"),
+    ));
     let repos = diff_repos_of(&single);
     assert_eq!(repos.len(), 1);
     assert_eq!(repos[0].name, None);
@@ -1440,33 +1433,9 @@ fn apply_diff_base_override_writes_only_the_named_repo() {
 }
 
 #[test]
-fn session_response_surfaces_base_branch_when_set() {
-    let mut inst = make_test_instance();
-    inst.worktree_info = Some(crate::session::WorktreeInfo {
-        branch: "feature/test".to_string(),
-        main_repo_path: "/tmp/repo".to_string(),
-        managed_by_aoe: true,
-        created_at: chrono::Utc::now(),
-        base_branch: Some("release-1.2".to_string()),
-    });
-    let resp = SessionResponse::from_instance(&inst, false);
-    assert_eq!(resp.base_branch.as_deref(), Some("release-1.2"));
-
-    // Field is omitted from the wire JSON when None so old clients
-    // don't see a flood of nulls.
-    inst.worktree_info.as_mut().unwrap().base_branch = None;
-    let json = serde_json::to_value(SessionResponse::from_instance(&inst, false)).unwrap();
-    assert!(
-        json.get("base_branch").is_none(),
-        "base_branch should be omitted when None, got: {json}"
-    );
-}
-
-#[test]
 fn session_response_serializes_to_json() {
-    let inst = make_test_instance();
-    let json = serde_json::to_value(SessionResponse::from_instance(&inst, false)).unwrap();
-
+    let json =
+        serde_json::to_value(SessionResponse::from_instance(&make_test_instance(), false)).unwrap();
     assert!(json.get("id").is_some());
     assert_eq!(json["tool"], "claude");
     assert_eq!(json["status"], "Running");
@@ -1474,178 +1443,141 @@ fn session_response_serializes_to_json() {
     assert_eq!(json["claude_fullscreen"], false);
 }
 
+/// Optional fields stay off the wire until they are set, so old clients never
+/// see a flood of nulls.
 #[test]
-fn session_response_omits_empty_warnings() {
-    let inst = make_test_instance();
-    let resp = SessionResponse::from_instance(&inst, false);
-    assert!(resp.warnings.is_empty());
-
-    let json = serde_json::to_value(&resp).unwrap();
-    assert!(
-        json.get("warnings").is_none(),
-        "empty warnings should be omitted from the JSON body, got: {json}"
-    );
-}
-
-#[test]
-fn session_response_serializes_populated_warnings() {
-    let inst = make_test_instance();
-    let mut resp = SessionResponse::from_instance(&inst, false);
-    resp.warnings = vec![
-        "post-checkout hook failed for repo-a".to_string(),
-        "post-checkout hook failed for repo-b".to_string(),
+fn session_response_omits_unset_optional_fields() {
+    let cases: [(&str, fn(&mut Instance)); 5] = [
+        ("base_branch", |i| {
+            i.worktree_info = Some(worktree("feature/test", "/tmp/repo", Some("release-1.2")))
+        }),
+        ("base_branch_override", |i| {
+            i.base_branch_override = Some("upstream/main".to_string())
+        }),
+        ("pinned_at", |i| i.pin()),
+        ("archived_at", |i| i.archive()),
+        ("snoozed_until", |i| i.snooze(30)),
     ];
 
-    let json = serde_json::to_value(&resp).unwrap();
-    let warnings = json
-        .get("warnings")
-        .expect("warnings should appear in JSON when populated");
-    let arr = warnings
-        .as_array()
-        .expect("warnings should serialize as a JSON array");
-    assert_eq!(arr.len(), 2);
-    assert_eq!(arr[0], "post-checkout hook failed for repo-a");
-    assert_eq!(arr[1], "post-checkout hook failed for repo-b");
-}
-
-#[test]
-fn claude_fullscreen_set_for_claude_when_enabled() {
-    let resp = SessionResponse::from_instance(&make_test_instance(), true);
-    assert_eq!(resp.tool, "claude");
-    assert!(resp.claude_fullscreen);
-}
-
-#[test]
-fn session_response_surfaces_pinned_at() {
-    let mut inst = make_test_instance();
-
-    // Default: no pin -> field omitted from the JSON body.
-    let json = serde_json::to_value(SessionResponse::from_instance(&inst, false)).unwrap();
-    assert!(
-        json.get("pinned_at").is_none(),
-        "pinned_at should be omitted when None, got: {json}"
-    );
-
-    inst.pin();
-    let resp = SessionResponse::from_instance(&inst, false);
-    assert!(resp.pinned_at.is_some(), "pinned_at must surface when set");
-    let json = serde_json::to_value(&resp).unwrap();
-    assert!(
-        json.get("pinned_at").is_some(),
-        "pinned_at must appear in JSON when set"
-    );
-}
-
-#[test]
-fn session_response_surfaces_archived_at() {
-    let mut inst = make_test_instance();
-    let json = serde_json::to_value(SessionResponse::from_instance(&inst, false)).unwrap();
-    assert!(json.get("archived_at").is_none());
-
-    inst.archive();
-    let resp = SessionResponse::from_instance(&inst, false);
-    assert!(resp.archived_at.is_some());
-}
-
-#[test]
-fn session_response_gates_snoozed_until_on_active_snooze() {
-    let mut inst = make_test_instance();
-
-    // Not snoozed -> field omitted.
-    let resp = SessionResponse::from_instance(&inst, false);
-    assert!(resp.snoozed_until.is_none());
-
-    // Active snooze -> field surfaced.
-    inst.snooze(30);
-    let resp = SessionResponse::from_instance(&inst, false);
-    assert!(resp.snoozed_until.is_some());
-
-    // Expired snooze -> stays on disk for the next mutation to rewrite,
-    // but the API gates on `is_snoozed()` so the wire value is None.
-    // This prevents the web from rendering "snoozed 0m" on rows that
-    // have already woken on the server.
-    inst.snoozed_until = Some(chrono::Utc::now() - chrono::Duration::seconds(1));
-    let resp = SessionResponse::from_instance(&inst, false);
-    assert!(
-        resp.snoozed_until.is_none(),
-        "expired snooze must be filtered out on the wire even though the persisted field stays set"
-    );
-}
-
-#[test]
-fn update_pin_body_parses() {
-    let body: UpdatePinBody = serde_json::from_str(r#"{"pinned": true}"#).unwrap();
-    assert!(body.pinned);
-    let body: UpdatePinBody = serde_json::from_str(r#"{"pinned": false}"#).unwrap();
-    assert!(!body.pinned);
-}
-
-#[test]
-fn update_archive_body_defaults_kill_pane_to_true() {
-    let body: UpdateArchiveBody = serde_json::from_str(r#"{"archived": true}"#).unwrap();
-    assert!(body.archived);
-    assert!(
-        body.kill_pane,
-        "kill_pane must default to true so callers that omit the field get TUI/CLI parity"
-    );
-
-    let body: UpdateArchiveBody =
-        serde_json::from_str(r#"{"archived": true, "kill_pane": false}"#).unwrap();
-    assert!(body.archived);
-    assert!(!body.kill_pane);
-}
-
-#[test]
-fn update_snooze_body_parses_minutes_and_null() {
-    let body: UpdateSnoozeBody = serde_json::from_str(r#"{"minutes": 60}"#).unwrap();
-    assert_eq!(body.minutes, Some(60));
-
-    // `{"minutes": null}` and an empty body both mean unsnooze.
-    let body: UpdateSnoozeBody = serde_json::from_str(r#"{"minutes": null}"#).unwrap();
-    assert_eq!(body.minutes, None);
-    let body: UpdateSnoozeBody = serde_json::from_str(r#"{}"#).unwrap();
-    assert_eq!(body.minutes, None);
-}
-
-#[test]
-fn update_snooze_validates_against_shared_bounds() {
-    // The handler uses `validate_snooze_duration` to reject 0 and >
-    // SNOOZE_MAX_MINUTES. Mirror the assertions here so a regression in
-    // the validator shape (or in the dialog presets at
-    // src/tui/dialogs/snooze_duration.rs) is caught locally.
-    assert!(crate::session::validate_snooze_duration(0).is_err());
-    for &m in &[60u64, 120, 180, 240, 300, 360, 1440, 7 * 1440] {
+    for (field, set) in cases {
+        let mut inst = make_test_instance();
+        let json = serde_json::to_value(SessionResponse::from_instance(&inst, false)).unwrap();
         assert!(
-            crate::session::validate_snooze_duration(m).is_ok(),
-            "preset {m} min must pass validator (matches TUI dialog presets)"
+            json.get(field).is_none(),
+            "{field} must be omitted while unset, got: {json}"
+        );
+
+        set(&mut inst);
+        let json = serde_json::to_value(SessionResponse::from_instance(&inst, false)).unwrap();
+        assert!(
+            json.get(field).is_some(),
+            "{field} must appear once set, got: {json}"
         );
     }
 }
 
 #[test]
-fn claude_fullscreen_unset_for_non_claude_even_when_enabled() {
+fn session_response_warnings_omitted_when_empty_and_listed_when_set() {
+    let mut resp = SessionResponse::from_instance(&make_test_instance(), false);
+    assert!(resp.warnings.is_empty());
+    let json = serde_json::to_value(&resp).unwrap();
+    assert!(
+        json.get("warnings").is_none(),
+        "empty warnings must be omitted, got: {json}"
+    );
+
+    resp.warnings = vec![
+        "post-checkout hook failed for repo-a".to_string(),
+        "post-checkout hook failed for repo-b".to_string(),
+    ];
+    let json = serde_json::to_value(&resp).unwrap();
+    assert_eq!(
+        json["warnings"],
+        serde_json::json!([
+            "post-checkout hook failed for repo-a",
+            "post-checkout hook failed for repo-b"
+        ])
+    );
+}
+
+/// An expired snooze stays on disk for the next mutation to rewrite, but the
+/// wire value is gated on `is_snoozed()` so the web never renders "snoozed 0m".
+#[test]
+fn session_response_gates_snoozed_until_on_active_snooze() {
     let mut inst = make_test_instance();
-    inst.tool = "cursor".to_string();
-    let resp = SessionResponse::from_instance(&inst, true);
-    assert!(!resp.claude_fullscreen);
+    inst.snooze(30);
+    assert!(SessionResponse::from_instance(&inst, false)
+        .snoozed_until
+        .is_some());
+
+    inst.snoozed_until = Some(chrono::Utc::now() - chrono::Duration::seconds(1));
+    assert!(SessionResponse::from_instance(&inst, false)
+        .snoozed_until
+        .is_none());
 }
 
 #[test]
-fn claude_fullscreen_unset_when_setting_disabled() {
-    let resp = SessionResponse::from_instance(&make_test_instance(), false);
-    assert!(!resp.claude_fullscreen);
+fn claude_fullscreen_needs_both_claude_and_the_setting() {
+    for (tool, enabled, expected) in [
+        ("claude", true, true),
+        ("claude", false, false),
+        ("cursor", true, false),
+    ] {
+        let mut inst = make_test_instance();
+        inst.tool = tool.to_string();
+        assert_eq!(
+            SessionResponse::from_instance(&inst, enabled).claude_fullscreen,
+            expected,
+            "tool={tool} enabled={enabled}"
+        );
+    }
+}
+
+#[test]
+fn update_bodies_parse_with_their_defaults() {
+    for (body, expected) in [
+        (r#"{"pinned": true}"#, true),
+        (r#"{"pinned": false}"#, false),
+    ] {
+        let parsed: UpdatePinBody = serde_json::from_str(body).unwrap();
+        assert_eq!(parsed.pinned, expected);
+    }
+
+    // kill_pane defaults to true so callers that omit it get TUI/CLI parity.
+    let archive: UpdateArchiveBody = serde_json::from_str(r#"{"archived": true}"#).unwrap();
+    assert!(archive.archived && archive.kill_pane);
+    let archive: UpdateArchiveBody =
+        serde_json::from_str(r#"{"archived": true, "kill_pane": false}"#).unwrap();
+    assert!(!archive.kill_pane);
+
+    // `{"minutes": null}` and an empty body both mean unsnooze.
+    for (body, expected) in [
+        (r#"{"minutes": 60}"#, Some(60)),
+        (r#"{"minutes": null}"#, None),
+        ("{}", None),
+    ] {
+        let parsed: UpdateSnoozeBody = serde_json::from_str(body).unwrap();
+        assert_eq!(parsed.minutes, expected);
+    }
+}
+
+/// Mirrors the TUI snooze dialog presets, so a regression in the shared
+/// validator shape is caught here too.
+#[test]
+fn update_snooze_validates_against_shared_bounds() {
+    assert!(crate::session::validate_snooze_duration(0).is_err());
+    for &m in &[60u64, 120, 180, 240, 300, 360, 1440, 7 * 1440] {
+        assert!(
+            crate::session::validate_snooze_duration(m).is_ok(),
+            "preset {m} min must pass the validator"
+        );
+    }
 }
 
 #[test]
 fn rename_updates_title_without_changing_worktree_branch() {
     let mut inst = make_test_instance();
-    inst.worktree_info = Some(crate::session::WorktreeInfo {
-        branch: "feature/test".to_string(),
-        main_repo_path: "/tmp/repo".to_string(),
-        managed_by_aoe: true,
-        created_at: chrono::Utc::now(),
-        base_branch: None,
-    });
+    inst.worktree_info = Some(worktree("feature/test", "/tmp/repo".to_string(), None));
 
     apply_session_title_rename(&mut inst, "Renamed Session".to_string());
 
@@ -1661,13 +1593,7 @@ fn title_only_rename_cache_patch_preserves_newer_path_and_branch() {
     let mut cached = make_test_instance();
     cached.title = "Old title".to_string();
     cached.project_path = "/tmp/worktrees/concurrent".to_string();
-    cached.worktree_info = Some(crate::session::WorktreeInfo {
-        branch: "concurrent-branch".to_string(),
-        main_repo_path: "/tmp/repo".to_string(),
-        managed_by_aoe: true,
-        created_at: chrono::Utc::now(),
-        base_branch: None,
-    });
+    cached.worktree_info = Some(worktree("concurrent-branch", "/tmp/repo".to_string(), None));
 
     apply_session_rename_cache_patch(
         &mut cached,
@@ -1699,13 +1625,7 @@ fn title_only_rename_cache_patch_preserves_newer_path_and_branch() {
 fn tied_rename_cache_patch_publishes_owned_path_and_branch() {
     let mut cached = make_test_instance();
     cached.project_path = "/tmp/worktrees/concurrent".to_string();
-    cached.worktree_info = Some(crate::session::WorktreeInfo {
-        branch: "concurrent-branch".to_string(),
-        main_repo_path: "/tmp/repo".to_string(),
-        managed_by_aoe: true,
-        created_at: chrono::Utc::now(),
-        base_branch: None,
-    });
+    cached.worktree_info = Some(worktree("concurrent-branch", "/tmp/repo".to_string(), None));
 
     apply_session_rename_cache_patch(
         &mut cached,
@@ -1748,17 +1668,15 @@ async fn rename_session_distinguishes_cwd_stable_title_and_branch_changes() {
     title_only.id = title_id.clone();
     title_only.status = Status::Running;
     title_only.view = crate::session::View::Structured;
-    title_only.worktree_info = Some(crate::session::WorktreeInfo {
-        branch: "my-session".to_string(),
-        main_repo_path: paths
+    title_only.worktree_info = Some(worktree(
+        "my-session",
+        paths
             .path()
             .join("missing-repo")
             .to_string_lossy()
             .into_owned(),
-        managed_by_aoe: true,
-        created_at: chrono::Utc::now(),
-        base_branch: None,
-    });
+        None,
+    ));
 
     let mut branch_only = Instance::new(
         "Branch Only",
@@ -1766,17 +1684,15 @@ async fn rename_session_distinguishes_cwd_stable_title_and_branch_changes() {
     );
     branch_only.id = branch_id.clone();
     branch_only.status = Status::Running;
-    branch_only.worktree_info = Some(crate::session::WorktreeInfo {
-        branch: "existing-branch".to_string(),
-        main_repo_path: paths
+    branch_only.worktree_info = Some(worktree(
+        "existing-branch",
+        paths
             .path()
             .join("missing-repo")
             .to_string_lossy()
             .into_owned(),
-        managed_by_aoe: true,
-        created_at: chrono::Utc::now(),
-        base_branch: None,
-    });
+        None,
+    ));
 
     let (_storage, state) = build_rename_test_state(
         vec![title_only.clone(), branch_only.clone()],
@@ -1900,17 +1816,15 @@ async fn rename_session_quiesces_structured_worker_only_when_its_cwd_moves() {
         // `blocks_worktree_edit` misses and quiesce closes.
         inst.status = Status::Idle;
         inst.view = crate::session::View::Structured;
-        inst.worktree_info = Some(crate::session::WorktreeInfo {
-            branch: case.leaf.to_string(),
-            main_repo_path: paths
+        inst.worktree_info = Some(worktree(
+            case.leaf,
+            paths
                 .path()
                 .join("missing-repo")
                 .to_string_lossy()
                 .into_owned(),
-            managed_by_aoe: true,
-            created_at: chrono::Utc::now(),
-            base_branch: None,
-        });
+            None,
+        ));
 
         let (_storage, state) = build_rename_test_state(vec![inst.clone()], vec![inst]);
         state.acp_supervisor.test_insert_worker(case.id).await;
@@ -2003,17 +1917,15 @@ async fn set_worktree_name_quiesces_structured_worker_only_when_its_cwd_moves() 
         inst.source_profile = "test".to_string();
         inst.status = Status::Idle;
         inst.view = crate::session::View::Structured;
-        inst.worktree_info = Some(crate::session::WorktreeInfo {
-            branch: case.leaf.to_string(),
-            main_repo_path: paths
+        inst.worktree_info = Some(worktree(
+            case.leaf,
+            paths
                 .path()
                 .join("missing-repo")
                 .to_string_lossy()
                 .into_owned(),
-            managed_by_aoe: true,
-            created_at: chrono::Utc::now(),
-            base_branch: None,
-        });
+            None,
+        ));
 
         let storage = Storage::new_unwatched("test").unwrap();
         storage
@@ -2056,13 +1968,7 @@ fn worktree_name_edit_updates_path_and_optionally_branch() {
     let mut inst = make_test_instance();
     inst.project_path = "/tmp/repo-worktrees/old".to_string();
     inst.title = "My Session".to_string();
-    inst.worktree_info = Some(crate::session::WorktreeInfo {
-        branch: "old".to_string(),
-        main_repo_path: "/tmp/repo".to_string(),
-        managed_by_aoe: true,
-        created_at: chrono::Utc::now(),
-        base_branch: None,
-    });
+    inst.worktree_info = Some(worktree("old", "/tmp/repo".to_string(), None));
 
     // Path-only edit leaves the branch and title untouched.
     apply_worktree_name_edit(&mut inst, "/tmp/repo-worktrees/new", None);
