@@ -11,22 +11,34 @@ export const liveContent = (page: Page) => page.locator("[data-live-content]");
 export const liveTexts = (h: MockHandle) => h.liveMessages.map((b) => b.toString("latin1"));
 export const liveMatches = (h: MockHandle, re: RegExp) => liveTexts(h).some((s) => re.test(s));
 
-/** Mock the terminal APIs and open the live view of the `pinch-test` session. */
-export async function openLiveTerminal(
+/** Open the live view of a seeded session on an already-mocked page. */
+export async function openLiveSession(
   page: Page,
-  opts: { mobile?: boolean; settings?: Parameters<typeof seedSettings>[1] | null } = {},
+  handle: MockHandle,
+  opts: {
+    mobile?: boolean;
+    title?: string;
+    settings?: Parameters<typeof seedSettings>[1] | null;
+    /** False for a structured-view session, which mounts no live terminal. */
+    waitForLive?: boolean;
+  } = {},
 ): Promise<MockHandle> {
-  const handle = await mockTerminalApis(page);
   await page.goto("/");
   if (opts.settings !== null) {
     await seedSettings(page, opts.settings ?? { mobileFontSize: 14 });
     await page.reload();
   }
   if (opts.mobile) await openMobileSidebar(page);
-  await clickSidebarSession(page, "pinch-test");
+  await clickSidebarSession(page, opts.title ?? "pinch-test");
+  if (opts.waitForLive === false) return handle;
   await page.locator("[data-live-terminal]").first().waitFor({ state: "visible", timeout: 10_000 });
   await handle.waitForLiveReady();
   return handle;
+}
+
+/** Mock the terminal APIs and open the live view of the `pinch-test` session. */
+export async function openLiveTerminal(page: Page, opts: Parameters<typeof openLiveSession>[2] = {}) {
+  return openLiveSession(page, await mockTerminalApis(page), opts);
 }
 
 /** A standard 24-row frame carrying the alt-screen / mouse flags under test. */

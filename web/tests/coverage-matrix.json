@@ -139,10 +139,10 @@
       "kind": "mocked-playwright",
       "risk": "high",
       "specs": [
-        "tests/mobile-dom-renderer.spec.ts",
+        "tests/mobile-panes.spec.ts",
         "tests/keyboard-auto-resize.spec.ts",
         "tests/mobile-keyboard.spec.ts",
-        "tests/mobile-fullscreen-agent-layout.spec.ts",
+        "tests/mobile-panes.spec.ts",
         "src/hooks/useMobileViewportLock.test.ts"
       ],
       "components": [
@@ -455,7 +455,7 @@
       "id": "settings.mobile-header",
       "kind": "mocked-playwright",
       "risk": "medium",
-      "specs": ["tests/mobile-settings-header.spec.ts"],
+      "specs": ["tests/mobile-panes.spec.ts"],
       "components": [
         "web/src/components/SettingsView.tsx",
         "web/src/components/settings/SettingsHeader.tsx",
@@ -1784,7 +1784,7 @@
       "id": "right-panel.mobile-picker",
       "kind": "mocked-playwright",
       "risk": "high",
-      "specs": ["tests/mobile-right-panel-picker.spec.ts"],
+      "specs": ["tests/mobile-panes.spec.ts"],
       "components": [
         "web/src/components/MobileRightPanelPicker.tsx",
         "web/src/components/MobileMainPane.tsx",
@@ -1796,7 +1796,7 @@
       "id": "right-panel.mobile-plugin-pane",
       "kind": "mocked-playwright",
       "risk": "medium",
-      "specs": ["tests/mobile-plugin-pane.spec.ts"],
+      "specs": ["tests/mobile-panes.spec.ts"],
       "components": [
         "web/src/components/MobileRightPanelPicker.tsx",
         "web/src/components/MobileMainPane.tsx",
@@ -3056,7 +3056,7 @@
       "id": "story.mobile-toolbar-hidden-on-desktop",
       "kind": "mocked-playwright",
       "risk": "low",
-      "specs": ["tests/mobile-toolbar.spec.ts"],
+      "specs": ["tests/mobile-panes.spec.ts"],
       "components": ["web/src/components/MobileTerminalToolbar.tsx"]
     },
     {
