@@ -1052,6 +1052,9 @@ mod tests {
         assert!(!row(&terminal_id).unread);
     }
 
+    /// A capability frame is only applied when it names the worker generation that is
+    /// still live, so an event queued by a replaced worker is dropped while the sentinel
+    /// event behind it still lands.
     #[tokio::test]
     async fn acp_event_listener_tracks_load_session_capability_updates() {
         let _app_dir = crate::session::test_support::isolate_app_dir();
@@ -1063,6 +1066,29 @@ mod tests {
         let first_generation = state.acp_supervisor.test_insert_worker(&id).await;
         let listener = tokio::spawn(acp_event_listener(state.clone()));
 
+        /// Poll the row until `want` holds, bounded so a failure reports the reason.
+        async fn await_row(
+            state: &AppState,
+            id: &str,
+            want: fn(&Instance) -> bool,
+            why: &str,
+        ) -> Instance {
+            for _ in 0..500 {
+                let row = state
+                    .instances
+                    .read()
+                    .await
+                    .iter()
+                    .find(|i| i.id == id)
+                    .cloned();
+                if let Some(row) = row.filter(|row| want(row)) {
+                    return row;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+            }
+            panic!("{why}");
+        }
+
         for _ in 0..500 {
             if state.acp_events_tx.receiver_count() > 0 {
                 break;
@@ -1071,49 +1097,36 @@ mod tests {
         }
         assert!(state.acp_events_tx.receiver_count() > 0);
 
-        let send_capability = |seq, capable, worker_generation| {
+        let send = |seq, event, worker_generation| {
             state
                 .acp_events_tx
                 .send(AcpBroadcastFrame {
                     session_id: id.clone(),
                     seq,
-                    event: Arc::new(crate::acp::Event::PromptCapabilities {
-                        image: false,
-                        audio: false,
-                        embedded_context: false,
-                        load_session: Some(capable),
-                        steering: false,
-                    }),
-                    worker_generation: Some(worker_generation),
+                    event: Arc::new(event),
+                    worker_generation,
                 })
                 .expect("listener is subscribed");
         };
+        let capability = |load_session| crate::acp::Event::PromptCapabilities {
+            image: false,
+            audio: false,
+            embedded_context: false,
+            load_session: Some(load_session),
+            steering: false,
+        };
 
-        send_capability(1, true, first_generation);
-        for _ in 0..500 {
-            if state
-                .instances
-                .read()
-                .await
-                .iter()
-                .find(|inst| inst.id == id)
-                .is_some_and(|inst| inst.acp_load_session_capable == Some(true))
-            {
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(2)).await;
-        }
-        assert!(
-            state
-                .instances
-                .read()
-                .await
-                .iter()
-                .find(|inst| inst.id == id)
-                .is_some_and(|inst| inst.acp_load_session_capable == Some(true)),
-            "the active worker capability was not applied"
-        );
+        send(1, capability(true), Some(first_generation));
+        await_row(
+            &state,
+            &id,
+            |i| i.acp_load_session_capable == Some(true),
+            "the active worker capability was not applied",
+        )
+        .await;
 
+        // Replace the worker, then publish a stale frame from the old generation with a
+        // generation-less sentinel behind it.
         state.acp_supervisor.test_remove_worker(&id).await;
         state
             .instances
@@ -1126,77 +1139,39 @@ mod tests {
         let second_generation = state.acp_supervisor.test_insert_worker(&id).await;
         assert_ne!(first_generation, second_generation);
 
-        send_capability(2, false, first_generation);
-        state
-            .acp_events_tx
-            .send(AcpBroadcastFrame {
-                session_id: id.clone(),
-                seq: 3,
-                event: Arc::new(crate::acp::Event::AcpSessionAssigned {
-                    acp_session_id: "replacement-acp-id".to_string(),
-                }),
-                worker_generation: None,
-            })
-            .expect("listener is subscribed");
-        for _ in 0..500 {
-            if state
-                .instances
-                .read()
-                .await
-                .iter()
-                .find(|inst| inst.id == id)
-                .is_some_and(|inst| inst.acp_session_id.as_deref() == Some("replacement-acp-id"))
-            {
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(2)).await;
-        }
-        let instance = state
-            .instances
-            .read()
-            .await
-            .iter()
-            .find(|inst| inst.id == id)
-            .cloned()
-            .expect("instance");
-        assert_eq!(
-            instance.acp_session_id.as_deref(),
-            Some("replacement-acp-id"),
-            "the sentinel event behind the stale frame was not applied"
+        send(2, capability(false), Some(first_generation));
+        send(
+            3,
+            crate::acp::Event::AcpSessionAssigned {
+                acp_session_id: "replacement-acp-id".to_string(),
+            },
+            None,
         );
+        let row = await_row(
+            &state,
+            &id,
+            |i| i.acp_session_id.as_deref() == Some("replacement-acp-id"),
+            "the sentinel event behind the stale frame was not applied",
+        )
+        .await;
         assert_eq!(
-            instance.acp_load_session_capable, None,
+            row.acp_load_session_capable, None,
             "a queued event from the replaced worker must be ignored"
         );
 
-        send_capability(4, false, second_generation);
-        for _ in 0..500 {
-            if state
-                .instances
-                .read()
-                .await
-                .iter()
-                .find(|inst| inst.id == id)
-                .is_some_and(|inst| inst.acp_load_session_capable == Some(false))
-            {
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(2)).await;
-        }
-        assert!(
-            state
-                .instances
-                .read()
-                .await
-                .iter()
-                .find(|inst| inst.id == id)
-                .is_some_and(|inst| inst.acp_load_session_capable == Some(false)),
-            "the replacement worker capability was not applied"
-        );
+        send(4, capability(false), Some(second_generation));
+        await_row(
+            &state,
+            &id,
+            |i| i.acp_load_session_capable == Some(false),
+            "the replacement worker capability was not applied",
+        )
+        .await;
 
         listener.abort();
         let _ = listener.await;
     }
+
     /// End to end over `acp_event_listener` itself, the path that actually closes #3181.
     #[tokio::test]
     #[serial_test::serial]
