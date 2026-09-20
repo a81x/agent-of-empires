@@ -658,6 +658,17 @@ mod tests {
         UiStore::new()
     }
 
+    fn set(
+        store: &UiStore,
+        generation: u64,
+        slot: UiSlot,
+        id: &str,
+        session_id: Option<&str>,
+        payload: Value,
+    ) -> Result<(), UiError> {
+        store.set("acme.kit", generation, slot, id, session_id, &payload)
+    }
+
     fn entry(session_id: &str, payload: Value) -> UiEntry {
         UiEntry {
             plugin_id: "acme.gh".into(),
@@ -723,13 +734,13 @@ mod tests {
     fn set_get_and_remove_global_entry() {
         let s = store();
         let g = s.begin_generation("acme.kit");
-        s.set(
-            "acme.kit",
+        set(
+            &s,
             g,
             UiSlot::StatusBar,
             "build",
             None,
-            &json!({"text": "ok", "tone": "success"}),
+            json!({"text": "ok", "tone": "success"}),
         )
         .unwrap();
         let snap = s.snapshot();
@@ -861,7 +872,7 @@ mod tests {
             ),
         ];
         for (name, slot, session, payload, ok) in cases {
-            let result = s.set("acme.kit", g, slot, "x", session, &payload);
+            let result = set(&s, g, slot, "x", session, payload);
             assert_eq!(result.is_ok(), ok, "{name}: {result:?}");
         }
         assert!(matches!(
@@ -874,39 +885,16 @@ mod tests {
     fn stale_generation_rejected_and_clear_is_generation_guarded() {
         let s = store();
         let g1 = s.begin_generation("acme.kit");
-        s.set(
-            "acme.kit",
-            g1,
-            UiSlot::Card,
-            "c",
-            None,
-            &json!({"title": "Hi"}),
-        )
-        .unwrap();
+        set(&s, g1, UiSlot::Card, "c", None, json!({"title": "Hi"})).unwrap();
         assert_eq!(s.snapshot().entries.len(), 1);
         let g2 = s.begin_generation("acme.kit");
         assert_eq!(s.snapshot().entries.len(), 0);
         assert_eq!(
-            s.set(
-                "acme.kit",
-                g1,
-                UiSlot::Card,
-                "c2",
-                None,
-                &json!({"title": "stale"})
-            ),
+            set(&s, g1, UiSlot::Card, "c2", None, json!({"title": "stale"})),
             Err(UiError::StaleWorker)
         );
         assert!(!s.clear_plugin("acme.kit", g1));
-        s.set(
-            "acme.kit",
-            g2,
-            UiSlot::Card,
-            "c3",
-            None,
-            &json!({"title": "new"}),
-        )
-        .unwrap();
+        set(&s, g2, UiSlot::Card, "c3", None, json!({"title": "new"})).unwrap();
         assert!(s.clear_plugin("acme.kit", g2));
         assert_eq!(s.snapshot().entries.len(), 0);
     }
@@ -915,15 +903,7 @@ mod tests {
     fn notifications_survive_clear_and_carry_monotonic_seq() {
         let s = store();
         let g = s.begin_generation("acme.kit");
-        s.set(
-            "acme.kit",
-            g,
-            UiSlot::StatusBar,
-            "x",
-            None,
-            &json!({"text": "hi"}),
-        )
-        .unwrap();
+        set(&s, g, UiSlot::StatusBar, "x", None, json!({"text": "hi"})).unwrap();
         let seq1 = s
             .notify(
                 "acme.kit",
@@ -996,40 +976,33 @@ mod tests {
     fn row_badge_accepts_items_list() {
         let s = store();
         let g = s.begin_generation("acme.kit");
-        s.set(
-            "acme.kit",
-            g,
-            UiSlot::RowBadge,
-            "repos",
-            Some("s1"),
-            &json!({"items": [
+        set(&s, g, UiSlot::RowBadge, "repos", Some("s1"), json!({"items": [
                 {"icon": "git-pull-request-arrow", "tone": "success", "href": "https://x/pr/1", "tooltip": "PR #1"},
                 {"icon": "git-pull-request-draft", "tone": "warn"}
-            ]}),
-        )
+            ]}))
         .unwrap();
         let snap = s.snapshot();
         assert_eq!(
             snap.entries[0].payload["items"].as_array().unwrap().len(),
             2
         );
-        s.set(
-            "acme.kit",
+        set(
+            &s,
             g,
             UiSlot::RowBadge,
             "repos",
             Some("s1"),
-            &json!({"items": []}),
+            json!({"items": []}),
         )
         .unwrap();
         assert!(matches!(
-            s.set(
-                "acme.kit",
+            set(
+                &s,
                 g,
                 UiSlot::RowBadge,
                 "repos",
                 Some("s1"),
-                &json!({"items": [{"tone": "rainbow"}]})
+                json!({"items": [{"tone": "rainbow"}]})
             ),
             Err(UiError::BadRequest(_))
         ));
@@ -1039,13 +1012,13 @@ mod tests {
     fn pane_blocks_are_forward_compatible() {
         let s = store();
         let g = s.begin_generation("acme.kit");
-        s.set(
-            "acme.kit",
+        set(
+            &s,
             g,
             UiSlot::Pane,
             "gh",
             Some("s1"),
-            &json!({"title": "GitHub", "default_location": "bottom", "blocks": [
+            json!({"title": "GitHub", "default_location": "bottom", "blocks": [
                 {"kind": "heading", "text": "GitHub"},
                 {"kind": "row", "label": "nexus", "value": "PR #12", "href": "https://x/pr/12"},
                 {"kind": "divider"},
@@ -1058,13 +1031,13 @@ mod tests {
         assert_eq!(blocks.len(), 4);
         assert_eq!(blocks[3]["kind"], json!("some-future-kind"));
         assert_eq!(snap.entries[0].payload["default_location"], json!("bottom"));
-        s.set(
-            "acme.kit",
+        set(
+            &s,
             g,
             UiSlot::Pane,
             "gh",
             Some("s1"),
-            &json!({"title": "T", "body": "B"}),
+            json!({"title": "T", "body": "B"}),
         )
         .unwrap();
     }
@@ -1080,23 +1053,23 @@ mod tests {
             }
             json!({"blocks": [block]})
         };
-        s.set(
-            "acme.kit",
+        set(
+            &s,
             g,
             UiSlot::Pane,
             "gh",
             Some("s1"),
-            &chain(MAX_BLOCK_DEPTH - 1),
+            chain(MAX_BLOCK_DEPTH - 1),
         )
         .unwrap();
         assert!(matches!(
-            s.set(
-                "acme.kit",
+            set(
+                &s,
                 g,
                 UiSlot::Pane,
                 "gh",
                 Some("s1"),
-                &chain(MAX_BLOCK_DEPTH + 1)
+                chain(MAX_BLOCK_DEPTH + 1)
             ),
             Err(UiError::BadRequest(_))
         ));
@@ -1104,13 +1077,13 @@ mod tests {
         for _ in 0..64 {
             inert = json!({"nested": inert});
         }
-        s.set(
-            "acme.kit",
+        set(
+            &s,
             g,
             UiSlot::Pane,
             "gh",
             Some("s1"),
-            &json!({"blocks": [{"kind": "some-future-kind", "payload": inert}]}),
+            json!({"blocks": [{"kind": "some-future-kind", "payload": inert}]}),
         )
         .unwrap();
     }
@@ -1119,27 +1092,20 @@ mod tests {
     fn pane_footer_round_trips_and_rejects_unknown_fields() {
         let s = store();
         let g = s.begin_generation("acme.kit");
-        s.set(
-            "acme.kit",
-            g,
-            UiSlot::Pane,
-            "gh",
-            Some("s1"),
-            &json!({"blocks": [{"kind": "heading", "text": "GitHub"}],
-                    "footer": {"text": "refreshed 12:07", "value": "blocked", "tone": "danger", "icon": "refresh-cw"}}),
-        )
+        set(&s, g, UiSlot::Pane, "gh", Some("s1"), json!({"blocks": [{"kind": "heading", "text": "GitHub"}],
+                    "footer": {"text": "refreshed 12:07", "value": "blocked", "tone": "danger", "icon": "refresh-cw"}}))
         .unwrap();
         let snap = s.snapshot();
         assert_eq!(snap.entries[0].payload["footer"]["value"], json!("blocked"));
         assert_eq!(snap.entries[0].payload["footer"]["tone"], json!("danger"));
         assert!(matches!(
-            s.set(
-                "acme.kit",
+            set(
+                &s,
                 g,
                 UiSlot::Pane,
                 "gh",
                 Some("s1"),
-                &json!({"footer": {"txt": "oops"}})
+                json!({"footer": {"txt": "oops"}})
             ),
             Err(UiError::BadRequest(_))
         ));
@@ -1150,13 +1116,13 @@ mod tests {
         let s = store();
         let g = s.begin_generation("acme.kit");
         assert!(matches!(
-            s.set(
-                "acme.kit",
+            set(
+                &s,
                 g,
                 UiSlot::Pane,
                 "gh",
                 Some("s1"),
-                &json!({"default_location": "sideways"})
+                json!({"default_location": "sideways"})
             ),
             Err(UiError::BadRequest(_))
         ));
@@ -1167,36 +1133,36 @@ mod tests {
         let s = store();
         let g = s.begin_generation("acme.kit");
         let big = "x".repeat(40 * 1024);
-        s.set(
-            "acme.kit",
+        set(
+            &s,
             g,
             UiSlot::Pane,
             "gh",
             Some("s1"),
-            &json!({"blocks": [{"kind": "note", "text": big}]}),
+            json!({"blocks": [{"kind": "note", "text": big}]}),
         )
         .unwrap();
         let too_big = "x".repeat(64 * 1024);
         assert!(matches!(
-            s.set(
-                "acme.kit",
+            set(
+                &s,
                 g,
                 UiSlot::Pane,
                 "gh",
                 Some("s1"),
-                &json!({"blocks": [{"kind": "note", "text": too_big}]})
+                json!({"blocks": [{"kind": "note", "text": too_big}]})
             ),
             Err(UiError::BadRequest(_))
         ));
         let over_badge = "x".repeat(9 * 1024);
         assert!(matches!(
-            s.set(
-                "acme.kit",
+            set(
+                &s,
                 g,
                 UiSlot::RowBadge,
                 "b",
                 Some("s1"),
-                &json!({"text": over_badge})
+                json!({"text": over_badge})
             ),
             Err(UiError::BadRequest(_))
         ));
@@ -1207,43 +1173,43 @@ mod tests {
         let s = store();
         let g = s.begin_generation("acme.kit");
         for i in 0..MAX_ENTRIES_PER_SCOPE {
-            s.set(
-                "acme.kit",
+            set(
+                &s,
                 g,
                 UiSlot::RowBadge,
                 &format!("b{i}"),
                 Some("s1"),
-                &json!({"text": "x"}),
+                json!({"text": "x"}),
             )
             .unwrap();
         }
         assert_eq!(
-            s.set(
-                "acme.kit",
+            set(
+                &s,
                 g,
                 UiSlot::RowBadge,
                 "overflow",
                 Some("s1"),
-                &json!({"text": "x"})
+                json!({"text": "x"})
             ),
             Err(UiError::QuotaExceeded)
         );
-        s.set(
-            "acme.kit",
+        set(
+            &s,
             g,
             UiSlot::RowBadge,
             "b0",
             Some("s2"),
-            &json!({"text": "x"}),
+            json!({"text": "x"}),
         )
         .unwrap();
-        s.set(
-            "acme.kit",
+        set(
+            &s,
             g,
             UiSlot::RowBadge,
             "b0",
             Some("s1"),
-            &json!({"text": "y"}),
+            json!({"text": "y"}),
         )
         .unwrap();
     }
@@ -1253,24 +1219,24 @@ mod tests {
         let s = store();
         let g = s.begin_generation("acme.kit");
         for i in 0..MAX_ENTRIES_PER_PLUGIN {
-            s.set(
-                "acme.kit",
+            set(
+                &s,
                 g,
                 UiSlot::RowBadge,
                 "b",
                 Some(&format!("s{i}")),
-                &json!({"text": "x"}),
+                json!({"text": "x"}),
             )
             .unwrap();
         }
         assert_eq!(
-            s.set(
-                "acme.kit",
+            set(
+                &s,
                 g,
                 UiSlot::RowBadge,
                 "b",
                 Some("overflow"),
-                &json!({"text": "x"})
+                json!({"text": "x"})
             ),
             Err(UiError::QuotaExceeded)
         );
@@ -1281,25 +1247,25 @@ mod tests {
         let s = store();
         let g = s.begin_generation("acme.kit");
         for i in 0..MAX_ENTRIES_PER_SCOPE {
-            s.set(
-                "acme.kit",
+            set(
+                &s,
                 g,
                 UiSlot::RowBadge,
                 &format!("b{i}"),
                 Some("s1"),
-                &json!({"text": "x"}),
+                json!({"text": "x"}),
             )
             .unwrap();
         }
         s.remove("acme.kit", g, UiSlot::RowBadge, "b0", Some("s1"))
             .unwrap();
-        s.set(
-            "acme.kit",
+        set(
+            &s,
             g,
             UiSlot::RowBadge,
             "replacement",
             Some("s1"),
-            &json!({"text": "x"}),
+            json!({"text": "x"}),
         )
         .unwrap();
     }
@@ -1310,26 +1276,10 @@ mod tests {
         assert_eq!(s.revision("acme.kit", None), 0);
         let g = s.begin_generation("acme.kit");
 
-        s.set(
-            "acme.kit",
-            g,
-            UiSlot::Card,
-            "c0",
-            None,
-            &json!({"title": "x"}),
-        )
-        .unwrap();
+        set(&s, g, UiSlot::Card, "c0", None, json!({"title": "x"})).unwrap();
         assert_eq!(s.revision("acme.kit", None), 1);
 
-        s.set(
-            "acme.kit",
-            g,
-            UiSlot::Card,
-            "c0",
-            None,
-            &json!({"title": "x"}),
-        )
-        .unwrap();
+        set(&s, g, UiSlot::Card, "c0", None, json!({"title": "x"})).unwrap();
         assert_eq!(s.revision("acme.kit", None), 2);
 
         s.remove("acme.kit", g, UiSlot::Card, "c0", None).unwrap();
@@ -1349,27 +1299,11 @@ mod tests {
     fn revision_is_scoped_per_session() {
         let s = store();
         let g = s.begin_generation("acme.kit");
-        s.set(
-            "acme.kit",
-            g,
-            UiSlot::Pane,
-            "p",
-            Some("s1"),
-            &json!({"title": "a"}),
-        )
-        .unwrap();
+        set(&s, g, UiSlot::Pane, "p", Some("s1"), json!({"title": "a"})).unwrap();
         assert_eq!(s.revision("acme.kit", Some("s1")), 1);
         assert_eq!(s.revision("acme.kit", Some("s2")), 0);
 
-        s.set(
-            "acme.kit",
-            g,
-            UiSlot::Pane,
-            "p",
-            Some("s2"),
-            &json!({"title": "b"}),
-        )
-        .unwrap();
+        set(&s, g, UiSlot::Pane, "p", Some("s2"), json!({"title": "b"})).unwrap();
         assert_eq!(s.revision("acme.kit", Some("s1")), 1);
         assert_eq!(s.revision("acme.kit", Some("s2")), 1);
 
