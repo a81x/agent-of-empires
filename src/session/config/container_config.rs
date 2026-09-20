@@ -3377,8 +3377,6 @@ mod tests {
             .to_string()
     }
 
-    // --- sandbox config tests ---
-
     fn setup_host_dir(dir: &TempDir) -> std::path::PathBuf {
         let host = dir.path().join("host");
         fs::create_dir_all(&host).unwrap();
@@ -3708,7 +3706,6 @@ mod tests {
 
     #[test]
     fn test_agent_config_mounts_match_agent_registry() {
-        // Every mount should correspond to a registered agent
         for mount in AGENT_CONFIG_MOUNTS {
             assert!(crate::agents::get_agent(mount.tool_name).is_some());
         }
@@ -3879,7 +3876,6 @@ mod tests {
         fs::create_dir_all(&host).unwrap();
         fs::write(host.join("config.json"), "{}").unwrap();
 
-        // Create a real dir with content, then symlink to it from copy_dirs.
         let real_dir = dir.path().join("real-skills");
         fs::create_dir_all(&real_dir).unwrap();
         fs::write(real_dir.join("skill.md"), "# Skill").unwrap();
@@ -3908,12 +3904,10 @@ mod tests {
         fs::create_dir_all(&host).unwrap();
         fs::write(host.join("good.json"), "ok").unwrap();
 
-        // Create a symlink pointing to a nonexistent target.
         #[cfg(unix)]
         std::os::unix::fs::symlink("/nonexistent/path", host.join("broken-link")).unwrap();
 
         let sandbox = dir.path().join("sandbox");
-        // Should succeed despite the broken symlink.
         sync_agent_config(&host, &sandbox, &[], &[], &[], &[]).unwrap();
 
         assert_eq!(fs::read_to_string(sandbox.join("good.json")).unwrap(), "ok");
@@ -3930,7 +3924,6 @@ mod tests {
         // Host has a history file with host-only entries.
         fs::write(host.join("history.jsonl"), "host-entry\n").unwrap();
 
-        // First sync copies it in.
         sync_agent_config(&host, &sandbox, &[], &[], &[], &["history.jsonl"]).unwrap();
         assert_eq!(
             fs::read_to_string(sandbox.join("history.jsonl")).unwrap(),
@@ -4064,8 +4057,6 @@ mod tests {
             assert_eq!(suffix, expected, "{agent}");
         }
     }
-
-    // --- credential freshness tests ---
 
     /// Fields in the order `serde_json` writes them back, so a fold that
     /// re-serializes a credential produces this string again.
@@ -4474,11 +4465,9 @@ mod tests {
     #[serial_test::serial]
     fn test_build_container_config_includes_repo_sandbox_settings() {
         let (_hg, _, _tmp_base) = BaseGuard::ready();
-        // Isolate HOME so global/profile config doesn't interfere
         let temp_home = TempDir::new().unwrap();
         let _home_guard = crate::session::test_support::isolate_home(temp_home.path());
 
-        // Create a project directory with repo config
         let project_dir = TempDir::new().unwrap();
         write_repo_config(
             project_dir.path(),
@@ -4491,7 +4480,6 @@ mount_ssh = true
 "#,
         );
 
-        // Initialize a git repo so compute_volume_paths works
         git2::Repository::init(project_dir.path()).unwrap();
 
         let project_path_str = project_dir.path().to_str().unwrap();
@@ -4507,7 +4495,6 @@ mount_ssh = true
             env_keys
         );
 
-        // Verify volume_ignores became anonymous volumes
         let dir_name = project_dir.path().file_name().unwrap().to_string_lossy();
         let expected_venv = format!("/workspace/{}/.venv", dir_name);
         let expected_node = format!("/workspace/{}/node_modules", dir_name);
@@ -4969,38 +4956,46 @@ volume_ignores = ["node_modules"]
         }
     }
 
-    // Issue #472: a YOLO-mode sandbox session must disable the agent's
-    // folder-trust prompt so the ephemeral container does not re-prompt on
-    // every launch.
+    /// #472: a YOLO sandbox must not re-prompt for folder trust on every
+    /// launch. Codex trusts the container workspace, keyed on the in-container
+    /// working dir rather than the host path; Gemini turns the check off.
     #[test]
     #[serial_test::serial]
-    fn test_build_container_config_yolo_trusts_codex_project_only_in_yolo() {
+    fn yolo_pre_trusts_the_container_workspace() {
         let temp_home = IsolatedHome::new();
-
         let project_dir = git_project();
 
-        let instance_id = "codex-yolo-trust-test";
         let config = Build::new("codex")
             .yolo(true)
-            .instance(instance_id)
+            .instance("codex-yolo-trust-test")
             .run(project_dir.path())
             .unwrap();
-
-        let codex_config = sandbox_store(&temp_home, ".codex", &instance_id).join("config.toml");
-        assert!(
-            codex_config.exists(),
-            "yolo codex sandbox must write config.toml"
-        );
-        let parsed: toml::Value =
+        let codex_config =
+            sandbox_store(&temp_home, ".codex", "codex-yolo-trust-test").join("config.toml");
+        let codex: toml::Value =
             toml::from_str(&fs::read_to_string(&codex_config).unwrap()).unwrap();
-        let projects = parsed["projects"].as_table().unwrap();
-        // The trust key is the in-container working dir, not the host path.
+        let projects = codex["projects"].as_table().unwrap();
         assert_eq!(
             projects[&config.working_dir]["trust_level"].as_str(),
             Some("trusted")
         );
 
-        crate::hooks::cleanup_hook_status_dir(instance_id);
+        Build::new("gemini")
+            .yolo(true)
+            .instance("gemini-yolo-trust-test")
+            .run(project_dir.path())
+            .unwrap();
+        let gemini_settings =
+            sandbox_store(&temp_home, ".gemini", "gemini-yolo-trust-test").join("settings.json");
+        let gemini: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&gemini_settings).unwrap()).unwrap();
+        assert_eq!(
+            gemini["security"]["folderTrust"]["enabled"],
+            serde_json::json!(false)
+        );
+
+        crate::hooks::cleanup_hook_status_dir("codex-yolo-trust-test");
+        crate::hooks::cleanup_hook_status_dir("gemini-yolo-trust-test");
     }
 
     // Claude Code's folder-trust dialog is keyed on the git root, so every
@@ -5209,39 +5204,6 @@ codex-work = "{}"
                 assert!(!settings.exists(), "folder trust must stay enabled");
             }
         }
-    }
-
-    #[test]
-    #[serial_test::serial]
-    fn test_build_container_config_yolo_disables_gemini_folder_trust() {
-        let temp_home = IsolatedHome::new();
-
-        let project_dir = git_project();
-
-        Build::new("gemini")
-            .yolo(true)
-            .instance("gemini-yolo-trust-test")
-            .run(project_dir.path())
-            .unwrap();
-
-        let gemini_settings = temp_home
-            .path()
-            .join(".gemini")
-            .join(SANDBOX_PRIVATE_SUBDIR)
-            .join("gemini-yolo-trust-test")
-            .join("settings.json");
-        assert!(
-            gemini_settings.exists(),
-            "yolo gemini sandbox must write settings.json"
-        );
-        let parsed: serde_json::Value =
-            serde_json::from_str(&fs::read_to_string(&gemini_settings).unwrap()).unwrap();
-        assert_eq!(
-            parsed["security"]["folderTrust"]["enabled"],
-            serde_json::Value::Bool(false)
-        );
-
-        crate::hooks::cleanup_hook_status_dir("gemini-yolo-trust-test");
     }
 
     #[test]
@@ -6088,7 +6050,6 @@ extra_volumes = ["/host/personal-only:/container/personal-only:ro"]
 
         let (_dir, repo_path) = setup_regular_repo();
 
-        // Create a sibling worktree (non-bare layout)
         let worktree_path = repo_path.parent().unwrap().join("my-worktree");
         let head = git2::Repository::open(&repo_path)
             .unwrap()
@@ -6132,7 +6093,6 @@ volume_ignores = ["target", "node_modules"]
             .run(Path::new(project_path_str))
             .unwrap();
 
-        // Verify volume_ignores are applied to the worktree mount
         assert!(
             config
                 .anonymous_volumes
@@ -6208,8 +6168,6 @@ volume_ignores = ["target"]
         assert!(config.anonymous_volumes.contains(&expected_wt_target));
     }
 
-    // --- prepare_sandbox_dir / clean_files tests ---
-
     #[test]
     fn test_clean_files_deletes_stale_database() {
         let home = TempDir::new().unwrap();
@@ -6222,7 +6180,6 @@ volume_ignores = ["target"]
         fs::write(sandbox_dir.join("opencode.db-wal"), "stale-wal").unwrap();
         fs::write(sandbox_dir.join("opencode.db-shm"), "stale-shm").unwrap();
 
-        // Create a minimal host dir so sync_agent_config doesn't error
         fs::create_dir_all(&host_dir).unwrap();
 
         let mount = AgentConfigMount {
@@ -6311,7 +6268,6 @@ volume_ignores = ["target"]
             clean_files: &["opencode.db", "opencode.db-wal", "opencode.db-shm"],
         };
 
-        // Should not panic or error when files don't exist
         prepare_sandbox_dir(&mount, home.path(), None, CredentialFold::Freshest).unwrap();
     }
 
@@ -6389,8 +6345,6 @@ volume_ignores = ["target"]
         std::env::remove_var("CLAUDE_CODE_USE_VERTEX");
         std::env::remove_var("GOOGLE_APPLICATION_CREDENTIALS");
     }
-
-    // --- named_volume_for tests ---
 
     /// The reporter's layout (#3742): a sibling-worktree session whose worktree
     /// moved from otari-worktrees/905 to otari-worktrees/rev-912. The main repo's
