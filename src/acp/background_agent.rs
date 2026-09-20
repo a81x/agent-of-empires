@@ -524,6 +524,14 @@ fn completed(
 mod tests {
     use super::*;
 
+    fn folded(lines: &[&str]) -> Snapshot {
+        let mut snap = Snapshot::default();
+        for line in lines {
+            fold_line(line, &mut snap);
+        }
+        snap
+    }
+
     #[tokio::test]
     async fn host_read_new_lines_reads_from_offset_and_buffers_partials() {
         let dir = tempfile::tempdir().unwrap();
@@ -533,7 +541,6 @@ mod tests {
 
         let line =
             r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash"}]}}"#;
-        // First write ends mid-line (no trailing newline): nothing folds yet.
         tokio::fs::write(&path, line).await.unwrap();
         let mut offset = 0u64;
         let mut buf = String::new();
@@ -548,99 +555,58 @@ mod tests {
         assert!(read_new_lines(&source, &path_str, &mut offset, &mut buf, &mut snap).await);
         assert_eq!(snap.tool_count, 2);
 
-        // No growth → no new bytes → false, offset unchanged.
         let before = offset;
         assert!(!read_new_lines(&source, &path_str, &mut offset, &mut buf, &mut snap).await);
         assert_eq!(offset, before);
     }
 
     #[test]
-    fn fold_counts_tools_and_tracks_last_text() {
-        let mut snap = Snapshot::default();
-        fold_line(
-            r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","name":"Bash"}]}}"#,
-            &mut snap,
-        );
-        fold_line(
+    fn fold_tracks_tools_results_text_and_end_turn() {
+        let snap = folded(&[
+            r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"ls -la","description":"list"}}]}}"#,
+            r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t2","name":"Read","input":{"file_path":"src/main.rs"}}]}}"#,
+            r#"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t1","is_error":false}]}}"#,
+            r#"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t2","is_error":true}]}}"#,
             r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"working on it"}]}}"#,
-            &mut snap,
+        ]);
+        let tools: Vec<_> = snapshot_tools(&snap)
+            .into_iter()
+            .map(|t| (t.name, t.title, t.ok))
+            .collect();
+        assert_eq!(
+            tools,
+            [
+                ("Bash".into(), Some("ls -la".into()), Some(true)),
+                ("Read".into(), Some("src/main.rs".into()), Some(false)),
+            ]
         );
-        assert_eq!(snap.tool_count, 1);
-        assert_eq!(snap.last_tool.as_deref(), Some("Bash"));
+        assert_eq!(snap.tool_count, 2);
+        assert_eq!(snap.last_tool.as_deref(), Some("Read"));
         assert_eq!(snap.last_text.as_deref(), Some("working on it"));
         assert!(!snap.done);
-    }
 
-    #[test]
-    fn fold_captures_tool_entries_with_titles_and_results() {
-        let mut snap = Snapshot::default();
-        fold_line(
-            r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"ls -la","description":"list"}}]}}"#,
-            &mut snap,
-        );
-        fold_line(
-            r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t2","name":"Read","input":{"file_path":"src/main.rs"}}]}}"#,
-            &mut snap,
-        );
-        // tool_result for t1 (success) and t2 (error) arrive on user lines.
-        fold_line(
-            r#"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t1","is_error":false}]}}"#,
-            &mut snap,
-        );
-        fold_line(
-            r#"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t2","is_error":true}]}}"#,
-            &mut snap,
-        );
-        let tools = snapshot_tools(&snap);
-        assert_eq!(tools.len(), 2);
-        assert_eq!(tools[0].name, "Bash");
-        assert_eq!(tools[0].title.as_deref(), Some("ls -la"));
-        assert_eq!(tools[0].ok, Some(true));
-        assert_eq!(tools[1].name, "Read");
-        assert_eq!(tools[1].title.as_deref(), Some("src/main.rs"));
-        assert_eq!(tools[1].ok, Some(false));
-        assert_eq!(snap.tool_count, 2);
-    }
-
-    #[test]
-    fn fold_marks_done_and_result_on_end_turn() {
-        let mut snap = Snapshot::default();
-        fold_line(
+        let snap = folded(&[
             r#"{"type":"assistant","message":{"stop_reason":"end_turn","content":[{"type":"text","text":"final answer"}]}}"#,
-            &mut snap,
-        );
+        ]);
         assert!(snap.done);
         assert_eq!(snap.result.as_deref(), Some("final answer"));
-    }
 
-    #[test]
-    fn fold_skips_non_assistant_and_attachment_lines() {
-        let mut snap = Snapshot::default();
-        fold_line(
+        let snap = folded(&[
             r#"{"type":"user","message":{"content":"prompt"}}"#,
-            &mut snap,
-        );
-        fold_line(r#"{"attachment":{"type":"skill_listing"}}"#, &mut snap);
-        assert_eq!(snap.tool_count, 0);
-        assert!(!snap.done);
-        assert!(!snap.parsed_any);
-    }
+            r#"{"attachment":{"type":"skill_listing"}}"#,
+        ]);
+        assert!(snap.tool_count == 0 && !snap.done && !snap.parsed_any);
+        assert!(format_warning(&snap).is_none());
 
-    #[test]
-    fn fold_counts_parse_errors_without_panicking() {
-        let mut snap = Snapshot::default();
-        fold_line("not json at all", &mut snap);
+        let snap = folded(&["not json at all"]);
         assert_eq!(snap.parse_errors, 1);
-        assert!(!snap.parsed_any);
-        assert!(format_warning(&snap).is_some());
-    }
+        assert!(
+            format_warning(&snap).is_some(),
+            "an unreadable format is surfaced"
+        );
 
-    #[test]
-    fn preview_truncates_long_text() {
-        let long = "x".repeat(TEXT_PREVIEW_CHARS + 50);
-        let p = preview(&long);
-        assert!(p.ends_with('…'));
-        assert!(p.chars().count() <= TEXT_PREVIEW_CHARS + 1);
+        let long = preview(&"x".repeat(TEXT_PREVIEW_CHARS + 50));
+        assert!(long.ends_with('…') && long.chars().count() <= TEXT_PREVIEW_CHARS + 1);
     }
 
     #[test]
@@ -656,7 +622,7 @@ mod tests {
                 BackgroundAgentStatus::Completed,
                 Some("final report"),
                 "completion inferred from final text",
-                "final text block, no dangling tool, no end_turn marker: genuinely done (#3232)",
+                "final text, no dangling tool, no end_turn marker: done",
             ),
             (
                 vec![
@@ -666,7 +632,7 @@ mod tests {
                 BackgroundAgentStatus::Stalled,
                 None,
                 "no transcript activity",
-                "last content is a tool call still awaiting its result: genuinely hung",
+                "a tool call still awaiting its result: hung",
             ),
             (
                 vec![
@@ -675,67 +641,40 @@ mod tests {
                 BackgroundAgentStatus::Stalled,
                 None,
                 "no transcript activity",
-                "text after an unresolved tool call: still mid-action, not done",
+                "text after an unresolved tool call: still mid-action",
             ),
             (
                 vec!["not json at all"],
                 BackgroundAgentStatus::Stalled,
                 None,
                 "no transcript activity",
-                "nothing parsed at all: genuinely hung",
+                "nothing parsed: hung",
             ),
         ];
         for (lines, expected_status, expected_result, warn_contains, desc) in cases {
-            let mut snap = Snapshot::default();
-            for line in lines {
-                fold_line(line, &mut snap);
-            }
-            let (status, result, warning) = infer_idle_outcome(&snap);
+            let (status, result, warning) = infer_idle_outcome(&folded(&lines));
             assert_eq!(status, expected_status, "{desc}");
-            assert_eq!(result.as_deref(), expected_result, "result for: {desc}");
-            let warning = warning.unwrap_or_default();
+            assert_eq!(result.as_deref(), expected_result, "{desc}");
             assert!(
-                warning.contains(warn_contains),
-                "warning for {desc}: expected {warn_contains:?}, got {warning:?}"
+                warning.unwrap_or_default().contains(warn_contains),
+                "{desc}"
             );
         }
-    }
 
-    #[test]
-    fn infer_idle_outcome_sees_unresolved_tool_past_the_display_cap() {
-        let mut snap = Snapshot::default();
-        for i in 0..=MAX_TOOLS {
-            fold_line(
-                &format!(
-                    r#"{{"type":"assistant","message":{{"content":[{{"type":"tool_use","id":"t{i}","name":"Bash"}}]}}}}"#
-                ),
-                &mut snap,
-            );
-        }
-        for i in 0..MAX_TOOLS {
-            fold_line(
-                &format!(
-                    r#"{{"type":"user","message":{{"content":[{{"type":"tool_result","tool_use_id":"t{i}","is_error":false}}]}}}}"#
-                ),
-                &mut snap,
-            );
-        }
-        fold_line(
-            r#"{"type":"assistant","message":{"content":[{"type":"text","text":"all done"}]}}"#,
-            &mut snap,
-        );
-
+        // A dangling call past the display cap still counts as unresolved.
+        let uses = (0..=MAX_TOOLS).map(|i| {
+            format!(r#"{{"type":"assistant","message":{{"content":[{{"type":"tool_use","id":"t{i}","name":"Bash"}}]}}}}"#)
+        });
+        let results = (0..MAX_TOOLS).map(|i| {
+            format!(r#"{{"type":"user","message":{{"content":[{{"type":"tool_result","tool_use_id":"t{i}","is_error":false}}]}}}}"#)
+        });
+        let text =
+            r#"{"type":"assistant","message":{"content":[{"type":"text","text":"all done"}]}}"#;
+        let lines: Vec<String> = uses.chain(results).chain([text.to_string()]).collect();
+        let snap = folded(&lines.iter().map(String::as_str).collect::<Vec<_>>());
         assert_eq!(snap.tools.len(), MAX_TOOLS, "display list stays capped");
-        assert!(
-            snap.tools.iter().all(|t| t.ok.is_some()),
-            "every tool in the capped list is resolved, so the cap hides the dangling one"
-        );
+        assert!(snap.tools.iter().all(|t| t.ok.is_some()));
         assert_eq!(snap.tool_count as usize, MAX_TOOLS + 1);
-        let (status, ..) = infer_idle_outcome(&snap);
-        assert_eq!(
-            status,
-            BackgroundAgentStatus::Stalled,
-            "a tool call past the display cap is still unresolved, so not done"
-        );
+        assert_eq!(infer_idle_outcome(&snap).0, BackgroundAgentStatus::Stalled);
     }
 }
