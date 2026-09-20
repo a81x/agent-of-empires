@@ -6,14 +6,6 @@ import type { DirEntry } from "../lib/types";
 const LAST_DIR_KEY = "aoe-last-browse-dir";
 const BROWSE_PAGE_SIZE = 100;
 
-function loadLastDir(): string | null {
-  return safeGetItem(LAST_DIR_KEY);
-}
-
-function saveLastDir(path: string) {
-  safeSetItem(LAST_DIR_KEY, path);
-}
-
 interface Props {
   initialPath?: string;
   onSelect: (path: string) => void;
@@ -123,7 +115,7 @@ export function DirectoryBrowser({ initialPath, onSelect }: Props) {
 
     queueMicrotask(async () => {
       if (initialPath && (await navigate(initialPath))) return;
-      const lastDir = loadLastDir();
+      const lastDir = safeGetItem(LAST_DIR_KEY);
       if (lastDir && (await navigate(lastDir))) return;
       const home = await getHomePath();
       await navigate(home || "/");
@@ -147,7 +139,7 @@ export function DirectoryBrowser({ initialPath, onSelect }: Props) {
       // Save parent so reopening the picker lands one level up,
       // where this repo lives. Mirrors the TUI behavior.
       const parent = entry.path.split("/").slice(0, -1).join("/") || "/";
-      saveLastDir(parent);
+      safeSetItem(LAST_DIR_KEY, parent);
       onSelect(entry.path);
     } else {
       navigate(entry.path);
@@ -345,7 +337,7 @@ export function DirectoryBrowser({ initialPath, onSelect }: Props) {
           type="button"
           onClick={() => {
             if (!currentPath) return;
-            saveLastDir(currentPath);
+            safeSetItem(LAST_DIR_KEY, currentPath);
             onSelect(currentPath);
           }}
           disabled={!currentPath || loading}

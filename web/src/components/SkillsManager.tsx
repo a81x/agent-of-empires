@@ -113,9 +113,6 @@ function SkillGroup({
   );
 }
 
-/** The right pane's tab row. */
-const DETAIL_TABS = [{ id: "content", label: "SKILL.md" }] as const;
-
 export function SkillsManager({ readOnly = false }: { readOnly?: boolean } = {}) {
   const [data, setData] = useState<SkillsResponse | null>(null);
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
@@ -524,14 +521,9 @@ export function SkillsManager({ readOnly = false }: { readOnly?: boolean } = {})
                 </p>
                 <div className="flex items-center justify-between gap-3">
                   <div className="flex gap-4">
-                    {DETAIL_TABS.map((tab) => (
-                      <span
-                        key={tab.id}
-                        className="border-b-2 border-brand-500 pb-1 font-mono text-[11px] uppercase tracking-wider text-brand-500"
-                      >
-                        {tab.label}
-                      </span>
-                    ))}
+                    <span className="border-b-2 border-brand-500 pb-1 font-mono text-[11px] uppercase tracking-wider text-brand-500">
+                      SKILL.md
+                    </span>
                   </div>
                   {/* Segmented toggle chips, not standalone action buttons: kept below the 32px button height so
                      the pair reads as one compact control sitting at the tab-label baseline rather than a second
