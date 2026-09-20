@@ -277,47 +277,36 @@ mod tests {
     use crate::plugin::registry::ValidationState;
 
     #[test]
-    fn report_shows_validation_line() {
-        let report = InstallReport {
-            id: "acme.foo".into(),
-            version: "1.2.3".into(),
-            capabilities: vec!["session.read".into(), "filesystem.read".into()],
-            granted: true,
-            validation: ValidationState::Community,
-        };
-        let out = format_report(&report, "Installed");
+    fn format_report_surfaces_validation_and_grant_state() {
+        let report =
+            |version: &str, capabilities: Vec<String>, granted, validation| InstallReport {
+                id: "acme.foo".into(),
+                version: version.into(),
+                capabilities,
+                granted,
+                validation,
+            };
+
+        let granted = report(
+            "1.2.3",
+            vec!["session.read".into(), "filesystem.read".into()],
+            true,
+            ValidationState::Community,
+        );
         assert_eq!(
-            out,
+            format_report(&granted, "Installed"),
             "Installed acme.foo 1.2.3.\n  validation: community\n  capabilities: session.read, filesystem.read (granted)"
         );
-    }
 
-    #[test]
-    fn local_install_validation_labelled_local() {
-        let report = InstallReport {
-            id: "acme.foo".into(),
-            version: "0.1.0".into(),
-            capabilities: vec![],
-            granted: true,
-            validation: ValidationState::Local,
-        };
-        let out = format_report(&report, "Installed");
+        let local = report("0.1.0", vec![], true, ValidationState::Local);
+        let out = format_report(&local, "Installed");
         assert!(
             out.contains("\n  validation: local\n"),
-            "local install surfaces its validation: {out:?}"
+            "a local install surfaces its validation: {out:?}"
         );
-    }
 
-    #[test]
-    fn inactive_with_no_capabilities_still_warns() {
-        let report = InstallReport {
-            id: "acme.foo".into(),
-            version: "0.1.0".into(),
-            capabilities: vec![],
-            granted: false,
-            validation: ValidationState::Community,
-        };
-        let out = format_report(&report, "Updated");
+        let inactive = report("0.1.0", vec![], false, ValidationState::Community);
+        let out = format_report(&inactive, "Updated");
         assert!(
             out.ends_with("  capabilities: none (not granted, plugin inactive)"),
             "inactivity is surfaced with no capabilities: {out:?}"
