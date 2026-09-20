@@ -2874,8 +2874,7 @@ mod tests {
         let temp_home = TempDir::new().unwrap();
         let _home_guard = crate::session::test_support::isolate_home(temp_home.path());
 
-        let project_dir = TempDir::new().unwrap();
-        git2::Repository::init(project_dir.path()).unwrap();
+        let project_dir = git_project();
         let instance_id = "pisandboxbind001";
         let config = Build::new("pi")
             .instance(instance_id)
@@ -2922,6 +2921,21 @@ mod tests {
     use crate::hooks::test_support::BaseGuard;
     use std::fs;
     use tempfile::TempDir;
+
+    /// A project directory that is a git repo, which `compute_volume_paths` needs.
+    fn git_project() -> TempDir {
+        let dir = TempDir::new().unwrap();
+        git2::Repository::init(dir.path()).unwrap();
+        dir
+    }
+
+    /// The per-instance sandbox config store AoE stages under an agent's dir.
+    fn sandbox_store(home: &IsolatedHome, agent_dir: &str, instance_id: &str) -> PathBuf {
+        home.path()
+            .join(agent_dir)
+            .join(SANDBOX_PRIVATE_SUBDIR)
+            .join(instance_id)
+    }
 
     /// Write a repo-level `.agent-of-empires/config.toml` under `project`.
     fn write_repo_config(project: &Path, contents: &str) {
@@ -4346,8 +4360,7 @@ mod tests {
         let cred = credential(now_ms() + 300 * 24 * 60 * 60 * 1000);
         fs::write(host.join(".credentials.json"), &cred).unwrap();
 
-        let project_dir = TempDir::new().unwrap();
-        git2::Repository::init(project_dir.path()).unwrap();
+        let project_dir = git_project();
         let shared = host.join(SANDBOX_PRIVATE_SUBDIR).join(".credentials.json");
         // A store the v027 move left a copy in, and a fresh one with none: both
         // end up with the empty mountpoint the nested file mount needs (#3845).
@@ -4780,8 +4793,7 @@ volume_ignores_strategy = "named"
 
     #[test]
     fn test_preview_glob_volume_ignores_empty_without_globs() {
-        let project_dir = TempDir::new().unwrap();
-        git2::Repository::init(project_dir.path()).unwrap();
+        let project_dir = git_project();
         let ignores = vec!["target".to_string(), ".venv".to_string()];
         let expansions =
             preview_glob_volume_ignores(project_dir.path().to_str().unwrap(), None, &ignores)
@@ -4858,8 +4870,7 @@ volume_ignores = ["node_modules"]
         let temp_home = TempDir::new().unwrap();
         let _home_guard = crate::session::test_support::isolate_home(temp_home.path());
 
-        let project_dir = TempDir::new().unwrap();
-        git2::Repository::init(project_dir.path()).unwrap();
+        let project_dir = git_project();
 
         let instance_id = "codex-sandbox-hooks-test";
         let config = Build::new("codex")
@@ -4867,11 +4878,7 @@ volume_ignores = ["node_modules"]
             .run(project_dir.path())
             .unwrap();
 
-        let codex_sandbox = temp_home
-            .path()
-            .join(".codex")
-            .join(SANDBOX_PRIVATE_SUBDIR)
-            .join(instance_id);
+        let codex_sandbox = sandbox_store(&temp_home, ".codex", &instance_id);
         assert!(codex_sandbox.join("hooks.json").exists());
         assert!(!codex_sandbox.join("config.toml").exists());
         assert!(!codex_sandbox.join("settings.json").exists());
@@ -4911,8 +4918,7 @@ volume_ignores = ["node_modules"]
     fn test_build_container_config_isolates_codex_home_per_instance() {
         let temp_home = IsolatedHome::new();
 
-        let project_dir = TempDir::new().unwrap();
-        git2::Repository::init(project_dir.path()).unwrap();
+        let project_dir = git_project();
         let legacy_sandbox = temp_home.path().join(".codex").join(SANDBOX_SUBDIR);
         fs::create_dir_all(&legacy_sandbox).unwrap();
         fs::write(legacy_sandbox.join("auth.json"), "legacy-auth").unwrap();
@@ -4930,13 +4936,7 @@ volume_ignores = ["node_modules"]
 
         let homes: Vec<_> = instance_ids
             .iter()
-            .map(|instance_id| {
-                temp_home
-                    .path()
-                    .join(".codex")
-                    .join(SANDBOX_PRIVATE_SUBDIR)
-                    .join(instance_id)
-            })
+            .map(|instance_id| sandbox_store(&temp_home, ".codex", &instance_id))
             .collect();
         assert_ne!(homes[0], homes[1]);
         for home in &homes {
@@ -4977,8 +4977,7 @@ volume_ignores = ["node_modules"]
     fn test_build_container_config_yolo_trusts_codex_project_only_in_yolo() {
         let temp_home = IsolatedHome::new();
 
-        let project_dir = TempDir::new().unwrap();
-        git2::Repository::init(project_dir.path()).unwrap();
+        let project_dir = git_project();
 
         let instance_id = "codex-yolo-trust-test";
         let config = Build::new("codex")
@@ -4987,12 +4986,7 @@ volume_ignores = ["node_modules"]
             .run(project_dir.path())
             .unwrap();
 
-        let codex_config = temp_home
-            .path()
-            .join(".codex")
-            .join(SANDBOX_PRIVATE_SUBDIR)
-            .join(instance_id)
-            .join("config.toml");
+        let codex_config = sandbox_store(&temp_home, ".codex", &instance_id).join("config.toml");
         assert!(
             codex_config.exists(),
             "yolo codex sandbox must write config.toml"
@@ -5020,8 +5014,7 @@ volume_ignores = ["node_modules"]
         for is_yolo in [false, true] {
             let temp_home = IsolatedHome::new();
 
-            let project_dir = TempDir::new().unwrap();
-            git2::Repository::init(project_dir.path()).unwrap();
+            let project_dir = git_project();
 
             let instance_id = format!("claude-trust-test-{is_yolo}");
             let config = Build::new("claude")
@@ -5030,12 +5023,7 @@ volume_ignores = ["node_modules"]
                 .run(project_dir.path())
                 .unwrap();
 
-            let seeded = temp_home
-                .path()
-                .join(".claude")
-                .join(SANDBOX_PRIVATE_SUBDIR)
-                .join(&instance_id)
-                .join(".claude.json");
+            let seeded = sandbox_store(&temp_home, ".claude", &instance_id).join(".claude.json");
             let parsed: serde_json::Value =
                 serde_json::from_str(&fs::read_to_string(&seeded).unwrap()).unwrap();
             // The trust key is the in-container working dir, not the host path.
@@ -5082,8 +5070,7 @@ claude-personal = "~/.claude-personal"
         )
         .unwrap();
 
-        let project_dir = TempDir::new().unwrap();
-        git2::Repository::init(project_dir.path()).unwrap();
+        let project_dir = git_project();
 
         let instance_id = "declared-config-dir-test";
         let config = Build::select(ContainerAgentSelection::new(
@@ -5113,12 +5100,8 @@ claude-personal = "~/.claude-personal"
             "the declared config dir must carry the trust record"
         );
 
-        let default_config = temp_home
-            .path()
-            .join(".claude")
-            .join(SANDBOX_PRIVATE_SUBDIR)
-            .join(instance_id)
-            .join(".claude.json");
+        let default_config =
+            sandbox_store(&temp_home, ".claude", &instance_id).join(".claude.json");
         let default_trust = fs::read_to_string(&default_config)
             .ok()
             .and_then(|c| serde_json::from_str::<serde_json::Value>(&c).ok())
@@ -5159,8 +5142,7 @@ codex-work = "{}"
         )
         .unwrap();
 
-        let project_dir = TempDir::new().unwrap();
-        git2::Repository::init(project_dir.path()).unwrap();
+        let project_dir = git_project();
 
         let instance_id = "declared-codex-dir-test";
         let config = Build::select(ContainerAgentSelection::new("codex-work", Some("codex")))
@@ -5234,8 +5216,7 @@ codex-work = "{}"
     fn test_build_container_config_yolo_disables_gemini_folder_trust() {
         let temp_home = IsolatedHome::new();
 
-        let project_dir = TempDir::new().unwrap();
-        git2::Repository::init(project_dir.path()).unwrap();
+        let project_dir = git_project();
 
         Build::new("gemini")
             .yolo(true)
@@ -5373,8 +5354,7 @@ trust_level = "trusted"
                 vec![format!("{}:/root/.cursor", shadow.to_string_lossy())];
         })
         .unwrap();
-        let project_dir = TempDir::new().unwrap();
-        git2::Repository::init(project_dir.path()).unwrap();
+        let project_dir = git_project();
 
         let config = Build::new("cursor")
             .instance("cursor-shadow-test")
@@ -5446,8 +5426,7 @@ trust_level = "trusted"
     fn test_build_container_config_installs_sidecar_hooks_files() {
         let temp_home = IsolatedHome::new();
 
-        let project_dir = TempDir::new().unwrap();
-        git2::Repository::init(project_dir.path()).unwrap();
+        let project_dir = git_project();
 
         let sidecar_agents: Vec<&crate::agents::AgentDef> = crate::agents::AGENTS
             .iter()
@@ -5519,8 +5498,7 @@ trust_level = "trusted"
             "[session]\nagent_status_hooks = false\n",
         )
         .unwrap();
-        let project_dir = TempDir::new().unwrap();
-        git2::Repository::init(project_dir.path()).unwrap();
+        let project_dir = git_project();
         let instance_id = "cursor-identity-only-sandbox-test";
         Build::new("cursor")
             .instance(instance_id)
@@ -5530,12 +5508,7 @@ trust_level = "trusted"
 
         let hooks: serde_json::Value = serde_json::from_str(
             &fs::read_to_string(
-                temp_home
-                    .path()
-                    .join(".cursor")
-                    .join(SANDBOX_PRIVATE_SUBDIR)
-                    .join(instance_id)
-                    .join("hooks.json"),
+                sandbox_store(&temp_home, ".cursor", &instance_id).join("hooks.json"),
             )
             .unwrap(),
         )
@@ -5559,8 +5532,7 @@ trust_level = "trusted"
     fn test_build_container_config_installs_hooks_into_selected_kiro_agent() {
         let temp_home = IsolatedHome::new();
 
-        let project_dir = TempDir::new().unwrap();
-        git2::Repository::init(project_dir.path()).unwrap();
+        let project_dir = git_project();
 
         let kiro = crate::agents::get_agent("kiro").unwrap();
         let sidecar = kiro.sidecar_hooks.as_ref().unwrap();
@@ -5573,12 +5545,8 @@ trust_level = "trusted"
         .unwrap();
 
         // Hooks land in the selected agent's staged sandbox config...
-        let selected_config = temp_home
-            .path()
-            .join(".kiro")
-            .join(SANDBOX_PRIVATE_SUBDIR)
-            .join(instance_id)
-            .join("agents/custom-agent.json");
+        let selected_config =
+            sandbox_store(&temp_home, ".kiro", &instance_id).join("agents/custom-agent.json");
         assert!(selected_config.exists());
         assert!(fs::read_to_string(&selected_config)
             .unwrap()
@@ -5610,8 +5578,7 @@ trust_level = "trusted"
         )
         .unwrap();
 
-        let project_dir = TempDir::new().unwrap();
-        git2::Repository::init(project_dir.path()).unwrap();
+        let project_dir = git_project();
 
         let instance_id = "kiro-managed-agent-sandbox-test";
         Build::select(
@@ -5621,11 +5588,7 @@ trust_level = "trusted"
         .run(project_dir.path())
         .unwrap();
 
-        let matched = temp_home
-            .path()
-            .join(".kiro")
-            .join(SANDBOX_PRIVATE_SUBDIR)
-            .join(instance_id)
+        let matched = sandbox_store(&temp_home, ".kiro", &instance_id)
             .join("agents/TeamAgents-custom-agent.json");
         assert!(matched.exists());
         let body = fs::read_to_string(&matched).unwrap();
@@ -5638,12 +5601,8 @@ trust_level = "trusted"
             "the agent's own hook must be preserved"
         );
 
-        let stem_clone = temp_home
-            .path()
-            .join(".kiro")
-            .join(SANDBOX_PRIVATE_SUBDIR)
-            .join(instance_id)
-            .join("agents/custom-agent.json");
+        let stem_clone =
+            sandbox_store(&temp_home, ".kiro", &instance_id).join("agents/custom-agent.json");
         assert!(
             !stem_clone.exists(),
             "must not create a filename-stem clone the CLI never loads"
@@ -5658,8 +5617,7 @@ trust_level = "trusted"
         let temp_home = TempDir::new().unwrap();
         let _home_guard = crate::session::test_support::isolate_home(temp_home.path());
 
-        let project_dir = TempDir::new().unwrap();
-        git2::Repository::init(project_dir.path()).unwrap();
+        let project_dir = git_project();
 
         let result = Build::new("codex")
             .instance("../etc")
@@ -5689,8 +5647,7 @@ trust_level = "trusted"
         )
         .unwrap();
 
-        let project_dir = TempDir::new().unwrap();
-        git2::Repository::init(project_dir.path()).unwrap();
+        let project_dir = git_project();
 
         let instance_id = "codex-sandbox-hooks-disabled-test";
         let config = Build::new("codex")
@@ -5699,11 +5656,7 @@ trust_level = "trusted"
             .run(project_dir.path())
             .unwrap();
 
-        let codex_sandbox = temp_home
-            .path()
-            .join(".codex")
-            .join(SANDBOX_PRIVATE_SUBDIR)
-            .join(instance_id);
+        let codex_sandbox = sandbox_store(&temp_home, ".codex", &instance_id);
         assert!(!codex_sandbox.join("config.toml").exists());
 
         let hook_dir =
@@ -5740,8 +5693,7 @@ agent_detect_as = { "wrapped-codex" = "codex" }
         )
         .unwrap();
 
-        let project_dir = TempDir::new().unwrap();
-        git2::Repository::init(project_dir.path()).unwrap();
+        let project_dir = git_project();
 
         let instance_id = "wrapped-codex-sandbox-hooks-test";
         // resolve_config_or_warn inside build_container_config installs the
@@ -5755,11 +5707,7 @@ agent_detect_as = { "wrapped-codex" = "codex" }
             .run(project_dir.path())
             .unwrap();
 
-        let codex_sandbox = temp_home
-            .path()
-            .join(".codex")
-            .join(SANDBOX_PRIVATE_SUBDIR)
-            .join(instance_id);
+        let codex_sandbox = sandbox_store(&temp_home, ".codex", &instance_id);
         assert!(codex_sandbox.join("hooks.json").exists());
         assert!(config.volumes.iter().any(|v| {
             v.host_path == codex_sandbox.to_string_lossy()
@@ -5796,8 +5744,7 @@ agent_detect_as = { "wrapped-codex" = "codex" }
         fs::create_dir_all(&codex_dir).unwrap();
         fs::write(codex_dir.join("config.toml"), r#"model = "initial""#).unwrap();
 
-        let project_dir = TempDir::new().unwrap();
-        git2::Repository::init(project_dir.path()).unwrap();
+        let project_dir = git_project();
 
         let instance_id = "codex-sandbox-refresh-hooks-test";
         Build::new("codex")
@@ -5908,8 +5855,7 @@ trusted_hash = "keep"
         );
         super::super::profile_config::save_profile_config("personal", &personal_config).unwrap();
 
-        let project_dir = TempDir::new().unwrap();
-        git2::Repository::init(project_dir.path()).unwrap();
+        let project_dir = git_project();
 
         let instances = [
             ("codex-work-status-map-refresh-test", "work", "waiting"),
@@ -5954,8 +5900,7 @@ trusted_hash = "keep"
     fn test_build_container_config_mounts_codex_home_from_extra_env() {
         let temp_home = IsolatedHome::new();
 
-        let project_dir = TempDir::new().unwrap();
-        git2::Repository::init(project_dir.path()).unwrap();
+        let project_dir = git_project();
 
         let codex_home_info = crate::session::instance::SandboxInfo {
             extra_env: Some(vec!["CODEX_HOME=/root/custom-codex".to_string()]),
@@ -5968,11 +5913,7 @@ trusted_hash = "keep"
             .run(project_dir.path())
             .unwrap();
 
-        let codex_sandbox = temp_home
-            .path()
-            .join(".codex")
-            .join(SANDBOX_PRIVATE_SUBDIR)
-            .join(instance_id);
+        let codex_sandbox = sandbox_store(&temp_home, ".codex", &instance_id);
         assert!(codex_sandbox.join("hooks.json").exists());
         assert!(config.volumes.iter().any(|v| {
             v.host_path == codex_sandbox.to_string_lossy()
@@ -5998,8 +5939,7 @@ environment = ["CODEX_HOME=/root/profile-codex"]
 "#,
         )
         .unwrap();
-        let project_dir = TempDir::new().unwrap();
-        git2::Repository::init(project_dir.path()).unwrap();
+        let project_dir = git_project();
 
         let instance_id = "codex-sandbox-config-env-hooks-test";
         let config = Build::new("codex")
@@ -6007,11 +5947,7 @@ environment = ["CODEX_HOME=/root/profile-codex"]
             .run(project_dir.path())
             .unwrap();
 
-        let codex_sandbox = temp_home
-            .path()
-            .join(".codex")
-            .join(SANDBOX_PRIVATE_SUBDIR)
-            .join(instance_id);
+        let codex_sandbox = sandbox_store(&temp_home, ".codex", &instance_id);
         assert!(codex_sandbox.join("hooks.json").exists());
         assert!(config.volumes.iter().any(|v| {
             v.host_path == codex_sandbox.to_string_lossy()
@@ -6071,8 +6007,7 @@ extra_volumes = ["/host/personal-only:/container/personal-only:ro"]
         )
         .unwrap();
 
-        let project_dir = TempDir::new().unwrap();
-        git2::Repository::init(project_dir.path()).unwrap();
+        let project_dir = git_project();
         let project_path_str = project_dir.path().to_str().unwrap();
 
         let has_volume = |config: &crate::containers::container_interface::ContainerConfig,
@@ -6784,12 +6719,8 @@ agent_status_hooks = false
         .unwrap();
 
         let instance_id = "gemini-empty-hook-cleanup";
-        let settings_path = temp_home
-            .path()
-            .join(".gemini")
-            .join(SANDBOX_PRIVATE_SUBDIR)
-            .join(instance_id)
-            .join("settings.json");
+        let settings_path =
+            sandbox_store(&temp_home, ".gemini", &instance_id).join("settings.json");
         let events = crate::agents::resolved_hook_events(
             crate::agents::get_agent("gemini").unwrap(),
             &crate::session::config::Config::default(),
@@ -6812,8 +6743,7 @@ agent_status_hooks = false
         )
         .unwrap();
 
-        let project_dir = TempDir::new().unwrap();
-        git2::Repository::init(project_dir.path()).unwrap();
+        let project_dir = git_project();
         Build::new("gemini")
             .instance(instance_id)
             .profile(profile)
