@@ -3191,11 +3191,7 @@ impl HomeView {
         let Some(inst) = self.get_instance(&session_id) else {
             return;
         };
-        let mode = if inst.is_sandboxed() {
-            self.get_terminal_mode(&session_id)
-        } else {
-            TerminalMode::Host
-        };
+        let mode = self.effective_terminal_mode(&session_id);
         let terminal_running = match mode {
             TerminalMode::Container => inst
                 .container_terminal_tmux_session()

@@ -131,6 +131,7 @@ impl HomeView {
                 skip_on_launch,
                 bound_hooks: false,
                 discard_sandbox_container: false,
+                conversation_carry: None,
             });
     }
 

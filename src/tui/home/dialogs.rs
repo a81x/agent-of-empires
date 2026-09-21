@@ -132,7 +132,11 @@ impl HomeView {
             .all_repos()
             .iter()
             .map(|r| r.main_repo_path.as_str())
-            .chain(inst.worktree_info.as_ref().map(|wt| wt.main_repo_path.as_str()))
+            .chain(
+                inst.worktree_info
+                    .as_ref()
+                    .map(|wt| wt.main_repo_path.as_str()),
+            )
             .chain(std::iter::once(inst.project_path.as_str()))
             .map(canonical_key)
             .collect();

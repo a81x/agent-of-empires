@@ -56,7 +56,10 @@ impl HomeView {
     }
 
     /// Sorted collapsed paths, pruned to `known` so the persisted set can't grow unbounded.
-    fn collapsed_known_paths(collapsed: &HashMap<String, bool>, known: HashSet<String>) -> Vec<String> {
+    fn collapsed_known_paths(
+        collapsed: &HashMap<String, bool>,
+        known: HashSet<String>,
+    ) -> Vec<String> {
         let mut paths: Vec<String> = collapsed
             .iter()
             .filter(|(path, &c)| c && known.contains(path.as_str()))

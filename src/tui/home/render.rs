@@ -510,17 +510,24 @@ fn push_shelf_error_lines(
 }
 
 /// Centered placeholder body: heading, message, the selected row's `last_error`, and an
-/// optional hint. The shelf placeholders wrap their prose; the fixed-copy ones do not.
-fn render_placeholder(
-    frame: &mut Frame,
-    area: Rect,
-    theme: &Theme,
-    heading: &str,
+/// optional hint. `wrap` is set by the shelf placeholders, whose prose is
+/// title-dependent; the fixed-copy ones lay their own lines out.
+struct Placeholder<'a> {
+    heading: &'a str,
     body: String,
-    inst: Option<&crate::session::Instance>,
+    inst: Option<&'a crate::session::Instance>,
     hint: Option<Line<'static>>,
     wrap: bool,
-) {
+}
+
+fn render_placeholder(frame: &mut Frame, area: Rect, theme: &Theme, placeholder: Placeholder) {
+    let Placeholder {
+        heading,
+        body,
+        inst,
+        hint,
+        wrap,
+    } = placeholder;
     let mut lines = vec![
         Line::from(""),
         Line::from(Span::styled(
@@ -1661,12 +1668,7 @@ impl HomeView {
                                 )
                             }
                             ViewMode::Terminal => {
-                                // For sandboxed sessions, check the appropriate terminal based on mode
-                                let terminal_mode = if inst.is_sandboxed() {
-                                    self.get_terminal_mode(id)
-                                } else {
-                                    TerminalMode::Host
-                                };
+                                let terminal_mode = self.effective_terminal_mode(id);
                                 let terminal_running =
                                     match terminal_mode {
                                         TerminalMode::Container => {
@@ -1929,11 +1931,7 @@ impl HomeView {
                 crate::tmux::Session::resolve_name_for_display(&inst.id, &inst.title)
             }
             ViewMode::Terminal => {
-                let mode = if inst.is_sandboxed() {
-                    self.get_terminal_mode(id)
-                } else {
-                    TerminalMode::Host
-                };
+                let mode = self.effective_terminal_mode(id);
                 match mode {
                     TerminalMode::Host => crate::tmux::TerminalSession::resolve_name_for_display(
                         &inst.id,
@@ -2930,16 +2928,7 @@ impl HomeView {
                 let selected_id = self.selected_session.clone();
 
                 if let Some(id) = selected_id {
-                    // Determine which terminal to preview based on mode
-                    let terminal_mode = if let Some(inst) = self.get_instance(&id) {
-                        if inst.is_sandboxed() {
-                            self.get_terminal_mode(&id)
-                        } else {
-                            TerminalMode::Host
-                        }
-                    } else {
-                        TerminalMode::Host
-                    };
+                    let terminal_mode = self.effective_terminal_mode(&id);
 
                     // Same single-source split as the Agent branch: the tmux pane is
                     // sized to `PreviewLayout::compute(..).output`, which
@@ -3390,11 +3379,13 @@ impl HomeView {
             frame,
             area,
             theme,
-            "Archived",
-            body,
-            inst,
-            Some(press_hint(theme, key, " to unarchive it.")),
-            true,
+            Placeholder {
+                heading: "Archived",
+                body,
+                inst,
+                hint: Some(press_hint(theme, key, " to unarchive it.")),
+                wrap: true,
+            },
         );
     }
 
@@ -3412,7 +3403,18 @@ impl HomeView {
         } else {
             format!("\"{}\" is being permanently deleted.", title)
         };
-        render_placeholder(frame, area, theme, "Deleting", body, None, None, true);
+        render_placeholder(
+            frame,
+            area,
+            theme,
+            Placeholder {
+                heading: "Deleting",
+                body,
+                inst: None,
+                hint: None,
+                wrap: true,
+            },
+        );
     }
 
     /// Calm placeholder for a trashed session: its agent was stopped but its transcript
@@ -3456,7 +3458,18 @@ impl HomeView {
                 Span::styled(" to delete permanently.", Style::default().fg(theme.dimmed)),
             ])
         };
-        render_placeholder(frame, area, theme, "Trash", body, inst, Some(hint), true);
+        render_placeholder(
+            frame,
+            area,
+            theme,
+            Placeholder {
+                heading: "Trash",
+                body,
+                inst,
+                hint: Some(hint),
+                wrap: true,
+            },
+        );
     }
 
     /// Calm placeholder for a pane that is simply gone (the generic gone-error), in
@@ -3466,11 +3479,13 @@ impl HomeView {
             frame,
             area,
             theme,
-            "Stopped",
-            "This session isn't running.".to_string(),
-            None,
-            Some(press_hint(theme, "Enter", " to start it.")),
-            false,
+            Placeholder {
+                heading: "Stopped",
+                body: "This session isn't running.".to_string(),
+                inst: None,
+                hint: Some(press_hint(theme, "Enter", " to start it.")),
+                wrap: false,
+            },
         );
     }
 
@@ -3498,15 +3513,17 @@ impl HomeView {
             frame,
             area,
             theme,
-            "Structured view",
-            body,
-            None,
-            Some(press_hint(
-                theme,
-                "Enter",
-                " to open it (offers to start a local `aoe serve` daemon if none is running).",
-            )),
-            false,
+            Placeholder {
+                heading: "Structured view",
+                body,
+                inst: None,
+                hint: Some(press_hint(
+                    theme,
+                    "Enter",
+                    " to open it (offers to start a local `aoe serve` daemon if none is running).",
+                )),
+                wrap: false,
+            },
         );
     }
 
