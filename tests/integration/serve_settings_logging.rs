@@ -50,82 +50,99 @@ async fn settings_only_reload_changed_log_filters() {
         logging::install_controller(init.controller.expect("reloadable subscriber"));
     }
     let _restore_filter = RestoreFilter(logging::current_filter().unwrap());
-    session::update_config(|config| {
-        config.logging.default_level = "info".into();
-        config
-            .logging
-            .targets
-            .insert("acp.protocol".into(), "warn".into());
-    })
-    .unwrap();
     let app = build_router_for_test(build_test_app_state(Vec::new()));
     let runtime_path = logging::runtime_filter_path(&session::get_app_dir().unwrap());
     let temporary = "agent_of_empires=debug,acp.protocol=trace";
-    logging::set_filter("agent_of_empires=info").unwrap();
+    for uri in ["/api/settings", "/api/profiles/main/settings"] {
+        session::update_config(|config| {
+            config.logging = Default::default();
+            config.logging.default_level = "info".into();
+            config
+                .logging
+                .targets
+                .insert("acp.protocol".into(), "warn".into());
+        })
+        .unwrap();
+        logging::set_filter("agent_of_empires=info").unwrap();
 
-    for (name, body, filter_changed) in [
-        ("empty patch", json!({}), false),
-        ("empty logging", json!({"logging": {}}), false),
-        (
-            "same baseline",
-            json!({"logging": {"default_level": "info"}}),
-            false,
-        ),
-        (
-            "same targets",
-            json!({"logging": {"targets": {"acp.protocol": "warn"}}}),
-            false,
-        ),
-        (
-            "same filter",
-            json!({"logging": {"default_level": "info", "targets": {"acp.protocol": "warn"}}}),
-            false,
-        ),
-        (
-            "sink settings",
-            json!({"logging": {
-                "output": "stdout", "file_path": "server.log", "rotation": "never",
-                "max_size_mib": 17, "keep_count": 3, "show_spans": true
-            }}),
-            false,
-        ),
-        (
-            "changed baseline",
-            json!({"logging": {"default_level": "error"}}),
-            true,
-        ),
-        (
-            "changed targets",
-            json!({"logging": {"targets": {"acp.protocol": "debug"}}}),
-            true,
-        ),
-    ] {
-        let runtime = patch(&app, "/api/log-level", json!({"filter": temporary})).await;
-        assert_eq!(runtime["current"], temporary, "{name}");
-        let response = patch(&app, "/api/settings", body.clone()).await;
-        let saved = Config::load().unwrap();
-        let saved_logging = serde_json::to_value(&saved.logging).unwrap();
-        assert_eq!(response["logging"], saved_logging, "{name}");
-        if let Some(fields) = body.get("logging").and_then(Value::as_object) {
-            for (key, value) in fields {
-                assert_eq!(&saved_logging[key], value, "{name}: {key}");
-            }
+        let mut cases = vec![
+            ("empty patch", json!({}), false),
+            ("empty logging", json!({"logging": {}}), false),
+            (
+                "same baseline",
+                json!({"logging": {"default_level": "info"}}),
+                false,
+            ),
+            (
+                "same targets",
+                json!({"logging": {"targets": {"acp.protocol": "warn"}}}),
+                false,
+            ),
+            (
+                "same filter",
+                json!({"logging": {"default_level": "info", "targets": {"acp.protocol": "warn"}}}),
+                false,
+            ),
+            (
+                "sink settings",
+                json!({"logging": {
+                    "output": "stdout", "file_path": "server.log", "rotation": "never",
+                    "max_size_mib": 17, "keep_count": 3, "show_spans": true
+                }}),
+                false,
+            ),
+            (
+                "changed baseline",
+                json!({"logging": {"default_level": "error"}}),
+                true,
+            ),
+            (
+                "changed targets",
+                json!({"logging": {"targets": {"acp.protocol": "debug"}}}),
+                true,
+            ),
+        ];
+        if uri != "/api/settings" {
+            cases.push(("removed targets", json!({"logging": {"targets": {}}}), true));
         }
-        let expected = if filter_changed {
-            logging::build_filter_from_config(&saved.logging.default_level, &saved.logging.targets)
+        for (name, body, filter_changed) in cases {
+            let runtime = patch(&app, "/api/log-level", json!({"filter": temporary})).await;
+            assert_eq!(runtime["current"], temporary, "{uri}: {name}");
+            let response = patch(&app, uri, body.clone()).await;
+            let saved = Config::load().unwrap();
+            let saved_logging = serde_json::to_value(&saved.logging).unwrap();
+            if uri == "/api/settings" {
+                assert_eq!(response["logging"], saved_logging, "{uri}: {name}");
+            } else {
+                assert!(
+                    response.get("logging").is_none(),
+                    "logging must remain global"
+                );
+            }
+            if let Some(fields) = body.get("logging").and_then(Value::as_object) {
+                for (key, value) in fields {
+                    assert_eq!(&saved_logging[key], value, "{uri}: {name}: {key}");
+                }
+            }
+            let expected = if filter_changed {
+                logging::build_filter_from_config(
+                    &saved.logging.default_level,
+                    &saved.logging.targets,
+                )
                 .unwrap()
-        } else {
-            temporary.to_string()
-        };
-        assert_eq!(
-            logging::current_filter().as_deref(),
-            Some(expected.as_str()),
-            "{name}"
-        );
-        assert_eq!(
-            std::fs::read_to_string(&runtime_path).unwrap().trim(),
-            expected,
-            "{name}"
-        );
+            } else {
+                temporary.to_string()
+            };
+            assert_eq!(
+                logging::current_filter().as_deref(),
+                Some(expected.as_str()),
+                "{uri}: {name}"
+            );
+            assert_eq!(
+                std::fs::read_to_string(&runtime_path).unwrap().trim(),
+                expected,
+                "{uri}: {name}"
+            );
+        }
     }
 }

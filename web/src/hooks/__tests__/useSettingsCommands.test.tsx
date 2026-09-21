@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { renderHook, waitFor } from "@testing-library/react";
+import { act, renderHook, waitFor } from "@testing-library/react";
 import { useSettingsCommands } from "../useSettingsCommands";
 import type { SettingsFieldDescriptor, SettingsWidget, SettingsWebWritePolicy } from "../../lib/types";
 
@@ -68,10 +68,38 @@ async function render(overrides: Partial<Parameters<typeof useSettingsCommands>[
   });
   await waitFor(() => expect(hook.result.current.length).toBe(5));
   const action = (id: string) => hook.result.current.find((a) => a.id === id);
+  await waitFor(() =>
+    expect(action("setting:worktree.auto_cleanup")?.subtitle).toBe(
+      overrides.readOnly ? "Opens settings · worktree" : "On · Global",
+    ),
+  );
   return { ...hook, onOpenSettingsTab, action };
 }
 
 describe("useSettingsCommands", () => {
+  it("opens settings while values load and toggles only the loaded value", async () => {
+    let resolveSettings!: (value: Awaited<ReturnType<typeof fetchSettings>>) => void;
+    vi.mocked(fetchSettings).mockReturnValueOnce(
+      new Promise((resolve) => {
+        resolveSettings = resolve;
+      }),
+    );
+    const onOpenSettingsTab = vi.fn();
+    const { result } = renderHook(() => useSettingsCommands({ open: true, readOnly: false, onOpenSettingsTab }));
+    const toggle = () => result.current.find((action) => action.id === "setting:worktree.auto_cleanup");
+    await waitFor(() => expect(toggle()).toBeDefined());
+    expect(toggle()?.subtitle).toBe("Opens settings · worktree");
+    toggle()?.perform();
+    expect(onOpenSettingsTab).toHaveBeenCalledWith("worktree");
+    expect(updateSettings).not.toHaveBeenCalled();
+    expect(updateProfileSettings).not.toHaveBeenCalled();
+
+    await act(async () => resolveSettings({ worktree: { auto_cleanup: true } } as never));
+    await waitFor(() => expect(toggle()?.subtitle).toBe("On · Global"));
+    toggle()?.perform();
+    await waitFor(() => expect(updateSettings).toHaveBeenCalledWith({ worktree: { auto_cleanup: false } }));
+  });
+
   it("generates one Settings entry per writable field, omitting local_only", async () => {
     const { result } = await render();
     const ids = result.current.map((a) => a.id);
@@ -81,6 +109,42 @@ describe("useSettingsCommands", () => {
     expect(ids).toContain("setting:acp.replay");
     expect(ids).not.toContain("setting:session.secret");
     expect(result.current.every((a) => a.group === "Settings")).toBe(true);
+  });
+
+  it("does not reuse cached values while refreshing or reopening for another profile", async () => {
+    for (const reopen of [false, true]) {
+      const { action, rerender, unmount, onOpenSettingsTab } = await render();
+      const fetchCount = vi.mocked(fetchSettings).mock.calls.length;
+      let resolveSettings!: (value: Awaited<ReturnType<typeof fetchSettings>>) => void;
+      vi.mocked(fetchSettings).mockReturnValueOnce(
+        new Promise((resolve) => {
+          resolveSettings = resolve;
+        }),
+      );
+      vi.mocked(fetchProfiles).mockResolvedValueOnce([{ name: "alternate", is_default: true }]);
+      if (reopen) {
+        rerender({ open: false, readOnly: false, onOpenSettingsTab });
+        rerender({ open: true, readOnly: false, onOpenSettingsTab });
+      } else {
+        action("setting:worktree.auto_cleanup")?.perform();
+      }
+      await waitFor(() => expect(fetchSettings).toHaveBeenCalledTimes(fetchCount + 1));
+      expect(fetchSettings).toHaveBeenLastCalledWith("alternate");
+      expect(action("setting:session.live_send")?.subtitle).toBe("Opens settings · session");
+      const saveCount = vi.mocked(updateProfileSettings).mock.calls.length;
+      action("setting:session.live_send")?.perform();
+      expect(onOpenSettingsTab).toHaveBeenCalledWith("session");
+      expect(updateProfileSettings).toHaveBeenCalledTimes(saveCount);
+
+      await act(async () =>
+        resolveSettings({ session: { live_send: true }, worktree: { auto_cleanup: false } } as never),
+      );
+      await waitFor(() => expect(action("setting:session.live_send")?.subtitle).toBe("On · alternate"));
+      action("setting:session.live_send")?.perform();
+      await waitFor(() => expect(updateProfileSettings).toHaveBeenCalledTimes(saveCount + 1));
+      expect(updateProfileSettings).toHaveBeenLastCalledWith("alternate", { session: { live_send: false } });
+      unmount();
+    }
   });
 
   it("flips a writable toggle inline through the default profile", async () => {

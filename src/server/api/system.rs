@@ -1756,36 +1756,32 @@ pub async fn update_profile_settings(
         let mut body = body;
         let logging_patch = body.as_object_mut().and_then(|obj| obj.remove("logging"));
         if let Some(patch) = logging_patch {
-            let global = crate::session::update_config(|global| -> anyhow::Result<()> {
-                let mut current = serde_json::to_value(&*global)?;
-                if let Some(current_obj) = current.as_object_mut() {
-                    match current_obj.get_mut("logging") {
-                        Some(existing) => {
-                            if let (Some(existing_obj), Some(new_obj)) =
-                                (existing.as_object_mut(), patch.as_object())
-                            {
-                                for (k, v) in new_obj {
-                                    existing_obj.insert(k.clone(), v.clone());
-                                }
-                            } else {
-                                current_obj.insert("logging".to_string(), patch);
-                            }
-                        }
-                        None => {
-                            current_obj.insert("logging".to_string(), patch);
-                        }
+            let (logging, filter_changed) =
+                crate::session::update_config(|global| -> anyhow::Result<_> {
+                    let mut current = serde_json::to_value(&global.logging)?;
+                    if let (Some(fields), Some(updates)) =
+                        (current.as_object_mut(), patch.as_object())
+                    {
+                        fields.extend(updates.clone());
+                    } else {
+                        current = patch;
                     }
+                    let updated: crate::session::config::LoggingConfig =
+                        serde_json::from_value(current)?;
+                    let filter_changed = global.logging.default_level != updated.default_level
+                        || global.logging.targets != updated.targets;
+                    global.logging = updated;
+                    Ok((global.logging.clone(), filter_changed))
+                })
+                .and_then(|inner| inner)?;
+            if filter_changed {
+                if let Ok(app_dir) = crate::session::get_app_dir() {
+                    crate::logging::apply_persisted_config(
+                        &logging.default_level,
+                        &logging.targets,
+                        &app_dir,
+                    );
                 }
-                *global = serde_json::from_value(current)?;
-                Ok(())
-            })
-            .and_then(|inner| inner.map(|()| crate::session::Config::load_or_warn()))?;
-            if let Ok(app_dir) = crate::session::get_app_dir() {
-                crate::logging::apply_persisted_config(
-                    &global.logging.default_level,
-                    &global.logging.targets,
-                    &app_dir,
-                );
             }
         }
 
