@@ -743,7 +743,7 @@ pi = "~/.pi-personal"
 
     #[test]
     fn pi_relaunch_of_an_unwritten_pin_uses_the_creating_flag() {
-        let mut inst = tool_instance("pi", "/tmp/pi-pinned");
+        let inst = tool_instance("pi", "/tmp/pi-pinned");
 
         let minted = Some("aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa");
         for (label, pinnable, sid, explicit, expected) in [
@@ -760,7 +760,7 @@ pi = "~/.pi-personal"
             );
         }
 
-        let mut claude = tool_instance("claude", "/tmp/pi-pinned");
+        let claude = tool_instance("claude", "/tmp/pi-pinned");
         assert!(claude.resume_flag_arm_is_existing(true, true, minted, false));
         assert!(!claude.pi_session_id_pinnable());
     }

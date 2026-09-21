@@ -402,12 +402,12 @@ impl Session {
 
         // The pane unlinking the file acknowledges it; tmux `-d` can return first.
         if !env_file.wait_until_consumed(Duration::from_secs(5)) {
-            super::refresh_session_cache();
+            crate::tmux::refresh_session_cache();
             let _ = self.kill();
             bail!("Pane did not consume its protected launch script");
         }
         env_file.disarm();
-        super::refresh_session_cache();
+        crate::tmux::refresh_session_cache();
 
         Ok(())
     }
@@ -450,7 +450,7 @@ impl Session {
             bail!("Failed to respawn dead pane: {}", stderr);
         }
 
-        super::refresh_session_cache();
+        crate::tmux::refresh_session_cache();
         Ok(true)
     }
 
@@ -4009,7 +4009,6 @@ mod tests {
         assert!(name.contains("abc123de"));
     }
 
-    #[test]
     /// The whole `new-session` argv, so a reordering cannot slip through.
     #[test]
     fn build_create_args_argv_table() {
@@ -4386,7 +4385,7 @@ mod tests {
         wait_for_pane_dead(&pane_id);
 
         let session = Session::from_name(&session_name);
-        super::refresh_session_cache();
+        crate::tmux::refresh_session_cache();
 
         assert!(session.exists(), "Session should exist via remain-on-exit");
         assert!(session.is_pane_dead(), "Pane should be dead after `true`");

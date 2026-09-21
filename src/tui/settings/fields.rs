@@ -1394,14 +1394,12 @@ mod tests {
         ));
 
         let profile = profile_from(json!({"status_hooks": {"on_waiting": "notify-send hi"}}));
-        let f = field(
-            &build(
-                SettingsCategory::StatusHooks,
-                SettingsScope::Profile,
-                &profile,
-            ),
-            "status_hooks.on_waiting",
+        let profile_rows = build(
+            SettingsCategory::StatusHooks,
+            SettingsScope::Profile,
+            &profile,
         );
+        let f = field(&profile_rows, "status_hooks.on_waiting");
         assert!(f.has_override);
         assert!(matches!(
             &f.value,

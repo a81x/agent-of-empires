@@ -3030,10 +3030,11 @@ mod tests {
     /// Branch `wt-branch` off HEAD and check it out at `worktree`. False when
     /// the `git` binary is unavailable, which the callers treat as a skip.
     fn add_worktree(repo_path: &Path, worktree: &Path) -> bool {
-        let repo = git2::Repository::open(repo_path).unwrap();
-        let head = repo.head().unwrap().peel_to_commit().unwrap();
-        repo.branch("wt-branch", &head, false).unwrap();
-        drop(repo);
+        {
+            let repo = git2::Repository::open(repo_path).unwrap();
+            let head = repo.head().unwrap().peel_to_commit().unwrap();
+            repo.branch("wt-branch", &head, false).unwrap();
+        }
         std::process::Command::new("git")
             .args(["worktree", "add", worktree.to_str().unwrap(), "wt-branch"])
             .current_dir(repo_path)
@@ -4537,13 +4538,13 @@ extra_run_args = ["--privileged"]
     #[test]
     #[serial_test::serial]
     fn test_build_container_config_drops_repo_network_escape_and_relabel() {
-        let temp_home = IsolatedHome::new();
+        let _temp_home = IsolatedHome::new();
 
         for network in ["container:victim", "ns:/var/run/netns/x"] {
             let project_dir = TempDir::new().unwrap();
             write_repo_config(
                 project_dir.path(),
-                format!("[sandbox]\nnetwork = \"{network}\"\nselinux_relabel = true\n"),
+                &format!("[sandbox]\nnetwork = \"{network}\"\nselinux_relabel = true\n"),
             );
 
             git2::Repository::init(project_dir.path()).unwrap();
@@ -4746,7 +4747,7 @@ volume_ignores_strategy = "named"
     #[test]
     #[serial_test::serial]
     fn test_build_container_config_sibling_worktree_loads_main_repo_sandbox_settings() {
-        let temp_home = IsolatedHome::new();
+        let _temp_home = IsolatedHome::new();
 
         // Main repo with repo config under .agent-of-empires/
         let parent = TempDir::new().unwrap();

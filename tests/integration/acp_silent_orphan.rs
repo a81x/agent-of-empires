@@ -122,7 +122,10 @@ async fn observe_parked_turn(
         outcome.await_activity(&mut client, marker).await;
     }
     outcome
-        .drain_turn(&mut client, Instant::now() + Duration::from_secs(drain_secs))
+        .drain_turn(
+            &mut client,
+            Instant::now() + Duration::from_secs(drain_secs),
+        )
         .await;
     let _ = client.shutdown().await;
     outcome
@@ -202,9 +205,14 @@ async fn silent_orphan_fires_when_the_turn_never_wraps_up() {
 #[serial]
 async fn silent_orphan_suppressed_during_normal_turn() {
     skip_without_shim!();
-    let outcome =
-        observe_parked_turn("silent-orphan-negative", ("10000", "10000"), "normal turn", None, 5)
-            .await;
+    let outcome = observe_parked_turn(
+        "silent-orphan-negative",
+        ("10000", "10000"),
+        "normal turn",
+        None,
+        5,
+    )
+    .await;
 
     assert_eq!(
         outcome.stopped.as_deref(),
@@ -276,8 +284,7 @@ async fn silent_orphan_suppressed_while_off_protocol_work_is_pending() {
         ),
     ];
     for (preseed, prompt, marker, expected_usage) in cases {
-        let outcome =
-            observe_parked_turn(preseed, ("300", "100"), prompt, Some(marker), 2).await;
+        let outcome = observe_parked_turn(preseed, ("300", "100"), prompt, Some(marker), 2).await;
         if let Some(expected) = expected_usage {
             assert_eq!(outcome.usage_cost, expected, "{preseed}");
         }
