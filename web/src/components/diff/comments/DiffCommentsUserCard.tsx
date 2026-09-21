@@ -48,8 +48,15 @@ export function DiffCommentsUserCard({ payload }: Props) {
 
 /** Shiki-highlighted snippet, plain `<pre>` while loading or for unknown languages. */
 function HighlightedSnippet({ code, language, filePath }: { code: string; language?: string; filePath: string }) {
-  const [html, setHtml] = useState<string | null>(null);
+  // Keyed by the inputs that produced it, so a superseded request resolving
+  // before its effect cleanup renders nothing. Theme is left out so a theme
+  // switch keeps the old palette until the re-highlight lands. NUL-delimited
+  // (written as an escape: a raw NUL makes git treat the file as binary) so
+  // field concatenations cannot collide.
+  const inputKey = `${code}\u0000${language ?? ""}\u0000${filePath}`;
+  const [result, setResult] = useState<{ key: string; html: string } | null>(null);
   const shiki = useShikiTheme();
+
   useEffect(() => {
     let cancelled = false;
     const hint = language && language.length > 0 ? language : (filePath.split(".").pop() ?? "");
@@ -57,8 +64,8 @@ function HighlightedSnippet({ code, language, filePath }: { code: string; langua
     (async () => {
       try {
         const out = await highlightSnippet(code, { langHint: hint, theme: shiki.theme, appearance: shiki.appearance });
-        if (cancelled) return;
-        if (out) setHtml(out);
+        if (cancelled || !out) return;
+        setResult({ key: inputKey, html: out });
       } catch {
         // Unknown language: keep plain rendering.
       }
@@ -66,7 +73,9 @@ function HighlightedSnippet({ code, language, filePath }: { code: string; langua
     return () => {
       cancelled = true;
     };
-  }, [code, language, filePath, shiki.theme, shiki.appearance]);
+  }, [code, language, filePath, inputKey, shiki.theme, shiki.appearance]);
+
+  const html = result && result.key === inputKey ? result.html : null;
 
   if (html) {
     // Shiki escapes `code`; the HTML carries only locally generated styles.

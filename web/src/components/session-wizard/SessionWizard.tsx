@@ -33,6 +33,9 @@ const LAST_USED_TOOL_KEY = "aoe-acp-last-tool";
 const MORE_OPTIONS_OPEN_KEY = "aoe-new-session-more-options-open";
 const LAST_USED_INSTRUCTION_KEY = "aoe-new-session-last-instruction";
 
+// Path of the last launched session, seeded into a plain open. Absolute paths only.
+const LAST_USED_PROJECT_KEY = "aoe-new-session-last-project";
+
 function loadLastUsedTool(): string {
   const stored = safeGetItem(LAST_USED_TOOL_KEY);
   return stored && ACP_CAPABLE_TOOLS.has(stored) ? stored : "claude";
@@ -51,9 +54,12 @@ export interface WizardPrefill {
   scratch?: boolean;
 }
 
-function initialWizardData(prefill: WizardPrefill | undefined): WizardData {
+function initialWizardData(prefill: WizardPrefill | undefined, nameOnly: boolean): WizardData {
+  const lastProject = safeGetItem(LAST_USED_PROJECT_KEY) ?? "";
   const base = {
     ...initialData,
+    // A name-only wizard's path is derived server-side, so it is never seeded.
+    path: !nameOnly && lastProject.startsWith("/") ? lastProject : "",
     tool: loadLastUsedTool(),
     customInstruction: safeGetItem(LAST_USED_INSTRUCTION_KEY) ?? "",
   };
@@ -82,7 +88,7 @@ interface Props {
 
 export function SessionWizard({ onClose, onCreated, prefill, nameOnly = false }: Props) {
   const [state, dispatch] = useReducer(reducer, {
-    data: initialWizardData(prefill),
+    data: initialWizardData(prefill, nameOnly),
     isSubmitting: false,
     error: null,
     agents: [],
@@ -111,16 +117,26 @@ export function SessionWizard({ onClose, onCreated, prefill, nameOnly = false }:
     body: CreateSessionRequest;
     tool: string;
   } | null>(null);
+  // A remembered path satisfies the submit gate at mount, so Launch waits for
+  // the defaults below rather than sending initialData's sandbox/worktree/yolo.
+  // Set on every outcome, so a failed fetch still leaves the form usable.
+  const [defaultsReady, setDefaultsReady] = useState(false);
 
   useEffect(() => {
     fetchAgents().then((a) => dispatch({ type: "SET_AGENTS", agents: a }));
     fetchGroups().then((g) => dispatch({ type: "SET_GROUPS", groups: g }));
     fetchDockerStatus().then((d) => dispatch({ type: "SET_DOCKER", available: d.available }));
     // Seed resolved profile defaults: the profile picker is hidden for single-profile users.
-    fetchProfiles().then((p) => {
-      dispatch({ type: "SET_PROFILES", profiles: p });
-      const effectiveProfile = prefill?.profile || p.find((x) => x.is_default)?.name || "";
-      fetchSettings(effectiveProfile || undefined).then((s) => {
+    fetchProfiles()
+      // A failed profiles fetch must not skip settings: an explicit prefill
+      // profile, or the unresolved global config, still applies.
+      .catch(() => [] as Awaited<ReturnType<typeof fetchProfiles>>)
+      .then((p) => {
+        dispatch({ type: "SET_PROFILES", profiles: p });
+        const effectiveProfile = prefill?.profile || p.find((x) => x.is_default)?.name || "";
+        return fetchSettings(effectiveProfile || undefined);
+      })
+      .then((s) => {
         if (!s) return;
         setCommandMaps(commandMapsFromSettings(s));
         const img = ((s.sandbox as Obj)?.default_image as string) || "";
@@ -134,8 +150,9 @@ export function SessionWizard({ onClose, onCreated, prefill, nameOnly = false }:
           sandboxEnabled: prefill?.sandboxEnabled ?? defaults.sandboxEnabled,
           skipIfDirty: true,
         });
-      });
-    });
+      })
+      .catch(() => {})
+      .finally(() => setDefaultsReady(true));
     // Seed once; a re-render with a new prefill object must not stomp user edits.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -171,6 +188,7 @@ export function SessionWizard({ onClose, onCreated, prefill, nameOnly = false }:
       dispatch({ type: "SUBMIT_SUCCESS" });
       if (ACP_CAPABLE_TOOLS.has(tool)) safeSetItem(LAST_USED_TOOL_KEY, tool);
       safeSetItem(LAST_USED_INSTRUCTION_KEY, body.custom_instruction ?? "");
+      if (body.path.startsWith("/")) safeSetItem(LAST_USED_PROJECT_KEY, body.path);
       for (const w of result.session?.warnings ?? []) toastBus.handler?.error(w);
       onCreated(result.session);
     } else if (result.hooksNeedTrust && !body.trust_hooks) {
@@ -319,6 +337,7 @@ export function SessionWizard({ onClose, onCreated, prefill, nameOnly = false }:
             error={state.error}
             onSubmit={handleSubmit}
             nameOnly={nameOnly}
+            defaultsReady={defaultsReady}
           />
         </div>
       </div>

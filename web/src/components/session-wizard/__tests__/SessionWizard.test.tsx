@@ -46,7 +46,12 @@ function renderWizard(prefill: WizardPrefill = { path: "/tmp/proj", tool: "claud
   return { onCreated };
 }
 
-const launch = () => fireEvent.click(screen.getByText(/Launch session/));
+// Launch stays disabled until the profile defaults settle, as for a real click.
+const launch = async () => {
+  const button = screen.getByText(/Launch session/).closest("button") as HTMLButtonElement;
+  await waitFor(() => expect(button.disabled).toBe(false));
+  fireEvent.click(button);
+};
 const payload = (call = 0) => createSession.mock.calls[call]![0];
 
 describe("SessionWizard structured view payload", () => {
@@ -59,7 +64,7 @@ describe("SessionWizard structured view payload", () => {
       fireEvent.click(screen.getByText("More options"));
       fireEvent.click(screen.getByRole("switch", { name: "Use structured view" }));
     }
-    launch();
+    await launch();
     await waitFor(() => expect(createSession).toHaveBeenCalled());
     expect(payload()).toMatchObject({ tool: "claude", view });
   });
@@ -73,7 +78,7 @@ describe("SessionWizard structured view payload", () => {
     fireEvent.click(screen.getByText("More options"));
     // The resolved launch command shows opencode once the defaults have applied.
     await waitFor(() => expect(screen.getAllByText(/opencode/).length).toBeGreaterThan(0));
-    launch();
+    await launch();
     await waitFor(() => expect(createSession).toHaveBeenCalled());
     expect(payload()).toMatchObject({
       tool: "opencode",
@@ -88,7 +93,7 @@ describe("SessionWizard last instruction memory", () => {
   it("prefills the stored instruction into the create payload", async () => {
     localStorage.setItem(INSTRUCTION_KEY, "always be terse");
     const { onCreated } = renderWizard();
-    launch();
+    await launch();
     await waitFor(() => expect(createSession).toHaveBeenCalledTimes(1));
     expect(payload()).toMatchObject({ custom_instruction: "always be terse" });
     await waitFor(() => expect(onCreated).toHaveBeenCalledWith({ id: "s1" }));
@@ -101,7 +106,7 @@ describe("SessionWizard last instruction memory", () => {
     fireEvent.change(screen.getByPlaceholderText("Custom instructions for this session..."), {
       target: { value: text },
     });
-    launch();
+    await launch();
     await waitFor(() => expect(createSession).toHaveBeenCalledTimes(1));
     expect(payload().custom_instruction).toBe(text || undefined);
     await waitFor(() => expect(localStorage.getItem(INSTRUCTION_KEY)).toBe(text));
@@ -120,7 +125,7 @@ describe("SessionWizard hooks trust", () => {
     },
   };
   const openDialog = async () => {
-    launch();
+    await launch();
     await waitFor(() => expect(screen.getByTestId("hooks-trust-dialog")).toBeTruthy());
   };
 

@@ -164,7 +164,10 @@ export function reducer(state: WizardState, action: Action): WizardState {
           ...state.data,
           yoloMode: action.yoloMode,
           sandboxEnabled: action.sandboxEnabled,
-          useWorktree: state.data.scratch ? false : action.worktreeEnabled,
+          // A remembered or prefilled path can resolve its repo probe before
+          // this arrives, so the seeded default must not flip a worktree back
+          // on for a scratch session or a non-repo path.
+          useWorktree: state.data.scratch || state.data.pathIsGitRepo === false ? false : action.worktreeEnabled,
           tool: action.tool || state.data.tool,
           extraEnv: action.extraEnv,
           agentModel: action.agentModel ?? "",

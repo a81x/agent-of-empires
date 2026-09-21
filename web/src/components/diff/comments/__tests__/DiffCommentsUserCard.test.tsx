@@ -6,11 +6,21 @@ import { cleanup, render, waitFor } from "@testing-library/react";
 import { DiffCommentsUserCard } from "../../comments/DiffCommentsUserCard";
 import type { DiffCommentsCardPayload } from "../../comments/buildPrompt";
 import type { DiffComment } from "../../comments/types";
+import { renderWithLateResolution } from "../../../../__tests__/lateResolution";
 
-const highlighter = vi.hoisted(() => ({ loaded: false }));
+// `deferred` hands the next call a manually-settled promise, for the
+// superseded-request ordering test; otherwise `loaded` picks between the
+// resolved-HTML branch and the plain <pre> fallback.
+const highlighter = vi.hoisted(() => ({ loaded: false, deferred: null as Promise<string | null> | null }));
 vi.mock("../../../../lib/snippetHighlighter", () => ({
-  highlightSnippet: (code: string) =>
-    Promise.resolve(highlighter.loaded ? `<pre class="shiki"><code>${code}</code></pre>` : null),
+  highlightSnippet: (code: string) => {
+    const pending = highlighter.deferred;
+    if (pending) {
+      highlighter.deferred = null;
+      return pending;
+    }
+    return Promise.resolve(highlighter.loaded ? `<pre class="shiki"><code>${code}</code></pre>` : null);
+  },
   DEFAULT_SHIKI_THEME: "github-dark",
 }));
 
@@ -34,6 +44,7 @@ const renderCard = (over: Partial<DiffCommentsCardPayload> = {}) =>
 afterEach(() => {
   cleanup();
   highlighter.loaded = false;
+  highlighter.deferred = null;
 });
 
 describe("DiffCommentsUserCard", () => {
@@ -95,5 +106,44 @@ describe("DiffCommentsUserCard", () => {
     highlighter.loaded = true;
     const c = renderCard({ comments: [comment({ capturedSnippet: "const y = 2;", language: "typescript" })] });
     await waitFor(() => expect(c.querySelector("pre.shiki")?.textContent).toContain("const y = 2;"));
+  });
+
+  it("clears highlighted output when the same slot is reused with an unresolved language (#3974)", async () => {
+    highlighter.loaded = true;
+    const card = (over: Partial<DiffComment>) => (
+      <DiffCommentsUserCard
+        payload={{ intro: "", outro: "", isMultiRepo: false, comments: [comment({ id: "c1", ...over })] }}
+      />
+    );
+    const { container, rerender } = render(card({ capturedSnippet: "const y = 2;", language: "typescript" }));
+    await waitFor(() => expect(container.querySelector("pre.shiki")).toBeTruthy());
+
+    highlighter.loaded = false;
+    rerender(card({ capturedSnippet: "plain text body", language: undefined, filePath: "NOTES" }));
+
+    expect(container.querySelector("pre.shiki")).toBeNull();
+    expect(container.querySelector("pre")?.textContent).toBe("plain text body");
+  });
+
+  it("ignores a late resolution from a superseded request (pending A -> committed B -> late A)", async () => {
+    let resolveA!: (v: string | null) => void;
+    highlighter.deferred = new Promise<string | null>((res) => {
+      resolveA = res;
+    });
+    const card = (over: Partial<DiffComment>) => (
+      <DiffCommentsUserCard
+        payload={{ intro: "", outro: "", isMultiRepo: false, comments: [comment({ id: "c1", ...over })] }}
+      />
+    );
+
+    const { html, text } = await renderWithLateResolution({
+      a: card({ capturedSnippet: "const a = 1;", language: "typescript" }),
+      b: card({ capturedSnippet: "plain b body", language: undefined, filePath: "NOTES" }),
+      bText: "plain b body",
+      resolveStale: () => resolveA('<pre class="shiki">OLD_A</pre>'),
+    });
+
+    expect(text).toContain("plain b body");
+    expect(html).not.toContain("OLD_A");
   });
 });

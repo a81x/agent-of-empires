@@ -221,7 +221,7 @@ export function DiffFileList({
 }
 
 // NUL cannot occur in a path, so it safely namespaces repo dirs in the shared collapsed set.
-const REPO_NS_SEP = " ";
+const REPO_NS_SEP = "\u0000";
 
 function RepoGroup({
   repo,

@@ -15,15 +15,20 @@ interface Props {
   onSubmit: () => void;
   /** CityHall name-only mode: the server derives the project. */
   nameOnly?: boolean;
+  /** False until the wizard's profile defaults have been applied (or their
+   *  fetch has failed); a launch before then would submit placeholder
+   *  sandbox/worktree/yolo values. Omitted means ready. */
+  defaultsReady?: boolean;
 }
 
 const isMac = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.userAgent);
 
 /** Launch button, submit gate, Cmd/Ctrl+Enter shortcut, and error banners. */
-export function LaunchFooter({ data, isSubmitting, error, onSubmit, nameOnly = false }: Props) {
+export function LaunchFooter({ data, isSubmitting, error, onSubmit, nameOnly = false, defaultsReady = true }: Props) {
   const offline = useServerDown();
   // Scratch and name-only sessions get their directory from the server.
-  const canSubmit = !isSubmitting && !offline && (nameOnly || data.scratch || !!data.path) && !!data.tool;
+  const canSubmit =
+    defaultsReady && !isSubmitting && !offline && (nameOnly || data.scratch || !!data.path) && !!data.tool;
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {

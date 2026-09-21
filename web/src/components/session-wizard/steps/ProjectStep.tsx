@@ -20,10 +20,11 @@ interface Props {
 }
 
 export function ProjectStep({ data, onChange, initialTab, agents = [] }: Props) {
-  // Until a tab is picked, show Recent while loading or when there are picks, else Browse.
+  // Until a tab is picked, show Recent while loading, when there are picks, or
+  // when a remembered path is set (so its selection shows); else Browse.
   const [manualTab, setManualTab] = useState<Tab | null>(initialTab ?? null);
   const { loading, query, setQuery, filteredSaved, filteredRecent, hasPicks } = useProjectPicker();
-  const activeTab: Tab = manualTab ?? (!loading && !hasPicks ? "browse" : "recent");
+  const activeTab: Tab = manualTab ?? (!loading && !hasPicks && !data.path ? "browse" : "recent");
 
   // Show the "Selected project" box only when no saved or recent row highlights the path.
   const normalizePath = (p: string) => p.replace(/\/+$/, "") || "/";

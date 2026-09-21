@@ -51,6 +51,16 @@ describe("APPLY_PROFILE_DEFAULTS", () => {
     expect(reducer(makeState({ scratch: true }), defaults({ worktreeEnabled: true })).data.useWorktree).toBe(false);
   });
 
+  // A remembered or prefilled path resolves its repo probe at mount, often
+  // before the chained profile+settings fetch seeds the defaults.
+  it.each([
+    [false, false],
+    [true, true],
+  ])("re-enables worktree only where the repo probe said yes (pathIsGitRepo %s)", (pathIsGitRepo, expected) => {
+    const state = makeState({ path: "/tmp/p", pathIsGitRepo });
+    expect(reducer(state, defaults({ worktreeEnabled: true })).data.useWorktree).toBe(expected);
+  });
+
   it.each([
     ["yoloMode", true],
     ["useWorktree", true],
