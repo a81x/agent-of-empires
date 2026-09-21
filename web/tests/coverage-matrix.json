@@ -2231,10 +2231,11 @@
       "kind": "vitest",
       "risk": "medium",
       "specs": [
-        "src/components/acp/__tests__/TrashedWorkerStoppedBanner.test.tsx"
+        "src/components/acp/__tests__/SessionBanners.test.tsx"
       ],
       "components": [
-        "web/src/components/acp/StructuredView.tsx"
+        "web/src/components/acp/StructuredView.tsx",
+        "web/src/components/acp/SessionBanners.tsx"
       ]
     },
     {
@@ -2415,13 +2416,14 @@
       "specs": [
         "src/components/diff/comments/buildPrompt.test.ts",
         "src/lib/acpTypes.test.ts",
-        "src/components/acp/AcpRuntime.test.ts",
-        "src/components/diff/comments/__tests__/DiffCommentsUserCard.test.tsx"
+        "src/components/diff/comments/__tests__/DiffCommentsUserCard.test.tsx",
+        "src/components/acp/activityMessages.test.ts"
       ],
       "components": [
         "web/src/components/diff/comments/DiffCommentsUserCard.tsx",
         "web/src/components/acp/AcpRuntime.tsx",
-        "web/src/components/acp/StructuredView.tsx"
+        "web/src/components/acp/StructuredView.tsx",
+        "web/src/components/acp/ThreadMessages.tsx"
       ]
     },
     {
@@ -2451,7 +2453,7 @@
       "kind": "vitest",
       "risk": "high",
       "specs": [
-        "src/components/acp/__tests__/AcpRuntime.clearFold.test.tsx"
+        "src/components/acp/__tests__/AcpRuntime.test.tsx"
       ],
       "components": [
         "web/src/components/acp/AcpRuntime.tsx"
@@ -2670,15 +2672,21 @@
       "risk": "medium",
       "specs": [
         "src/components/acp/__tests__/BackgroundAgentsPanel.test.tsx",
-        "src/components/acp/__tests__/ToolCards.test.tsx",
-        "src/lib/acpTypes.reducer.test.ts"
+        "src/lib/acpTypes.reducer.test.ts",
+        "src/components/acp/ToolCards.render.test.tsx"
       ],
       "components": [
         "web/src/components/acp/BackgroundAgentsPanel.tsx",
         "web/src/components/acp/backgroundAgentsContext.ts",
         "web/src/components/acp/ToolCards.tsx",
         "web/src/lib/acpTypes.ts",
-        "web/src/hooks/useAcpSession.ts"
+        "web/src/hooks/useAcpSession.ts",
+        "web/src/components/acp/CoreToolCards.tsx",
+        "web/src/components/acp/GroupToolCards.tsx",
+        "web/src/components/acp/NamedToolCards.tsx",
+        "web/src/components/acp/TodoCards.tsx",
+        "web/src/components/acp/ToolCardChrome.tsx",
+        "web/src/components/acp/ToolOutputMedia.tsx"
       ]
     },
     {
@@ -2716,12 +2724,13 @@
       "risk": "high",
       "specs": [
         "tests/live/acp-transcript.spec.ts",
-        "src/components/acp/Composer.paste.test.tsx"
+        "src/components/acp/Composer.test.tsx"
       ],
       "components": [
         "web/src/components/acp/Composer.tsx",
         "web/src/components/acp/AcpRuntime.tsx",
-        "web/src/components/acp/StructuredView.tsx"
+        "web/src/components/acp/StructuredView.tsx",
+        "web/src/components/acp/ComposerControls.tsx"
       ]
     },
     {
@@ -2804,7 +2813,7 @@
       "specs": [
         "src/lib/acpTypes.reducer.test.ts",
         "src/hooks/__tests__/useAcpResolveApproval.test.ts",
-        "src/components/acp/ElicitationAnswerCard.test.tsx"
+        "src/components/acp/AskUserQuestionCard.test.tsx"
       ],
       "components": [
         "web/src/lib/acpTypes.ts",
@@ -2821,14 +2830,15 @@
       "specs": [
         "src/components/acp/__tests__/WorkingSpinner.test.tsx"
       ],
-      "components": []
+      "components": [
+        "web/src/components/acp/WorkingSpinner.tsx"
+      ]
     },
     {
       "id": "acp.stop-button-escalation",
       "kind": "vitest",
       "risk": "high",
       "specs": [
-        "src/components/acp/__tests__/AcpRuntime.cancelEscalation.test.ts",
         "src/components/acp/__tests__/useCancelEscalation.test.tsx"
       ],
       "components": [
@@ -2846,7 +2856,8 @@
         "src/lib/acpRattle.test.ts"
       ],
       "components": [
-        "web/src/components/acp/StructuredView.tsx"
+        "web/src/components/acp/StructuredView.tsx",
+        "web/src/components/acp/WorkingSpinner.tsx"
       ]
     },
     {
@@ -2861,7 +2872,8 @@
         "src/hooks/useAcpSession.queue.test.ts"
       ],
       "components": [
-        "web/src/components/acp/StructuredView.tsx"
+        "web/src/components/acp/StructuredView.tsx",
+        "web/src/components/acp/WorkingSpinner.tsx"
       ]
     },
     {
@@ -2878,9 +2890,11 @@
       "kind": "vitest",
       "risk": "medium",
       "specs": [
-        "src/components/acp/Composer.escape.test.tsx"
+        "src/components/acp/Composer.test.tsx"
       ],
-      "components": []
+      "components": [
+        "web/src/components/acp/ComposerControls.tsx"
+      ]
     },
     {
       "id": "acp.composer-ios-keyboard-reservation",
@@ -2888,10 +2902,9 @@
       "risk": "medium",
       "specs": [
         "tests/acp-composer-keyboard.spec.ts",
-        "src/components/acp/StructuredView.layout.test.ts",
         "src/components/acp/__tests__/StructuredViewRoot.test.tsx",
-        "src/components/acp/Composer.layout.test.ts",
-        "src/lib/__tests__/platform.test.ts"
+        "src/lib/__tests__/platform.test.ts",
+        "src/components/acp/composerInput.test.ts"
       ],
       "components": [
         "web/src/components/acp/StructuredView.tsx",
@@ -2917,12 +2930,13 @@
       "specs": [
         "tests/acp-composer-recall.spec.ts",
         "src/components/acp/recallNav.test.ts",
-        "src/components/acp/Composer.recall.test.ts",
-        "src/components/acp/Composer.recall.dom.test.tsx"
+        "src/components/acp/composerInput.test.ts",
+        "src/components/acp/Composer.test.tsx"
       ],
       "components": [
         "web/src/components/acp/Composer.tsx",
-        "web/src/components/acp/recallNav.ts"
+        "web/src/components/acp/recallNav.ts",
+        "web/src/components/acp/ComposerControls.tsx"
       ]
     },
     {
@@ -2930,13 +2944,14 @@
       "kind": "vitest",
       "risk": "medium",
       "specs": [
-        "src/components/acp/Composer.slashProvenance.test.tsx",
-        "src/lib/skillProvenance.test.ts"
+        "src/lib/skillProvenance.test.ts",
+        "src/components/acp/Composer.test.tsx"
       ],
       "components": [
         "web/src/components/acp/Composer.tsx",
         "web/src/lib/skillProvenance.ts",
-        "web/src/components/ProvenanceBadge.tsx"
+        "web/src/components/ProvenanceBadge.tsx",
+        "web/src/components/acp/ComposerControls.tsx"
       ]
     },
     {
@@ -2944,11 +2959,12 @@
       "kind": "vitest",
       "risk": "low",
       "specs": [
-        "src/components/acp/Composer.usageHint.test.tsx"
+        "src/components/acp/Composer.test.tsx"
       ],
       "components": [
         "web/src/components/acp/Composer.tsx",
-        "web/src/components/Tooltip.tsx"
+        "web/src/components/Tooltip.tsx",
+        "web/src/components/acp/ComposerControls.tsx"
       ]
     },
     {
@@ -3018,7 +3034,13 @@
       ],
       "components": [
         "web/src/components/acp/ToolCards.tsx",
-        "web/src/lib/acpTypes.ts"
+        "web/src/lib/acpTypes.ts",
+        "web/src/components/acp/CoreToolCards.tsx",
+        "web/src/components/acp/GroupToolCards.tsx",
+        "web/src/components/acp/NamedToolCards.tsx",
+        "web/src/components/acp/TodoCards.tsx",
+        "web/src/components/acp/ToolCardChrome.tsx",
+        "web/src/components/acp/ToolOutputMedia.tsx"
       ]
     },
     {
@@ -3030,7 +3052,6 @@
         "src/hooks/useAcpSession.queue.test.ts",
         "src/hooks/useRespawnSession.test.tsx",
         "src/components/acp/SystemNotices.test.tsx",
-        "src/components/acp/RateLimitRecoverySection.test.tsx",
         "src/components/acp/SwitchAgentModal.test.tsx",
         "src/hooks/useAcpSession.rateLimitPark.test.ts"
       ],
@@ -3040,7 +3061,8 @@
         "web/src/components/acp/SwitchAgentModal.tsx",
         "web/src/hooks/useAcpSession.ts",
         "web/src/hooks/useRespawnSession.ts",
-        "web/src/lib/acpTypes.ts"
+        "web/src/lib/acpTypes.ts",
+        "web/src/components/acp/SystemNotices.tsx"
       ]
     },
     {
@@ -3113,9 +3135,11 @@
       "risk": "medium",
       "specs": [
         "src/lib/acpTypes.test.ts",
-        "src/components/acp/__tests__/WorkerRestartingBanner.test.tsx"
+        "src/components/acp/__tests__/SessionBanners.test.tsx"
       ],
-      "components": []
+      "components": [
+        "web/src/components/acp/SessionBanners.tsx"
+      ]
     },
     {
       "id": "acp.usage-baseline",
@@ -3243,7 +3267,8 @@
         "web/src/components/acp/StructuredView.tsx",
         "web/src/components/acp/AcpRuntime.tsx",
         "web/src/hooks/useAcpSession.ts",
-        "web/src/lib/acpTypes.ts"
+        "web/src/lib/acpTypes.ts",
+        "web/src/components/acp/WorkingSpinner.tsx"
       ]
     },
     {
@@ -3285,7 +3310,6 @@
       "risk": "high",
       "specs": [
         "src/components/acp/Markdown.test.tsx",
-        "src/components/acp/Markdown.breaks.test.tsx",
         "src/components/acp/__tests__/artifactMedia.test.tsx"
       ],
       "components": [
@@ -3326,12 +3350,17 @@
       "kind": "vitest",
       "risk": "high",
       "specs": [
-        "src/components/acp/ToolCards.render.test.tsx",
-        "src/components/acp/__tests__/ToolCards.test.tsx"
+        "src/components/acp/ToolCards.render.test.tsx"
       ],
       "components": [
         "web/src/components/acp/ToolCards.tsx",
-        "web/src/components/ProvenanceBadge.tsx"
+        "web/src/components/ProvenanceBadge.tsx",
+        "web/src/components/acp/CoreToolCards.tsx",
+        "web/src/components/acp/GroupToolCards.tsx",
+        "web/src/components/acp/NamedToolCards.tsx",
+        "web/src/components/acp/TodoCards.tsx",
+        "web/src/components/acp/ToolCardChrome.tsx",
+        "web/src/components/acp/ToolOutputMedia.tsx"
       ]
     },
     {
@@ -3339,7 +3368,7 @@
       "kind": "vitest",
       "risk": "high",
       "specs": [
-        "src/components/acp/AcpRuntime.test.ts"
+        "src/components/acp/activityMessages.test.ts"
       ],
       "components": [
         "web/src/components/acp/AcpRuntime.tsx",
@@ -3365,7 +3394,8 @@
         "src/components/acp/QueuedPromptsStrip.test.tsx"
       ],
       "components": [
-        "web/src/components/acp/StructuredView.tsx"
+        "web/src/components/acp/StructuredView.tsx",
+        "web/src/components/acp/PromptStrips.tsx"
       ]
     },
     {
@@ -3374,12 +3404,14 @@
       "risk": "medium",
       "specs": [
         "src/components/acp/QueuedPromptsStrip.test.tsx",
-        "src/components/acp/Composer.toolbarButtons.test.tsx"
+        "src/components/acp/Composer.test.tsx"
       ],
       "components": [
         "web/src/components/acp/StructuredView.tsx",
         "web/src/components/acp/Composer.tsx",
-        "web/src/hooks/useAcpSession.ts"
+        "web/src/hooks/useAcpSession.ts",
+        "web/src/components/acp/PromptStrips.tsx",
+        "web/src/components/acp/ComposerControls.tsx"
       ]
     },
     {
@@ -3391,7 +3423,8 @@
       ],
       "components": [
         "web/src/lib/promptRepin.ts",
-        "web/src/components/acp/StructuredView.tsx"
+        "web/src/components/acp/StructuredView.tsx",
+        "web/src/components/acp/useTranscriptScroll.ts"
       ]
     },
     {
@@ -3421,14 +3454,20 @@
       "kind": "vitest",
       "risk": "high",
       "specs": [
-        "src/components/acp/AcpRuntime.test.ts",
-        "src/components/acp/ToolCards.render.test.tsx"
+        "src/components/acp/ToolCards.render.test.tsx",
+        "src/components/acp/activityMessages.test.ts"
       ],
       "components": [
         "web/src/components/acp/AcpRuntime.tsx",
         "web/src/components/acp/StructuredView.tsx",
         "web/src/components/acp/ToolCards.tsx",
-        "web/src/components/acp/ToolErrorBody.tsx"
+        "web/src/components/acp/ToolErrorBody.tsx",
+        "web/src/components/acp/CoreToolCards.tsx",
+        "web/src/components/acp/GroupToolCards.tsx",
+        "web/src/components/acp/NamedToolCards.tsx",
+        "web/src/components/acp/TodoCards.tsx",
+        "web/src/components/acp/ToolCardChrome.tsx",
+        "web/src/components/acp/ToolOutputMedia.tsx"
       ]
     },
     {
@@ -3448,13 +3487,19 @@
       "kind": "vitest",
       "risk": "medium",
       "specs": [
-        "src/components/acp/AcpRuntime.test.ts",
-        "src/components/acp/ToolCards.render.test.tsx"
+        "src/components/acp/ToolCards.render.test.tsx",
+        "src/components/acp/activityMessages.test.ts"
       ],
       "components": [
         "web/src/components/acp/AcpRuntime.tsx",
         "web/src/components/acp/StructuredView.tsx",
-        "web/src/components/acp/ToolCards.tsx"
+        "web/src/components/acp/ToolCards.tsx",
+        "web/src/components/acp/CoreToolCards.tsx",
+        "web/src/components/acp/GroupToolCards.tsx",
+        "web/src/components/acp/NamedToolCards.tsx",
+        "web/src/components/acp/TodoCards.tsx",
+        "web/src/components/acp/ToolCardChrome.tsx",
+        "web/src/components/acp/ToolOutputMedia.tsx"
       ]
     },
     {
@@ -3462,17 +3507,23 @@
       "kind": "vitest",
       "risk": "medium",
       "specs": [
-        "src/components/acp/AcpRuntime.test.ts",
         "src/components/acp/ToolCards.render.test.tsx",
         "src/lib/agentProfiles.test.ts",
-        "src/lib/acpTypes.test.ts"
+        "src/lib/acpTypes.test.ts",
+        "src/components/acp/activityMessages.test.ts"
       ],
       "components": [
         "web/src/components/acp/ToolCards.tsx",
         "web/src/components/acp/AcpRuntime.tsx",
         "web/src/lib/agentProfiles.ts",
         "web/src/lib/acpArgs.ts",
-        "web/src/lib/acpTypes.ts"
+        "web/src/lib/acpTypes.ts",
+        "web/src/components/acp/CoreToolCards.tsx",
+        "web/src/components/acp/GroupToolCards.tsx",
+        "web/src/components/acp/NamedToolCards.tsx",
+        "web/src/components/acp/TodoCards.tsx",
+        "web/src/components/acp/ToolCardChrome.tsx",
+        "web/src/components/acp/ToolOutputMedia.tsx"
       ]
     },
     {
@@ -3538,7 +3589,8 @@
         "src/components/acp/__tests__/StartupErrorBanner.test.tsx"
       ],
       "components": [
-        "web/src/components/acp/StructuredView.tsx"
+        "web/src/components/acp/StructuredView.tsx",
+        "web/src/components/acp/StartupErrorBanner.tsx"
       ]
     },
     {
@@ -4324,7 +4376,8 @@
         "tests/live/acp-stories/agent-status.spec.ts"
       ],
       "components": [
-        "web/src/components/acp/StructuredView.tsx"
+        "web/src/components/acp/StructuredView.tsx",
+        "web/src/components/acp/PlanStrip.tsx"
       ]
     },
     {
@@ -4355,7 +4408,6 @@
       "kind": "vitest",
       "risk": "medium",
       "specs": [
-        "src/components/acp/Composer.dictation.test.ts",
         "src/components/acp/useDictationBurstGuard.test.ts"
       ],
       "components": [
@@ -4367,7 +4419,7 @@
       "kind": "vitest",
       "risk": "medium",
       "specs": [
-        "src/components/acp/Composer.dictation.test.ts"
+        "src/components/acp/useDictationBurstGuard.test.ts"
       ],
       "components": [
         "web/src/components/acp/Composer.tsx"
@@ -4437,11 +4489,12 @@
       "kind": "vitest",
       "risk": "medium",
       "specs": [
-        "src/components/acp/Composer.draft.test.tsx"
+        "src/components/acp/Composer.test.tsx"
       ],
       "components": [
         "web/src/components/acp/Composer.tsx",
-        "web/src/lib/acpDrafts.ts"
+        "web/src/lib/acpDrafts.ts",
+        "web/src/components/acp/ComposerControls.tsx"
       ]
     },
     {
@@ -4449,11 +4502,12 @@
       "kind": "vitest",
       "risk": "medium",
       "specs": [
-        "src/components/acp/Composer.draft.test.tsx"
+        "src/components/acp/Composer.test.tsx"
       ],
       "components": [
         "web/src/components/acp/Composer.tsx",
-        "web/src/lib/acpDrafts.ts"
+        "web/src/lib/acpDrafts.ts",
+        "web/src/components/acp/ComposerControls.tsx"
       ]
     },
     {
@@ -4461,13 +4515,14 @@
       "kind": "vitest",
       "risk": "medium",
       "specs": [
-        "src/components/acp/Composer.draft.test.tsx",
-        "src/components/acp/__tests__/AcpRuntime.draft.test.tsx"
+        "src/components/acp/Composer.test.tsx",
+        "src/components/acp/__tests__/AcpRuntime.test.tsx"
       ],
       "components": [
         "web/src/components/acp/Composer.tsx",
         "web/src/components/acp/AcpRuntime.tsx",
-        "web/src/lib/acpDrafts.ts"
+        "web/src/lib/acpDrafts.ts",
+        "web/src/components/acp/ComposerControls.tsx"
       ]
     },
     {
@@ -4510,11 +4565,12 @@
       "risk": "medium",
       "specs": [
         "src/components/acp/recallNav.test.ts",
-        "src/components/acp/Composer.recall.dom.test.tsx"
+        "src/components/acp/Composer.test.tsx"
       ],
       "components": [
         "web/src/components/acp/Composer.tsx",
-        "web/src/components/acp/StructuredView.tsx"
+        "web/src/components/acp/StructuredView.tsx",
+        "web/src/components/acp/ComposerControls.tsx"
       ]
     },
     {
@@ -4522,10 +4578,11 @@
       "kind": "vitest",
       "risk": "low",
       "specs": [
-        "src/components/acp/Composer.toolbarButtons.test.tsx"
+        "src/components/acp/Composer.test.tsx"
       ],
       "components": [
-        "web/src/components/acp/Composer.tsx"
+        "web/src/components/acp/Composer.tsx",
+        "web/src/components/acp/ComposerControls.tsx"
       ]
     },
     {
@@ -4534,12 +4591,13 @@
       "risk": "high",
       "specs": [
         "tests/live/acp-stories/composer-controls.spec.ts",
-        "src/components/acp/Composer.slashCommand.dom.test.tsx",
-        "src/components/acp/slashCompletion.test.ts"
+        "src/components/acp/slashCompletion.test.ts",
+        "src/components/acp/Composer.test.tsx"
       ],
       "components": [
         "web/src/components/acp/Composer.tsx",
-        "web/src/components/acp/slashCompletion.ts"
+        "web/src/components/acp/slashCompletion.ts",
+        "web/src/components/acp/ComposerControls.tsx"
       ]
     },
     {
@@ -4551,7 +4609,8 @@
         "src/components/acp/queuedPromptsLayout.test.ts"
       ],
       "components": [
-        "web/src/components/acp/StructuredView.tsx"
+        "web/src/components/acp/StructuredView.tsx",
+        "web/src/components/acp/PromptStrips.tsx"
       ]
     },
     {
@@ -4563,7 +4622,13 @@
         "src/components/acp/ToolCards.render.test.tsx"
       ],
       "components": [
-        "web/src/components/acp/ToolCards.tsx"
+        "web/src/components/acp/ToolCards.tsx",
+        "web/src/components/acp/CoreToolCards.tsx",
+        "web/src/components/acp/GroupToolCards.tsx",
+        "web/src/components/acp/NamedToolCards.tsx",
+        "web/src/components/acp/TodoCards.tsx",
+        "web/src/components/acp/ToolCardChrome.tsx",
+        "web/src/components/acp/ToolOutputMedia.tsx"
       ]
     },
     {
@@ -5094,11 +5159,11 @@
       "kind": "vitest",
       "risk": "medium",
       "specs": [
-        "src/components/acp/__tests__/TriageBanners.test.tsx",
-        "src/components/acp/__tests__/ScheduledWakeupBanner.test.tsx"
+        "src/components/acp/__tests__/SessionBanners.test.tsx"
       ],
       "components": [
-        "web/src/components/acp/StructuredView.tsx"
+        "web/src/components/acp/StructuredView.tsx",
+        "web/src/components/acp/SessionBanners.tsx"
       ]
     },
     {
@@ -5257,11 +5322,17 @@
         "src/components/plugin/__tests__/PluginSlots.test.tsx",
         "src/lib/__tests__/pluginUi.test.ts",
         "src/hooks/usePluginUiState.test.tsx",
-        "src/components/acp/__tests__/ToolCards.test.tsx"
+        "src/components/acp/ToolCards.render.test.tsx"
       ],
       "components": [
         "web/src/components/plugin/PluginSlots.tsx",
-        "web/src/components/acp/ToolCards.tsx"
+        "web/src/components/acp/ToolCards.tsx",
+        "web/src/components/acp/CoreToolCards.tsx",
+        "web/src/components/acp/GroupToolCards.tsx",
+        "web/src/components/acp/NamedToolCards.tsx",
+        "web/src/components/acp/TodoCards.tsx",
+        "web/src/components/acp/ToolCardChrome.tsx",
+        "web/src/components/acp/ToolOutputMedia.tsx"
       ]
     },
     {
@@ -5285,11 +5356,12 @@
       "risk": "medium",
       "specs": [
         "src/components/plugin/__tests__/PluginSlots.test.tsx",
-        "src/components/acp/Composer.pluginComposerActions.test.tsx"
+        "src/components/acp/Composer.test.tsx"
       ],
       "components": [
         "web/src/components/plugin/PluginSlots.tsx",
-        "web/src/components/acp/Composer.tsx"
+        "web/src/components/acp/Composer.tsx",
+        "web/src/components/acp/ComposerControls.tsx"
       ]
     }
   ]
