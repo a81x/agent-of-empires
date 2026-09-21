@@ -13,7 +13,7 @@ The dashboard is the home screen of the web app: a workspace sidebar on the left
 
 ## Creating a session
 
-The **New session** wizard walks four steps:
+The **New session** wizard is one screen with these sections:
 
 - **Project**: pick the working directory from the Recent tab (saved projects first, then the directories of recent sessions), browse for one, clone a URL, or start a [scratch session](../scratch-sessions.md) with no path.
 - **Session**: set the title, which auto-slugifies into a worktree branch name unless you edit it, or attach an existing branch instead.
@@ -21,6 +21,8 @@ The **New session** wizard walks four steps:
 - **Review**: confirm before the session spawns.
 
 Choosing a profile seeds the agent-step defaults; switching profiles after you have edited a field asks first.
+
+A plain New session opens on the project you launched last; pick another from Recent or Browse to change it.
 
 ## Command palette
 

@@ -95,7 +95,7 @@ row_tag = "branch"        # none | auto | profile | sandbox | branch
 | `custom_agents` | `{}` | User-defined agents (name to command). See [Custom agents](#custom-agents). |
 | `agent_detect_as` | `{}` | Maps a custom agent onto a built-in it inherits (status heuristics, ACP adapter, native resume). |
 | `agent_acp_cmd` | `{}` | ACP launch command that makes a custom agent structured-view capable, e.g. `{ "oc-superpowers" = "ocp run sp acp" }`. Split into argv and run with no shell. |
-| `agent_config_dir` | `{}` | Config directory an agent reads instead of its built-in default, keyed by agent name. Wins over the agent's config-dir environment variable. Global/profile only. |
+| `agent_config_dir` | `{}` | Config directory an agent reads instead of its built-in default, keyed by agent name. Wins over the agent's config-dir environment variable. Two names pointing at the same agent are two accounts of it; a restart that swaps between them carries the conversation across, see [Session Resume](session-resume.md#swapping-the-engine-on-a-restart). Global/profile only. |
 | `agents.<name>.status_map` | `{}` | Trusted hook-event to status mapping (`running`, `waiting`, `idle`, `error`), applied on the next hook install. Hooks receive `AOE_PROFILE`, so a script can read the resolved map with `aoe -p "$AOE_PROFILE" profile show --status-map <agent> --json`. Global/profile only. |
 | `agents.<name>.status_rules` | `[]` | Declarative pane status rules. See [Status rules](#status-rules-for-custom-agents). Global/profile only. |
 
