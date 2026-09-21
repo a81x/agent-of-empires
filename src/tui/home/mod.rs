@@ -79,14 +79,10 @@ pub(super) use self::watchers::{
 };
 use self::watchers::{RELOAD_FAILED_TITLE, WATCHER_WARNING_TITLE};
 
-/// Kinds of in-progress mouse drags. Today only the list/preview divider
-/// is draggable; the enum keeps future drag targets (diff split, group
-/// reorder) from churning the `Option<...>` shape on `HomeView`.
+/// Kinds of in-progress mouse drags.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum DragKind {
-    /// Resize from the pressed column and requested width, reversing the
-    /// horizontal delta when the sidebar is on the right.
-    ListDivider { start_col: u16, start_width: u16 },
+    ListDivider,
     /// Drag-selecting text inside the preview pane. Available whenever
     /// the pane is on screen (in or out of live-send mode). The anchor
     /// cell is where the user pressed; `preview_selection` on

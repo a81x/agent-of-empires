@@ -62,37 +62,28 @@ fn compose_list_title(
     format!(" {}{}{} ", prefix, profile_tag, suffix)
 }
 
-/// Source of truth for the pane-arrangement passed to `render_list` /
-/// `render_preview`, so their border masks honor DESIGN.md's single-shared-
-/// separator invariant.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
-enum PaneLayout {
-    Collapsed(SidebarPosition),
+enum ListLayout {
+    Horizontal(SidebarPosition),
     Stacked,
-    SideBySide(SidebarPosition),
 }
 
-impl PaneLayout {
+impl ListLayout {
     /// The preview owns the shared separator; omit the adjacent list border.
     fn list_borders(self) -> Borders {
         match self {
             Self::Stacked => Borders::TOP | Borders::LEFT | Borders::RIGHT,
-            Self::Collapsed(SidebarPosition::Left) | Self::SideBySide(SidebarPosition::Left) => {
+            Self::Horizontal(SidebarPosition::Left) => {
                 Borders::TOP | Borders::LEFT | Borders::BOTTOM
             }
-            Self::Collapsed(SidebarPosition::Right) | Self::SideBySide(SidebarPosition::Right) => {
+            Self::Horizontal(SidebarPosition::Right) => {
                 Borders::TOP | Borders::RIGHT | Borders::BOTTOM
             }
         }
     }
-
-    fn preview_borders(self) -> Borders {
-        match self {
-            Self::Collapsed(_) | Self::Stacked | Self::SideBySide(_) => Borders::ALL,
-        }
-    }
 }
 
+/// Return `(list, preview)` rectangles in logical order for either screen position.
 fn sidebar_areas(
     area: Rect,
     list_width: u16,
@@ -870,6 +861,7 @@ fn activity_column_padding(
 }
 
 impl HomeView {
+    /// Lay out the active view and refresh the hit regions for the next input event.
     pub fn render(
         &mut self,
         frame: &mut Frame,
@@ -992,12 +984,7 @@ impl HomeView {
             // list column.
             let strip_col = self.diagnostics_dock(frame, strip_area, theme);
             self.render_collapsed_strip(frame, strip_col, theme);
-            self.render_preview(
-                frame,
-                preview_area,
-                theme,
-                PaneLayout::Collapsed(self.sidebar_position),
-            );
+            self.render_preview(frame, preview_area, theme);
         } else if available_width < responsive::STACKED_BREAKPOINT {
             let main_height = content_area.height;
             let list_height = responsive::stacked_list_height(main_height);
@@ -1017,8 +1004,8 @@ impl HomeView {
             // list column to dock under; the strip spans the list's width above
             // the preview.
             let list_rect = self.diagnostics_dock(frame, chunks[0], theme);
-            self.render_list(frame, list_rect, theme, PaneLayout::Stacked);
-            self.render_preview(frame, chunks[1], theme, PaneLayout::Stacked);
+            self.render_list(frame, list_rect, theme, ListLayout::Stacked);
+            self.render_preview(frame, chunks[1], theme);
         } else {
             // Side-by-side: cap list width so the preview pane keeps its
             // usability floor (PREVIEW_MIN_WIDTH).
@@ -1040,9 +1027,9 @@ impl HomeView {
 
             // Strip docks under the list column; the preview keeps full height.
             let list_rect = self.diagnostics_dock(frame, list_area, theme);
-            let layout = PaneLayout::SideBySide(self.sidebar_position);
+            let layout = ListLayout::Horizontal(self.sidebar_position);
             self.render_list(frame, list_rect, theme, layout);
-            self.render_preview(frame, preview_area, theme, layout);
+            self.render_preview(frame, preview_area, theme);
         }
         self.render_status_bar(frame, main_chunks[1], theme);
 
@@ -1196,7 +1183,7 @@ impl HomeView {
             ViewMode::Terminal | ViewMode::Tool(_) => theme.terminal_border,
         };
         let block = Block::default()
-            .borders(PaneLayout::Collapsed(self.sidebar_position).list_borders())
+            .borders(ListLayout::Horizontal(self.sidebar_position).list_borders())
             .border_type(BorderType::Rounded)
             .border_style(Style::default().fg(border_color));
         let inner = block.inner(area);
@@ -1225,7 +1212,8 @@ impl HomeView {
         frame.render_widget(Paragraph::new(lines).alignment(Alignment::Center), inner);
     }
 
-    fn render_list(&mut self, frame: &mut Frame, area: Rect, theme: &Theme, layout: PaneLayout) {
+    /// Paint list rows and record hit regions, leaving the shared border to the preview.
+    fn render_list(&mut self, frame: &mut Frame, area: Rect, theme: &Theme, layout: ListLayout) {
         self.list_area = area;
         let profile = self.active_profile_display();
         let mut title = match &self.view_mode {
@@ -2772,7 +2760,8 @@ impl HomeView {
         self.active_preview_cache().captured_lines
     }
 
-    fn render_preview(&mut self, frame: &mut Frame, area: Rect, theme: &Theme, layout: PaneLayout) {
+    /// Paint the preview and refresh geometry used by selection and live-send.
+    fn render_preview(&mut self, frame: &mut Frame, area: Rect, theme: &Theme) {
         if self.system_health_open {
             self.preview_outer_area = area;
             self.preview_area = area;
@@ -2811,7 +2800,7 @@ impl HomeView {
         };
 
         let mut block = Block::default()
-            .borders(layout.preview_borders())
+            .borders(Borders::ALL)
             .border_type(BorderType::Rounded)
             .border_style(Style::default().fg(border_color))
             .padding(Padding::horizontal(1));
@@ -2931,10 +2920,6 @@ impl HomeView {
 
         let inner = block.inner(area);
         self.preview_area = inner;
-        // `area` is the OUTER preview rect (the block + borders + content).
-        // Stash it so `App::draw_preview_only` can call back into
-        // `render_preview` with the right rect on `%output` wakes; passing
-        // the inner there draws a nested block.
         self.preview_outer_area = area;
         self.diff_area = Rect::default();
         // The agent-pane sub-rect of `inner`: full inner when the info

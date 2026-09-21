@@ -2,7 +2,7 @@
 //
 // Contract test for the per-setting command-palette entries (#2108). Asserts
 // schema -> entry generation (local_only omitted), that writable toggles flip
-// inline through the default profile, and that every other widget, elevation
+// inline at their declared scope, and that every other widget, elevation
 // toggles, and read-only mode produce a jump instead of a write.
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -15,13 +15,14 @@ vi.mock("../../lib/api", () => ({
   fetchProfiles: vi.fn(),
   fetchSettings: vi.fn(),
   updateProfileSettings: vi.fn(),
+  updateSettings: vi.fn(),
 }));
 vi.mock("../../lib/toastBus", () => ({
   reportInfo: vi.fn(),
   reportError: vi.fn(),
 }));
 
-import { fetchProfiles, fetchSettings, getSettingsSchema, updateProfileSettings } from "../../lib/api";
+import { fetchProfiles, fetchSettings, getSettingsSchema, updateProfileSettings, updateSettings } from "../../lib/api";
 
 function field(
   section: string,
@@ -50,6 +51,7 @@ const SCHEMA: SettingsFieldDescriptor[] = [
   field("security", "danger", { kind: "toggle" }, { policy: "requires_elevation", reason: "x" }),
   field("acp", "replay", { kind: "select", options: [] }, { policy: "allow" }),
   field("session", "secret", { kind: "toggle" }, { policy: "local_only", reason: "x" }),
+  field("telemetry", "enabled", { kind: "toggle" }, { policy: "allow" }, false),
 ];
 
 beforeEach(() => {
@@ -61,6 +63,7 @@ beforeEach(() => {
     worktree: { auto_cleanup: true },
   } as never);
   vi.mocked(updateProfileSettings).mockResolvedValue(true);
+  vi.mocked(updateSettings).mockResolvedValue(true);
 });
 
 function render(overrides: Partial<Parameters<typeof useSettingsCommands>[0]> = {}) {
@@ -74,7 +77,7 @@ function render(overrides: Partial<Parameters<typeof useSettingsCommands>[0]> = 
 describe("useSettingsCommands", () => {
   it("generates one Settings entry per writable field, omitting local_only", async () => {
     const { result } = render();
-    await waitFor(() => expect(result.current.length).toBe(4));
+    await waitFor(() => expect(result.current.length).toBe(5));
     const ids = result.current.map((a) => a.id);
     expect(ids).toContain("setting:session.live_send");
     expect(ids).toContain("setting:worktree.auto_cleanup");
@@ -86,33 +89,39 @@ describe("useSettingsCommands", () => {
 
   it("flips a writable toggle inline through the default profile", async () => {
     const { result } = render();
-    await waitFor(() => expect(result.current.length).toBe(4));
+    await waitFor(() => expect(result.current.length).toBe(5));
     const toggle = result.current.find((a) => a.id === "setting:session.live_send");
     expect(toggle?.subtitle).toBe("Off · main");
     toggle?.perform();
     await waitFor(() => expect(updateProfileSettings).toHaveBeenCalledWith("main", { session: { live_send: true } }));
   });
 
-  it("labels a global-only toggle's scope as Global", async () => {
+  it("saves a global-only toggle at the scope named in its subtitle", async () => {
     const { result } = render();
-    await waitFor(() => expect(result.current.length).toBe(4));
+    await waitFor(() => expect(result.current.length).toBe(5));
     const toggle = result.current.find((a) => a.id === "setting:worktree.auto_cleanup");
     expect(toggle?.subtitle).toBe("On · Global");
+    toggle?.perform();
+    await waitFor(() => expect(updateSettings).toHaveBeenCalledWith({ worktree: { auto_cleanup: false } }));
+    expect(updateProfileSettings).not.toHaveBeenCalled();
   });
 
-  it("jumps for non-toggle widgets and elevation toggles, never writing", async () => {
+  it("opens settings for non-toggle widgets, elevation, and telemetry consent", async () => {
     const { result, onOpenSettingsTab } = render();
-    await waitFor(() => expect(result.current.length).toBe(4));
+    await waitFor(() => expect(result.current.length).toBe(5));
     result.current.find((a) => a.id === "setting:acp.replay")?.perform();
     expect(onOpenSettingsTab).toHaveBeenCalledWith("structured-view");
     result.current.find((a) => a.id === "setting:security.danger")?.perform();
     expect(onOpenSettingsTab).toHaveBeenCalledWith("security");
+    result.current.find((a) => a.id === "setting:telemetry.enabled")?.perform();
+    expect(onOpenSettingsTab).toHaveBeenCalledWith("telemetry");
     expect(updateProfileSettings).not.toHaveBeenCalled();
+    expect(updateSettings).not.toHaveBeenCalled();
   });
 
   it("turns every toggle into a jump in read-only mode", async () => {
     const { result, onOpenSettingsTab } = render({ readOnly: true });
-    await waitFor(() => expect(result.current.length).toBe(4));
+    await waitFor(() => expect(result.current.length).toBe(5));
     result.current.find((a) => a.id === "setting:session.live_send")?.perform();
     expect(onOpenSettingsTab).toHaveBeenCalledWith("session");
     expect(updateProfileSettings).not.toHaveBeenCalled();

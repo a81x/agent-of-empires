@@ -39,7 +39,7 @@ fn hit_divider_is_false_in_stacked_mode() {
 
 #[test]
 #[serial]
-fn drag_updates_list_width_relative_to_start() {
+fn drag_updates_list_width_to_pointer() {
     let mut env = create_test_env_empty();
     stage_side_by_side(&mut env);
     assert!(
@@ -137,6 +137,7 @@ fn drag_start_misses_off_divider_column() {
     assert!(env.view.drag_state.is_none());
 }
 
+/// A side change commits the last width without reusing the old pointer origin.
 #[test]
 #[serial]
 fn changing_sidebar_position_ends_drag_at_last_width() {
@@ -184,6 +185,7 @@ fn changing_sidebar_position_ends_drag_at_last_width() {
     }
 }
 
+/// Reversed horizontal drags obey both width limits and save the final width.
 #[test]
 #[serial]
 fn right_divider_drag_clamps_and_persists() {

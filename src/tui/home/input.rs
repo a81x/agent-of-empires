@@ -660,13 +660,13 @@ impl HomeView {
         hit
     }
 
+    /// Cancel gestures tied to old screen coordinates before moving the sidebar.
     pub(super) fn set_sidebar_position(&mut self, position: SidebarPosition) {
         if self.sidebar_position == position {
             return;
         }
-        // Active gestures use coordinates from the layout before the move.
         match self.drag_state {
-            Some(DragKind::ListDivider { .. }) => {
+            Some(DragKind::ListDivider) => {
                 self.handle_drag_end();
             }
             Some(DragKind::PreviewSelect) => {
@@ -707,10 +707,7 @@ impl HomeView {
     /// mobile clients where Shift-bypass does nothing.
     pub fn handle_drag_start(&mut self, col: u16, row: u16) -> bool {
         if self.hit_divider(col, row) {
-            self.drag_state = Some(DragKind::ListDivider {
-                start_col: col,
-                start_width: self.list_width,
-            });
+            self.drag_state = Some(DragKind::ListDivider);
             return true;
         }
         // Modals that aren't live-send sit over the preview, so a
@@ -792,20 +789,17 @@ impl HomeView {
             return false;
         }
         match self.drag_state {
-            Some(DragKind::ListDivider {
-                start_col,
-                start_width,
-            }) => {
-                // Signed arithmetic handles either drag direction without wrapping.
-                let delta = match self.sidebar_position {
-                    SidebarPosition::Left => col as i32 - start_col as i32,
-                    SidebarPosition::Right => start_col as i32 - col as i32,
+            Some(DragKind::ListDivider) => {
+                if self.divider_col.is_none() {
+                    self.handle_drag_end();
+                    return false;
+                }
+                let proposed = match self.sidebar_position {
+                    SidebarPosition::Left => col as i32 - self.list_area.x as i32,
+                    SidebarPosition::Right => self.list_area.right() as i32 - 1 - col as i32,
                 };
-                let proposed = start_width as i32 + delta;
 
-                // Clamp ceiling tracks the live viewport width; if the user
-                // resized the terminal mid-drag, the new width is honored. The
-                // floor of 10 matches the keyboard `<` shrink limit.
+                // Match the keyboard shrink limit and reserve preview space.
                 let ceiling = self
                     .main_area_width
                     .saturating_sub(responsive::PREVIEW_MIN_WIDTH);
@@ -983,7 +977,7 @@ impl HomeView {
         self.preview_drag_pos = None;
         self.preview_autoscroll_at = None;
         match state {
-            DragKind::ListDivider { .. } => {
+            DragKind::ListDivider => {
                 self.save_list_width();
             }
             DragKind::PreviewSelect => {

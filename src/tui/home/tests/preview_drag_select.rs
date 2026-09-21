@@ -95,6 +95,7 @@ fn drag_start_outside_live_mode_installs_selection() {
     assert!(!sel.finalized);
 }
 
+/// Moving the preview cancels an unfinished selection without publishing clipboard text.
 #[test]
 #[serial]
 fn changing_sidebar_position_cancels_preview_gesture_without_copying() {
@@ -720,13 +721,10 @@ fn screen_flow_rects_fully_offscreen_returns_empty() {
     assert!(rects.is_empty());
 }
 
+/// Finalizing a rendered selection copies the chosen text with the sidebar on either side.
 #[test]
 #[serial]
 fn full_render_pipeline_captures_copy_text_after_finalize() {
-    // Drives the actual render path: render seeds the text-view
-    // snapshot, the drag handlers map against it, and
-    // paint_preview_selection captures the selected lines from the
-    // parsed cache into preview_copy_text for the app loop to drain.
     use crate::tui::styles::load_theme;
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;

@@ -33,6 +33,7 @@ fn settings_exposes_editable_mouse_capture_toggle() {
     h.wait_for("Disabled");
 }
 
+/// Save each sidebar position through Settings and verify it in a fresh TUI process.
 #[test]
 #[parallel]
 fn settings_changes_sidebar_position_and_persists_it() {

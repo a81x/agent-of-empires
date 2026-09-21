@@ -187,13 +187,15 @@ pub fn resolve_config_or_warn(profile: &str) -> Config {
     }
 }
 
-/// Merge profile overrides into global config.
-///
-/// Delegates to [`merge_configs_generic`]: the profile's sparse override tree is
-/// JSON-merged onto the global config, so adding a config field never touches
-/// this function.
+/// Merge profile overrides, keeping schema-declared global-only fields global.
 pub fn merge_configs(global: Config, profile: &ProfileConfig) -> Config {
-    merge_configs_generic(&global, &profile.overrides_value())
+    let mut overrides = profile.overrides_value();
+    for field in super::settings_schema::schema_ref() {
+        if !field.profile_overridable {
+            super::settings_schema::clear_path(&mut overrides, &field.section, &field.field);
+        }
+    }
+    merge_configs_generic(&global, &overrides)
 }
 
 /// Generic single-source merge (#1692): serialize the global config to JSON,
@@ -670,12 +672,23 @@ mod tests {
         assert_eq!(ov["tmux"]["mouse"], json!("enabled"));
     }
 
+    /// Ignore stale global-only overrides without discarding eligible siblings.
     #[test]
-    fn test_merge_configs_with_theme_override() {
-        let global = Config::default();
-        let profile = profile_from(json!({"theme": {"name": "tokyo-night"}}));
+    fn test_merge_configs_keeps_global_only_fields() {
+        use crate::session::config::SidebarPosition;
+
+        let mut global = Config::default();
+        global.session.sidebar_position = SidebarPosition::Right;
+        global.theme.name = "empire".to_string();
+        let profile = profile_from(json!({
+            "session": {"sidebar_position": "left", "snooze_duration_minutes": 12},
+            "theme": {"name": "tokyo-night", "idle_decay_minutes": 20}
+        }));
         let merged = merge_configs(global, &profile);
-        assert_eq!(merged.theme.name, "tokyo-night");
+        assert_eq!(merged.session.sidebar_position, SidebarPosition::Right);
+        assert_eq!(merged.theme.name, "empire");
+        assert_eq!(merged.session.snooze_duration_minutes, 12);
+        assert_eq!(merged.theme.idle_decay_minutes, 20);
     }
 
     #[test]

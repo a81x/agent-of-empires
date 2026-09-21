@@ -44,6 +44,7 @@ impl HomeView {
     pub(in crate::tui) fn refresh_from_config(&mut self, origin: ConfigRefreshOrigin) {
         let profile = self.config_profile();
         let config = resolve_config_or_warn(&profile);
+        // The lenient resolver returns defaults when only the profile is malformed.
         let sidebar_position = crate::session::Config::load_or_warn()
             .session
             .sidebar_position;
@@ -80,11 +81,12 @@ impl HomeView {
         self.maybe_export_watcher_refresh_count(new_count);
         let profile = self.config_profile();
         let config = crate::session::resolve_config(&profile)?;
-        let sidebar_position = crate::session::Config::load()?.session.sidebar_position;
+        let sidebar_position = config.session.sidebar_position;
         self.apply_config_to_state(config, sidebar_position, ConfigRefreshOrigin::Watcher);
         Ok(())
     }
 
+    /// Apply a snapshot, reporting interactive warnings without interrupting watcher reloads.
     fn apply_config_to_state(
         &mut self,
         config: crate::session::Config,
@@ -250,6 +252,7 @@ mod tests {
     use crate::session::config::{profile_config::save_profile_config, SidebarPosition};
     use serial_test::serial;
 
+    /// Invalid profile files must not replace a valid global sidebar preference.
     #[test]
     #[serial]
     fn sidebar_position_ignores_profile_overrides_on_startup_and_reload() {
@@ -280,6 +283,21 @@ mod tests {
         view.try_refresh_from_config_watcher().unwrap();
         assert_eq!(view.sidebar_position, SidebarPosition::Right);
 
+        let profile_path = crate::session::get_profile_dir_path("test")
+            .unwrap()
+            .join("config.toml");
+        std::fs::write(&profile_path, "[session\n").unwrap();
+        view.refresh_from_config(ConfigRefreshOrigin::Interactive);
+        assert_eq!(view.sidebar_position, SidebarPosition::Right);
+        let reopened = HomeView::new_for_test(
+            Some("test".to_string()),
+            AvailableTools::with_tools(&["claude"]),
+            crate::file_watch::FileWatchService::noop(),
+        )
+        .unwrap();
+        assert_eq!(reopened.sidebar_position, SidebarPosition::Right);
+
+        save_positions(SidebarPosition::Right, SidebarPosition::Left);
         std::fs::write(crate::session::config::config_path().unwrap(), "[session\n").unwrap();
         assert!(view.try_refresh_from_config_watcher().is_err());
         assert_eq!(view.sidebar_position, SidebarPosition::Right);

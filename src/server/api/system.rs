@@ -276,6 +276,7 @@ fn reject_response(rej: PatchRejection) -> axum::response::Response {
         .into_response()
 }
 
+/// Persist a global patch and apply side effects for the sections it changes.
 pub async fn update_settings(
     State(state): State<Arc<AppState>>,
     body: Result<Json<serde_json::Value>, axum::extract::rejection::JsonRejection>,
@@ -330,6 +331,7 @@ pub async fn update_settings(
                 .collect()
         })
         .unwrap_or_default();
+    let logging_changed = body.get("logging").is_some();
     // Fold validated `plugin:<id>` sections into their on-disk storage path
     // (`plugins.<id>.settings.*`) before the generic merge.
     rewrite_plugin_sections(&mut body);
@@ -348,15 +350,15 @@ pub async fn update_settings(
 
     match result {
         Ok(Ok(config)) => {
-            // Settings touched [logging]? Apply the new filter live to
-            // the daemon + persist runtime_filter so acp runners pick
-            // it up via the notify watcher.
-            if let Ok(app_dir) = crate::session::get_app_dir() {
-                crate::logging::apply_persisted_config(
-                    &config.logging.default_level,
-                    &config.logging.targets,
-                    &app_dir,
-                );
+            // Unrelated settings must preserve temporary runtime log levels.
+            if logging_changed {
+                if let Ok(app_dir) = crate::session::get_app_dir() {
+                    crate::logging::apply_persisted_config(
+                        &config.logging.default_level,
+                        &config.logging.targets,
+                        &app_dir,
+                    );
+                }
             }
             // Tell each touched plugin's worker its settings changed (#2897),
             // after the durable write. Best-effort; config.get is the fallback.

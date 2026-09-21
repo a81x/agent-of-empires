@@ -32,6 +32,7 @@ impl HomeView {
         Ok(view)
     }
 
+    /// Load visible profiles and global UI state with an injectable reconciliation worker.
     fn new_with_reconcile(
         active_profile: Option<String>,
         available_tools: AvailableTools,

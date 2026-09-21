@@ -1,27 +1,7 @@
 // @vitest-environment jsdom
 //
-// Payload-permutation coverage for the schema-driven settings tabs, ported
-// from the live Playwright story specs (settings-tmux-select, settings-tmux-
-// mouse, settings-logging-level, settings-snooze-duration, settings-sound-
-// toggle, plus the UI half of settings-persistence-tmux):
-//
-//   - change the tmux status_bar / mouse selects and the change reaches the
-//     selected profile as { tmux: { status_bar | mouse: ... } }
-//   - change the logging default level select and it lands as
-//     { logging: { default_level: ... } }
-//   - commit a new snooze duration and it lands as
-//     { session: { snooze_duration_minutes: <number> } }
-//   - flip the sound Enabled toggle and it lands as { sound: { enabled: true } }
-//   - the global-only, advanced session_id_poller_max_threads number sits in
-//     the Session tab's Advanced fold, carries the "not profile-overridable"
-//     note, and commits as { session: { session_id_poller_max_threads: <n> } }
-//
-// Each tab is a SchemaSection fed by `GET /api/settings/schema`, so the mock
-// schema below mirrors the real `#[setting(...)]` shapes (labels, widgets,
-// options) from src/session/config/mod.rs / src/sound/config.rs. What this pins is
-// the exact (profile, { section: { field: value } }) PATCH leaf each control
-// emits; server-side persistence of the PATCH is the server's contract, not
-// the dashboard's.
+// Schema controls write one field at the declared scope, preserve siblings,
+// and restore persisted values after a failed save.
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
@@ -40,6 +20,24 @@ const TMUX_MODES = [
 ];
 
 const SCHEMA = [
+  {
+    section: "session",
+    field: "sidebar_position",
+    category: "Session",
+    label: "Sidebar Position",
+    description: "Side of the TUI session list.",
+    widget: {
+      kind: "select",
+      options: [
+        { value: "left", label: "Left" },
+        { value: "right", label: "Right" },
+      ],
+    },
+    web_write: ALLOW,
+    profile_overridable: false,
+    validation: NONE,
+    advanced: false,
+  },
   {
     section: "tmux",
     field: "status_bar",
@@ -125,6 +123,7 @@ vi.mock("../../../lib/api", () => ({
   fetchSettings: vi.fn(() => Promise.resolve({ tmux: {}, logging: {}, session: {}, sound: {} })),
   getSettingsSchema: vi.fn(() => Promise.resolve(SCHEMA)),
   updateProfileSettings: vi.fn(() => Promise.resolve(true)),
+  updateSettings: vi.fn(() => Promise.resolve(true)),
   updateTheme: vi.fn(() => Promise.resolve(true)),
   fetchThemes: vi.fn(() => Promise.resolve([])),
   setDefaultProfile: vi.fn(() => Promise.resolve(true)),
@@ -176,6 +175,33 @@ function clickToggle(container: HTMLElement, label: string) {
 describe("schema-driven settings field PATCH payloads", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(api.fetchSettings).mockResolvedValue({
+      tmux: {},
+      logging: {},
+      session: { sidebar_position: "left" },
+      sound: {},
+    } as never);
+  });
+
+  it("saves Sidebar Position globally and reloads the saved value after a failed edit", async () => {
+    const { container } = renderTab("session");
+    await screen.findByText("Sidebar Position");
+    const select = selectByLabel(container, "Sidebar Position");
+    await waitFor(() => expect(select.value).toBe("left"));
+
+    for (const value of ["right", "left"]) {
+      fireEvent.change(select, { target: { value } });
+      await waitFor(() =>
+        expect(api.updateSettings).toHaveBeenLastCalledWith({ session: { sidebar_position: value } }),
+      );
+      expect(select.value).toBe(value);
+    }
+    expect(api.updateProfileSettings).not.toHaveBeenCalled();
+
+    vi.mocked(api.updateSettings).mockResolvedValueOnce(false);
+    fireEvent.change(select, { target: { value: "right" } });
+    await screen.findByText("Failed to save, please try again");
+    await waitFor(() => expect(select.value).toBe("left"));
   });
 
   it("tmux Status Bar select emits { tmux: { status_bar } } to the selected profile", async () => {
@@ -290,7 +316,7 @@ describe("schema-driven settings field PATCH payloads", () => {
     commit(input, "120");
 
     await waitFor(() =>
-      expect(vi.mocked(api.updateProfileSettings)).toHaveBeenCalledWith("main", {
+      expect(vi.mocked(api.updateSettings)).toHaveBeenCalledWith({
         session: { session_id_poller_max_threads: 120 },
       }),
     );

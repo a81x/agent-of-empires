@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { fetchProfiles, fetchSettings, getSettingsSchema, updateProfileSettings } from "../lib/api";
+import { fetchProfiles, fetchSettings, getSettingsSchema, updateProfileSettings, updateSettings } from "../lib/api";
 import { reportError, reportInfo } from "../lib/toastBus";
 import type { CommandAction } from "../components/command-palette/types";
 import type { SettingsFieldDescriptor } from "../lib/types";
@@ -31,11 +31,8 @@ function sectionToTab(section: string): string {
  * to its settings tab. `local_only` fields are omitted because the server PATCH
  * rejects them.
  *
- * Inline writes target the default profile, the same path SettingsView takes
- * when its profile picker sits on the default, so there is no new write
- * behavior. The write scope is named in the subtitle and toast rather than left
- * implicit: a `profile_overridable` flip names the profile, a global-only flip
- * reads "Global".
+ * Inline writes honor the schema's scope: the default profile for overridable
+ * fields, otherwise global settings. Subtitles name that same scope.
  */
 export function useSettingsCommands({ open, readOnly, onOpenSettingsTab }: Args): CommandAction[] {
   const [schema, setSchema] = useState<SettingsFieldDescriptor[]>([]);
@@ -76,7 +73,9 @@ export function useSettingsCommands({ open, readOnly, onOpenSettingsTab }: Args)
       const keywords = [f.section, f.field, f.category, f.label, f.widget.kind, "setting", "config"];
       const id = `setting:${f.section}.${f.field}`;
 
-      const inlineToggle = f.widget.kind === "toggle" && f.web_write.policy === "allow" && !readOnly;
+      // Telemetry must use its dedicated consent flow.
+      const inlineToggle =
+        f.section !== "telemetry" && f.widget.kind === "toggle" && f.web_write.policy === "allow" && !readOnly;
 
       if (inlineToggle) {
         const isOn = current === true;
@@ -90,7 +89,10 @@ export function useSettingsCommands({ open, readOnly, onOpenSettingsTab }: Args)
           perform: () => {
             const next = !isOn;
             void (async () => {
-              const ok = await updateProfileSettings(defaultProfile, { [f.section]: { [f.field]: next } });
+              const patch = { [f.section]: { [f.field]: next } };
+              const ok = f.profile_overridable
+                ? await updateProfileSettings(defaultProfile, patch)
+                : await updateSettings(patch);
               if (!ok) {
                 reportError(`Failed to update ${f.label}`);
                 return;
