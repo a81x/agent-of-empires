@@ -140,15 +140,24 @@ impl TranscriptModel {
                 text,
                 attachments,
                 prompt_id,
+                synthesized,
             } => {
                 self.begin_turn();
-                let id = match prompt_id {
-                    Some(pid) if !pid.is_empty() => pid.clone(),
-                    _ => format!("user-seq-{seq}"),
-                };
-                let mut row = self.grouped_row(id, TranscriptRowKind::UserPrompt, text.clone());
-                row.attachments = attachments.clone();
-                vec![self.append(row)]
+                // A rate-limit resume continuation replays a prompt the user
+                // already saw once, before the park; render nothing so the
+                // transcript reads as an uninterrupted continuation instead
+                // of the same message appearing twice.
+                if *synthesized {
+                    Vec::new()
+                } else {
+                    let id = match prompt_id {
+                        Some(pid) if !pid.is_empty() => pid.clone(),
+                        _ => format!("user-seq-{seq}"),
+                    };
+                    let mut row = self.grouped_row(id, TranscriptRowKind::UserPrompt, text.clone());
+                    row.attachments = attachments.clone();
+                    vec![self.append(row)]
+                }
             }
             Event::UserDiffCommentsPrompt {
                 intro,
@@ -873,6 +882,7 @@ mod tests {
                 size: 1234,
             }],
             prompt_id: None,
+            synthesized: false,
         };
         let mut m = TranscriptModel::new();
         let deltas = m.apply_event(3, &with_attachment);
@@ -893,6 +903,7 @@ mod tests {
                     text: "hi".into(),
                     attachments: Vec::new(),
                     prompt_id: prompt_id.map(Into::into),
+                    synthesized: false,
                 },
             );
             assert_eq!(m.rows()[0].id, want, "prompt_id={prompt_id:?}");
@@ -912,6 +923,26 @@ mod tests {
         );
         let payload = diff_row.diff_comments.as_ref().expect("payload");
         assert!(payload.is_multi_repo && payload.intro == "look");
+    }
+
+    /// A rate-limit resume continuation replays a prompt the user already saw
+    /// once, before the park (#3028, #4040): it must not appear twice, yet it
+    /// still opens a fresh turn so `empty_output` and divider suppression
+    /// behave like a real prompt.
+    #[test]
+    fn synthesized_prompt_renders_no_row_but_still_opens_the_turn() {
+        let ev = Event::UserPromptSent {
+            text: "run the nightly task".into(),
+            attachments: Vec::new(),
+            prompt_id: None,
+            synthesized: true,
+        };
+        let mut m = TranscriptModel::new();
+        let deltas = m.apply_event(1, &ev);
+        assert!(deltas.is_empty());
+        assert!(m.rows().is_empty());
+        assert!(m.turn_active);
+        assert!(!m.turn_has_output);
     }
 
     #[test]

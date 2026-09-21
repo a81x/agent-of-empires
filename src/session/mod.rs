@@ -12,6 +12,7 @@ pub(crate) mod claim;
 // `acp` because terminal/tmux import via the CLI does not involve ACP.
 pub mod claude_import;
 pub mod config;
+pub mod conversation_carry;
 // Depends on `crate::acp` (Event / event store) and is only driven from the
 // serve daemon. See #2808.
 pub mod conversation_summary;
@@ -68,21 +69,23 @@ pub use groups::{
     ARCHIVED_SECTION_PATH, SCRATCH_GROUP_NAME, SCRATCH_GROUP_PATH, TRASH_SECTION_NAME,
     TRASH_SECTION_PATH,
 };
+#[cfg(test)]
+pub(crate) use instance::install_aliases;
 pub(crate) use instance::{
     duplicate_session_error, find_duplicate_session, is_duplicate_session,
     persist_omp_session_to_storage, persist_session_to_storage, PassiveStatusPatch, ResumeIntent,
     SidWrite, NEWER_GENERATION_BUSY_REASON,
 };
 pub(crate) use instance::{
-    generic_host_config_path_for, sidecar_host_config_path_for, ResumeAttemptPolicy,
-    TerminalContextResume,
+    generic_host_config_path_for, resolved_agent_for, sidecar_host_config_path_for,
+    ResumeAttemptPolicy, TerminalContextResume,
 };
 pub use instance::{
     is_valid_session_color, DetectionState, EnsureReadyError, EnsureReadyOutcome, Instance,
     LaunchSidOutcome, LifecycleOperation, LifecycleReservation, LifecycleReservationError,
-    PluginCreateIdempotency, PollerStart, SandboxInfo, SessionBucket, StartOutcome, Status,
-    TerminalInfo, View, WorkspaceInfo, WorkspaceRepo, WorktreeInfo, SESSION_COLORS,
-    TMUX_SESSION_GONE_ERROR,
+    PendingInitialTurn, PluginCreateIdempotency, PollerStart, SandboxInfo, SessionBucket,
+    StartOutcome, Status, TerminalInfo, View, WorkspaceInfo, WorkspaceRepo, WorktreeInfo,
+    SESSION_COLORS, TMUX_SESSION_GONE_ERROR,
 };
 #[cfg(test)]
 pub(crate) use move_journal::{

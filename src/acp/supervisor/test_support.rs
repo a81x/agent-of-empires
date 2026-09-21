@@ -155,6 +155,7 @@ pub(super) struct VecSink {
     pub(super) frames: std::sync::Mutex<Vec<(String, u64, Event)>>,
     pub(super) stale_nonces: std::sync::Mutex<Vec<Nonce>>,
     pub(super) stale_elicitation_nonces: std::sync::Mutex<Vec<Nonce>>,
+    pub(super) stale_background_agent_ids: std::sync::Mutex<Vec<String>>,
 }
 
 impl VecSink {
@@ -175,6 +176,9 @@ impl BroadcastSink for VecSink {
     }
     fn unresolved_elicitation_nonces(&self, _session_id: &str) -> Vec<Nonce> {
         self.stale_elicitation_nonces.lock().unwrap().clone()
+    }
+    fn unresolved_background_agent_ids(&self, _session_id: &str) -> Vec<String> {
+        self.stale_background_agent_ids.lock().unwrap().clone()
     }
 }
 

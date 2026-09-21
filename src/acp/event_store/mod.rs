@@ -21,7 +21,7 @@ pub use attachments::AttachmentBlob;
 pub use rate_limit::RateLimitPark;
 pub use replay::ReplayPage;
 pub use search::ContentHit;
-pub use turns::TerminalRepairProbe;
+pub use turns::{TerminalRepairProbe, UnresolvedBackgroundAgentLaunch};
 
 /// Lifecycle and metadata events that neither count as session activity nor
 /// fall to the retention prune.

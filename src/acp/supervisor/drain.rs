@@ -78,6 +78,11 @@ struct StreamEnd {
 enum RestartDecision {
     Respawn(Box<SpawnConfig>),
     BudgetBurned,
+    /// An `Attached` worker's connection died. There is no spawn config to
+    /// respawn from, and parking would strand an adopted session behind a
+    /// banner nobody may be watching, so the handle is dropped and a startup
+    /// failure recorded for the reconciler to fresh-spawn from.
+    LeaveToReconciler,
     /// The handle was removed (shutdown or delete).
     Gone,
     /// The registry entry was deleted under a live handle (`aoe acp stop|kill`).
@@ -196,10 +201,29 @@ impl<S: BroadcastSink> Drain<S> {
     }
 
     /// Remove this epoch's handle; a no-op once a newer epoch replaced it.
+    /// Every caller is a terminal arm with no respawn behind it, so this
+    /// worker's background-agent tailers die here and nothing will report
+    /// their outcome: detach them, or a park leaves the panel showing them
+    /// running and holds the sidebar dot lit for its length (#4001). Gated on
+    /// the release so a newer epoch's sub-agents, which that epoch's own sweep
+    /// owns, are left alone; the detach runs off the `workers` guard because
+    /// it reads the store.
     async fn drop_handle(&self, lease: &Lease) {
-        let mut guard = self.workers.lock().await;
-        if lock_recover(&self.lifecycle).release_running(lease) {
-            guard.remove(&self.session_id);
+        let dropped = {
+            let mut guard = self.workers.lock().await;
+            let dropped = lock_recover(&self.lifecycle).release_running(lease);
+            if dropped {
+                guard.remove(&self.session_id);
+            }
+            dropped
+        };
+        if dropped {
+            super::publish::detach_orphaned_background_agents_on(
+                &*self.sink,
+                &self.next_seqs,
+                &self.session_id,
+                "the worker that was tracking this sub-agent stopped; tracking stopped",
+            );
         }
     }
 
@@ -234,6 +258,14 @@ impl<S: BroadcastSink> Drain<S> {
                         RESTART_WINDOW.as_secs()
                     ),
                 });
+            }
+            RestartDecision::LeaveToReconciler => {
+                info!(
+                    target: "acp.supervisor",
+                    session = %session_id,
+                    "attached worker connection died; leaving the fresh spawn to the reconciler"
+                );
+                lock_recover(&self.startup_failures).insert(session_id.clone());
             }
             RestartDecision::Gone => return None,
             RestartDecision::UserStopped => {
@@ -352,7 +384,17 @@ impl<S: BroadcastSink> Drain<S> {
         }
         drop(reservation);
 
+        // The respawned client starts with an empty `pending_responders` and
+        // no tailer is respawned on replay, so requests and background
+        // sub-agents still unresolved in the log are orphaned by the crashed
+        // worker this replaces.
         super::publish::cancel_orphaned_requests_on(&*self.sink, &self.next_seqs, session_id);
+        super::publish::detach_orphaned_background_agents_on(
+            &*self.sink,
+            &self.next_seqs,
+            session_id,
+            super::publish::WORKER_REPLACED_DETACH_WARNING,
+        );
         info!(
             target: "acp.supervisor",
             session = %session_id,
@@ -540,8 +582,13 @@ async fn restart_decision(workers: &Workers, session_id: &str) -> RestartDecisio
     match &handle.kind {
         _ if count > MAX_RESPAWNS_IN_WINDOW => RestartDecision::BudgetBurned,
         WorkerKind::Runner { spawn_config } => RestartDecision::Respawn(spawn_config.clone()),
-        // Attached and test workers have no spawn config to respawn from.
-        _ => RestartDecision::BudgetBurned,
+        // Attached: the previous daemon owned the runner and there is no spawn
+        // config here, so hand the session to the reconciler rather than park
+        // an adopted worker behind a banner nobody may be watching.
+        WorkerKind::Attached => RestartDecision::LeaveToReconciler,
+        // In-proc test fixture with no subprocess to respawn.
+        #[cfg(test)]
+        WorkerKind::Stdio => RestartDecision::BudgetBurned,
     }
 }
 
@@ -615,6 +662,151 @@ mod tests {
         assert!(
             matches!(decision, RestartDecision::UserStopped),
             "no registry entry means a user stop, got {decision:?}"
+        );
+    }
+
+    /// An `Attached` worker (reattached to a runner a previous daemon owned)
+    /// has no spawn config to respawn from. A crash after the session was
+    /// established must hand the session to the reconciler rather than park it
+    /// behind the crash-loop banner. With the registry entry gone the same
+    /// crash is a user stop (`aoe acp stop|kill`) and must not re-arm.
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn drain_rearms_an_attached_crash_for_the_reconciler() {
+        // (session, registry record saved, handed to the reconciler)
+        for (id, registry_saved, expect_rearm) in [
+            ("s-attach-rearm", true, true),
+            ("s-attach-user-stop", false, false),
+        ] {
+            let (_home, tmp) = isolate_home();
+            let sink = VecSink::new();
+            let sup = Supervisor::new(sink.clone());
+            if registry_saved {
+                // A live record keeps `restart_decision` past the user-stop
+                // gate, so the attached handoff is the arm exercised.
+                worker_registry::save(&worker_record(
+                    id,
+                    std::process::id(),
+                    tmp.path().join("attach.sock"),
+                ))
+                .unwrap();
+            }
+            let (client, _client_tx) = crate::acp::acp_client::AcpClient::fake_for_test(
+                crate::acp::state::AcpSessionId(id.into()),
+            );
+            let lease = sup
+                .test_install_handle(id, client, WorkerKind::Attached, None)
+                .await;
+            let (inbound_tx, inbound_rx) = mpsc::channel::<Event>(16);
+            let drain = sup.start_drain_task(id.into(), lease, inbound_rx);
+            inbound_tx
+                .send(Event::AcpSessionAssigned {
+                    acp_session_id: "acp-1".into(),
+                })
+                .await
+                .unwrap();
+            inbound_tx
+                .send(Event::AgentStartupError {
+                    message: "ACP connection failed: native binary failed to launch".into(),
+                })
+                .await
+                .unwrap();
+            drop(inbound_tx);
+            tokio::time::timeout(Duration::from_secs(2), drain)
+                .await
+                .expect("drain task should exit within 2s of inbound close")
+                .unwrap();
+
+            assert!(
+                !sup.workers.lock().await.contains_key(id),
+                "{id}: the handle must be dropped"
+            );
+            assert_eq!(
+                sup.take_startup_failures(),
+                if expect_rearm {
+                    vec![id.to_string()]
+                } else {
+                    Vec::<String>::new()
+                },
+                "{id}: only a registry-backed attached crash re-arms"
+            );
+            let frames = sink.frames.lock().unwrap();
+            assert!(
+                !frames.iter().any(|(_, _, ev)| {
+                    matches!(ev, Event::AgentStartupError { message } if message.contains("crashed more than"))
+                }),
+                "{id}: the crash-loop banner must not be published for an attached worker"
+            );
+            assert_eq!(
+                stopped_reasons(&sink, id)
+                    .iter()
+                    .filter(|r| *r == "user_stopped")
+                    .count(),
+                usize::from(!expect_rearm),
+                "{id}: a registry-gone attached crash is a user stop"
+            );
+        }
+    }
+
+    /// A worker that goes away with no respawn behind it takes its
+    /// background-agent tailers with it, so the drain's terminal arms must
+    /// detach whatever the log still shows running: otherwise the panel keeps
+    /// the sub-agent `Running` and `has_active_background_agent` holds the
+    /// sidebar dot lit past the `Stopped` this same arm publishes (#4001).
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn a_terminal_drain_arm_detaches_the_workers_background_agents() {
+        use crate::acp::state::{AcpSessionId, AcpState, AgentName, BackgroundAgentStatus};
+
+        let id = "s-drain-detach";
+        let (_home, _tmp) = isolate_home();
+        let (sink, store, _rx, _store_tmp) = channel_sink();
+        sink.publish(
+            id,
+            1,
+            &Event::BackgroundAgentLaunched {
+                agent_id: "sub-1".into(),
+                tool_call_id: "tc-1".into(),
+                description: "do a thing".into(),
+                prompt: "do a thing".into(),
+                model: "claude".into(),
+                output_file: "/tmp/nonexistent-4029.jsonl".into(),
+                started_at: chrono::Utc::now(),
+            },
+        );
+        let sup = Supervisor::new(sink);
+        sup.hydrate_seqs(store.all_session_seqs());
+        let (client, _client_tx) =
+            crate::acp::acp_client::AcpClient::fake_for_test(AcpSessionId(id.into()));
+        // No registry record: `restart_decision` reads that as the user
+        // stopping the runner externally and drops the handle without a
+        // respawn, which is the arm under test.
+        let lease = sup
+            .test_install_handle(id, client, WorkerKind::Attached, None)
+            .await;
+        let (inbound_tx, inbound_rx) = mpsc::channel::<Event>(16);
+        let drain = sup.start_drain_task(id.into(), lease, inbound_rx);
+        drop(inbound_tx);
+        tokio::time::timeout(Duration::from_secs(5), drain)
+            .await
+            .expect("drain task should exit within 5s of inbound close")
+            .unwrap();
+
+        assert!(
+            store.unresolved_background_agent_ids(id).is_empty(),
+            "the dropped worker's sub-agent must be detached in the durable log"
+        );
+        let mut state = AcpState::new(AcpSessionId(id.into()), AgentName("claude".into()), None);
+        for (_, event) in store.replay_from(id, 0) {
+            state.apply_event(event).unwrap();
+        }
+        assert_eq!(
+            state.background_agents[0].status,
+            BackgroundAgentStatus::Detached
+        );
+        assert!(
+            !state.has_active_background_agent(),
+            "the sidebar dot must not stay lit behind a stopped worker"
         );
     }
 

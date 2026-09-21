@@ -5,7 +5,7 @@ use std::sync::Arc;
 use tokio::sync::broadcast;
 
 use crate::acp::approvals::Nonce;
-use crate::acp::event_store::{AttachmentBlob, EventStore};
+use crate::acp::event_store::{AttachmentBlob, EventStore, UnresolvedBackgroundAgentLaunch};
 use crate::acp::state::{Event, RateLimitInfo};
 
 /// Destination for published events; test sinks override only what they observe.
@@ -28,6 +28,20 @@ pub trait BroadcastSink: Send + Sync + 'static {
     }
     /// Nonces of elicitations requested on disk but never resolved.
     fn unresolved_elicitation_nonces(&self, _session_id: &str) -> Vec<Nonce> {
+        Vec::new()
+    }
+    /// Agent ids of `BackgroundAgentLaunched` events on disk with no matching
+    /// `BackgroundAgentCompleted`: sub-agents a dead worker's tailer will
+    /// never report on again.
+    fn unresolved_background_agent_ids(&self, _session_id: &str) -> Vec<String> {
+        Vec::new()
+    }
+    /// The same rows, carrying `output_file` so `Supervisor::attach` can
+    /// resume tailing a sub-agent that survived a daemon restart.
+    fn unresolved_background_agent_launches(
+        &self,
+        _session_id: &str,
+    ) -> Vec<UnresolvedBackgroundAgentLaunch> {
         Vec::new()
     }
     /// Persist a prompt attachment keyed to its `UserPromptSent` seq.
@@ -70,6 +84,18 @@ impl BroadcastSink for ChannelSink {
 
     fn unresolved_elicitation_nonces(&self, session_id: &str) -> Vec<Nonce> {
         self.event_store.unresolved_elicitation_nonces(session_id)
+    }
+
+    fn unresolved_background_agent_ids(&self, session_id: &str) -> Vec<String> {
+        self.event_store.unresolved_background_agent_ids(session_id)
+    }
+
+    fn unresolved_background_agent_launches(
+        &self,
+        session_id: &str,
+    ) -> Vec<UnresolvedBackgroundAgentLaunch> {
+        self.event_store
+            .unresolved_background_agent_launches(session_id)
     }
 
     fn record_attachment(&self, session_id: &str, seq: u64, blob: &AttachmentBlob) -> bool {

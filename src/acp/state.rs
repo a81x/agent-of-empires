@@ -372,6 +372,10 @@ pub struct AcpState {
     #[serde(default)]
     pub background_agents: Vec<BackgroundAgentRecord>,
 
+    /// Whether the main turn is in flight. Dispatch (`acp::dispatch::decide`)
+    /// and the queue drain gate on this directly, so it tracks only the main
+    /// turn, never a background sub-agent; display signals combine it with
+    /// `has_active_background_agent()`.
     #[serde(default)]
     pub turn_active: bool,
     /// A mid-turn prompt is injected into the running turn rather than queued.
@@ -537,8 +541,12 @@ pub enum Event {
         description: String,
         prompt: String,
         model: String,
-        /// Local transcript path the daemon tails; never serialized.
-        #[serde(default, skip_serializing)]
+        /// Local transcript path the daemon tails. Persisted so a daemon that
+        /// restarts mid-run can re-tail a sub-agent that survived it; an event
+        /// from before this field existed defaults to empty, which the resume
+        /// sweep treats as untrackable and detaches. A host fs path, stripped
+        /// before any client-facing frame (`protocol::strip_transcript_path`).
+        #[serde(default)]
         output_file: String,
         started_at: DateTime<Utc>,
     },
@@ -596,6 +604,13 @@ pub enum Event {
         /// Client-minted id so a web client reconciles its optimistic row.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         prompt_id: Option<String>,
+        /// True when the daemon queued this turn itself (a rate-limit resume
+        /// continuation) rather than the user typing it just now. The
+        /// transcript model skips rendering a row for it: the user already
+        /// saw this text once, before the park. `#[serde(default)]` keeps
+        /// pre-existing persisted events deserialising as non-synthesized.
+        #[serde(default)]
+        synthesized: bool,
     },
     PromptCapabilities {
         image: bool,
@@ -621,6 +636,9 @@ pub enum Event {
         reason: String,
         text: String,
     },
+    /// Native ACP session id admitted by a successful new, load, fork, or
+    /// resume. The server listener persists it on `Instance.acp_session_id` so
+    /// the next spawn can `session/load`.
     AcpSessionAssigned {
         acp_session_id: String,
     },
@@ -666,6 +684,14 @@ impl AcpState {
             updated_at: Utc::now(),
             ..Self::default()
         }
+    }
+
+    /// Whether any background sub-agent is still in flight. Keyed on
+    /// `ended_at`, not `status`: a terminal `BackgroundAgentCompleted` can
+    /// carry `status: Stalled` (the tailer's abort timeout gives up without a
+    /// clean `end_turn`), and that record is done like any other (#4001).
+    pub fn has_active_background_agent(&self) -> bool {
+        self.background_agents.iter().any(|a| a.ended_at.is_none())
     }
 
     /// Apply a single event; returns the new `last_seq`.
@@ -849,9 +875,12 @@ impl AcpState {
                 last_text,
                 ..
             } => {
+                // A terminal record never reopens. `ended_at` is part of the
+                // guard because the tailer's abort timeout closes a record
+                // with the non-terminal `Stalled` status.
                 if let Some(a) = self
                     .background_agent(&agent_id)
-                    .filter(|a| !a.status.is_terminal())
+                    .filter(|a| a.ended_at.is_none() && !a.status.is_terminal())
                 {
                     a.status = status;
                     a.tool_count = tool_count;
@@ -988,6 +1017,7 @@ pub(crate) mod test_support {
             prompt_id: None,
             text: text.into(),
             attachments: Vec::new(),
+            synthesized: false,
         }
     }
 
@@ -1372,6 +1402,120 @@ mod tests {
         );
         assert_eq!((agent.tool_count, agent.tools.len()), (3, 1));
         assert_eq!(agent.result.as_deref(), Some("done"));
+    }
+
+    fn launched() -> Event {
+        Event::BackgroundAgentLaunched {
+            agent_id: "a1".into(),
+            tool_call_id: "tc1".into(),
+            description: "map backend".into(),
+            prompt: "do the thing".into(),
+            model: "claude-opus-4-8".into(),
+            output_file: "/tmp/a1.output".into(),
+            started_at: Utc::now(),
+        }
+    }
+
+    fn bg_progress(status: BackgroundAgentStatus, tool_count: u32) -> Event {
+        Event::BackgroundAgentProgress {
+            agent_id: "a1".into(),
+            status,
+            tool_count,
+            tools: vec![],
+            last_tool: None,
+            last_text: None,
+            at: Utc::now(),
+        }
+    }
+
+    fn bg_completed(status: BackgroundAgentStatus) -> Event {
+        Event::BackgroundAgentCompleted {
+            agent_id: "a1".into(),
+            status,
+            tools: vec![],
+            result: None,
+            warning: None,
+            ended_at: Utc::now(),
+        }
+    }
+
+    /// #4001: a completion closes the record whatever status it carries, and
+    /// a late Progress never reopens it. `Stalled` is the case the old
+    /// status-only guard missed: the tailer's abort timeout ends a run with a
+    /// status that is not otherwise terminal, which both wedged the busy
+    /// signal on and let a straggling Progress revive the record.
+    #[test]
+    fn a_terminal_background_record_never_reopens_and_goes_idle() {
+        for status in [
+            BackgroundAgentStatus::Stalled,
+            BackgroundAgentStatus::Detached,
+            BackgroundAgentStatus::Completed,
+        ] {
+            let mut s = applied([launched()]);
+            assert!(s.has_active_background_agent(), "{status:?}");
+
+            s.apply_event(bg_completed(status)).unwrap();
+            s.apply_event(bg_progress(BackgroundAgentStatus::Running, 9))
+                .unwrap();
+            let agent = &s.background_agents[0];
+            assert_eq!(agent.status, status, "{status:?} must not reopen");
+            assert!(agent.ended_at.is_some(), "{status:?}");
+            assert!(!s.has_active_background_agent(), "{status:?}");
+        }
+    }
+
+    /// Only `BackgroundAgentCompleted` sets `ended_at`, so a `Progress`
+    /// reporting a stall is not terminal and the next one resumes it.
+    #[test]
+    fn background_agent_progress_stalled_without_ended_at_still_resumes() {
+        let s = applied([launched(), bg_progress(BackgroundAgentStatus::Stalled, 4)]);
+        assert_eq!(
+            s.background_agents[0].status,
+            BackgroundAgentStatus::Stalled
+        );
+        assert!(s.background_agents[0].ended_at.is_none());
+        assert!(s.has_active_background_agent());
+
+        let s = applied([
+            launched(),
+            bg_progress(BackgroundAgentStatus::Stalled, 4),
+            bg_progress(BackgroundAgentStatus::Running, 5),
+        ]);
+        assert_eq!(
+            s.background_agents[0].status,
+            BackgroundAgentStatus::Running
+        );
+    }
+
+    /// #4001: `turn_active` gates prompt dispatch and the queue drain, not
+    /// just display, so `Stopped` clears it even while a sub-agent the turn
+    /// spawned runs on. The busy display signal is the pair of flags.
+    #[test]
+    fn turn_active_tracks_only_the_main_turn() {
+        let mut s = applied([prompt("go"), launched()]);
+        assert!(s.turn_active && s.has_active_background_agent());
+
+        s.apply_event(bg_completed(BackgroundAgentStatus::Completed))
+            .unwrap();
+        assert!(
+            s.turn_active,
+            "the main turn's own Stopped never fired, so it is still live"
+        );
+        assert!(!s.has_active_background_agent());
+
+        let mut s = applied([prompt("go"), launched(), stopped("prompt_complete")]);
+        assert!(
+            !s.turn_active,
+            "dispatch must send the next prompt rather than queue it behind a background agent"
+        );
+        assert!(
+            s.has_active_background_agent(),
+            "the display signal stays busy"
+        );
+
+        s.apply_event(bg_completed(BackgroundAgentStatus::Completed))
+            .unwrap();
+        assert!(!s.turn_active && !s.has_active_background_agent());
     }
 
     fn config_options(model: &str) -> Event {

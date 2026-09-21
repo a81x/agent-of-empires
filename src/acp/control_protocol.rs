@@ -14,6 +14,25 @@ pub const MAX_AGENT_FRAME_BYTES: usize = 64 * 1024 * 1024;
 /// Hard cap on a single control frame.
 pub const MAX_CONTROL_FRAME_BYTES: u32 = MAX_AGENT_FRAME_BYTES as u32 + 64 * 1024;
 
+/// Bound on the runner-to-daemon control queue. A detached runner buffers
+/// outbound frames until a daemon reattaches, so it must never retain an
+/// unbounded number of large JSON values, yet one maximum-sized ACP frame
+/// must still fit. This backlog is exactly what a reattaching daemon replays,
+/// so the daemon's pending-replay buffer is sized against the same contract:
+/// a legitimate reattach must be able to accept the whole flushed queue.
+pub const MAX_CONTROL_QUEUE_FRAMES: usize = 4096;
+pub const MAX_CONTROL_QUEUE_BYTES: usize = 128 * 1024 * 1024;
+
+/// Runner-minted [`ControlBody::Notify`] queued right after an established
+/// session's [`ControlBody::SessionReady`]. Frames go out handshake first, so
+/// it follows the updates the agent sent before its reply; the daemon handles
+/// it only once that replay has been applied.
+#[derive(
+    Debug, Clone, Default, Serialize, Deserialize, agent_client_protocol::JsonRpcNotification,
+)]
+#[notification(method = "_aoe/session_replayed")]
+pub struct SessionReplayed {}
+
 /// A single control frame.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -176,6 +195,13 @@ pub async fn write_frame<W: AsyncWrite + Unpin>(w: &mut W, body: &ControlBody) -
 
 /// Read one frame.
 pub async fn read_frame<R: AsyncRead + Unpin>(r: &mut R) -> Result<Option<ControlBody>> {
+    Ok(read_frame_with_size(r).await?.map(|(body, _)| body))
+}
+
+/// Read a frame with its original wire cost, including the length prefix.
+pub(crate) async fn read_frame_with_size<R: AsyncRead + Unpin>(
+    r: &mut R,
+) -> Result<Option<(ControlBody, usize)>> {
     let mut len_buf = [0u8; 4];
     #[cfg(feature = "test-support")]
     let length_read = async {
@@ -209,7 +235,7 @@ pub async fn read_frame<R: AsyncRead + Unpin>(r: &mut R) -> Result<Option<Contro
     let mut body = vec![0u8; len as usize];
     r.read_exact(&mut body).await?;
     let parsed: ControlBody = serde_json::from_slice(&body)?;
-    Ok(Some(parsed))
+    Ok(Some((parsed, len as usize + len_buf.len())))
 }
 
 #[cfg(test)]

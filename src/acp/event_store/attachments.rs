@@ -131,6 +131,7 @@ mod tests {
                 name: Some("shot.png".into()),
                 size: 7,
             }],
+            synthesized: false,
         };
         store.record(session_id, 1, &prompt).unwrap();
         assert!(store.record_attachment(session_id, 1, &img_blob(id)));

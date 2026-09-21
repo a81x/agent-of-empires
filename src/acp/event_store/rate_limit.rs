@@ -410,6 +410,7 @@ mod tests {
             prompt_id: None,
             text: "look at this".into(),
             attachments: vec![attachment.clone()],
+            synthesized: false,
         };
         // (events, expected prompt)
         let cases = [

@@ -22,6 +22,33 @@ pub struct TerminalRepairProbe {
     pub substantive_at_ms: i64,
 }
 
+/// One unresolved `BackgroundAgentLaunched` row. See
+/// [`EventStore::unresolved_background_agent_launches`].
+#[derive(Debug, Clone)]
+pub struct UnresolvedBackgroundAgentLaunch {
+    pub agent_id: String,
+    pub output_file: String,
+}
+
+/// Launches with no matching completion, shared by both unresolved-launch
+/// queries. Both `agent_id` extractions are `IS NOT NULL`-guarded: SQLite's
+/// `NOT IN` evaluates to `NULL` (never true) for every row once the subquery
+/// yields one `NULL`, so a single unextractable id would otherwise blank the
+/// whole result instead of just miscounting that row.
+const UNRESOLVED_BACKGROUND_AGENT_WHERE: &str = "
+     FROM acp_events
+     WHERE session_id = ?1
+       AND discriminant = 'BackgroundAgentLaunched'
+       AND json_extract(event_json, '$.BackgroundAgentLaunched.agent_id') IS NOT NULL
+       AND json_extract(event_json, '$.BackgroundAgentLaunched.agent_id') NOT IN (
+           SELECT json_extract(event_json, '$.BackgroundAgentCompleted.agent_id')
+           FROM acp_events
+           WHERE session_id = ?1
+             AND discriminant = 'BackgroundAgentCompleted'
+             AND json_extract(event_json, '$.BackgroundAgentCompleted.agent_id') IS NOT NULL
+       )
+     ORDER BY seq ASC";
+
 impl EventStore {
     pub fn latest_plan(&self, session_id: &str) -> Option<Plan> {
         let (_, json) =
@@ -184,6 +211,52 @@ impl EventStore {
         .into_iter()
         .map(Nonce)
         .collect()
+    }
+
+    /// Agent ids of `BackgroundAgentLaunched` events with no later
+    /// `BackgroundAgentCompleted`. Read from the durable log rather than the
+    /// control cache, which may be cold for a session no reader has hydrated
+    /// since a daemon restart, so a dying worker's teardown can detach
+    /// sub-agents its tailer will never report on again (#4001).
+    pub fn unresolved_background_agent_ids(&self, session_id: &str) -> Vec<String> {
+        query_strings(
+            &self.conn(),
+            &format!(
+                "SELECT json_extract(event_json, '$.BackgroundAgentLaunched.agent_id') AS agent_id\
+                 {UNRESOLVED_BACKGROUND_AGENT_WHERE}"
+            ),
+            "unresolved_background_agent_ids",
+            session_id,
+        )
+    }
+
+    /// The same rows as [`Self::unresolved_background_agent_ids`], carrying
+    /// the transcript path a resumed tailer needs. `Supervisor::attach` uses
+    /// it to resume tracking a sub-agent that survived the restart instead of
+    /// detaching it.
+    pub fn unresolved_background_agent_launches(
+        &self,
+        session_id: &str,
+    ) -> Vec<UnresolvedBackgroundAgentLaunch> {
+        let conn = self.conn();
+        let what = "unresolved_background_agent_launches";
+        let sql = format!(
+            "SELECT json_extract(event_json, '$.BackgroundAgentLaunched.agent_id'),\
+                    json_extract(event_json, '$.BackgroundAgentLaunched.output_file')\
+             {UNRESOLVED_BACKGROUND_AGENT_WHERE}"
+        );
+        let Some(mut stmt) = logged(conn.prepare(&sql), what, session_id) else {
+            return Vec::new();
+        };
+        let rows = stmt.query_map(params![session_id], |row| {
+            Ok(UnresolvedBackgroundAgentLaunch {
+                agent_id: row.get(0)?,
+                output_file: row.get::<_, Option<String>>(1)?.unwrap_or_default(),
+            })
+        });
+        logged(rows, what, session_id)
+            .map(|rows| rows.filter_map(|r| r.ok()).collect())
+            .unwrap_or_default()
     }
 
     /// Full payloads of unresolved approval requests, in request order.
@@ -715,5 +788,95 @@ mod tests {
         assert_eq!(store.unresolved_elicitation_nonces("s-1"), [e_b]);
         assert!(store.unresolved_approval_nonces("s-2").is_empty());
         assert!(store.unresolved_elicitation_nonces("s-2").is_empty());
+    }
+
+    fn bg_launched(agent_id: &str, output_file: &str) -> Event {
+        Event::BackgroundAgentLaunched {
+            agent_id: agent_id.into(),
+            tool_call_id: format!("tc-{agent_id}"),
+            description: "map backend".into(),
+            prompt: "do it".into(),
+            model: "claude-opus-4-8".into(),
+            output_file: output_file.into(),
+            started_at: chrono::Utc::now(),
+        }
+    }
+
+    /// Background-agent parallel of `unresolved_approval_nonces`: a launch
+    /// whose id never saw a matching completion is orphaned, and the launches
+    /// variant carries the transcript path a resumed tailer needs.
+    #[test]
+    fn unresolved_background_agent_launches_find_orphans() {
+        let (_tmp, store) = open_store(1000);
+        record_from(
+            &store,
+            "s-1",
+            1,
+            [
+                bg_launched("bg-a", "/tmp/a.jsonl"),
+                Event::BackgroundAgentCompleted {
+                    agent_id: "bg-a".into(),
+                    status: BackgroundAgentStatus::Completed,
+                    tools: Vec::new(),
+                    result: None,
+                    warning: None,
+                    ended_at: chrono::Utc::now(),
+                },
+                bg_launched("bg-b", "/tmp/b.jsonl"),
+                bg_launched("bg-c", ""),
+            ],
+        );
+
+        assert_eq!(
+            store.unresolved_background_agent_ids("s-1"),
+            ["bg-b".to_string(), "bg-c".to_string()]
+        );
+        let launches: Vec<(String, String)> = store
+            .unresolved_background_agent_launches("s-1")
+            .into_iter()
+            .map(|l| (l.agent_id, l.output_file))
+            .collect();
+        assert_eq!(
+            launches,
+            [
+                ("bg-b".to_string(), "/tmp/b.jsonl".to_string()),
+                ("bg-c".to_string(), String::new()),
+            ]
+        );
+        assert!(store.unresolved_background_agent_ids("s-2").is_empty());
+        assert!(store.unresolved_background_agent_launches("s-2").is_empty());
+    }
+
+    /// A completion row whose `agent_id` is not extractable (truncated
+    /// payload, schema drift) must not hide every other orphan: SQLite's
+    /// `NOT IN` goes `NULL` for the whole result once the subquery yields one
+    /// `NULL`, silently no-opping the detach scan. The store never writes
+    /// such a row, so insert one directly.
+    #[test]
+    fn unresolved_background_agent_ids_survive_an_unextractable_completed_row() {
+        let (_tmp, store) = open_store(1000);
+        store
+            .record("s-1", 1, &bg_launched("bg-real-orphan", ""))
+            .unwrap();
+        store
+            .conn()
+            .execute(
+                "INSERT INTO acp_events (session_id, seq, event_json, created_at, discriminant)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![
+                    "s-1",
+                    2_i64,
+                    "{\"BackgroundAgentCompleted\":{}}",
+                    0_i64,
+                    "BackgroundAgentCompleted",
+                ],
+            )
+            .unwrap();
+
+        assert_eq!(
+            store.unresolved_background_agent_ids("s-1"),
+            ["bg-real-orphan".to_string()],
+            "an unextractable Completed row must not blank the whole scan"
+        );
     }
 }

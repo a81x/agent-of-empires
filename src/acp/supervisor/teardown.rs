@@ -9,7 +9,7 @@ use crate::acp::acp_client::{AcpClient, DeleteSessionOutcome};
 use crate::acp::runner_lifecycle::{
     Lease, LifecycleTable, ProcessControl, RunnerIdentity, Settlement, StopDecision,
 };
-use crate::acp::state::Event;
+use crate::acp::state::{BackgroundAgentStatus, Event};
 use crate::daemon::AcpWorkerState;
 use crate::process::worker_registry;
 
@@ -120,6 +120,25 @@ impl<S: BroadcastSink> Supervisor<S> {
                 self.settle(&lease, settlement);
                 // Publish now so the UI clears its thinking state before the next reap tick.
                 if !is_test_worker(&handle) {
+                    // The worker's tailer died with it, so a sub-agent still
+                    // running on disk will never get its own terminal event
+                    // and `has_active_background_agent` would stay true
+                    // forever (#4001). Ahead of the `Stopped`, so a reader
+                    // folding the log in order sees it cleared no later than
+                    // the turn-end event.
+                    for agent_id in self.sink.unresolved_background_agent_ids(session_id) {
+                        self.publish_next(
+                            session_id,
+                            &Event::BackgroundAgentCompleted {
+                                agent_id,
+                                status: BackgroundAgentStatus::Detached,
+                                tools: Vec::new(),
+                                result: None,
+                                warning: None,
+                                ended_at: chrono::Utc::now(),
+                            },
+                        );
+                    }
                     self.publish_next(
                         session_id,
                         &Event::Stopped {
@@ -567,6 +586,162 @@ mod tests {
                 .iter()
                 .all(|(id, _, _)| id != "s-stdio"),
             "neither the reaper nor shutdown publishes for test workers"
+        );
+    }
+
+    /// #4001: teardown must detach every background sub-agent the dying
+    /// worker's tailer will never report on again, ahead of the `Stopped` it
+    /// already publishes, so a reader folding the log in order sees
+    /// `has_active_background_agent` cleared no later than the turn end.
+    /// Nothing outstanding adds nothing, and the two arms that never reach
+    /// `TearDown` publish neither the detach nor the `Stopped`.
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn shutdown_detaches_outstanding_background_agents_before_stopped() {
+        let (_home, tmp) = isolate_home();
+        let sink = VecSink::new();
+        *sink.stale_background_agent_ids.lock().unwrap() = vec!["bg-1".into(), "bg-2".into()];
+        let sup = Supervisor::new(sink.clone());
+        sup.test_install_runner(
+            "s-detach",
+            runner_config(tmp.path().join("dummy.sock")),
+            None,
+        )
+        .await;
+
+        sup.shutdown("s-detach").await.expect("shutdown");
+
+        let frames = sink.frames.lock().unwrap().clone();
+        let mine: Vec<&(String, u64, Event)> = frames
+            .iter()
+            .filter(|(id, _, _)| id == "s-detach")
+            .collect();
+        assert_eq!(mine.len(), 3, "two detach completions plus the Stopped");
+        for (idx, expected) in [(0, "bg-1"), (1, "bg-2")] {
+            match &mine[idx].2 {
+                Event::BackgroundAgentCompleted {
+                    agent_id, status, ..
+                } => assert_eq!(
+                    (agent_id.as_str(), *status),
+                    (expected, BackgroundAgentStatus::Detached)
+                ),
+                other => panic!("expected a Detached completion, got {other:?}"),
+            }
+        }
+        assert!(matches!(&mine[2].2, Event::Stopped { reason } if reason == "user_stopped"));
+        assert!(
+            mine[0].1 < mine[1].1 && mine[1].1 < mine[2].1,
+            "detach completions must be seq-ordered ahead of Stopped"
+        );
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn shutdown_publishes_no_detach_outside_the_teardown_arm() {
+        let (_home, tmp) = isolate_home();
+        // Nothing outstanding: only the Stopped teardown always publishes.
+        let sink = VecSink::new();
+        let sup = Supervisor::new(sink.clone());
+        sup.test_install_runner(
+            "s-clean",
+            runner_config(tmp.path().join("dummy.sock")),
+            None,
+        )
+        .await;
+        sup.shutdown("s-clean").await.expect("shutdown");
+        let clean = sink.frames.lock().unwrap().len();
+        assert_eq!(clean, 1, "only the Stopped, no synthetic completion");
+
+        // `NotOwned`: a session id nothing ever spawned.
+        let sink = VecSink::new();
+        *sink.stale_background_agent_ids.lock().unwrap() = vec!["bg-1".into()];
+        let sup = Supervisor::new(sink.clone());
+        assert!(matches!(
+            sup.shutdown("s-never-existed").await,
+            Err(SupervisorError::UnknownSession(_))
+        ));
+        assert!(
+            sink.frames.lock().unwrap().is_empty(),
+            "an unowned session must publish nothing, detach included"
+        );
+
+        // `CancelRequested`: a resume is still in flight, no handle installed.
+        let sink = VecSink::new();
+        *sink.stale_background_agent_ids.lock().unwrap() = vec!["bg-1".into()];
+        let sup = Supervisor::new(sink.clone());
+        let _reservation = reserve(sup.begin_resume("s-resuming", ResumeKind::Spawn).await);
+        sup.shutdown("s-resuming")
+            .await
+            .expect("a cancel-in-flight shutdown does not error");
+        assert!(
+            sink.frames.lock().unwrap().is_empty(),
+            "a resume-in-flight cancel must publish nothing, detach included"
+        );
+    }
+
+    /// The `VecSink` cases above never exercise `ChannelSink`'s own override
+    /// or the SQL behind it, so a wrong json path there would pass them all.
+    /// Record a launch through a real store, tear the session down through a
+    /// real `ChannelSink`, and read the durable log back.
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn shutdown_detaches_through_a_real_channel_sink_and_event_store() {
+        let (_home, tmp) = isolate_home();
+        let (sink, store, _rx, _store_tmp) = channel_sink();
+        store
+            .record(
+                "s-real-teardown",
+                1,
+                &Event::BackgroundAgentLaunched {
+                    agent_id: "bg-real".into(),
+                    tool_call_id: "tc-real".into(),
+                    description: "map backend".into(),
+                    prompt: "do it".into(),
+                    model: "claude-opus-4-8".into(),
+                    output_file: "/tmp/bg-real.output".into(),
+                    started_at: chrono::Utc::now(),
+                },
+            )
+            .unwrap();
+        let sup = Supervisor::new(sink);
+        // That seq=1 went straight to the store, so next_seqs needs the same
+        // hydrate a real daemon restart performs; otherwise teardown's publish
+        // collides with it and is dropped by INSERT OR IGNORE.
+        sup.hydrate_seqs(store.all_session_seqs());
+        sup.test_install_runner(
+            "s-real-teardown",
+            runner_config(tmp.path().join("dummy.sock")),
+            None,
+        )
+        .await;
+        assert_eq!(
+            store.unresolved_background_agent_ids("s-real-teardown"),
+            ["bg-real".to_string()],
+            "precondition: the launch is genuinely outstanding before teardown"
+        );
+
+        sup.shutdown("s-real-teardown").await.expect("shutdown");
+
+        let replayed = store.replay_from("s-real-teardown", 0);
+        assert_eq!(replayed.len(), 3, "launch, detach completion, stopped");
+        match &replayed[1] {
+            (
+                2,
+                Event::BackgroundAgentCompleted {
+                    agent_id, status, ..
+                },
+            ) => assert_eq!(
+                (agent_id.as_str(), *status),
+                ("bg-real", BackgroundAgentStatus::Detached)
+            ),
+            other => panic!("expected a Detached completion at seq 2, got {other:?}"),
+        }
+        assert!(matches!(replayed[2], (3, Event::Stopped { .. })));
+        assert!(
+            store
+                .unresolved_background_agent_ids("s-real-teardown")
+                .is_empty(),
+            "the real ChannelSink override must reach the real scan and close it out"
         );
     }
 

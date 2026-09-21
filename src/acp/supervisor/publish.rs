@@ -5,8 +5,8 @@ use tracing::info;
 use super::{next_seq, BroadcastSink, PromptDisposition, SeqMap, Supervisor, WorkerKind};
 use crate::acp::approvals::ApprovalDecision;
 use crate::acp::elicitations::ElicitationOutcome;
-use crate::acp::event_store::AttachmentBlob;
-use crate::acp::state::Event;
+use crate::acp::event_store::{AttachmentBlob, UnresolvedBackgroundAgentLaunch};
+use crate::acp::state::{BackgroundAgentStatus, Event};
 
 impl<S: BroadcastSink> Supervisor<S> {
     pub(super) fn publish_next(&self, session_id: &str, event: &Event) -> u64 {
@@ -105,18 +105,21 @@ impl<S: BroadcastSink> Supervisor<S> {
     }
 
     pub async fn publish_user_prompt(&self, session_id: &str, text: String) -> PromptDisposition {
-        self.publish_user_prompt_with_attachments(session_id, text, &[], None)
+        self.publish_user_prompt_with_attachments(session_id, text, &[], None, false)
             .await
     }
 
     /// Record a `UserPromptSent` (attachments stored as blobs keyed to its seq)
-    /// and decide how the caller routes the text.
+    /// and decide how the caller routes the text. `synthesized` marks a
+    /// daemon-queued rate-limit continuation rather than text the user just
+    /// typed, which the transcript renders no row for (#4040).
     pub async fn publish_user_prompt_with_attachments(
         &self,
         session_id: &str,
         text: String,
         attachments: &[AttachmentBlob],
         prompt_id: Option<String>,
+        synthesized: bool,
     ) -> PromptDisposition {
         let agent_key = self.agent_key_for_session(session_id).await;
         let profile = crate::acp::agent_profiles::resolve(&agent_key);
@@ -145,6 +148,7 @@ impl<S: BroadcastSink> Supervisor<S> {
             text,
             attachments: refs,
             prompt_id,
+            synthesized,
         };
         if !self.sink.publish_persisted(session_id, seq, &event) {
             // Roll back so refs never point at blobs that were not published.
@@ -196,6 +200,96 @@ impl<S: BroadcastSink> Supervisor<S> {
     pub(super) fn cancel_orphaned_requests(&self, session_id: &str) {
         cancel_orphaned_requests_on(&*self.sink, &self.next_seqs, session_id);
     }
+
+    /// Detach background sub-agents the previous daemon left outstanding.
+    /// See [`detach_orphaned_background_agents_on`].
+    pub(super) fn detach_orphaned_background_agents(&self, session_id: &str) {
+        detach_orphaned_background_agents_on(
+            &*self.sink,
+            &self.next_seqs,
+            session_id,
+            WORKER_REPLACED_DETACH_WARNING,
+        );
+    }
+}
+
+/// Why `spawn` and the drain respawn path detach: both install a fresh worker
+/// over the one whose tailer died.
+pub(super) const WORKER_REPLACED_DETACH_WARNING: &str =
+    "the worker that was tracking this sub-agent was replaced; tracking stopped";
+
+/// Detach background sub-agents left running by a dead worker: its tailer died
+/// with it, so nothing will ever report their outcome and the panel would show
+/// them running forever (#4001). `warning` is caller-supplied because the
+/// sites differ in why tracking stopped. `attach` instead resumes what it can;
+/// see [`collect_resumable_background_agent_launches`].
+pub(super) fn detach_orphaned_background_agents_on<S: BroadcastSink>(
+    sink: &S,
+    next_seqs: &SeqMap,
+    session_id: &str,
+    warning: &str,
+) {
+    let stale_ids = sink.unresolved_background_agent_ids(session_id);
+    if stale_ids.is_empty() {
+        return;
+    }
+    info!(
+        target: "acp.supervisor",
+        session = %session_id,
+        stale = stale_ids.len(),
+        "detaching background sub-agents orphaned by daemon restart"
+    );
+    for agent_id in stale_ids {
+        publish_background_agent_detached(sink, next_seqs, session_id, agent_id, warning);
+    }
+}
+
+fn publish_background_agent_detached<S: BroadcastSink>(
+    sink: &S,
+    next_seqs: &SeqMap,
+    session_id: &str,
+    agent_id: String,
+    warning: &str,
+) {
+    sink.publish(
+        session_id,
+        next_seq(next_seqs, session_id),
+        &Event::BackgroundAgentCompleted {
+            agent_id,
+            status: BackgroundAgentStatus::Detached,
+            tools: Vec::new(),
+            result: None,
+            warning: Some(warning.to_string()),
+            ended_at: chrono::Utc::now(),
+        },
+    );
+}
+
+/// The attach-path counterpart of [`detach_orphaned_background_agents_on`]:
+/// the worker just attached is provably alive, so a sub-agent it launched may
+/// still be running. Detaches only the launches with no transcript path to
+/// resume from and returns the rest for `AcpClient::resume_background_tailing`.
+/// Sync so the query and those publishes can run before the drain starts,
+/// while the resume send stays an await outside the caller's lock.
+pub(super) fn collect_resumable_background_agent_launches<S: BroadcastSink>(
+    sink: &S,
+    next_seqs: &SeqMap,
+    session_id: &str,
+) -> Vec<UnresolvedBackgroundAgentLaunch> {
+    let (resumable, untrackable): (Vec<_>, Vec<_>) = sink
+        .unresolved_background_agent_launches(session_id)
+        .into_iter()
+        .partition(|l| !l.output_file.is_empty());
+    for launch in untrackable {
+        publish_background_agent_detached(
+            sink,
+            next_seqs,
+            session_id,
+            launch.agent_id,
+            "session reattached before this sub-agent finished; tracking stopped",
+        );
+    }
+    resumable
 }
 
 /// Cancel approvals and elicitations a dead worker left unresolved in the log:
@@ -469,5 +563,36 @@ mod tests {
         );
         let seqs: Vec<u64> = frames.iter().map(|f| f.1).collect();
         assert_eq!(seqs, [1, 2, 3, 4]);
+    }
+
+    /// `synthesized` rides through to the published event: a rate-limit resume
+    /// continuation must stay distinguishable from an ordinary prompt so the
+    /// transcript can skip rendering a duplicate row for it (#4040).
+    #[tokio::test]
+    async fn publish_user_prompt_carries_the_synthesized_flag() {
+        let sink = VecSink::new();
+        let sup = Supervisor::new(sink.clone());
+        sup.publish_user_prompt("s-1", "typed by the user".into())
+            .await;
+        sup.publish_user_prompt_with_attachments(
+            "s-1",
+            "resent after rate limit".into(),
+            &[],
+            None,
+            true,
+        )
+        .await;
+
+        let flags: Vec<bool> = sink
+            .frames
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(_, _, event)| match event {
+                Event::UserPromptSent { synthesized, .. } => *synthesized,
+                other => panic!("unexpected {other:?}"),
+            })
+            .collect();
+        assert_eq!(flags, [false, true]);
     }
 }
