@@ -955,7 +955,11 @@ mod tests {
         );
         assert_eq!(shared.as_deref(), Some("from-profile"), "profile wins");
 
-        let (names, shared) = resolve(None, repo.clone()).await;
+        // A profile with no mcp.json, so the project-local trust gate is read
+        // against the global layer: with no profile argument at all,
+        // `resolve_default_profile` would pick "work" (the only profile on
+        // disk) and its `shared` would win.
+        let (names, shared) = resolve(Some("empty"), repo.clone()).await;
         assert!(
             !names.contains(&"project-only".to_string()),
             "untrusted project is skipped"
@@ -965,7 +969,7 @@ mod tests {
         let servers = crate::session::mcp::project_mcp::load_project_mcp_servers(&repo).unwrap();
         let hash = crate::session::mcp::project_mcp::fingerprint(&servers);
         crate::session::config::repo_config::trust_repo(&repo, None, Some(&hash)).unwrap();
-        let (names, shared) = resolve(None, repo).await;
+        let (names, shared) = resolve(Some("empty"), repo).await;
         assert!(
             names.contains(&"project-only".to_string()),
             "trusted project is forwarded"

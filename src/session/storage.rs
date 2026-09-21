@@ -2714,6 +2714,8 @@ mod tests {
         fs::write(&storage.sessions_path, "{ invalid json }")?;
         assert!(storage.load().is_err());
 
+        // `update` reads before it writes, so clear the corrupt file first.
+        fs::write(&storage.sessions_path, "[]")?;
         seed(&storage, &[])?;
         assert_eq!(fs::read_to_string(&storage.sessions_path)?.trim(), "[]");
 

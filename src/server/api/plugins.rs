@@ -259,7 +259,7 @@ pub struct PluginActionBody {
 pub async fn invoke_plugin_action(
     State(state): State<std::sync::Arc<AppState>>,
     Path(id): Path<String>,
-    Json(body): Json<PluginActionBody>,
+    body: Result<Json<PluginActionBody>, axum::extract::rejection::JsonRejection>,
 ) -> Response {
     if state.read_only {
         return api_error(
@@ -272,6 +272,12 @@ pub async fn invoke_plugin_action(
     if let Some(resp) = super::cityhall_block(&state) {
         return resp;
     }
+    // Extracted after the guards so a read-only or CityHall server answers with
+    // its own status rather than a body-shape 400 (#1229).
+    let Json(body) = match body {
+        Ok(body) => body,
+        Err(rejection) => return rejection.into_response(),
+    };
     let Some(host) = state.plugin_host.as_ref() else {
         return api_error(
             StatusCode::SERVICE_UNAVAILABLE,

@@ -1347,7 +1347,11 @@ mod tests {
         assert_eq!(attention_tier(&snoozed), 99);
         snoozed.archive();
         assert_eq!(attention_tier(&snoozed), 99);
+        // `archive` clears the snooze and settles the live status, so restore
+        // both before checking what an expired snooze alone does.
+        assert!(snoozed.snoozed_until.is_none());
         snoozed.unarchive();
+        snoozed.status = Status::Waiting;
         snoozed.snoozed_until = Some(Utc::now() - Duration::seconds(1));
         assert!(!snoozed.is_snoozed() && snoozed.snooze_remaining().is_none());
         assert_eq!(

@@ -163,7 +163,11 @@ fn opt_in_round_trips_and_opt_out_deletes_id() {
 #[test]
 #[serial]
 fn do_not_track_suppresses_send_and_id() {
-    let _tmp = opted_in();
+    // Not `opted_in()`: that fixture applies the opt-in before DO_NOT_TRACK is
+    // set, which legitimately mints an id. This test is about suppression from
+    // the start.
+    let _tmp = isolate();
+    update_config(|config| config.telemetry.enabled = true).expect("save config");
     unsafe { std::env::set_var("DO_NOT_TRACK", "1") };
 
     assert!(telemetry::do_not_track());
@@ -485,7 +489,11 @@ fn cli_usage_flush_throttled_but_retries_after_failure() {
     );
     // Zero gaps always re-grant: every stamp is older than zero.
     assert!(telemetry::cli_usage_due(Duration::ZERO, Duration::ZERO));
+    drop(_tmp);
 
+    // A fresh install: the daily slot is unclaimed, so a *failed* send must
+    // leave it open even though the attempt stamp throttles the retry.
+    let _tmp = opted_in();
     telemetry::record_cli_usage_flush(false);
     assert!(
         !telemetry::cli_usage_due(day, hour),
