@@ -116,8 +116,9 @@ fn tmux_query(h: &TuiTestHarness, title: &str, args: &[&str]) -> String {
     let name = launched_tmux_name(h, title);
     let output = h
         .tmux()
-        .args(args)
+        .arg(args[0])
         .args(["-t", &name])
+        .args(&args[1..])
         .output()
         .expect("tmux query");
     assert!(

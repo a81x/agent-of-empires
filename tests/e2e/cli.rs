@@ -437,6 +437,8 @@ fn cli_mcp_list_merges_layers_and_redacts_secrets() {
     assert_eq!(server("native-only")["provenance"], "agent-native:claude");
     assert_eq!(server("native-only")["envNames"], json!(["TOKEN"]));
 
+    // The Codex phase asserts the native layer alone.
+    std::fs::remove_file(app_dir_in(home).join("mcp.json")).expect("remove global mcp.json");
     let codex_dir = home.join(".codex");
     std::fs::create_dir_all(&codex_dir).expect("create .codex dir");
     std::fs::write(
