@@ -207,7 +207,16 @@ mod tests {
     fn profile_matrix_is_pinned_per_registry_key() {
         // (key, clear aliases, driven reset, parent namespaces, claude-family
         //  tool gates, yolo mode id, reviewed)
-        let cases: [(&str, &[&str], bool, &[&str], bool, Option<&str>, bool); 13] = [
+        type Case<'a> = (
+            &'a str,
+            &'a [&'a str],
+            bool,
+            &'a [&'a str],
+            bool,
+            Option<&'a str>,
+            bool,
+        );
+        let cases: [Case; 13] = [
             (
                 "claude",
                 &["/clear"],

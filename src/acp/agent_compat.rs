@@ -361,7 +361,8 @@ mod tests {
         use ExpectedAgent::*;
         let below_floor = format!("{CLAUDE_AGENT_ACP_MIN_VERSION}-alpha.1");
         // (agent, reported name and version, expected error kind or None for accepted)
-        let cases: Vec<(ExpectedAgent, Option<(&str, &str)>, Option<&str>)> = vec![
+        type Case<'a> = (ExpectedAgent, Option<(&'a str, &'a str)>, Option<&'a str>);
+        let cases: Vec<Case> = vec![
             (
                 ClaudeAgentAcp,
                 Some((CLAUDE, "0.0.0")),
