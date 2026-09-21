@@ -311,6 +311,7 @@ mod tests {
             text: "run the nightly task".into(),
             attachments: Vec::new(),
             prompt_id: None,
+            synthesized: false,
         };
         let stopped = || Event::Stopped {
             reason: "rate_limited".into(),
@@ -338,13 +339,17 @@ mod tests {
         (home, state, project)
     }
 
-    async fn pending_turn(state: &AppState, id: &str) -> bool {
+    /// The queued continuation's `synthesized` flag, or `None` when no turn
+    /// is queued.
+    async fn pending_turn(state: &AppState, id: &str) -> Option<bool> {
         state
             .instances
             .read()
             .await
             .iter()
-            .any(|i| i.id == id && i.pending_initial_turn.is_some())
+            .find(|i| i.id == id)
+            .and_then(|i| i.pending_initial_turn.as_ref())
+            .map(|t| t.synthesized)
     }
 
     fn latest_stop_reason(state: &AppState, id: &str) -> Option<String> {
@@ -453,18 +458,20 @@ mod tests {
     #[serial_test::serial]
     async fn rate_limit_reap_resumes_below_the_cap_and_parks_at_it() {
         let max = RATE_LIMIT_AUTO_RESUME_MAX_REDELIVERIES as usize;
-        // (streak, setup, released, latest stop reason, continuation kept)
+        // (streak, setup, released, latest stop reason, queued continuation).
+        // A kept continuation is daemon-queued, not user-typed, so it carries
+        // `synthesized` and the transcript model skips a duplicate row (#4041).
         let cases = [
-            (max - 1, Setup::None, true, "rate_limited", true),
+            (max - 1, Setup::None, true, "rate_limited", Some(true)),
             (
                 max,
                 Setup::None,
                 false,
                 RATE_LIMIT_EXHAUSTED_RETRIES_REASON,
-                false,
+                None,
             ),
-            (max, Setup::CasAhead, false, "rate_limited", true),
-            (max, Setup::LockHeld, false, "rate_limited", true),
+            (max, Setup::CasAhead, false, "rate_limited", Some(true)),
+            (max, Setup::LockHeld, false, "rate_limited", Some(true)),
         ];
         for (streak, setup, released, reason, kept) in cases {
             let id = "sess-3688";

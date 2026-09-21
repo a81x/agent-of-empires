@@ -1281,7 +1281,7 @@ mod tests {
         assert!(mgr.validate_session(&id, &secret).await, "IP is not bound");
         assert!(!mgr.validate_session(&id, &binding(0xBB)).await);
         assert!(
-            !mgr.validate_session(&id, &vec![0xAA; BINDING_SECRET_BYTES - 1])
+            !mgr.validate_session(&id, &[0xAA; BINDING_SECRET_BYTES - 1])
                 .await,
             "a truncated secret must not match on its prefix"
         );

@@ -985,7 +985,7 @@ fn render_status(
             Style::default().fg(theme.title),
         ));
     }
-    if state.transcript.turn_active {
+    if state.transcript.turn_active || state.transcript.background_agent_active {
         let banner = state.transcript.status_text.as_deref().unwrap_or("working");
         spans.push(Span::styled(
             format!("· ● {banner} "),
@@ -2762,6 +2762,20 @@ mod tests {
         assert!(dump.contains("12k/200k (6%)"), "usage meter missing");
     }
 
+    /// #4001: the status banner must light up for a background sub-agent
+    /// even while the main turn itself is idle.
+    #[test]
+    fn status_line_shows_working_banner_for_a_background_agent_alone() {
+        let mut state = test_state();
+        state.transcript.turn_active = false;
+        state.transcript.background_agent_active = true;
+        let dump = render_dump(&state, 80, 24);
+        assert!(
+            dump.contains("working"),
+            "expected the working banner while a background agent runs: {dump}"
+        );
+    }
+
     #[test]
     fn compaction_reminder_gating() {
         // (threshold, used, size, compacting, expected)
@@ -2944,6 +2958,7 @@ mod tests {
                 prompt_id: None,
                 text: "Hello.".into(),
                 attachments: Vec::new(),
+                synthesized: false,
             },
             crate::acp::state::Event::AgentMessageChunk {
                 text: "What should we build?".into(),

@@ -867,6 +867,7 @@ mod tests {
                 text: "go".into(),
                 attachments: Vec::new(),
                 prompt_id: None,
+                synthesized: false,
             },
         );
         let folded = state.session_service.fold_control_state("s-fold").await;
@@ -1214,6 +1215,7 @@ mod tests {
                     prompt_id: None,
                     text: "hi".into(),
                     attachments: Vec::new(),
+                    synthesized: false,
                 },
             ),
             (

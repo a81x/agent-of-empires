@@ -253,10 +253,12 @@ pub(super) async fn resume_one(state: Arc<AppState>, target: ResumeTarget) -> Re
 }
 
 async fn seed_in_flight_status(state: &AppState, id: &str) {
+    // Cold control-state fold at reattach time, same caveat as
+    // `seed_acp_statuses` (#4001).
     let Some(intent) = state
         .acp_event_store
         .latest_seed_status_event(id)
-        .and_then(|event| crate::server::derive_acp_status(&event))
+        .and_then(|event| crate::server::derive_acp_status(&event, false, false))
     else {
         return;
     };
@@ -595,6 +597,7 @@ mod tests {
             text: "keep going".into(),
             attachments: Vec::new(),
             prompt_id: None,
+            synthesized: false,
         };
         state.acp_event_store.record(id, 1, &prompt).unwrap();
         state.acp_supervisor.hydrate_seqs([(id.to_string(), 1)]);

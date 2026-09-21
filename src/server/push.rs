@@ -1168,7 +1168,8 @@ mod tests {
         };
         let host = ("host", "aoe.example.com");
 
-        let cases: &[(&str, &[(&str, &str)], Option<&str>)] = &[
+        type Case<'a> = (&'a str, &'a [(&'a str, &'a str)], Option<&'a str>);
+        let cases: &[Case] = &[
             (
                 "origin wins over host",
                 &[
