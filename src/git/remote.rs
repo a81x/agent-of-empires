@@ -332,7 +332,7 @@ pub(crate) fn parse_owner_with_key_from_remote_url(url: &str) -> Option<(String,
     Some((owner, key))
 }
 
-/// [`parse_owner_identity_from_remote_url`] against a repo's `origin`, in one
+/// `parse_owner_with_key_from_remote_url` against a repo's `origin`, in one
 /// lookup. `None` under the same conditions as [`get_remote_owner`].
 pub fn get_remote_owner_with_key(path: &Path) -> Option<(String, String)> {
     let repo = open_repo_at(path).ok()?;

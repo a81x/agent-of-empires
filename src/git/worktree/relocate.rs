@@ -128,7 +128,7 @@ impl GitWorktree {
 
     /// Move a worktree with `git worktree move` so git's bookkeeping follows,
     /// unlocking before and re-locking after. Worktrees with submodules take
-    /// [`Self::relocate_worktree_with_submodules`].
+    /// `relocate_worktree_with_submodules`.
     pub fn move_worktree(&self, from: &Path, to: &Path) -> Result<()> {
         if !from.exists() {
             return Err(GitError::WorktreeNotFound(from.to_path_buf()));

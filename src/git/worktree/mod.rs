@@ -167,7 +167,7 @@ impl GitWorktree {
         Ok(())
     }
 
-    /// Lock `path`'s admin entry (see [`WORKTREE_LOCK_REASON`]). A failure only
+    /// Lock `path`'s admin entry (see `WORKTREE_LOCK_REASON`). A failure only
     /// forfeits prune protection, so callers surface it as a warning.
     pub fn lock_worktree(&self, path: &Path) -> Result<()> {
         run_bounded(

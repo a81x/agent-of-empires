@@ -475,7 +475,7 @@ fn run_hooks_streamed(
     Ok(())
 }
 
-/// `extra_env` is exported to each hook; see [`lifecycle_env_vars`].
+/// `extra_env` is exported to each hook; see `lifecycle_env_vars`.
 pub fn execute_hooks(
     commands: &[String],
     project_path: &Path,
