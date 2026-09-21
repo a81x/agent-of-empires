@@ -18,7 +18,6 @@ use crate::acp::event_store::EventStore;
 use crate::daemon::AcpWorkerState;
 use crate::session::Instance;
 
-pub(crate) use crate::acp::state::RATE_LIMIT_EXHAUSTED_RETRIES_REASON;
 pub(crate) use rate_limit::enqueue_rate_limit_continuation;
 pub(crate) use resume::{command_override_for_spawn, trigger_resume_background, ResumeTrigger};
 

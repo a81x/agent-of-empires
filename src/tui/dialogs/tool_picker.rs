@@ -4,7 +4,7 @@ use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::prelude::*;
 use ratatui::widgets::*;
 
-use super::{centered_rect, DialogResult};
+use super::DialogResult;
 use crate::session::config::ToolSessionConfig;
 use crate::tui::styles::Theme;
 

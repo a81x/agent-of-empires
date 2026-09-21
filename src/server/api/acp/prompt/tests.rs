@@ -44,7 +44,7 @@ fn published(state: &AppState, id: &str, pred: impl Fn(&Event) -> bool) -> bool 
 fn park_on_exhausted_rate_limit(state: &AppState, id: &str) {
     assert!(state.acp_supervisor.publish_stopped_if_seq(
         id,
-        crate::server::acp_reconciler::RATE_LIMIT_EXHAUSTED_RETRIES_REASON,
+        crate::acp::state::RATE_LIMIT_EXHAUSTED_RETRIES_REASON,
         0,
     ));
 }

@@ -220,7 +220,7 @@ pub(crate) fn kill_sessions_matching(matches: impl Fn(&str) -> bool) {
     let output = crate::tmux::tmux_query_command()
         .args(["list-sessions", "-F", "#{session_name}"])
         .output();
-    if let Ok(out) = output.as_ref().filter(|out| out.status.success()) {
+    if let Some(out) = output.as_ref().ok().filter(|out| out.status.success()) {
         for name in String::from_utf8_lossy(&out.stdout)
             .lines()
             .filter(|name| matches(name))
