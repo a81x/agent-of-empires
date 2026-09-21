@@ -2,6 +2,7 @@ import { useCallback, useMemo, useRef, useState } from "react";
 import { usePluginUiEntries } from "../lib/pluginUiContext";
 import { pluginSortSpecs } from "../lib/pluginUi";
 import type { ProjectInfo, RepoGroup, Workspace } from "../lib/types";
+import { SidebarSystemHealth } from "./SystemHealthStrip";
 import type { SidebarAxis } from "../lib/sidebarAxis";
 import {
   archivableWorkspaces,
@@ -357,6 +358,8 @@ export function WorkspaceSidebar(props: Props) {
             </div>
           )}
         </div>
+
+        <SidebarSystemHealth />
 
         <div className="border-t border-surface-700/20 p-2 flex items-center gap-1">
           {trashedWorkspaces.length > 0 && (

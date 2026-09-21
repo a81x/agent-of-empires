@@ -24,6 +24,7 @@ const descriptor = (section: string, field: string, label: string, widget: Recor
 const SESSION_SCHEMA = [
   descriptor("session", "auto_stop_idle_secs", "Auto-stop idle sessions (s)", { kind: "number", min: 0 }),
   descriptor("acp", "acp_defaults", "Structured View Defaults", { kind: "custom", id: "acp-defaults" }),
+  descriptor("session", "show_diagnostics_pane", "Show system health strip", { kind: "toggle" }),
   descriptor("session", "smart_rename", "Smart Session Rename", { kind: "toggle" }),
   descriptor("session", "row_tag", "Row Tag", {
     kind: "select",
@@ -61,6 +62,19 @@ async function renderTab(tab: string, session: Record<string, unknown> = {}, wai
   return { ...view, onSettingsRefresh };
 }
 
+/** The switch on the toggle row whose caption is `label`. The caption is plain
+ *  text beside the control, not a `<label>`, and several ancestors share its
+ *  text, so match the leaf and walk up to the row. Not by position: the section
+ *  holds several switches in schema order. */
+function toggleByLabel(container: HTMLElement, label: string): HTMLButtonElement {
+  const caption = Array.from(container.querySelectorAll("div")).find(
+    (el) => el.children.length === 0 && el.textContent === label,
+  );
+  const button = caption?.closest("div.justify-between")?.querySelector("button[role=switch]");
+  expect(button).toBeTruthy();
+  return button as HTMLButtonElement;
+}
+
 function commit(input: HTMLInputElement | HTMLTextAreaElement, value: string) {
   fireEvent.focus(input);
   fireEvent.change(input, { target: { value } });
@@ -87,7 +101,7 @@ describe("Session tab", () => {
 
   it("persists smart_rename without refreshing app settings", async () => {
     const { container, onSettingsRefresh } = await renderTab("session", { smart_rename: true }, "Smart Session Rename");
-    fireEvent.click(container.querySelector("button[role=switch]")!);
+    fireEvent.click(toggleByLabel(container, "Smart Session Rename"));
     await expectSaved({ session: { smart_rename: false } });
     expect(onSettingsRefresh).not.toHaveBeenCalled();
   });
@@ -99,6 +113,19 @@ describe("Session tab", () => {
     )!;
     fireEvent.change(select, { target: { value: "none" } });
     await expectSaved({ session: { row_tag: "none" } });
+    expect(onSettingsRefresh).toHaveBeenCalledTimes(1);
+  });
+
+  it("refreshes app-level settings after saving show_diagnostics_pane", async () => {
+    // The strip is handed down by context from the app shell, so a save that
+    // does not re-read settings leaves it on screen after being switched off.
+    const { container, onSettingsRefresh } = await renderTab(
+      "session",
+      { show_diagnostics_pane: true },
+      "Show system health strip",
+    );
+    fireEvent.click(toggleByLabel(container, "Show system health strip"));
+    await expectSaved({ session: { show_diagnostics_pane: false } });
     expect(onSettingsRefresh).toHaveBeenCalledTimes(1);
   });
 
