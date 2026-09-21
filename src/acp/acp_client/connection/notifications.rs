@@ -2,9 +2,9 @@
 //! and the `session/update` handler itself.
 
 use crate::acp::agent_profiles::AgentProfile;
-use crate::acp::background_agent::{spawn_tailer, TranscriptSource};
+use crate::acp::background_agent::{spawn_tailer, TailerStart, TranscriptSource};
 use crate::acp::state::Event;
-use agent_client_protocol::schema::v1::{SessionNotification, SessionUpdate};
+use agent_client_protocol::schema::v1::{SessionId, SessionNotification, SessionUpdate};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 use std::sync::Arc;
@@ -16,6 +16,7 @@ use crate::acp::acp_client::lifecycle::{
     forward_lifecycle_signals, LifecycleEnvelope, TerminalClaim,
 };
 use crate::acp::acp_client::rate_limit::rate_limit_rejection_from_meta;
+use crate::acp::acp_client::session_identity::SessionIngress;
 use crate::acp::acp_client::session_sandbox::SessionSandbox;
 use crate::acp::acp_client::tool_context::{
     update_tool_context_cache, ToolCallContextCache, ToolContextCache,
@@ -30,6 +31,9 @@ pub(super) fn now_ms() -> i64 {
 
 pub(super) struct Shared {
     pub(super) event_tx: mpsc::Sender<Event>,
+    /// Admits only the lifecycle-selected native session; everything the
+    /// agent sends for another id is refused or buffered here (#3937).
+    pub(super) ingress: Arc<SessionIngress>,
     pub(super) session_label: String,
     pub(super) profile: &'static AgentProfile,
     /// Set between a successful `session/load` and the first prompt, while
@@ -66,6 +70,7 @@ pub(super) struct Shared {
 }
 
 impl Shared {
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn new(
         event_tx: mpsc::Sender<Event>,
         session_label: String,
@@ -74,6 +79,7 @@ impl Shared {
         terminal_claim: Arc<TerminalClaim>,
         prompt_in_flight: Arc<AtomicBool>,
         sandbox: Option<&SessionSandbox>,
+        ingress: Arc<SessionIngress>,
     ) -> Self {
         // A sandboxed session's sub-agent transcripts live in the container.
         let bg_transcript_source = match sandbox {
@@ -85,6 +91,7 @@ impl Shared {
         };
         Self {
             event_tx,
+            ingress,
             session_label,
             profile,
             suppress_history_replay: AtomicBool::new(false),
@@ -109,6 +116,43 @@ impl Shared {
         let _ = self.event_tx.send(event).await;
     }
 
+    /// Publish the native session the lifecycle selected and apply the
+    /// updates buffered while it was still pending.
+    pub(super) async fn commit_session(
+        &self,
+        id: SessionId,
+    ) -> Result<(), agent_client_protocol::Error> {
+        let _guard = self.ingress.fence.lock().await;
+        let replay = self.ingress.finish(Some(id.clone()))?;
+        self.emit(Event::AcpSessionAssigned {
+            acp_session_id: id.0.to_string(),
+        })
+        .await;
+        self.apply_replay(replay).await;
+        Ok(())
+    }
+
+    /// Replayed updates carry no local prompt, so they only rebuild state.
+    pub(super) async fn apply_replay(&self, replay: Vec<SessionNotification>) {
+        for notification in replay {
+            self.handle_notification(notification, false).await;
+        }
+    }
+
+    /// Re-tail sub-agents a previous daemon launched and left unresolved.
+    pub(super) fn resume_background_tailing(&self, launches: Vec<(String, String)>) {
+        for (agent_id, output_file) in launches {
+            spawn_tailer(
+                agent_id,
+                output_file,
+                self.bg_transcript_source.clone(),
+                self.event_tx.clone(),
+                self.between_prompt.bg_agents.clone(),
+                TailerStart::Resumed,
+            );
+        }
+    }
+
     pub(super) fn reset_message_dedup(&self) {
         self.agent_msg_dedup
             .lock()
@@ -116,7 +160,14 @@ impl Shared {
             .reset();
     }
 
-    pub(super) async fn handle_notification(&self, notification: SessionNotification) {
+    /// `local_prompt_signals` is false for a replayed update committed with
+    /// the session: it belongs to no local prompt, so it must not reach the
+    /// per-prompt watchdog.
+    pub(super) async fn handle_notification(
+        &self,
+        notification: SessionNotification,
+        local_prompt_signals: bool,
+    ) {
         self.last_event_at.store(now_ms(), Ordering::Relaxed);
         let suppressing = self.suppress_history_replay.load(Ordering::Relaxed);
         // Drop the adapter's leaked restatement before anything sees it
@@ -167,7 +218,7 @@ impl Shared {
         // Signals go first: if the event send backpressures, the watchdog must
         // not evaluate without a suppression-bearing signal.
         forward_lifecycle_signals(
-            prompt_active,
+            local_prompt_signals && prompt_active && epoch != 0,
             &self.lifecycle_tx,
             epoch,
             lifecycle,
@@ -189,6 +240,7 @@ impl Shared {
                         self.bg_transcript_source.clone(),
                         self.event_tx.clone(),
                         self.between_prompt.bg_agents.clone(),
+                        TailerStart::Live,
                     );
                 }
             }

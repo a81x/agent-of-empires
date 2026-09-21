@@ -162,6 +162,7 @@ pub(super) fn map_update_to_events(
                 text: text.text,
                 attachments: Vec::new(),
                 prompt_id: None,
+                synthesized: false,
             }],
             other => vec![raw_event(&other)],
         },
@@ -455,7 +456,7 @@ mod tests {
         map_update_to_events(update, &agent_profiles::CLAUDE)
     }
 
-    fn tool_update(id: &str, fields: ToolCallUpdateFields) -> SessionUpdate {
+    fn tool_update(id: &'static str, fields: ToolCallUpdateFields) -> SessionUpdate {
         SessionUpdate::ToolCallUpdate(ToolCallUpdate::new(id, fields))
     }
 
@@ -925,18 +926,19 @@ mod tests {
             ConfigOptionUpdate, SessionConfigOption, SessionConfigOptionCategory,
             SessionConfigSelectOption,
         };
-        let option = |id: &str, current: &str, values: &[&str], category| {
-            SessionConfigOption::select(
-                id,
-                id,
-                current,
-                values
-                    .iter()
-                    .map(|v| SessionConfigSelectOption::new(*v, *v))
-                    .collect::<Vec<_>>(),
-            )
-            .category(category)
-        };
+        let option =
+            |id: &'static str, current: &'static str, values: &[&'static str], category| {
+                SessionConfigOption::select(
+                    id,
+                    id,
+                    current,
+                    values
+                        .iter()
+                        .map(|v| SessionConfigSelectOption::new(*v, *v))
+                        .collect::<Vec<_>>(),
+                )
+                .category(category)
+            };
         let update = ConfigOptionUpdate::new(vec![
             option(
                 "model",

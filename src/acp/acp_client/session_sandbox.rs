@@ -153,8 +153,8 @@ pub(super) fn build_sandbox_docker_argv(
     let request_auth = config
         .provider_env
         .iter()
-        .cloned()
-        .filter(|(key, _)| provider_env_denyreason(key).is_none());
+        .filter(|&(key, _)| provider_env_denyreason(key).is_none())
+        .cloned();
     let adapter_allowlist = allowlisted_env_pairs(config)
         .into_iter()
         .filter(|(key, _)| !is_host_only_path_env(key));

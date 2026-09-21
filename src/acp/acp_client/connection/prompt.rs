@@ -387,6 +387,9 @@ impl Session {
                 acp_session_id,
                 respond_to,
             }) => handle_delete_session_cmd(&self.connection, acp_session_id, respond_to),
+            Some(ClientCmd::ResumeBackgroundTailing(launches)) => {
+                self.shared.resume_background_tailing(launches)
+            }
             Some(ClientCmd::Prompt(blocks)) => return Ok(self.on_follow_up(turn, blocks).await),
             Some(ClientCmd::ResetSession {
                 text, respond_to, ..

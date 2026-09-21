@@ -18,11 +18,11 @@ use crate::acp::agent_profiles::AgentProfile;
 use crate::acp::state::Event;
 use agent_client_protocol::schema::v1::{
     CreateElicitationRequest, CreateElicitationResponse, CreateTerminalRequest,
-    CreateTerminalResponse, KillTerminalRequest, KillTerminalResponse, McpServer,
+    CreateTerminalResponse, ElicitationScope, KillTerminalRequest, KillTerminalResponse, McpServer,
     ReadTextFileRequest, ReadTextFileResponse, ReleaseTerminalRequest, ReleaseTerminalResponse,
-    RequestPermissionRequest, RequestPermissionResponse, SessionNotification,
-    TerminalOutputRequest, TerminalOutputResponse, WaitForTerminalExitRequest,
-    WaitForTerminalExitResponse, WriteTextFileRequest, WriteTextFileResponse,
+    RequestPermissionRequest, RequestPermissionResponse, SessionId, TerminalOutputRequest,
+    TerminalOutputResponse, WaitForTerminalExitRequest, WaitForTerminalExitResponse,
+    WriteTextFileRequest, WriteTextFileResponse,
 };
 use agent_client_protocol::{Agent, ByteStreams, Client, ConnectionTo, Responder};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -39,6 +39,7 @@ use super::lifecycle::TerminalClaim;
 use super::pending::PendingResponders;
 use super::permission_handlers::{handle_elicitation_request, handle_permission_request};
 use super::rate_limit::{captured_rate_limit_resets_at, classify_rate_limit_from_message};
+use super::session_identity::{SessionIngress, SessionIngressNotification};
 use super::terminal_handlers::{
     handle_create_terminal, handle_kill_terminal, handle_release_terminal, handle_terminal_output,
     handle_wait_for_terminal_exit,
@@ -52,6 +53,9 @@ pub(crate) const CANCEL_ESCALATION_GRACE: Duration = Duration::from_secs(10);
 
 /// A detached runner's control channel, which owns the ACP handshake and the
 /// turn; everything else is relayed through the crate transport.
+/// Taken once, by whichever of the handshake or the failure path answers first.
+pub(super) type ReadyTx = Mutex<Option<oneshot::Sender<Result<(), AcpError>>>>;
+
 pub(super) struct RunnerLink {
     pub(super) control: Arc<DaemonControlClient>,
     /// Shared with the control reader, which claims an adopted turn's
@@ -94,15 +98,23 @@ fn reply<T: agent_client_protocol::JsonRpcResponse>(
 /// Register request handlers that each answer from a `SessionResources` clone.
 /// The builder is typestate, so each registration shadows the last.
 macro_rules! resource_requests {
-    ($builder:expr, $resources:expr, $(($req:ty, $resp:ty, $handler:path)),+ $(,)?) => {{
+    ($builder:expr, $resources:expr, $ingress:expr, $(($req:ty, $resp:ty, $handler:path)),+ $(,)?) => {{
         let builder = $builder;
         $(
             let builder = {
                 let res = $resources.clone();
+                let ingress = $ingress.clone();
                 builder.on_receive_request(
                     move |request: $req, responder: Responder<$resp>, _conn| {
-                        let res = res.clone();
-                        async move { reply(responder, $handler(request, res).await) }
+                        let (res, ingress) = (res.clone(), ingress.clone());
+                        async move {
+                            // A foreign session's callback performs no effect.
+                            let _guard = match ingress.request(&request.session_id).await {
+                                Ok(guard) => guard,
+                                Err(error) => return reply(responder, Err(error)),
+                            };
+                            reply(responder, $handler(request, res).await)
+                        }
                     },
                     agent_client_protocol::on_receive_request!(),
                 )
@@ -145,6 +157,23 @@ pub(super) async fn run_connection_task<W, R>(
             Arc::new(AtomicBool::new(false)),
         ),
     };
+    // A runner owns identity across daemons, so its ingress is the one that
+    // already holds the adopted session.
+    let ingress = control
+        .as_ref()
+        .map(|control| control.ingress.clone())
+        .unwrap_or_else(|| {
+            let initial = match &mode {
+                ConnectMode::Resume { acp_session_id, .. } => {
+                    Some(SessionId::from(acp_session_id.clone()))
+                }
+                ConnectMode::Fresh { .. } => None,
+            };
+            Arc::new(SessionIngress::new(initial))
+        });
+    if control.is_some() && matches!(&mode, ConnectMode::Resume { .. }) {
+        ingress.begin();
+    }
     let shared = Arc::new(Shared::new(
         event_tx.clone(),
         label.clone(),
@@ -153,6 +182,7 @@ pub(super) async fn run_connection_task<W, R>(
         terminal_claim,
         prompt_in_flight,
         resources.sandbox.as_ref(),
+        ingress.clone(),
     ));
     let ready_tx = Arc::new(Mutex::new(Some(ready_tx)));
 
@@ -171,10 +201,32 @@ pub(super) async fn run_connection_task<W, R>(
         .on_receive_notification(
             {
                 let shared = shared.clone();
-                move |notification: SessionNotification, _cx| {
-                    let shared = shared.clone();
+                let control = control.clone();
+                // Only the relay tags updates with their original frame size.
+                let control_notifications = control.is_some();
+                move |notification: SessionIngressNotification, _cx| {
+                    let (shared, control) = (shared.clone(), control.clone());
                     async move {
-                        shared.handle_notification(notification).await;
+                        let params = match notification {
+                            SessionIngressNotification::Replayed(marker) => {
+                                if let Some(control) = control.as_ref() {
+                                    control.mark_session_replayed(marker);
+                                }
+                                return Ok(());
+                            }
+                            SessionIngressNotification::Update(params) => params,
+                        };
+                        let (notification, wire_bytes) = SessionIngressNotification::decode_update(
+                            params,
+                            control_notifications,
+                        )?;
+                        let admitted = shared
+                            .ingress
+                            .notification(notification, wire_bytes)
+                            .await?;
+                        if let Some((notification, _guard)) = admitted {
+                            shared.handle_notification(notification, true).await;
+                        }
                         Ok(())
                     }
                 }
@@ -190,6 +242,10 @@ pub(super) async fn run_connection_task<W, R>(
                       _conn| {
                     let (shared, pending) = (shared.clone(), pending.clone());
                     async move {
+                        let _guard = match shared.ingress.request(&request.session_id).await {
+                            Ok(guard) => guard,
+                            Err(error) => return reply(responder, Err(error)),
+                        };
                         let outcome = handle_permission_request(
                             request,
                             shared.event_tx.clone(),
@@ -207,11 +263,23 @@ pub(super) async fn run_connection_task<W, R>(
         .on_receive_request(
             {
                 let event_tx = event_tx.clone();
+                let ingress = ingress.clone();
                 move |request: CreateElicitationRequest,
                       responder: Responder<CreateElicitationResponse>,
                       _conn| {
                     let (event_tx, pending) = (event_tx.clone(), pending_responders.clone());
+                    let ingress = ingress.clone();
                     async move {
+                        // Only a session-scoped elicitation carries an identity
+                        // to fence on.
+                        let _guard = if let ElicitationScope::Session(scope) = request.scope() {
+                            match ingress.request(&scope.session_id).await {
+                                Ok(guard) => Some(guard),
+                                Err(error) => return reply(responder, Err(error)),
+                            }
+                        } else {
+                            None
+                        };
                         let outcome = handle_elicitation_request(request, event_tx, pending).await;
                         reply(responder, outcome)
                     }
@@ -222,6 +290,7 @@ pub(super) async fn run_connection_task<W, R>(
     let builder = resource_requests!(
         builder,
         resources,
+        ingress,
         (
             ReadTextFileRequest,
             ReadTextFileResponse,
@@ -274,12 +343,20 @@ pub(super) async fn run_connection_task<W, R>(
         lifecycle_rx,
     };
     let result = builder
-        .connect_with(transport, |connection: ConnectionTo<Agent>| async move {
-            match establish::establish(connection, establish_ctx).await? {
-                Some(session) => session.run().await,
-                None => Ok(()),
-            }
-        })
+        .connect_with(
+            transport,
+            move |connection: ConnectionTo<Agent>| async move {
+                tokio::select! {
+                    error = ingress.failed() => Err(error),
+                    result = async move {
+                        match establish::establish(connection, establish_ctx).await? {
+                            Some(session) => session.run().await,
+                            None => Ok(()),
+                        }
+                    } => result,
+                }
+            },
+        )
         .await;
 
     if let Err(e) = &result {
@@ -318,7 +395,7 @@ pub(super) async fn run_connection_task<W, R>(
 async fn report_connection_error(
     e: &agent_client_protocol::Error,
     shared: &Shared,
-    ready_tx: &Mutex<Option<oneshot::Sender<Result<(), AcpError>>>>,
+    ready_tx: &ReadyTx,
 ) {
     let label = &shared.session_label;
     let event_tx = &shared.event_tx;

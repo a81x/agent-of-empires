@@ -3,8 +3,8 @@
 
 use crate::acp::state::Event;
 use agent_client_protocol::schema::v1::{
-    CancelNotification, ContentBlock, McpServer, NewSessionRequest, SessionConfigValueId,
-    SessionId, SetSessionConfigOptionRequest,
+    CancelNotification, ContentBlock, McpServer, NewSessionRequest, NewSessionResponse,
+    SessionConfigValueId, SessionId, SetSessionConfigOptionRequest,
 };
 use agent_client_protocol::{Agent, ConnectionTo};
 use std::collections::VecDeque;
@@ -25,15 +25,19 @@ use crate::acp::acp_client::config_options::{
 };
 use crate::acp::acp_client::control::DaemonControlClient;
 use crate::acp::acp_client::delete::handle_delete_session_cmd;
+use crate::acp::acp_client::errors::acp_internal_error;
 use crate::acp::acp_client::lifecycle::LifecycleEnvelope;
 use crate::acp::acp_client::reset::{
     await_reset_request, ResetRequestError, ResetSessionOutcome, SESSION_RESET_IN_TASK_TIMEOUT,
 };
+use crate::acp::acp_client::session_identity::ordered_session_request;
 
 pub(super) struct Session {
     pub(super) connection: ConnectionTo<Agent>,
     pub(super) shared: Arc<Shared>,
     pub(super) control: Option<Arc<DaemonControlClient>>,
+    /// Mirrors the ingress's committed identity, refreshed each iteration so
+    /// a reset's swap cannot be missed.
     pub(super) acp_session_id: SessionId,
     /// The id came from storage rather than this agent, so a prompt
     /// rejection may mean the agent dropped it (#3560).
@@ -95,6 +99,10 @@ impl Session {
         let mut idle_tick = tokio::time::interval(BETWEEN_PROMPT_IDLE_CHECK_INTERVAL);
         idle_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
+            self.acp_session_id =
+                self.shared.ingress.current().ok_or_else(|| {
+                    acp_internal_error("native session is not established".into())
+                })?;
             // Fallback prompts go first so later messages cannot overtake them.
             let cmd = match self.pending_prompts.pop_front() {
                 Some(blocks) => Some(ClientCmd::Prompt(blocks)),
@@ -146,11 +154,14 @@ impl Session {
                 Some(ClientCmd::SetConfigOption { config_id, value }) => {
                     self.dispatch_config_option(config_id, value)
                 }
+                Some(ClientCmd::ResumeBackgroundTailing(launches)) => {
+                    self.shared.resume_background_tailing(launches)
+                }
                 Some(ClientCmd::ResetSession {
                     text,
                     deadline,
                     respond_to,
-                }) => self.reset_session(text, deadline, respond_to).await,
+                }) => self.reset_session(text, deadline, respond_to).await?,
                 #[cfg(test)]
                 Some(ClientCmd::FlushForTest(done)) => {
                     let _ = done.send(());
@@ -207,8 +218,17 @@ impl Session {
         text: String,
         deadline: tokio::time::Instant,
         respond_to: oneshot::Sender<ResetSessionOutcome>,
-    ) {
+    ) -> Result<(), agent_client_protocol::Error> {
         let label = self.shared.session_label.clone();
+        let ingress = self.shared.ingress.clone();
+        // No identity transition while an agent callback holds the fence.
+        let Ok(transition_guard) = tokio::time::timeout_at(deadline, ingress.fence.lock()).await
+        else {
+            let _ = respond_to.send(ResetSessionOutcome::Failed {
+                message: "reset deadline expired while agent callbacks were in flight".into(),
+            });
+            return Ok(());
+        };
         let work = self.shared.between_prompt.work_state();
         if work.is_busy() {
             // Old-session events would be attributed to the new conversation.
@@ -227,7 +247,7 @@ impl Session {
             let _ = respond_to.send(ResetSessionOutcome::Failed {
                 message: "agent work is still in flight; wait for it to finish before clearing the conversation".into(),
             });
-            return;
+            return Ok(());
         }
         info!(
             target: "acp.protocol",
@@ -238,14 +258,34 @@ impl Session {
         let req =
             NewSessionRequest::new(self.agent_cwd.clone()).mcp_servers(self.mcp_servers.clone());
         let connection = self.connection.clone();
-        let result =
-            await_reset_request(deadline, || connection.send_request(req).block_task()).await;
+        let generation = ingress.begin();
+        drop(transition_guard);
+        let result = await_reset_request(deadline, || {
+            ordered_session_request(
+                &connection,
+                &ingress,
+                generation,
+                req,
+                |resp: &NewSessionResponse| resp.session_id.clone(),
+            )
+        })
+        .await;
+        // A failed reset keeps the old session, so its buffered updates are
+        // replayed onto it rather than dropped.
+        let commit_guard = ingress.fence.lock().await;
+        let retained_id = result
+            .as_ref()
+            .map(|resp| resp.session_id.clone())
+            .unwrap_or_else(|_| self.acp_session_id.clone());
+        let mut replay = ingress.finish(Some(retained_id.clone()))?;
+        if retained_id == self.acp_session_id {
+            self.shared.apply_replay(std::mem::take(&mut replay)).await;
+        }
         let message = match result {
             Ok(new_session) if new_session.session_id.0 != self.acp_session_id.0 => {
                 let new_id = new_session.session_id.clone();
-                // session/new is the irreversible commit: adopt the id before
-                // best-effort config restoration.
-                self.acp_session_id = new_id.clone();
+                // session/new is the irreversible commit; the loop picks the
+                // id back up from the ingress on its next iteration.
                 self.session_from_storage = false;
                 self.channels = SessionChannels::new(
                     new_session.modes.as_ref(),
@@ -268,6 +308,8 @@ impl Session {
                         acp_session_id: new_id.0.to_string(),
                     })
                     .await;
+                self.shared.apply_replay(replay).await;
+                drop(commit_guard);
                 if let Some(modes) = &new_session.modes {
                     self.shared.emit(modes_available_event(modes)).await;
                 }
@@ -284,7 +326,7 @@ impl Session {
                 let _ = respond_to.send(ResetSessionOutcome::Reset {
                     new_acp_session_id: new_id.0.to_string(),
                 });
-                return;
+                return Ok(());
             }
             // A stale runner answered from its handshake cache.
             Ok(_) => "the worker replayed the existing session \
@@ -308,6 +350,7 @@ impl Session {
             })
             .await;
         let _ = respond_to.send(ResetSessionOutcome::Failed { message });
+        Ok(())
     }
 
     /// The fresh session starts on adapter defaults, so configured effort and

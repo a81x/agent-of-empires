@@ -5,8 +5,9 @@ use crate::acp::agent_compat::{self, ExpectedAgent};
 use crate::acp::mcp_config;
 use crate::acp::state::{Event, StartupErrorDetail};
 use agent_client_protocol::schema::v1::{
-    ForkSessionRequest, InitializeResponse, LoadSessionRequest, McpServer, NewSessionRequest,
-    SessionConfigId, SessionId,
+    ForkSessionRequest, ForkSessionResponse, InitializeResponse, LoadSessionRequest,
+    LoadSessionResponse, McpServer, NewSessionRequest, NewSessionResponse, SessionConfigId,
+    SessionId,
 };
 use agent_client_protocol::{Agent, ConnectionTo, JsonRpcRequest};
 use std::collections::VecDeque;
@@ -14,11 +15,12 @@ use std::path::PathBuf;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::{mpsc, oneshot, Mutex};
+use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
 
 use super::command_loop::Session;
 use super::notifications::{now_ms, Shared};
+use super::ReadyTx;
 use crate::acp::acp_client::commands::{ClientCmd, ConnectMode};
 use crate::acp::acp_client::config_options::{
     apply_config_default, config_options_event, mode_config_id, modes_available_event,
@@ -28,6 +30,7 @@ use crate::acp::acp_client::control::{establish_session_v3, DaemonControlClient}
 use crate::acp::acp_client::errors::{acp_internal_error, AcpError, IncompatibleAgentError};
 use crate::acp::acp_client::handshake::{build_initialize_request, should_fork};
 use crate::acp::acp_client::lifecycle::LifecycleEnvelope;
+use crate::acp::acp_client::session_identity::ordered_session_request;
 
 /// Fully silent grace after reattaching to an in-flight turn.
 const RESUME_IDLE_GRACE_DEFAULT: Duration = Duration::from_secs(30);
@@ -47,7 +50,7 @@ fn resume_idle_grace() -> Duration {
 pub(super) struct EstablishCtx {
     pub(super) shared: Arc<Shared>,
     pub(super) control: Option<Arc<DaemonControlClient>>,
-    pub(super) ready_tx: Arc<Mutex<Option<oneshot::Sender<Result<(), AcpError>>>>>,
+    pub(super) ready_tx: Arc<ReadyTx>,
     pub(super) mode: ConnectMode,
     pub(super) expected_agent: ExpectedAgent,
     pub(super) mcp_servers: Vec<McpServer>,
@@ -239,20 +242,30 @@ fn spawn_resume_idle_watchdog(shared: Arc<Shared>) {
 }
 
 impl Session {
-    /// Sessions are created by the runner when one is attached, else sent
-    /// directly over the crate connection.
-    async fn establish_request<Req>(
+    /// A request that mints a new native session: sent by the runner when one
+    /// is attached, else over the crate connection. Updates the agent sends
+    /// before its reply stay buffered until [`Shared::commit_session`] decides
+    /// which id owns them (#3937).
+    async fn minting_request<Req>(
         &self,
         method: &str,
         req: Req,
+        native_id: fn(&Req::Response) -> SessionId,
     ) -> Result<Req::Response, agent_client_protocol::Error>
     where
         Req: JsonRpcRequest + serde::Serialize,
-        Req::Response: serde::de::DeserializeOwned,
+        Req::Response: serde::de::DeserializeOwned + Send + 'static,
     {
+        let ingress = &self.shared.ingress;
+        let generation = {
+            let _guard = ingress.fence.lock().await;
+            ingress.begin()
+        };
         match self.control.as_ref() {
             Some(control) => establish_session_v3(control, method, &req).await,
-            None => self.connection.send_request(req).block_task().await,
+            None => {
+                ordered_session_request(&self.connection, ingress, generation, req, native_id).await
+            }
         }
     }
 
@@ -271,12 +284,26 @@ impl Session {
             "resume mode: reusing runner session without agent load/new"
         );
         // Clears a sticky startup error in the UI; same-id is a no-op server-side.
-        self.shared
-            .emit(Event::AcpSessionAssigned {
-                acp_session_id: stored.clone(),
-            })
-            .await;
-        Ok(SessionId::from(stored))
+        let id = SessionId::from(stored);
+        self.shared.commit_session(id.clone()).await?;
+        Ok(id)
+    }
+
+    /// A runner sends SessionReady ahead of the replay it is still flushing,
+    /// so the load only completes once the barrier behind that replay has
+    /// been dispatched (#4016).
+    async fn load_request(
+        &self,
+        req: LoadSessionRequest,
+    ) -> Result<LoadSessionResponse, agent_client_protocol::Error> {
+        let Some(control) = self.control.as_ref() else {
+            return self.connection.send_request(req).block_task().await;
+        };
+        let result = establish_session_v3(control, "session/load", &req).await;
+        if result.is_ok() {
+            control.session_replayed().await;
+        }
+        result
     }
 
     async fn fresh(
@@ -303,9 +330,15 @@ impl Session {
             info!(target: "acp.protocol", session = %label, parent_acp_id = %parent, "structured fork via session/fork");
             let req = ForkSessionRequest::new(parent.clone(), self.agent_cwd.clone())
                 .mcp_servers(mcp_servers);
-            return match self.establish_request("session/fork", req).await {
+            return match self
+                .minting_request("session/fork", req, |resp: &ForkSessionResponse| {
+                    resp.session_id.clone()
+                })
+                .await
+            {
                 Ok(resp) => {
                     let new_id = resp.session_id.clone();
+                    self.shared.commit_session(new_id.clone()).await?;
                     info!(
                         target: "acp.protocol",
                         session = %label,
@@ -318,11 +351,6 @@ impl Session {
                     if let Some(modes) = resp.modes.as_ref() {
                         self.shared.emit(modes_available_event(modes)).await;
                     }
-                    self.shared
-                        .emit(Event::AcpSessionAssigned {
-                            acp_session_id: new_id.0.to_string(),
-                        })
-                        .await;
                     if let Some(event) = config_options_event(resp.config_options) {
                         self.shared.emit(event).await;
                     }
@@ -368,9 +396,16 @@ impl Session {
                     .suppress_history_replay
                     .store(true, Ordering::Relaxed);
             }
+            // The replay arrives under the stored id, so identity commits
+            // before the request rather than on its reply.
+            {
+                let ingress = &self.shared.ingress;
+                let _guard = ingress.fence.lock().await;
+                ingress.finish(Some(SessionId::from(stored.clone())))?;
+            }
             let req = LoadSessionRequest::new(stored.clone(), self.agent_cwd.clone())
                 .mcp_servers(mcp_servers.clone());
-            match self.establish_request("session/load", req).await {
+            match self.load_request(req).await {
                 Ok(resp) => {
                     self.session_from_storage = true;
                     info!(
@@ -409,6 +444,11 @@ impl Session {
                         stored_id = %stored,
                         "session/load failed, falling back to session/new: {e}"
                     );
+                    {
+                        let ingress = &self.shared.ingress;
+                        let _guard = ingress.fence.lock().await;
+                        ingress.finish(None)?;
+                    }
                     self.shared
                         .suppress_history_replay
                         .store(false, Ordering::Relaxed);
@@ -429,13 +469,18 @@ impl Session {
         let label = self.shared.session_label.clone();
         info!(target: "acp.protocol", session = %label, "creating fresh session via session/new");
         let req = NewSessionRequest::new(self.agent_cwd.clone()).mcp_servers(mcp_servers);
-        let new_session = self.establish_request("session/new", req).await?;
+        let new_session = self
+            .minting_request("session/new", req, |resp: &NewSessionResponse| {
+                resp.session_id.clone()
+            })
+            .await?;
         let id = new_session.session_id.clone();
         if let Some(reason) = context_reset_reason {
             self.shared
                 .emit(Event::SessionContextReset { reason })
                 .await;
         }
+        self.shared.commit_session(id.clone()).await?;
         info!(
             target: "acp.protocol",
             session = %label,
@@ -476,11 +521,6 @@ impl Session {
                 ),
             }
         }
-        self.shared
-            .emit(Event::AcpSessionAssigned {
-                acp_session_id: id.0.to_string(),
-            })
-            .await;
         Ok(id)
     }
 
