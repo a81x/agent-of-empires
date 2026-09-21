@@ -13,9 +13,10 @@ use crate::util::now_secs;
 
 pub use crate::process::worker::{is_pid_alive, validate_id as validate_session_id};
 
-/// Runner protocol generation. Separate from liveness: a wrong-generation process is live
-/// and must be reaped before its replacement starts.
-pub const RUNNER_VERSION: u32 = 3;
+/// Runner protocol generation. Generation 4 announces authoritative native session identity
+/// before callbacks; the control wire version stays 3. Separate from liveness: a
+/// wrong-generation process is live and must be reaped before its replacement starts.
+pub const RUNNER_VERSION: u32 = 4;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkerRecord {
@@ -783,47 +784,53 @@ mod tests {
     #[test]
     #[serial]
     #[cfg(unix)]
-    fn live_v1_record_is_live_but_stale_and_terminate_reaps_it() {
+    fn live_legacy_records_are_live_but_stale_and_terminate_reaps_them() {
         use std::os::unix::process::CommandExt as _;
 
         with_temp_home(|| {
-            let mut victim = KillOnDrop(
-                std::process::Command::new("sleep")
-                    .arg("60")
-                    .process_group(0)
-                    .spawn()
-                    .expect("spawn stand-in runner"),
-            );
-            let dir = workers_dir().unwrap();
-            let sock = dir.join("v1sess.sock");
-            std::fs::write(&sock, b"").unwrap();
-            let mut rec = new_record("v1sess", victim.0.id(), sock.clone());
-            rec.runner_version = 1;
-            save(&rec).unwrap();
+            for version in [1, 3] {
+                // Its own process group, so the killpg lands on it alone rather than on
+                // the test runner.
+                let mut victim = KillOnDrop(
+                    std::process::Command::new("sleep")
+                        .arg("60")
+                        .process_group(0)
+                        .spawn()
+                        .expect("spawn stand-in runner"),
+                );
+                let session_id = format!("v{version}sess");
+                let sock = workers_dir().unwrap().join(format!("{session_id}.sock"));
+                let mut rec = new_record(&session_id, victim.0.id(), sock);
+                rec.runner_version = version;
+                // Legacy relay and control-only runners use different socket paths.
+                std::fs::write(expected_socket(&rec), b"").unwrap();
+                save(&rec).unwrap();
 
-            assert!(
-                is_record_live(&rec),
-                "a live v1 runner must not read as dead: its record holds the only copy of the pid"
-            );
-            assert!(
-                !is_runner_current(&rec),
-                "v1 is a generation behind, so the reconciler must replace it"
-            );
+                assert!(
+                    is_record_live(&rec),
+                    "a live legacy runner must not read as dead: its record holds the only copy of the pid"
+                );
+                assert!(
+                    !is_runner_current(&rec),
+                    "a legacy runner is a generation behind, so the reconciler must replace it"
+                );
 
-            terminate("v1sess");
+                terminate(&session_id);
 
-            let reaped = (0..40).any(|_| {
-                if matches!(victim.0.try_wait(), Ok(Some(_))) {
-                    return true;
-                }
-                std::thread::sleep(std::time::Duration::from_millis(50));
-                false
-            });
-            assert!(
-                reaped,
-                "terminate must signal the live v1 runner, not orphan it"
-            );
-            assert!(!record_path("v1sess").unwrap().exists());
+                // Signalled, not merely forgotten.
+                let reaped = (0..40).any(|_| {
+                    if matches!(victim.0.try_wait(), Ok(Some(_))) {
+                        return true;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                    false
+                });
+                assert!(
+                    reaped,
+                    "terminate must signal the live legacy runner, not orphan it"
+                );
+                assert!(!record_path(&session_id).unwrap().exists());
+            }
         });
     }
 

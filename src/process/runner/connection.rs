@@ -1,9 +1,7 @@
 //! One daemon control-channel attachment: attach handshake, reader loop, and writer task.
 
 use super::jsonrpc::read_frame_bounded;
-use super::shared::{
-    DeliveryScope, QueuedKind, RunnerShared, CONTROL_ATTACH_TIMEOUT, CONTROL_WRITE_TIMEOUT,
-};
+use super::shared::{RunnerShared, CONTROL_ATTACH_TIMEOUT, CONTROL_WRITE_TIMEOUT};
 use super::STDOUT_READ_BUF;
 use crate::acp::control_protocol::{self, ControlBody};
 use std::sync::atomic::Ordering;
@@ -195,10 +193,12 @@ pub(super) async fn handle_control_connection(
     let handshake_worker = tokio::spawn(async move {
         let mut control_closed = control_closed_rx;
         while let Some(command) = handshake_rx.recv().await {
+            let mut dispatch_release = None;
+            let mut established = false;
             let handshake = async {
                 match command {
                     HandshakeCommand::Initialize(request) => match handshake_shared
-                        .run_or_replay_initialize(&handshake_stdin, request)
+                        .run_or_replay_initialize(&handshake_stdin, request, &mut dispatch_release)
                         .await
                     {
                         Ok(result) => ControlBody::Initialized { result },
@@ -218,11 +218,17 @@ pub(super) async fn handle_control_connection(
                     }
                     HandshakeCommand::EstablishSession { method, request } => {
                         match handshake_shared
-                            .run_or_replay_session(&handshake_stdin, &method, request)
+                            .run_or_replay_session(
+                                &handshake_stdin,
+                                &method,
+                                request,
+                                &mut dispatch_release,
+                            )
                             .await
                         {
                             Ok((acp_session_id, result)) => {
                                 handshake_done.store(true, Ordering::Release);
+                                established = true;
                                 ControlBody::SessionReady {
                                     acp_session_id,
                                     result,
@@ -241,12 +247,9 @@ pub(super) async fn handle_control_connection(
                 return;
             };
             handshake_shared
-                .enqueue(
-                    DeliveryScope::Attachment(attachment_id),
-                    QueuedKind::Handshake,
-                    frame,
-                )
+                .enqueue_handshake(attachment_id, frame, established)
                 .await;
+            drop(dispatch_release);
         }
     });
 
