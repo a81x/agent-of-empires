@@ -730,11 +730,11 @@ mod tests {
                 },
                 "{id}: only a registry-backed attached crash re-arms"
             );
-            let frames = sink.frames.lock().unwrap();
+            let banner_published = sink.frames.lock().unwrap().iter().any(|(_, _, ev)| {
+                matches!(ev, Event::AgentStartupError { message } if message.contains("crashed more than"))
+            });
             assert!(
-                !frames.iter().any(|(_, _, ev)| {
-                    matches!(ev, Event::AgentStartupError { message } if message.contains("crashed more than"))
-                }),
+                !banner_published,
                 "{id}: the crash-loop banner must not be published for an attached worker"
             );
             assert_eq!(
