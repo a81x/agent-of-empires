@@ -3014,7 +3014,7 @@ fn plan_summary_counts_done_and_picks_the_first_non_done_step() {
     use crate::acp::state::PlanStepStatus::*;
 
     // (steps, expected total, completed, current step title)
-    let cases: Vec<(Vec<_>, usize, usize, Option<&str>)> = vec![
+    let cases: Vec<(Vec<_>, u32, u32, Option<&str>)> = vec![
         (
             vec![
                 step("a", "alpha", Done),

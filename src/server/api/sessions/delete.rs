@@ -698,7 +698,7 @@ pub(super) async fn purge_workspace_artifacts(
             ))
         };
 
-        let instance = find_instance(&state, &id).await;
+        let instance = find_instance(state, &id).await;
         let Some(instance) = instance else {
             // A concurrent retention auto-purge won the race, so the row we
             // were asked to delete is gone. A no-op, not a failure.

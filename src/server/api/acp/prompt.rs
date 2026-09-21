@@ -10,7 +10,7 @@ use crate::acp::elicitations::ElicitationResolution;
 use crate::acp::protocol::{
     ApprovalDecisionWire, DiffCommentsPromptRequest, PromptRequest, ResolveApprovalRequest,
 };
-use crate::server::session_service::{SendTurnError, SessionCaller};
+use crate::server::session_service::{SendTurnError, SendTurnRequest, SessionCaller};
 
 use super::*;
 
@@ -116,10 +116,13 @@ pub async fn acp_prompt(
         .send_turn(
             &SessionCaller::User,
             &id,
-            &req.text,
-            &attachments,
-            woke_idle_dormant,
-            req.prompt_id.clone(),
+            SendTurnRequest {
+                text: &req.text,
+                attachments: &attachments,
+                woke_idle_dormant,
+                prompt_id: req.prompt_id.clone(),
+                synthesized: false,
+            },
         )
         .await;
     match outcome {

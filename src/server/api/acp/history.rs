@@ -415,6 +415,7 @@ mod tests {
                 text: "hello".into(),
                 attachments: Vec::new(),
                 prompt_id: None,
+                synthesized: false,
             },
             Event::AgentMessageChunk { text: "hi".into() },
             Event::AgentMessageChunk {

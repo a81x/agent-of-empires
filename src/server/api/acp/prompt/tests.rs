@@ -351,7 +351,7 @@ async fn diff_comments_refuse_to_open_a_turn_another_submission_started() {
 
     state
         .acp_supervisor
-        .publish_user_prompt_with_attachments(&id, "the winning turn".into(), &[], None)
+        .publish_user_prompt_with_attachments(&id, "the winning turn".into(), &[], None, false)
         .await;
     drop(winner);
 
