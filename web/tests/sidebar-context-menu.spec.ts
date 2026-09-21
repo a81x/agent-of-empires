@@ -5,7 +5,11 @@
 import type { Locator, Page } from "@playwright/test";
 import { test, expect } from "./helpers/mockedTest";
 import { iPhone13 } from "./helpers/viewports";
-import { installSidebarMocks, type MockSessionInput } from "./helpers/sidebarMocks";
+import {
+  installSidebarMocks,
+  threeSessionsInOneRepo,
+  type MockSessionInput,
+} from "./helpers/sidebarMocks";
 import { openMobileSidebar } from "./helpers/sidebar";
 
 const ROW = "[data-testid='sidebar-session-row']";
@@ -17,13 +21,15 @@ const selectedRows = (page: Page) => page.locator(`${ROW}[data-selected]`);
 const menu = (page: Page) => page.locator(MENU);
 
 /** Three sessions, one per repo, so each gets its own group header. */
-const THREE: MockSessionInput[] = ["Mongols", "Goths", "Persians"].map((title, i) => ({
-  id: `s-${i + 1}`,
-  title,
-  project_path: `/tmp/repo-${"abc"[i]}`,
-  group: `/tmp/repo-${"abc"[i]}`,
-  branch: null,
-}));
+const THREE: MockSessionInput[] = ["Mongols", "Goths", "Persians"].map(
+  (title, i) => ({
+    id: `s-${i + 1}`,
+    title,
+    project_path: `/tmp/repo-${"abc"[i]}`,
+    group: `/tmp/repo-${"abc"[i]}`,
+    branch: null,
+  }),
+);
 
 async function openSidebar(page: Page, sessions: MockSessionInput[]) {
   await installSidebarMocks(page, { sessions });
@@ -45,7 +51,10 @@ test.describe("Sidebar context-menu viewport clamp (#1601)", () => {
           const box = await page.locator(selector).boundingBox();
           if (!box) return null;
           return (
-            box.x >= 0 && box.y >= 0 && box.x + box.width <= viewport.width && box.y + box.height <= viewport.height
+            box.x >= 0 &&
+            box.y >= 0 &&
+            box.x + box.width <= viewport.width &&
+            box.y + box.height <= viewport.height
           );
         },
         { timeout: 5_000 },
@@ -66,7 +75,9 @@ test.describe("Sidebar context-menu viewport clamp (#1601)", () => {
     ["session row", ROW, MENU],
     ["repo group header", "[data-testid='sidebar-group-header']", GROUP_MENU],
   ] as const) {
-    test(`right-click on the bottom ${what} keeps the menu inside the viewport`, async ({ page }) => {
+    test(`right-click on the bottom ${what} keeps the menu inside the viewport`, async ({
+      page,
+    }) => {
       await installSidebarMocks(page, { sessions: THREE });
       await page.setViewportSize({ width: 900, height: 360 });
       await page.goto("/");
@@ -89,7 +100,9 @@ test.describe("Sidebar context-menu viewport clamp (#1601)", () => {
 // navigating, Shift+click extends the range, and bulk triage runs from the
 // right-click menu (the BulkActionBar popup was removed in #2312).
 test.describe("Sidebar multi-select (#1724, #2312)", () => {
-  test("Cmd/Ctrl+click toggles selection without navigating", async ({ page }) => {
+  test("Cmd/Ctrl+click toggles selection without navigating", async ({
+    page,
+  }) => {
     await openSidebar(page, THREE);
     await expect(rows(page)).toHaveCount(3);
 
@@ -111,7 +124,9 @@ test.describe("Sidebar multi-select (#1724, #2312)", () => {
     await expect(selectedRows(page)).toHaveCount(0);
   });
 
-  test("right-click a selected row bulk-archives the whole selection", async ({ page }) => {
+  test("right-click a selected row bulk-archives the whole selection", async ({
+    page,
+  }) => {
     const archived: Array<{ id: string; body: unknown }> = [];
     await page.route("**/api/sessions/*/archive", (r) => {
       const id =
@@ -136,17 +151,22 @@ test.describe("Sidebar multi-select (#1724, #2312)", () => {
 
     await rows(page).nth(1).click({ button: "right" });
     await expect(menu(page)).toContainText("3 selected");
-    const archiveItem = menu(page).locator("[data-testid='sidebar-context-menu-bulk-archive']");
+    const archiveItem = menu(page).locator(
+      "[data-testid='sidebar-context-menu-bulk-archive']",
+    );
     await expect(archiveItem).toContainText("Archive 3");
     await archiveItem.click();
 
     await expect.poll(() => archived.length).toBe(3);
     expect(archived.map((a) => a.id).sort()).toEqual(["s-1", "s-2", "s-3"]);
-    for (const a of archived) expect(a.body).toEqual({ archived: true, kill_pane: true });
+    for (const a of archived)
+      expect(a.body).toEqual({ archived: true, kill_pane: true });
     await expect(selectedRows(page)).toHaveCount(0);
   });
 
-  test("right-click an unselected row resets the selection to that row (#2312)", async ({ page }) => {
+  test("right-click an unselected row resets the selection to that row (#2312)", async ({
+    page,
+  }) => {
     await openSidebar(page, THREE);
     await rows(page)
       .nth(0)
@@ -161,10 +181,14 @@ test.describe("Sidebar multi-select (#1724, #2312)", () => {
     await expect(selectedRows(page)).toHaveCount(1);
     await expect(menu(page)).toBeVisible();
     await expect(menu(page)).not.toContainText("selected");
-    await expect(menu(page).locator("[data-testid='sidebar-context-menu-bulk-archive']")).toHaveCount(0);
+    await expect(
+      menu(page).locator("[data-testid='sidebar-context-menu-bulk-archive']"),
+    ).toHaveCount(0);
   });
 
-  test("plain click then Shift+click selects the range from the navigated row (#2312)", async ({ page }) => {
+  test("plain click then Shift+click selects the range from the navigated row (#2312)", async ({
+    page,
+  }) => {
     await openSidebar(page, THREE);
     // A plain click navigates and leaves the row as the anchor; no intervening
     // Cmd+click is needed before the range works.
@@ -182,7 +206,12 @@ test.describe("Sidebar multi-select (#1724, #2312)", () => {
 // POSTs acp enable/disable. The backend round-trip is covered by Rust and live
 // specs; this pins the menu presence, the confirm gate, and each request.
 test.describe("Sidebar Switch view (#2252)", () => {
-  const session = (id: string, title: string, view: "structured" | "terminal", acpCapable: boolean) => ({
+  const session = (
+    id: string,
+    title: string,
+    view: "structured" | "terminal",
+    acpCapable: boolean,
+  ) => ({
     id,
     title,
     project_path: "/tmp/repo",
@@ -202,57 +231,100 @@ test.describe("Sidebar Switch view (#2252)", () => {
 
   async function openSwitchMenu(page: Page, title: string) {
     await page.goto("/");
-    await rows(page).filter({ hasText: title }).first().click({ button: "right" });
+    await rows(page)
+      .filter({ hasText: title })
+      .first()
+      .click({ button: "right" });
     await expect(menu(page)).toBeVisible();
-    await page.locator("[data-testid='sidebar-context-menu-switch-view']").click();
+    await page
+      .locator("[data-testid='sidebar-context-menu-switch-view']")
+      .click();
   }
 
   for (const c of [
-    { dir: "structured session switches to terminal", id: "sess-1", view: "structured", endpoint: "disable" },
-    { dir: "terminal acp-capable session switches to structured", id: "sess-2", view: "terminal", endpoint: "enable" },
+    {
+      dir: "structured session switches to terminal",
+      id: "sess-1",
+      view: "structured",
+      endpoint: "disable",
+    },
+    {
+      dir: "terminal acp-capable session switches to structured",
+      id: "sess-2",
+      view: "terminal",
+      endpoint: "enable",
+    },
   ] as const) {
     test(`${c.dir} after confirm`, async ({ page }) => {
-      await installSidebarMocks(page, { sessions: [session(c.id, `Switch ${c.id}`, c.view, true)] });
+      await installSidebarMocks(page, {
+        sessions: [session(c.id, `Switch ${c.id}`, c.view, true)],
+      });
       let posted: string | null = null;
       await page.route(`**/api/sessions/*/acp/${c.endpoint}`, (r) => {
         if (r.request().method() !== "POST") return r.fulfill({ status: 400 });
         posted = r.request().url();
-        return r.fulfill({ json: { session_id: c.id, view: c.view === "structured" ? "terminal" : "structured" } });
+        return r.fulfill({
+          json: {
+            session_id: c.id,
+            view: c.view === "structured" ? "terminal" : "structured",
+          },
+        });
       });
 
       await openSwitchMenu(page, `Switch ${c.id}`);
       const dialog = page.locator("[data-testid='switch-view-dialog']");
       await expect(dialog).toBeVisible();
       // Claude keeps context: the confirm copy must say so, not threaten loss.
-      if (c.view === "structured") await expect(dialog).toContainText("continues in the terminal");
+      if (c.view === "structured")
+        await expect(dialog).toContainText("continues in the terminal");
       await page.locator("[data-testid='switch-view-confirm']").click();
-      await expect.poll(() => posted).toContain(`/api/sessions/${c.id}/acp/${c.endpoint}`);
-      if (c.view === "structured") await expect(page.getByText("Switched to terminal")).toBeVisible();
+      await expect
+        .poll(() => posted)
+        .toContain(`/api/sessions/${c.id}/acp/${c.endpoint}`);
+      if (c.view === "structured")
+        await expect(page.getByText("Switched to terminal")).toBeVisible();
     });
   }
 
   test("a failed switch surfaces an error toast", async ({ page }) => {
-    await installSidebarMocks(page, { sessions: [session("sess-9", "Broken switch", "structured", true)] });
-    await page.route("**/api/sessions/*/acp/disable", (r) => r.fulfill({ status: 500 }));
+    await installSidebarMocks(page, {
+      sessions: [session("sess-9", "Broken switch", "structured", true)],
+    });
+    await page.route("**/api/sessions/*/acp/disable", (r) =>
+      r.fulfill({ status: 500 }),
+    );
 
     await openSwitchMenu(page, "Broken switch");
     await page.locator("[data-testid='switch-view-confirm']").click();
     await expect(page.getByText("Failed to switch to terminal")).toBeVisible();
   });
 
-  test("non-acp-capable terminal session has no switch-view item", async ({ page }) => {
-    await installSidebarMocks(page, { sessions: [session("sess-3", "Plain terminal", "terminal", false)] });
+  test("non-acp-capable terminal session has no switch-view item", async ({
+    page,
+  }) => {
+    await installSidebarMocks(page, {
+      sessions: [session("sess-3", "Plain terminal", "terminal", false)],
+    });
     await page.goto("/");
-    await rows(page).filter({ hasText: "Plain terminal" }).first().click({ button: "right" });
+    await rows(page)
+      .filter({ hasText: "Plain terminal" })
+      .first()
+      .click({ button: "right" });
     await expect(menu(page)).toBeVisible();
-    await expect(page.locator("[data-testid='sidebar-context-menu-switch-view']")).toHaveCount(0);
+    await expect(
+      page.locator("[data-testid='sidebar-context-menu-switch-view']"),
+    ).toHaveCount(0);
   });
 });
 
 // The `ctx:no` row badge marks sessions whose next launch cannot resume
 // context. Only the unavailable states are surfaced.
 test.describe("Context resume badge", () => {
-  const session = (id: string, title: string, fields: Record<string, unknown> = {}): MockSessionInput => ({
+  const session = (
+    id: string,
+    title: string,
+    fields: Record<string, unknown> = {},
+  ): MockSessionInput => ({
     id,
     title,
     project_path: `/tmp/${id}`,
@@ -263,29 +335,53 @@ test.describe("Context resume badge", () => {
 
   test("surfaces only unavailable context resume states", async ({ page }) => {
     await openSidebar(page, [
-      session("missing", "Missing target", { context_resume: { state: "unavailable", reason: "no_target" } }),
-      session("runtime", "Runtime check", {
-        context_resume: { state: "indeterminate", reason: "runtime_check_required" },
+      session("missing", "Missing target", {
+        context_resume: { state: "unavailable", reason: "no_target" },
       }),
-      session("available", "Available context", { context_resume: { state: "available" } }),
+      session("runtime", "Runtime check", {
+        context_resume: {
+          state: "indeterminate",
+          reason: "runtime_check_required",
+        },
+      }),
+      session("available", "Available context", {
+        context_resume: { state: "available" },
+      }),
       session("old-daemon", "Unreported context"),
       session("future-reason", "Future reason", {
         context_resume: { state: "unavailable", reason: "future_reason" },
       }),
-      session("future-state", "Future state", { context_resume: { state: "future_state" } }),
+      session("future-state", "Future state", {
+        context_resume: { state: "future_state" },
+      }),
     ]);
 
-    await expect(page.getByTitle("Context resume unavailable: no resume target has been captured")).toHaveText(
-      "ctx:no",
-    );
-    await expect(page.getByTitle("Context resume unavailable", { exact: true })).toHaveText("ctx:no");
-    await expect(page.getByRole("link", { name: /Missing target/ })).toHaveAccessibleName(/Missing target ctx:no$/);
-    for (const title of ["Runtime check", "Available context", "Unreported context", "Future state"]) {
-      await expect(page.getByRole("link", { name: new RegExp(title) })).not.toContainText("ctx:");
+    await expect(
+      page.getByTitle(
+        "Context resume unavailable: no resume target has been captured",
+      ),
+    ).toHaveText("ctx:no");
+    await expect(
+      page.getByTitle("Context resume unavailable", { exact: true }),
+    ).toHaveText("ctx:no");
+    await expect(
+      page.getByRole("link", { name: /Missing target/ }),
+    ).toHaveAccessibleName(/Missing target ctx:no$/);
+    for (const title of [
+      "Runtime check",
+      "Available context",
+      "Unreported context",
+      "Future state",
+    ]) {
+      await expect(
+        page.getByRole("link", { name: new RegExp(title) }),
+      ).not.toContainText("ctx:");
     }
   });
 
-  test("uses the active session for a multi-session workspace badge and navigation", async ({ page }) => {
+  test("uses the active session for a multi-session workspace badge and navigation", async ({
+    page,
+  }) => {
     await openSidebar(page, [
       {
         ...session("idle", "Idle session", {
@@ -305,10 +401,16 @@ test.describe("Context resume badge", () => {
       },
     ]);
 
-    await expect(page.getByTitle("Context resume unavailable: the next launch was explicitly reset")).toHaveText(
-      "ctx:no",
-    );
-    await expect(page.getByTitle("Context resume unavailable: no resume target has been captured")).toHaveCount(0);
+    await expect(
+      page.getByTitle(
+        "Context resume unavailable: the next launch was explicitly reset",
+      ),
+    ).toHaveText("ctx:no");
+    await expect(
+      page.getByTitle(
+        "Context resume unavailable: no resume target has been captured",
+      ),
+    ).toHaveCount(0);
     const workspaceLink = page.locator('a[href="/session/running"]');
     await expect(workspaceLink).toHaveCount(1);
     await workspaceLink.click();
@@ -316,9 +418,16 @@ test.describe("Context resume badge", () => {
   });
 
   for (const axis of ["group", "repo+group"]) {
-    test(`keeps the badge and activation on the same ${axis} slice`, async ({ page }) => {
-      await page.addInitScript((axis) => localStorage.setItem("aoe-sidebar-axis", axis), axis);
-      await page.route("**/api/app-state/web-ui-state", (r) => r.fulfill({ json: { "aoe-sidebar-axis": axis } }));
+    test(`keeps the badge and activation on the same ${axis} slice`, async ({
+      page,
+    }) => {
+      await page.addInitScript(
+        (axis) => localStorage.setItem("aoe-sidebar-axis", axis),
+        axis,
+      );
+      await page.route("**/api/app-state/web-ui-state", (r) =>
+        r.fulfill({ json: { "aoe-sidebar-axis": axis } }),
+      );
       await openSidebar(page, [
         {
           ...session("idle", "Idle session", {
@@ -330,7 +439,10 @@ test.describe("Context resume badge", () => {
           group: "A",
         },
         {
-          ...session("running", "Running session", { status: "Running", context_resume: { state: "available" } }),
+          ...session("running", "Running session", {
+            status: "Running",
+            context_resume: { state: "available" },
+          }),
           project_path: "/tmp/shared",
           branch: "shared",
           group: "B",
@@ -361,8 +473,10 @@ test.describe("Long-press menu (mobile)", () => {
 
   const LONG_PRESS_MS = 500;
 
-  test("a native contextmenu after the long-press does not dismiss the row menu", async ({ page }) => {
-    await installSidebarMocks(page, { sessions: THREE });
+  test("a native contextmenu after the long-press does not dismiss the row menu", async ({
+    page,
+  }) => {
+    await installSidebarMocks(page, { sessions: threeSessionsInOneRepo() });
     await page.goto("/");
     await openMobileSidebar(page);
 
@@ -372,7 +486,10 @@ test.describe("Long-press menu (mobile)", () => {
     const [x, y] = [box.x + box.width / 2, box.y + box.height / 2];
 
     const cdp = await page.context().newCDPSession(page);
-    await cdp.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x, y, id: 1 }] });
+    await cdp.send("Input.dispatchTouchEvent", {
+      type: "touchStart",
+      touchPoints: [{ x, y, id: 1 }],
+    });
     await page.waitForTimeout(LONG_PRESS_MS + 100);
     await expect(menu(page)).toBeVisible();
 
@@ -419,7 +536,10 @@ test.describe("Long-press menu (mobile)", () => {
     );
     await expect(menu(page)).toBeVisible();
 
-    await cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+    await cdp.send("Input.dispatchTouchEvent", {
+      type: "touchEnd",
+      touchPoints: [],
+    });
 
     // The guard is a time window: later, a tap outside still dismisses. Tap
     // beside the menu, which is nearly full height on a phone and so attracts
@@ -429,9 +549,12 @@ test.describe("Long-press menu (mobile)", () => {
       const r = el.getBoundingClientRect();
       const gapLeft = r.left;
       const gapRight = window.innerWidth - r.right;
-      if (Math.max(gapLeft, gapRight) < 12) throw new Error("no horizontal gap beside the menu");
+      if (Math.max(gapLeft, gapRight) < 12)
+        throw new Error("no horizontal gap beside the menu");
       return {
-        x: Math.round(gapLeft >= gapRight ? gapLeft / 2 : (r.right + window.innerWidth) / 2),
+        x: Math.round(
+          gapLeft >= gapRight ? gapLeft / 2 : (r.right + window.innerWidth) / 2,
+        ),
         y: Math.round(r.top + r.height / 2),
       };
     });
