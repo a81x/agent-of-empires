@@ -39,8 +39,9 @@ pub struct AcpTranscript {
     /// lets the user skip/cancel so the agent's turn never hangs; the answer
     /// form is web-only.
     pub pending_elicitations: Vec<PendingElicitation>,
-    /// Live status banner ("thinking…" / "compacting…"), shown only while a
-    /// turn runs. Derived from the server's phase in `apply_reduced_state`.
+    /// Live status banner ("thinking…" / "compacting…"), shown while a turn
+    /// runs or a background sub-agent is active. Derived from the server's
+    /// phase in `apply_reduced_state`.
     pub status_text: Option<String>,
     /// Id of the agent's currently selected mode. `None` until the agent
     /// advertises one.
@@ -57,6 +58,13 @@ pub struct AcpTranscript {
     /// Whether the agent is mid-turn. The composer reads it to decide whether
     /// Enter sends now or parks the prompt in the daemon's queue.
     pub turn_active: bool,
+    /// Whether a background sub-agent (async Task) is still outstanding.
+    /// Display-only: unlike `turn_active`, the composer must NOT gate
+    /// send-vs-park on this, since the main turn itself is genuinely idle
+    /// (#4001). Combine with `turn_active` only for the busy spinner;
+    /// Esc-to-cancel reads `turn_active` (via `agent_busy` in mod.rs), never
+    /// this field.
+    pub background_agent_active: bool,
     /// Whether the agent accepts `_session/steering`. When true the composer
     /// sends a mid-turn prompt straight through and the daemon injects it into
     /// the running turn. Re-derived as `false` on a respawn onto an adapter
@@ -177,6 +185,7 @@ impl AcpTranscript {
             cancelling: false,
             compacting: false,
             turn_active: false,
+            background_agent_active: false,
             usage: None,
             current_plan: Vec::new(),
             lagged: false,
@@ -251,6 +260,7 @@ impl AcpTranscript {
         }
         self.last_seq = seq;
 
+        self.background_agent_active = state.has_active_background_agent();
         self.agent_name = Some(state.agent.0);
         self.turn_active = state.turn_active;
         self.steering = state.steering;
@@ -278,9 +288,10 @@ impl AcpTranscript {
             })
             .unwrap_or_default();
 
-        // The banner renders only while a turn runs, so the phases that end one
-        // never reach the screen. Compaction outranks thinking: the adapter goes
-        // silent for minutes and the user needs to know why.
+        // The banner renders only while a turn runs or a background sub-agent is
+        // active, so the phases that end a turn never reach the screen.
+        // Compaction outranks thinking: the adapter goes silent for minutes and
+        // the user needs to know why.
         self.status_text = if state.compacting {
             Some("compacting…".to_string())
         } else if state.thinking.is_some() {
@@ -417,6 +428,7 @@ mod tests {
                 prompt_id: None,
                 text: "go".into(),
                 attachments: vec![],
+                synthesized: false,
             },
             Event::PromptCapabilities {
                 steering: true,
@@ -577,6 +589,27 @@ mod tests {
         assert!(t.available_modes.is_empty());
     }
 
+    /// #4001: a live background sub-agent must reach the TUI's busy
+    /// signal via `apply_reduced_state`, distinct from `turn_active` (which
+    /// stays false since the main turn itself may be genuinely idle).
+    #[test]
+    fn apply_reduced_state_picks_up_a_live_background_agent() {
+        let mut t = AcpTranscript::new("s-1");
+        let state = reduced(&[Event::BackgroundAgentLaunched {
+            agent_id: "a1".into(),
+            tool_call_id: "tc1".into(),
+            description: "map backend".into(),
+            prompt: "do the thing".into(),
+            model: "claude-opus-4-8".into(),
+            output_file: "/tmp/a1.output".into(),
+            started_at: chrono::Utc::now(),
+        }]);
+        assert!(!state.turn_active, "fixture invariant: no main turn opened");
+        t.apply_reduced_state(1, state, &[]);
+        assert!(!t.turn_active);
+        assert!(t.background_agent_active);
+    }
+
     /// A snapshot that races live deltas must not rewind the view.
     #[test]
     fn stale_reduced_state_frame_is_dropped() {
@@ -634,6 +667,7 @@ mod tests {
             prompt_id: None,
             text: "go".into(),
             attachments: vec![],
+            synthesized: false,
         };
         let reset = || Event::SessionContextReset {
             reason: "worker restarted".into(),
@@ -742,6 +776,7 @@ mod tests {
                 prompt_id: None,
                 text: "hi".into(),
                 attachments: Vec::new(),
+                synthesized: false,
             },
             Event::AgentMessageChunk { text: "one".into() },
         ]);

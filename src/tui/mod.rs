@@ -274,15 +274,13 @@ pub async fn run(profile: &str, startup_warning: Option<String>) -> Result<()> {
     let available_tools = crate::tmux::AvailableTools::detect();
 
     // Refresh the update cache so the changelog dialog has release notes.
-    if check_version_change()?.is_some() {
-        if get_update_settings().update_check_mode.is_enabled() {
-            // Don't let a network issue block startup.
-            let _ = tokio::time::timeout(
-                std::time::Duration::from_secs(5),
-                check_for_update(env!("CARGO_PKG_VERSION"), true),
-            )
-            .await;
-        }
+    if check_version_change()?.is_some() && get_update_settings().update_check_mode.is_enabled() {
+        // Don't let a network issue block startup.
+        let _ = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            check_for_update(env!("CARGO_PKG_VERSION"), true),
+        )
+        .await;
     }
 
     // Clean-only plugin auto-update, non-blocking; asks a running daemon to reload.

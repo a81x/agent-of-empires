@@ -825,7 +825,7 @@ fn render_status(
             Style::default().fg(theme.title),
         ));
     }
-    if state.transcript.turn_active {
+    if state.transcript.turn_active || state.transcript.background_agent_active {
         let banner = state.transcript.status_text.as_deref().unwrap_or("working");
         spans.push(Span::styled(
             format!("· ● {banner} "),
@@ -2069,10 +2069,18 @@ mod tests {
         assert!(!out.contains("stale"), "{out:?}");
     }
 
+    /// (kind, args, completion, must contain, must not contain)
+    type ToolCardCase<'a> = (
+        &'a str,
+        &'a str,
+        Option<(bool, &'a str)>,
+        &'a [&'a str],
+        &'a [&'a str],
+    );
+
     #[test]
     fn tool_card_bodies() {
-        // (kind, args, completion, must contain, must not contain)
-        let cases: &[(&str, &str, Option<(bool, &str)>, &[&str], &[&str])] = &[
+        let cases: &[ToolCardCase] = &[
             (
                 "edit",
                 r#"{"file_path":"src/a.rs","old_string":"let x = 1;","new_string":"let x = 2;"}"#,
@@ -2288,6 +2296,17 @@ mod tests {
         assert!(render_dump(&state, 100, 24).contains("/compact"));
     }
 
+    /// #4001: the banner lights up for a background sub-agent even while the
+    /// main turn is idle.
+    #[test]
+    fn status_line_shows_working_banner_for_a_background_agent_alone() {
+        let mut state = test_state();
+        state.transcript.turn_active = false;
+        state.transcript.background_agent_active = true;
+        let dump = render_dump(&state, 80, 24);
+        assert!(dump.contains("working"), "{dump}");
+    }
+
     #[test]
     fn composer_is_a_prompt_rail_and_preview_stays_calm() {
         let rows = render_rows(&test_state(), 60, 12, true);
@@ -2320,6 +2339,7 @@ mod tests {
                 prompt_id: None,
                 text: "Hello.".into(),
                 attachments: Vec::new(),
+                synthesized: false,
             },
             Event::AgentMessageChunk {
                 text: "What should we build?".into(),
