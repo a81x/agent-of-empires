@@ -1219,7 +1219,7 @@
       "kind": "vitest",
       "risk": "low",
       "specs": [
-        "src/components/session-wizard/__tests__/AgentPickerEssentials.lifecycle.test.tsx"
+        "src/components/session-wizard/__tests__/AgentOptions.test.tsx"
       ],
       "components": [
         "web/src/components/session-wizard/steps/AgentPickerEssentials.tsx"
@@ -1265,9 +1265,9 @@
       "kind": "vitest",
       "risk": "high",
       "specs": [
-        "src/components/session-wizard/__tests__/HooksTrustDialog.test.tsx",
-        "src/components/session-wizard/__tests__/SessionWizard.hooksTrust.test.tsx",
-        "src/lib/api.test.ts"
+        "src/lib/api.test.ts",
+        "src/components/session-wizard/__tests__/ConfirmCreateDialogs.test.tsx",
+        "src/components/session-wizard/__tests__/SessionWizard.test.tsx"
       ],
       "components": [
         "web/src/components/session-wizard/SessionWizard.tsx",
@@ -1280,11 +1280,12 @@
       "kind": "vitest",
       "risk": "medium",
       "specs": [
-        "src/components/session-wizard/__tests__/VolumeIgnoresGlobDialog.test.tsx",
-        "src/lib/api.test.ts"
+        "src/lib/api.test.ts",
+        "src/components/session-wizard/__tests__/ConfirmCreateDialogs.test.tsx"
       ],
       "components": [
-        "web/src/components/session-wizard/VolumeIgnoresGlobDialog.tsx"
+        "web/src/components/session-wizard/VolumeIgnoresGlobDialog.tsx",
+        "web/src/components/session-wizard/ConfirmCreateDialog.tsx"
       ]
     },
     {
@@ -1292,14 +1293,15 @@
       "kind": "vitest",
       "risk": "high",
       "specs": [
-        "src/components/session-wizard/__tests__/structuredViewToggle.test.tsx",
-        "src/components/session-wizard/wizardReducer.test.ts"
+        "src/components/session-wizard/wizardReducer.test.ts",
+        "src/components/session-wizard/__tests__/SessionWizard.test.tsx"
       ],
       "components": [
         "web/src/components/session-wizard/SessionWizard.tsx",
         "web/src/components/session-wizard/steps/AgentStep.tsx",
         "web/src/components/session-wizard/steps/AgentPickerEssentials.tsx",
-        "web/src/components/session-wizard/wizardReducer.ts"
+        "web/src/components/session-wizard/wizardReducer.ts",
+        "web/src/components/session-wizard/steps/AgentOptions.tsx"
       ]
     },
     {
@@ -1308,7 +1310,8 @@
       "risk": "high",
       "specs": [
         "src/lib/__tests__/acpEligibility.test.ts",
-        "src/components/session-wizard/__tests__/structuredViewToggle.test.tsx"
+        "src/components/session-wizard/__tests__/SessionWizard.test.tsx",
+        "src/components/session-wizard/__tests__/AgentOptions.test.tsx"
       ],
       "components": [
         "web/src/lib/acpCapableTools.ts",
@@ -1332,7 +1335,7 @@
       "kind": "vitest",
       "risk": "medium",
       "specs": [
-        "src/components/session-wizard/__tests__/structuredViewToggle.test.tsx"
+        "src/components/session-wizard/__tests__/SessionWizard.test.tsx"
       ],
       "components": [
         "web/src/components/session-wizard/steps/AgentStep.tsx",
@@ -1349,7 +1352,8 @@
       "components": [
         "web/src/components/session-wizard/SessionWizard.tsx",
         "web/src/components/session-wizard/steps/AgentStep.tsx",
-        "web/src/components/TerminalView.tsx"
+        "web/src/components/TerminalView.tsx",
+        "web/src/components/session-wizard/steps/AgentOptions.tsx"
       ]
     },
     {
@@ -1360,7 +1364,10 @@
         "tests/wizard.spec.ts"
       ],
       "components": [
-        "web/src/components/session-wizard/steps/AgentStep.tsx"
+        "web/src/components/session-wizard/steps/AgentStep.tsx",
+        "web/src/components/session-wizard/steps/AgentOptions.tsx",
+        "web/src/components/session-wizard/steps/AdvancedLaunchFields.tsx",
+        "web/src/components/session-wizard/steps/ProfilePresetPicker.tsx"
       ]
     },
     {
@@ -1443,7 +1450,7 @@
       "kind": "vitest",
       "risk": "high",
       "specs": [
-        "src/components/session-wizard/__tests__/ProjectStep.import.test.tsx"
+        "src/components/session-wizard/__tests__/ProjectStep.test.tsx"
       ],
       "components": [
         "web/src/components/session-wizard/steps/ProjectStep.tsx",
@@ -1466,7 +1473,7 @@
       "kind": "vitest",
       "risk": "medium",
       "specs": [
-        "src/components/session-wizard/__tests__/ProjectStep.workspace.test.tsx"
+        "src/components/session-wizard/__tests__/ProjectStep.test.tsx"
       ],
       "components": [
         "web/src/components/session-wizard/steps/ProjectStep.tsx"
@@ -2313,12 +2320,14 @@
       "risk": "low",
       "specs": [
         "src/components/diff/__tests__/CopyPathContextMenu.test.tsx",
-        "src/components/diff/__tests__/DiffFileList.copyPath.test.tsx"
+        "src/components/diff/__tests__/DiffFileList.test.tsx"
       ],
       "components": [
         "web/src/components/diff/CopyPathContextMenu.tsx",
         "web/src/components/diff/DiffFileList.tsx",
-        "web/src/lib/clipboard.ts"
+        "web/src/lib/clipboard.ts",
+        "web/src/components/diff/DiffFileRows.tsx",
+        "web/src/components/diff/BasePicker.tsx"
       ]
     },
     {
@@ -2348,7 +2357,7 @@
       "risk": "low",
       "specs": [
         "src/components/diff/__tests__/MarkdownFileView.test.tsx",
-        "src/components/diff/__tests__/DiffFileViewer.markdown.test.tsx"
+        "src/components/diff/__tests__/DiffFileViewer.layout.test.tsx"
       ],
       "components": [
         "web/src/components/diff/MarkdownFileView.tsx",
@@ -2454,7 +2463,6 @@
       "risk": "medium",
       "specs": [
         "src/components/diff/comments/storage.test.ts",
-        "src/components/diff/comments/storage.sweep.test.ts",
         "src/hooks/useDiffComments.rtl.test.tsx"
       ],
       "components": [
@@ -2525,10 +2533,12 @@
       "kind": "vitest",
       "risk": "medium",
       "specs": [
-        "src/components/diff/__tests__/DiffFileViewer.split.test.tsx"
+        "src/components/diff/__tests__/DiffFileViewer.layout.test.tsx"
       ],
       "components": [
-        "web/src/components/diff/DiffFileViewer.tsx"
+        "web/src/components/diff/DiffFileViewer.tsx",
+        "web/src/components/diff/DiffViewerHeader.tsx",
+        "web/src/components/diff/viewerChrome.tsx"
       ]
     },
     {
@@ -2554,7 +2564,7 @@
       "kind": "vitest",
       "risk": "low",
       "specs": [
-        "src/components/settings/__tests__/DiffSettings.test.tsx"
+        "src/components/settings/__tests__/preferencePanels.test.tsx"
       ],
       "components": [
         "web/src/components/settings/DiffSettings.tsx",
@@ -2584,8 +2594,8 @@
       "kind": "vitest",
       "risk": "low",
       "specs": [
-        "src/components/settings/__tests__/PanelsSettings.test.tsx",
-        "src/lib/__tests__/paneLayout.test.ts"
+        "src/lib/__tests__/paneLayout.test.ts",
+        "src/components/settings/__tests__/preferencePanels.test.tsx"
       ],
       "components": [
         "web/src/components/settings/PanelsSettings.tsx",
@@ -2634,7 +2644,8 @@
         "tests/live/repositories.spec.ts"
       ],
       "components": [
-        "web/src/components/session-wizard/steps/ProjectStep.tsx"
+        "web/src/components/session-wizard/steps/ProjectStep.tsx",
+        "web/src/components/session-wizard/steps/CloneRepoForm.tsx"
       ]
     },
     {
@@ -4216,7 +4227,7 @@
       "specs": [
         "tests/diff.spec.ts",
         "tests/live/repositories.spec.ts",
-        "src/components/diff/__tests__/DiffFileList.coverage.test.tsx"
+        "src/components/diff/__tests__/DiffFileList.test.tsx"
       ],
       "components": [
         "web/src/components/diff/DiffFileList.tsx"
@@ -4227,7 +4238,7 @@
       "kind": "vitest",
       "risk": "medium",
       "specs": [
-        "src/components/session-wizard/__tests__/ExtraReposPicker.perRepoBase.test.tsx"
+        "src/components/session-wizard/__tests__/ExtraReposPicker.test.tsx"
       ],
       "components": [
         "web/src/components/session-wizard/steps/ExtraReposPicker.tsx",
@@ -4243,7 +4254,7 @@
       "risk": "low",
       "specs": [
         "tests/diff.spec.ts",
-        "src/components/diff/__tests__/DiffFileList.coverage.test.tsx"
+        "src/components/diff/__tests__/DiffFileList.test.tsx"
       ],
       "components": [
         "web/src/components/diff/DiffFileList.tsx"
@@ -5116,7 +5127,6 @@
         "src/lib/__tests__/tourSteps.test.ts",
         "src/hooks/__tests__/useTour.test.ts",
         "src/components/__tests__/Dashboard.tour.test.tsx",
-        "src/components/tour/TourRunner.theme.test.tsx",
         "src/components/tour/TourRunner.transition.test.tsx"
       ],
       "components": [
@@ -5195,7 +5205,10 @@
         "web/src/components/settings/PluginUpdateConsentModal.tsx",
         "web/src/components/settings/PluginInstallConsentModal.tsx",
         "web/src/components/settings/PluginJobProgressModal.tsx",
-        "web/src/components/settings/PluginIdentityIcon.tsx"
+        "web/src/components/settings/PluginIdentityIcon.tsx",
+        "web/src/components/settings/PluginCard.tsx",
+        "web/src/components/settings/PluginMarketplace.tsx",
+        "web/src/components/settings/PluginModal.tsx"
       ]
     },
     {
@@ -5259,7 +5272,10 @@
         "src/components/plugin/__tests__/PluginSlots.test.tsx"
       ],
       "components": [
-        "web/src/components/plugin/PluginSlots.tsx"
+        "web/src/components/plugin/PluginSlots.tsx",
+        "web/src/components/plugin/PluginPane.tsx",
+        "web/src/components/plugin/SlotChrome.tsx",
+        "web/src/components/plugin/paneBlocks.tsx"
       ],
       "notes": "The api_version 12 pane block vocabulary: callout, bar and columns, plus the interactive row (clicking a row fires its `method` with the block's `params`, e.g. github.select_pr) and the pinned pane footer. api_version 13 adds the sparkline block (per-sample band coloring) and the global home-pane slot (PluginHomePanes), covered by the sparkline and home-pane cases in PluginSlots.test.tsx."
     },
