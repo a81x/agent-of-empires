@@ -12,6 +12,7 @@ use uuid::Uuid;
 
 use crate::containers::{self, DockerContainer};
 use crate::session::config::container_config;
+use crate::session::conversation_carry::ConversationCarry;
 use crate::session::environment::{
     build_docker_env_args_with_managed_codex_home, resolved_sandbox_environment, shell_escape,
     shell_escape_script_word,
@@ -61,6 +62,7 @@ mod types;
 pub(crate) const SESSION_IDENTITY_EXTENSION: &str =
     include_str!("../../../assets/session/aoe-session-id.js");
 
+pub(crate) use accessors::resolved_agent_for;
 pub use flags::{is_valid_session_color, SessionBucket, SESSION_COLORS};
 pub(crate) use lifecycle::NEWER_GENERATION_BUSY_REASON;
 pub use lifecycle::{LifecycleOperation, LifecycleReservation, LifecycleReservationError};
@@ -72,6 +74,8 @@ pub(crate) use sid_persist::{persist_session_to_storage, SidPersistOutcome, SidW
 pub use start::{LaunchSidOutcome, StartOutcome};
 pub(crate) use status::PassiveStatusPatch;
 pub use status::{Status, TMUX_SERVER_UNREACHABLE_ERROR, TMUX_SESSION_GONE_ERROR};
+#[cfg(test)]
+pub(crate) use test_helpers::install_aliases;
 pub(crate) use tmux_session::{
     duplicate_session_error, find_duplicate_session, is_duplicate_session, AgentSeed,
 };
@@ -133,6 +137,26 @@ pub struct DetectionState {
     pub pending: Option<Status>,
 }
 
+/// A turn queued for delivery once the (resumed) worker is live. See
+/// `Instance::pending_initial_turn`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PendingInitialTurn {
+    pub text: String,
+    /// Attachment refs for a rate-limit resume continuation replaying a
+    /// prompt that carried images/files (#3028). Metadata only; bytes stay in
+    /// the acp_attachments store and are reloaded at drain time. Empty for
+    /// create-time initial turns (those are text-only).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attachments: Vec<crate::daemon::PromptAttachmentRef>,
+    /// True when the daemon queued this turn itself (a rate-limit resume
+    /// continuation) rather than the user typing it at session-create time.
+    /// Carried onto the resulting `Event::UserPromptSent` so the transcript
+    /// model skips rendering a row for it: the user already saw this text
+    /// once, before the park.
+    #[serde(default)]
+    pub synthesized: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Instance {
     pub id: String,
@@ -188,10 +212,26 @@ pub struct Instance {
     pub created_by_plugin: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub plugin_create_idempotency: Option<PluginCreateIdempotency>,
+
+    /// A turn persisted with the session and not yet delivered to the agent:
+    /// either the initial prompt from session create (#2897), or a
+    /// rate-limit resume continuation replaying an interrupted prompt
+    /// (#3028). Written in the same `Storage::update` that creates the row
+    /// (create case) or by `SessionService::set_pending_initial_turn`
+    /// (continuation case), so the write and its first turn are accepted
+    /// atomically; the session service drains it once the ACP worker is live
+    /// (create fast path, and the reconciler tick after a crash or restart)
+    /// and clears it after a successful publish + forward. Delivery is
+    /// at-least-once: a crash between the forward and this field's clear
+    /// re-delivers on the next drain. v029 folded this from two flat fields
+    /// (`pending_initial_turn: Option<String>` plus a companion
+    /// `pending_initial_turn_attachments`) into one typed record once a third
+    /// piece of turn state (`synthesized`) needed to ride along.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub pending_initial_turn: Option<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub pending_initial_turn_attachments: Vec<crate::daemon::PromptAttachmentRef>,
+    pub pending_initial_turn: Option<PendingInitialTurn>,
+
+    /// Server-owned follow-ups, ordered by `QueuedPromptEntry::seq`. Persisted
+    /// here so the daemon can drain them without a connected client.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub queued_prompts: Vec<crate::daemon::QueuedPromptEntry>,
     #[serde(default, skip_serializing_if = "is_zero_u64")]
