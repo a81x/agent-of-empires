@@ -49,7 +49,7 @@
       "id": "settings.mcp-servers.handlers",
       "kind": "vitest",
       "risk": "high",
-      "specs": ["src/components/__tests__/McpServers.test.tsx", "src/lib/api.mcp.test.ts"],
+      "specs": ["src/components/__tests__/McpServers.test.tsx", "src/lib/api.test.ts"],
       "components": ["web/src/components/McpServers.tsx"]
     },
     {
@@ -63,7 +63,7 @@
       "id": "settings.skills-management.handlers",
       "kind": "vitest",
       "risk": "high",
-      "specs": ["src/components/__tests__/SkillsManager.test.tsx", "src/lib/api.skills.test.ts"],
+      "specs": ["src/components/__tests__/SkillsManager.test.tsx", "src/lib/api.test.ts"],
       "components": ["web/src/components/SkillsManager.tsx"]
     },
     {
@@ -513,7 +513,7 @@
       "id": "acp.server-queue",
       "kind": "vitest",
       "risk": "medium",
-      "specs": ["src/lib/__tests__/queueApi.test.ts"],
+      "specs": ["src/lib/api.test.ts"],
       "components": ["web/src/lib/api.ts"]
     },
     {
@@ -932,7 +932,7 @@
       "specs": [
         "src/components/session-wizard/__tests__/HooksTrustDialog.test.tsx",
         "src/components/session-wizard/__tests__/SessionWizard.hooksTrust.test.tsx",
-        "src/lib/__tests__/createSessionApi.test.ts"
+        "src/lib/api.test.ts"
       ],
       "components": [
         "web/src/components/session-wizard/SessionWizard.tsx",
@@ -944,10 +944,7 @@
       "id": "wizard.volume-ignores-globs.unit",
       "kind": "vitest",
       "risk": "medium",
-      "specs": [
-        "src/components/session-wizard/__tests__/VolumeIgnoresGlobDialog.test.tsx",
-        "src/lib/__tests__/volumeIgnoresApi.test.ts"
-      ],
+      "specs": ["src/components/session-wizard/__tests__/VolumeIgnoresGlobDialog.test.tsx", "src/lib/api.test.ts"],
       "components": ["web/src/components/session-wizard/VolumeIgnoresGlobDialog.tsx"]
     },
     {
@@ -1135,7 +1132,7 @@
         "src/components/command-palette/__tests__/CommandPalette.test.tsx",
         "src/hooks/useConversationSearch.test.ts",
         "src/hooks/__tests__/useCommandActions.test.tsx",
-        "src/lib/__tests__/searchConversationsApi.test.ts"
+        "src/lib/api.test.ts"
       ],
       "components": ["web/src/App.tsx", "web/src/components/command-palette/CommandPalette.tsx"]
     },
@@ -1628,7 +1625,7 @@
       "id": "session.workspace-delete",
       "kind": "vitest",
       "risk": "high",
-      "specs": ["src/lib/__tests__/trashActions.test.ts", "src/lib/api.coverage.test.ts"],
+      "specs": ["src/lib/__tests__/trashActions.test.ts", "src/lib/api.test.ts"],
       "components": ["web/src/lib/trashActions.ts", "web/src/lib/api.ts"]
     },
     {
@@ -1944,7 +1941,7 @@
       "id": "connectivity.lifecycle-fetch-toasts",
       "kind": "vitest",
       "risk": "medium",
-      "specs": ["src/lib/fetchInterceptor.more.test.ts"],
+      "specs": ["src/lib/fetchInterceptor.test.ts"],
       "components": ["web/src/lib/fetchInterceptor.ts"]
     },
     {
@@ -2278,7 +2275,7 @@
       "id": "acp.switch-agent-manual",
       "kind": "vitest",
       "risk": "medium",
-      "specs": ["src/components/acp/SwitchAgentModal.test.tsx", "src/lib/api.acp.test.ts"],
+      "specs": ["src/components/acp/SwitchAgentModal.test.tsx", "src/lib/api.test.ts"],
       "components": [
         "web/src/components/acp/SwitchAgentModal.tsx",
         "web/src/components/acp/Composer.tsx",
@@ -2303,7 +2300,7 @@
       "id": "acp.switch-view-api",
       "kind": "vitest",
       "risk": "medium",
-      "specs": ["src/lib/api.acp.test.ts", "src/lib/acpKeepContext.test.ts"],
+      "specs": ["src/lib/api.test.ts", "src/lib/acpKeepContext.test.ts"],
       "components": ["web/src/lib/api.ts", "web/src/lib/acpKeepContext.ts"]
     },
     {
@@ -3493,7 +3490,7 @@
       "id": "sidebar.rename-success-warning",
       "kind": "vitest",
       "risk": "medium",
-      "specs": ["src/lib/api.coverage.test.ts", "src/components/__tests__/WorkdirNameEdit.test.tsx"],
+      "specs": ["src/lib/api.test.ts", "src/components/__tests__/WorkdirNameEdit.test.tsx"],
       "components": ["web/src/lib/api.ts", "web/src/components/WorkspaceSidebar.tsx"]
     },
     {
