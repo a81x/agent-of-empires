@@ -42,7 +42,6 @@ import { trashedWorkspaceRestoreIds } from "./lib/trashActions";
 import {
   loginStatus,
   logout,
-  fetchSettings,
   isDebugBuild,
   reportTelemetrySeen,
   setSessionUnread,
@@ -57,6 +56,8 @@ import { IdleDecayWindowContext, parseIdleDecayWindowMs } from "./lib/idleDecay"
 import { parseUnreadIndicatorEnabled, UnreadIndicatorContext, useUnreadIndicatorEnabled } from "./lib/unreadIndicator";
 import { parseSessionRowTagMode, SessionRowTagContext, type SessionRowTagMode } from "./lib/sessionRowTag";
 import { parseSessionColorsEnabled, SessionColorsContext } from "./lib/sessionColors";
+import { fetchActiveProfileSettings } from "./lib/appSettings";
+import { parseSystemHealthEnabled, SystemHealthEnabledContext } from "./lib/systemHealth";
 import { toastBus, reportError } from "./lib/toastBus";
 import { isAbsolutePath, resolveToRepoRelative, type FileRef } from "./lib/fileRef";
 import { OPEN_SESSION_EVENT } from "./lib/sessionRoute";
@@ -119,6 +120,7 @@ interface AppSettings {
   unreadIndicatorEnabled: boolean;
   sessionRowTagMode: SessionRowTagMode;
   sessionColorsEnabled: boolean;
+  systemHealthEnabled: boolean;
 }
 
 const DEFAULT_APP_SETTINGS: AppSettings = {
@@ -126,6 +128,7 @@ const DEFAULT_APP_SETTINGS: AppSettings = {
   unreadIndicatorEnabled: true,
   sessionRowTagMode: "branch",
   sessionColorsEnabled: true,
+  systemHealthEnabled: false,
 };
 
 function parseAppSettings(settings: Record<string, unknown> | null | undefined): AppSettings {
@@ -134,6 +137,7 @@ function parseAppSettings(settings: Record<string, unknown> | null | undefined):
     unreadIndicatorEnabled: parseUnreadIndicatorEnabled(settings),
     sessionRowTagMode: parseSessionRowTagMode(settings),
     sessionColorsEnabled: parseSessionColorsEnabled(settings),
+    systemHealthEnabled: parseSystemHealthEnabled(settings),
   };
 }
 
@@ -146,15 +150,19 @@ export default function App() {
   const [appSettings, setAppSettings] = useState(DEFAULT_APP_SETTINGS);
 
   const refreshAppSettings = useCallback(async () => {
-    setAppSettings(parseAppSettings(await fetchSettings()));
+    setAppSettings(parseAppSettings(await fetchActiveProfileSettings()));
   }, []);
 
+  // Settings are read once the login gate says they can be: on a
+  // login-required server an early read is rejected, and nothing would fetch
+  // again afterwards, so the whole session would run on defaults.
   const refreshLoginStatus = useCallback(() => {
     loginStatus().then(({ required, authenticated }) => {
       setLoginRequired(required);
       setLoginAuthenticated(authenticated);
+      if (!required || authenticated) void refreshAppSettings();
     });
-  }, []);
+  }, [refreshAppSettings]);
 
   useEffect(() => {
     return listen(() => setTokenExpired(true), [window, TOKEN_EXPIRED_EVENT]);
@@ -170,10 +178,6 @@ export default function App() {
   }, []);
 
   useEffect(refreshLoginStatus, [refreshLoginStatus]);
-
-  useEffect(() => {
-    fetchSettings().then((settings) => setAppSettings(parseAppSettings(settings)));
-  }, []);
 
   if (tokenExpired) {
     return (
@@ -191,6 +195,8 @@ export default function App() {
       <LoginPage
         onSuccess={() => {
           setLoginAuthenticated(true);
+          // First point at which settings are readable on a login-walled server.
+          void refreshAppSettings();
           resetTokenExpired();
         }}
       />
@@ -206,17 +212,19 @@ export default function App() {
       <UnreadIndicatorContext.Provider value={appSettings.unreadIndicatorEnabled}>
         <SessionRowTagContext.Provider value={appSettings.sessionRowTagMode}>
           <SessionColorsContext.Provider value={appSettings.sessionColorsEnabled}>
-            <PluginUiProvider>
-              <AppContent
-                loginRequired={loginRequired}
-                onLogout={async () => {
-                  await logout();
-                  setLoginAuthenticated(false);
-                }}
-                onSettingsRefresh={refreshAppSettings}
-              />
-            </PluginUiProvider>
-            <ElevationPrompt />
+            <SystemHealthEnabledContext.Provider value={appSettings.systemHealthEnabled}>
+              <PluginUiProvider>
+                <AppContent
+                  loginRequired={loginRequired}
+                  onLogout={async () => {
+                    await logout();
+                    setLoginAuthenticated(false);
+                  }}
+                  onSettingsRefresh={refreshAppSettings}
+                />
+              </PluginUiProvider>
+              <ElevationPrompt />
+            </SystemHealthEnabledContext.Provider>
           </SessionColorsContext.Provider>
         </SessionRowTagContext.Provider>
       </UnreadIndicatorContext.Provider>
