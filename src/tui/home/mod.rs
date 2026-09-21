@@ -84,10 +84,8 @@ use self::watchers::{RELOAD_FAILED_TITLE, WATCHER_WARNING_TITLE};
 /// reorder) from churning the `Option<...>` shape on `HomeView`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum DragKind {
-    /// Resizing the side-by-side list/preview divider. `start_col` is the
-    /// column where the user pressed; `start_width` is the requested
-    /// `list_width` at that moment. The new requested width is
-    /// `start_width + (current_col - start_col)`, clamped on apply.
+    /// Resize from the pressed column and requested width, reversing the
+    /// horizontal delta when the sidebar is on the right.
     ListDivider { start_col: u16, start_width: u16 },
     /// Drag-selecting text inside the preview pane. Available whenever
     /// the pane is on screen (in or out of live-send mode). The anchor
@@ -412,6 +410,7 @@ pub struct HomeView {
     /// (`leader b`). Persisted to `app_state.home_sidebar_collapsed` so the
     /// choice survives restarts.
     pub(super) sidebar_collapsed: bool,
+    pub(super) sidebar_position: crate::session::config::SidebarPosition,
     /// Per-session record of the last NON-live passive resize the worker
     /// applied, so neither the selected-session sync nor the fleet reconcile
     /// SIGWINCH-storms a pane that already matches. A session's entry is

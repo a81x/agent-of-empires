@@ -44,7 +44,10 @@ impl HomeView {
     pub(in crate::tui) fn refresh_from_config(&mut self, origin: ConfigRefreshOrigin) {
         let profile = self.config_profile();
         let config = resolve_config_or_warn(&profile);
-        self.apply_config_to_state(config, origin);
+        let sidebar_position = crate::session::Config::load_or_warn()
+            .session
+            .sidebar_position;
+        self.apply_config_to_state(config, sidebar_position, origin);
     }
 
     /// Watcher-path counterpart of `refresh_from_config`. Returns Err on
@@ -77,13 +80,15 @@ impl HomeView {
         self.maybe_export_watcher_refresh_count(new_count);
         let profile = self.config_profile();
         let config = crate::session::resolve_config(&profile)?;
-        self.apply_config_to_state(config, ConfigRefreshOrigin::Watcher);
+        let sidebar_position = crate::session::Config::load()?.session.sidebar_position;
+        self.apply_config_to_state(config, sidebar_position, ConfigRefreshOrigin::Watcher);
         Ok(())
     }
 
     fn apply_config_to_state(
         &mut self,
         config: crate::session::Config,
+        sidebar_position: crate::session::config::SidebarPosition,
         origin: ConfigRefreshOrigin,
     ) {
         self.default_terminal_mode = match config.sandbox.default_terminal_mode {
@@ -97,6 +102,7 @@ impl HomeView {
         self.confirm_before_quit = config.session.confirm_before_quit;
         self.host_tab_title = config.session.host_tab_title;
         self.row_tag_mode = config.session.row_tag;
+        self.set_sidebar_position(sidebar_position);
         // Keep the strip in sync when the Settings UI or a config-file edit
         // flips the toggle from any settings surface.
         self.show_diagnostics = config.session.show_diagnostics_pane;
@@ -235,5 +241,47 @@ impl HomeView {
         if let Some(status_hooks) = self.status_hook_configs.get(&profile) {
             self.status_hook_config = status_hooks.clone();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::session::config::{profile_config::save_profile_config, SidebarPosition};
+    use serial_test::serial;
+
+    #[test]
+    #[serial]
+    fn sidebar_position_ignores_profile_overrides_on_startup_and_reload() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let _guard = crate::session::test_support::isolate_app_dir_at(temp.path());
+        let save_positions = |global_position, profile_position| {
+            update_config(|config| config.session.sidebar_position = global_position).unwrap();
+            let profile = serde_json::from_value(serde_json::json!({
+                "session": { "sidebar_position": profile_position }
+            }))
+            .unwrap();
+            save_profile_config("test", &profile).unwrap();
+        };
+        save_positions(SidebarPosition::Right, SidebarPosition::Left);
+        let mut view = HomeView::new_for_test(
+            Some("test".to_string()),
+            AvailableTools::with_tools(&["claude"]),
+            crate::file_watch::FileWatchService::noop(),
+        )
+        .unwrap();
+        assert_eq!(view.sidebar_position, SidebarPosition::Right);
+
+        save_positions(SidebarPosition::Left, SidebarPosition::Right);
+        view.refresh_from_config(ConfigRefreshOrigin::Interactive);
+        assert_eq!(view.sidebar_position, SidebarPosition::Left);
+
+        save_positions(SidebarPosition::Right, SidebarPosition::Left);
+        view.try_refresh_from_config_watcher().unwrap();
+        assert_eq!(view.sidebar_position, SidebarPosition::Right);
+
+        std::fs::write(crate::session::config::config_path().unwrap(), "[session\n").unwrap();
+        assert!(view.try_refresh_from_config_watcher().is_err());
+        assert_eq!(view.sidebar_position, SidebarPosition::Right);
     }
 }
