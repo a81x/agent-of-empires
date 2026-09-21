@@ -1654,7 +1654,8 @@ mod tests {
         snoozed.snooze(30);
         let mut favorited = Instance::new("t", "/tmp/t");
         favorited.favorite();
-        let cases: [(Instance, &str, fn(&Instance) -> bool); 3] = [
+        type Case = (Instance, &'static str, fn(&Instance) -> bool);
+        let cases: [Case; 3] = [
             (archived, "archived_at", Instance::is_archived),
             (snoozed, "snoozed_until", Instance::is_snoozed),
             (favorited, "favorited_at", Instance::is_favorited),

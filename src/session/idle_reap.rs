@@ -140,7 +140,8 @@ mod tests {
         let n = now();
         let idle = Status::Idle;
         // (status, idle-entered secs ago, last-accessed secs ago, attached, threshold, stop?)
-        let cases: &[(Status, Option<i64>, Option<i64>, bool, u32, bool)] = &[
+        type Case = (Status, Option<i64>, Option<i64>, bool, u32, bool);
+        let cases: &[Case] = &[
             (idle, Some(36000), None, false, 0, false),
             (Status::Running, Some(36000), None, false, 60, false),
             (Status::Waiting, Some(36000), None, false, 60, false),
