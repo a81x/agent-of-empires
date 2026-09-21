@@ -331,26 +331,25 @@ pub async fn update_settings(
                 .collect()
         })
         .unwrap_or_default();
-    let logging_changed = body.get("logging").is_some();
-    // Fold validated `plugin:<id>` sections into their on-disk storage path
-    // (`plugins.<id>.settings.*`) before the generic merge.
     rewrite_plugin_sections(&mut body);
 
     let result = tokio::task::spawn_blocking(move || {
-        crate::session::update_config(|config| -> anyhow::Result<()> {
+        crate::session::update_config(|config| -> anyhow::Result<_> {
             let mut current = serde_json::to_value(&*config)?;
             crate::session::config::settings_schema::merge_json(&mut current, &body);
-            *config = serde_json::from_value(current)?;
-            Ok(())
+            let updated: crate::session::Config = serde_json::from_value(current)?;
+            let logging_changed = config.logging.default_level != updated.logging.default_level
+                || config.logging.targets != updated.logging.targets;
+            *config = updated;
+            Ok((config.clone(), logging_changed))
         })
-        .and_then(|inner| inner)?;
-        Ok::<_, anyhow::Error>(crate::session::Config::load_or_warn())
+        .and_then(|inner| inner)
     })
     .await;
 
     match result {
-        Ok(Ok(config)) => {
-            // Unrelated settings must preserve temporary runtime log levels.
+        Ok(Ok((config, logging_changed))) => {
+            // No-op and restart-only edits preserve temporary runtime filters.
             if logging_changed {
                 if let Ok(app_dir) = crate::session::get_app_dir() {
                     crate::logging::apply_persisted_config(
