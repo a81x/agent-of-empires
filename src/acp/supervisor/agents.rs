@@ -255,7 +255,17 @@ mod tests {
     #[test]
     fn command_override_applies_only_to_the_tools_own_registry_binary() {
         // (agent, from registry, spec command, spec args, override tool, override, want command, want args)
-        let cases: [(&str, bool, &str, &[&str], &str, &str, &str, &[&str]); 5] = [
+        type Case<'a> = (
+            &'a str,
+            bool,
+            &'a str,
+            &'a [&'a str],
+            &'a str,
+            &'a str,
+            &'a str,
+            &'a [&'a str],
+        );
+        let cases: [Case; 5] = [
             (
                 "opencode",
                 true,

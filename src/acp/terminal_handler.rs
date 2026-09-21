@@ -244,7 +244,8 @@ mod tests {
             },
         ];
         // (env entries, command, args, expected argv tail after `exec -w /workspace`)
-        let cases: [(Vec<EnvEntry>, &str, Vec<String>, Vec<&str>); 2] = [
+        type Case<'a> = (Vec<EnvEntry>, &'a str, Vec<String>, Vec<&'a str>);
+        let cases: [Case; 2] = [
             (
                 entries,
                 "gh",
