@@ -131,7 +131,8 @@ mod tests {
     #[test]
     #[serial]
     fn reconcile_from_disk_picks_up_peer_writes() {
-        let cases: &[(&str, fn(&mut Instance), fn(&Instance))] = &[
+        type ReconcileCase = (&'static str, fn(&mut Instance), fn(&Instance));
+        let cases: &[ReconcileCase] = &[
             (
                 "peer persist",
                 |row| row.agent_session_id = Some("new-sid".to_string()),

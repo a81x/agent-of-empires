@@ -590,16 +590,17 @@ mod tests {
         let confirmed = UNKNOWN_ERROR_WINDOW_CONFIRMED_PRESENT + Duration::from_millis(1);
         // (label, reachable, start status, prior error, ever present, unknown streak,
         //  expected status, expected error)
-        let cases: [(
-            &str,
+        type StatusCase = (
+            &'static str,
             bool,
             Status,
-            Option<&str>,
+            Option<&'static str>,
             bool,
             Option<Duration>,
             Status,
-            Option<&str>,
-        ); 7] = [
+            Option<&'static str>,
+        );
+        let cases: [StatusCase; 7] = [
             (
                 "confirmed absent latches",
                 true,

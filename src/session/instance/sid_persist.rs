@@ -1219,19 +1219,20 @@ mod tests {
             }
             // (label, tool, seeded disk row, disk intent, preset env, memory sid, prior sid,
             //  prior intent, want env, want memory sid, want memory intent)
-            let cases: [(
-                &str,
-                &str,
-                Option<Option<&str>>,
+            type SidCase = (
+                &'static str,
+                &'static str,
+                Option<Option<&'static str>>,
                 ResumeIntent,
-                Option<&str>,
-                &str,
-                Option<&str>,
+                Option<&'static str>,
+                &'static str,
+                Option<&'static str>,
                 ResumeIntent,
-                Option<&str>,
-                Option<&str>,
+                Option<&'static str>,
+                Option<&'static str>,
                 ResumeIntent,
-            ); 6] = [
+            );
+            let cases: [SidCase; 6] = [
                 (
                     "applied non-claude",
                     "opencode",

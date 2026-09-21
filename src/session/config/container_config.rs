@@ -4816,7 +4816,7 @@ volume_ignores = ["node_modules"]
             .run(project_dir.path())
             .unwrap();
 
-        let codex_sandbox = sandbox_store(temp_home.path(), ".codex", &instance_id);
+        let codex_sandbox = sandbox_store(temp_home.path(), ".codex", instance_id);
         assert!(codex_sandbox.join("hooks.json").exists());
         assert!(!codex_sandbox.join("config.toml").exists());
         assert!(!codex_sandbox.join("settings.json").exists());
@@ -4874,7 +4874,7 @@ volume_ignores = ["node_modules"]
 
         let homes: Vec<_> = instance_ids
             .iter()
-            .map(|instance_id| sandbox_store(temp_home.path(), ".codex", &instance_id))
+            .map(|instance_id| sandbox_store(temp_home.path(), ".codex", instance_id))
             .collect();
         assert_ne!(homes[0], homes[1]);
         for home in &homes {
@@ -5048,7 +5048,7 @@ claude-personal = "~/.claude-personal"
         );
 
         let default_config =
-            sandbox_store(temp_home.path(), ".claude", &instance_id).join(".claude.json");
+            sandbox_store(temp_home.path(), ".claude", instance_id).join(".claude.json");
         let default_trust = fs::read_to_string(&default_config)
             .ok()
             .and_then(|c| serde_json::from_str::<serde_json::Value>(&c).ok())
@@ -5439,7 +5439,7 @@ trust_level = "trusted"
 
         let hooks: serde_json::Value = serde_json::from_str(
             &fs::read_to_string(
-                sandbox_store(temp_home.path(), ".cursor", &instance_id).join("hooks.json"),
+                sandbox_store(temp_home.path(), ".cursor", instance_id).join("hooks.json"),
             )
             .unwrap(),
         )
@@ -5477,7 +5477,7 @@ trust_level = "trusted"
 
         // Hooks land in the selected agent's staged sandbox config...
         let selected_config =
-            sandbox_store(temp_home.path(), ".kiro", &instance_id).join("agents/custom-agent.json");
+            sandbox_store(temp_home.path(), ".kiro", instance_id).join("agents/custom-agent.json");
         assert!(
             selected_config.exists(),
             "selected-agent sandbox hook config should be installed at {}",
@@ -5523,7 +5523,7 @@ trust_level = "trusted"
         .run(project_dir.path())
         .unwrap();
 
-        let matched = sandbox_store(temp_home.path(), ".kiro", &instance_id)
+        let matched = sandbox_store(temp_home.path(), ".kiro", instance_id)
             .join("agents/TeamAgents-custom-agent.json");
         assert!(
             matched.exists(),
@@ -5541,7 +5541,7 @@ trust_level = "trusted"
         );
 
         let stem_clone =
-            sandbox_store(temp_home.path(), ".kiro", &instance_id).join("agents/custom-agent.json");
+            sandbox_store(temp_home.path(), ".kiro", instance_id).join("agents/custom-agent.json");
         assert!(
             !stem_clone.exists(),
             "must not create a filename-stem clone the CLI never loads"
@@ -5595,7 +5595,7 @@ trust_level = "trusted"
             .run(project_dir.path())
             .unwrap();
 
-        let codex_sandbox = sandbox_store(temp_home.path(), ".codex", &instance_id);
+        let codex_sandbox = sandbox_store(temp_home.path(), ".codex", instance_id);
         assert!(!codex_sandbox.join("config.toml").exists());
 
         let hook_dir =
@@ -5646,7 +5646,7 @@ agent_detect_as = { "wrapped-codex" = "codex" }
             .run(project_dir.path())
             .unwrap();
 
-        let codex_sandbox = sandbox_store(temp_home.path(), ".codex", &instance_id);
+        let codex_sandbox = sandbox_store(temp_home.path(), ".codex", instance_id);
         assert!(codex_sandbox.join("hooks.json").exists());
         assert!(config.volumes.iter().any(|v| {
             v.host_path == codex_sandbox.to_string_lossy()
@@ -5855,7 +5855,7 @@ trusted_hash = "keep"
             .run(project_dir.path())
             .unwrap();
 
-        let codex_sandbox = sandbox_store(temp_home.path(), ".codex", &instance_id);
+        let codex_sandbox = sandbox_store(temp_home.path(), ".codex", instance_id);
         assert!(codex_sandbox.join("hooks.json").exists());
         assert!(config.volumes.iter().any(|v| {
             v.host_path == codex_sandbox.to_string_lossy()
@@ -5889,7 +5889,7 @@ environment = ["CODEX_HOME=/root/profile-codex"]
             .run(project_dir.path())
             .unwrap();
 
-        let codex_sandbox = sandbox_store(temp_home.path(), ".codex", &instance_id);
+        let codex_sandbox = sandbox_store(temp_home.path(), ".codex", instance_id);
         assert!(codex_sandbox.join("hooks.json").exists());
         assert!(config.volumes.iter().any(|v| {
             v.host_path == codex_sandbox.to_string_lossy()
@@ -6659,7 +6659,7 @@ agent_status_hooks = false
 
         let instance_id = "gemini-empty-hook-cleanup";
         let settings_path =
-            sandbox_store(temp_home.path(), ".gemini", &instance_id).join("settings.json");
+            sandbox_store(temp_home.path(), ".gemini", instance_id).join("settings.json");
         let events = crate::agents::resolved_hook_events(
             crate::agents::get_agent("gemini").unwrap(),
             &crate::session::config::Config::default(),

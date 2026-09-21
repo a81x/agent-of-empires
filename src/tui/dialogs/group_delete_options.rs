@@ -518,7 +518,8 @@ mod tests {
         assert!(!d.options.delete_sessions);
 
         // (worktrees, containers, focused row, the option it owns)
-        let rows: &[(bool, bool, usize, fn(&GroupDeleteOptions) -> bool)] = &[
+        type ToggleCase = (bool, bool, usize, fn(&GroupDeleteOptions) -> bool);
+        let rows: &[ToggleCase] = &[
             (true, false, 2, |o| o.delete_worktrees),
             (true, false, 3, |o| o.delete_branches),
             (false, true, 2, |o| o.delete_containers),

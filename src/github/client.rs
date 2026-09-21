@@ -344,7 +344,13 @@ mod tests {
     #[test]
     fn classify_status_separates_scope_rate_limit_and_plain_api_errors() {
         let scope_header = &[("x-accepted-oauth-scopes", "repo")][..];
-        let cases: [(StatusCode, &[(&'static str, &str)], &str, fn(GitHubError)); 8] = [
+        type ErrorCase = (
+            StatusCode,
+            &'static [(&'static str, &'static str)],
+            &'static str,
+            fn(GitHubError),
+        );
+        let cases: [ErrorCase; 8] = [
             (StatusCode::UNAUTHORIZED, &[], "", |err| {
                 assert!(matches!(err, GitHubError::Unauthorized))
             }),

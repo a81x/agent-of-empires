@@ -231,7 +231,13 @@ mod tests {
             value: value.to_string(),
         };
         // (entries, expected argv, expected inherited pairs, values that must not reach argv)
-        let cases: [(Vec<EnvEntry>, &[&str], &[(&str, &str)], &[&str]); 5] = [
+        type EnvCase = (
+            Vec<EnvEntry>,
+            &'static [&'static str],
+            &'static [(&'static str, &'static str)],
+            &'static [&'static str],
+        );
+        let cases: [EnvCase; 5] = [
             (
                 vec![inherit("GH_TOKEN", "ghp_secret")],
                 &["-e", "GH_TOKEN"],

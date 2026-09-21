@@ -933,16 +933,17 @@ command = ["sleep", "600"]
     fn plan_reconcile_launches_missing_tears_down_extras_and_respects_the_cap() {
         let set = |ids: &[&str]| -> HashSet<String> { ids.iter().map(|s| s.to_string()).collect() };
         // name, desired, running, crashed, cap, launch, teardown, truncated
-        let cases: [(
-            &str,
-            &[&str],
-            &[&str],
-            &[&str],
+        type HostCase = (
+            &'static str,
+            &'static [&'static str],
+            &'static [&'static str],
+            &'static [&'static str],
             usize,
-            &[&str],
-            &[&str],
+            &'static [&'static str],
+            &'static [&'static str],
             bool,
-        ); 5] = [
+        );
+        let cases: [HostCase; 5] = [
             (
                 "launches missing",
                 &["a", "b"],
