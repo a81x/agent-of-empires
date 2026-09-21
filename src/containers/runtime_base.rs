@@ -839,14 +839,16 @@ mod tests {
             mount("/host/rw", "/container/rw", false),
             mount("/host/ro", "/container/ro", true),
         ];
-        let named = vec![NamedVolumeMount {
-            volume_name: "aoe-vi-sess1-workspace-node_modules-abc123".to_string(),
-            container_path: "/workspace/node_modules".to_string(),
-        }];
+        let named = || {
+            vec![NamedVolumeMount {
+                volume_name: "aoe-vi-sess1-workspace-node_modules-abc123".to_string(),
+                container_path: "/workspace/node_modules".to_string(),
+            }]
+        };
         let config = || ContainerConfig {
             volumes: volumes.clone(),
             anonymous_volumes: vec!["/tmp/cache".to_string()],
-            named_ignore_volumes: named.clone(),
+            named_ignore_volumes: named(),
             ..Default::default()
         };
         assert_eq!(
@@ -1045,11 +1047,13 @@ mod tests {
             ..Default::default()
         };
         for base in [&DOCKER, &PODMAN, &APPLE] {
-            let labels = values_of(&create_args(base, ContainerConfig::default()), "--label");
+            let args = create_args(base, ContainerConfig::default());
+            let labels = values_of(&args, "--label");
             assert_eq!(labels[0], "com.agent-of-empires.sandbox-store-generation=2");
             assert!(labels[1].starts_with("com.agent-of-empires.mount-fingerprint="));
             assert_eq!(labels.len(), 2);
-            let labels = values_of(&create_args(base, shared()), "--label");
+            let shared_args = create_args(base, shared());
+            let labels = values_of(&shared_args, "--label");
             assert_eq!(
                 labels[2..],
                 [
