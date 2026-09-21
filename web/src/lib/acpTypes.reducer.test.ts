@@ -271,6 +271,9 @@ describe("applyEvent / background agents", () => {
   const completed: AcpEvent = {
     BackgroundAgentCompleted: { agent_id: "a1", status: "completed", result: "done", ended_at: "2026-06-27T00:00:10Z" },
   };
+  const stalledTerminal: AcpEvent = {
+    BackgroundAgentCompleted: { agent_id: "a1", status: "stalled", ended_at: "2026-06-27T00:00:10Z" },
+  };
   const agent = (...events: AcpEvent[]) =>
     events.reduce((s, e, i) => ev(s, i + 1, e), emptyAcpState()).backgroundAgents;
 
@@ -283,9 +286,9 @@ describe("applyEvent / background agents", () => {
     expect(agent(launched, running, completed)[0]).toMatchObject({ status: "completed", result: "done" });
   });
 
-  it("freezes the elapsed timer while stalled and clears it on resume", () => {
+  it("leaves endedAt null on a stall, so the elapsed timer keeps ticking (#4001)", () => {
     const stalled = progress("stalled", 1, "2026-06-27T00:01:30Z");
-    expect(agent(launched, stalled)[0]).toMatchObject({ status: "stalled", endedAt: "2026-06-27T00:01:30Z" });
+    expect(agent(launched, stalled)[0]).toMatchObject({ status: "stalled", endedAt: null });
     const resumed = agent(launched, stalled, progress("running", 2, "2026-06-27T00:01:35Z"))[0];
     expect(resumed).toMatchObject({ status: "running", endedAt: null });
   });
@@ -293,6 +296,13 @@ describe("applyEvent / background agents", () => {
   it("does not reopen a completed agent on a late progress event", () => {
     const late = agent(launched, completed, progress("running", 99, "2026-06-27T00:00:20Z"))[0];
     expect(late).toMatchObject({ status: "completed", toolCount: 0 });
+  });
+
+  it("does not reopen a stalled-terminal agent on a late progress event (#4001)", () => {
+    // A terminal BackgroundAgentCompleted can carry status "stalled" (the tailer's
+    // own abort timeout), so the endedAt guard, not the status list, has to stop it.
+    const late = agent(launched, stalledTerminal, progress("running", 99, "2026-06-27T00:00:20Z"))[0];
+    expect(late).toMatchObject({ status: "stalled", toolCount: 0, endedAt: "2026-06-27T00:00:10Z" });
   });
 });
 

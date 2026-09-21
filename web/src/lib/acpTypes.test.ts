@@ -6,9 +6,12 @@ import {
   applyReducedState,
   deriveTurnActive,
   emptyAcpState,
+  hasActiveBackgroundAgent,
+  isVisiblyBusy,
   normaliseTurnState,
   type AcpEvent,
   type AcpState,
+  type BackgroundAgent,
   type ConfigOptionDescriptor,
   type ReducedState,
 } from "./acpTypes";
@@ -362,6 +365,58 @@ describe("turnActive: daemon truth plus an optimistic overlay (#3417)", () => {
     [true, ["p1"], true],
   ])("deriveTurnActive(%s, %o) is %s", (serverTurnActive, inflightPromptIds, expected) => {
     expect(deriveTurnActive({ serverTurnActive, inflightPromptIds })).toBe(expected);
+  });
+
+  it("hasActiveBackgroundAgent keys on endedAt, and isVisiblyBusy ORs it with turnActive", () => {
+    const bg = (endedAt: string | null): BackgroundAgent => ({
+      agentId: "a1",
+      toolCallId: "tc1",
+      description: "map backend",
+      prompt: "do the thing",
+      model: "claude-opus-4-8",
+      status: endedAt ? "completed" : "running",
+      startedAt: "2026-06-27T00:00:00Z",
+      endedAt,
+      toolCount: 0,
+      tools: [],
+      lastTool: null,
+      lastText: null,
+      result: null,
+      warning: null,
+    });
+    const active = [bg(null)];
+
+    expect(hasActiveBackgroundAgent({ backgroundAgents: [] })).toBe(false);
+    expect(hasActiveBackgroundAgent({ backgroundAgents: active })).toBe(true);
+    expect(hasActiveBackgroundAgent({ backgroundAgents: [bg("2026-06-27T00:00:10Z")] })).toBe(false);
+
+    expect(isVisiblyBusy({ turnActive: false, backgroundAgents: [] })).toBe(false);
+    expect(isVisiblyBusy({ turnActive: true, backgroundAgents: [] })).toBe(true);
+    expect(isVisiblyBusy({ turnActive: false, backgroundAgents: active })).toBe(true);
+  });
+
+  it("a stalled background agent still reads as active, since Progress never sets endedAt (#4001)", () => {
+    const launched: AcpEvent = {
+      BackgroundAgentLaunched: {
+        agent_id: "a1",
+        tool_call_id: "tc1",
+        description: "map backend",
+        prompt: "do the thing",
+        model: "claude-opus-4-8",
+        started_at: "2026-06-27T00:00:00Z",
+      },
+    };
+    const progress = (status: string, tool_count: number, at: string): AcpEvent => ({
+      BackgroundAgentProgress: { agent_id: "a1", status, tool_count, at },
+    });
+
+    const stalled = fold(emptyAcpState(), launched, progress("stalled", 1, "2026-06-27T00:01:00Z"));
+    expect(stalled.backgroundAgents[0].endedAt).toBeNull();
+    expect(hasActiveBackgroundAgent(stalled)).toBe(true);
+
+    const resumed = fold(stalled, progress("running", 2, "2026-06-27T00:01:05Z"));
+    expect(resumed.backgroundAgents[0].endedAt).toBeNull();
+    expect(hasActiveBackgroundAgent(resumed)).toBe(true);
   });
 
   it("N prompts steered into one turn are all closed by its single Stopped", () => {

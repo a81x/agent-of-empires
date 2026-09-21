@@ -1160,14 +1160,19 @@ export function applyEvent(state: AcpState, frame: AcpFrame): AcpState {
     const e = event.BackgroundAgentProgress;
     next.backgroundAgents = next.backgroundAgents.map((a) => {
       if (a.agentId !== e.agent_id) return a;
-      // A terminal record never reopens to running.
-      if (a.status === "completed" || a.status === "detached" || a.status === "error") return a;
+      // A terminal record never reopens to running. Also guarded on endedAt:
+      // a terminal Stalled record (the tailer's own abort timeout) carries
+      // endedAt too, and the status check alone would let a late Progress
+      // reopen it, contradicting hasActiveBackgroundAgent's endedAt-keyed read.
+      if (a.endedAt || a.status === "completed" || a.status === "detached" || a.status === "error") return a;
       return {
         ...a,
         status: e.status,
         toolCount: e.tool_count,
         tools: e.tools && e.tools.length > 0 ? e.tools : a.tools,
-        endedAt: e.status === "stalled" ? (a.endedAt ?? e.at) : e.status === "running" ? null : a.endedAt,
+        // A Progress never ends an agent; only the terminal
+        // BackgroundAgentCompleted sets endedAt (#4001).
+        endedAt: null,
         lastTool: e.last_tool ?? a.lastTool,
         lastText: e.last_text ?? a.lastText,
       };
@@ -1305,6 +1310,19 @@ export function appendElicitationAnswerRow(
 /** Mid-turn steering can complete several prompts with one event, so prompt counters cannot derive this. */
 export function deriveTurnActive(state: Pick<AcpState, "serverTurnActive" | "inflightPromptIds">): boolean {
   return state.serverTurnActive || state.inflightPromptIds.length > 0;
+}
+
+/** Outstanding background sub-agent (async Task), mirroring
+ *  `AcpState::has_active_background_agent`: keyed on `endedAt` rather than
+ *  status, since a stalled agent's own terminal completion counts as done. */
+export function hasActiveBackgroundAgent(state: Pick<AcpState, "backgroundAgents">): boolean {
+  return state.backgroundAgents.some((a) => a.endedAt === null);
+}
+
+/** Display-only busy signal for the runtime spinner. Distinct from `turnActive`,
+ *  which tracks only the main turn because send-vs-queue composer gating reads it. */
+export function isVisiblyBusy(state: Pick<AcpState, "turnActive" | "backgroundAgents">): boolean {
+  return state.turnActive || hasActiveBackgroundAgent(state);
 }
 
 /** Mirror the daemon's turn-close edges; `GET /acp/replay` serves raw events without `reduced_state`. */
