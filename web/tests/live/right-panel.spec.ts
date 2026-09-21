@@ -78,6 +78,29 @@ test("files pane renders a Markdown file in a scratch session", async ({ page, s
   await expect(page.getByRole("listitem").filter({ hasText: "step one" }).first()).toBeVisible();
 });
 
+test("files pane numbers the lines of a source file", async ({ page, spawnServe }) => {
+  // #4003: the file pane renders through the shared diff renderer, so it numbers lines like the diff pane.
+  const serve = await spawnServe({
+    seedFn: seedSessionViaAoeAdd({
+      title: "rp-files-gutter",
+      subdir: "gutter-project",
+      git: false,
+      files: { "notes.ts": "const a = 1;\nconst b = 2;\nconst c = 3;\n" },
+    }),
+  });
+  await openSession(page, serve, "rp-files-gutter");
+  await page.getByRole("button", { name: "Toggle Files pane" }).first().click();
+  const notesRow = page.getByRole("button", { name: "notes.ts" }).first();
+  await expect(notesRow).toBeVisible({ timeout: 10_000 });
+  await notesRow.click();
+
+  // Four cells for three lines of code: a file ending in a newline carries a
+  // final empty line and the renderer numbers it, the way an editor shows it.
+  const gutter = page.locator("[data-line-number-content]");
+  await expect(gutter).toHaveCount(4, { timeout: 10_000 });
+  await expect(gutter).toHaveText(["1", "2", "3", "4"]);
+});
+
 test("right panel diff viewer: 1000-line file scrolls, binary file shows placeholder", async ({ page, spawnServe }) => {
   const serve = await spawnServe({
     seedFn: seedSessionViaAoeAdd({

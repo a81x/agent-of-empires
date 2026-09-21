@@ -665,7 +665,6 @@ export async function spawnAoeServe(opts: SpawnOptions): Promise<ServeHandle> {
   }
 
   const pendingChildren = new Set<ChildProcess>();
-  let stopped: Promise<void> | undefined;
   let proc: ChildProcess | null = null;
   let port = 0;
   let baseUrl = "";
@@ -756,7 +755,7 @@ export async function spawnAoeServe(opts: SpawnOptions): Promise<ServeHandle> {
           handle.authToken = refreshed;
         }
       },
-      stop: () => (stopped ??= cleanup()),
+      stop: cleanup,
     };
 
     if (authMode === "passphrase" && passphrase && opts.preloginViaHarness) {

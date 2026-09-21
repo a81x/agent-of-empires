@@ -209,6 +209,8 @@ test.describe("scratch sessions", () => {
     await expect(w.getByRole("button", { name: /Launch session/ })).toBeVisible();
     await expect(w.getByText(/Scratch session/).first()).toBeVisible();
     await expect(w.getByRole("switch", { name: "Skip project folder" })).toHaveAttribute("aria-checked", "true");
+    // Launch and its shortcut stay disabled until the profile defaults settle.
+    await expect(w.getByRole("button", { name: /Launch session/ })).toBeEnabled();
     await page.keyboard.press("ControlOrMeta+Enter");
     // The server provisions the directory, so no path is sent.
     await expect.poll(() => created[0]?.scratch).toBe(true);
