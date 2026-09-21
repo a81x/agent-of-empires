@@ -2631,7 +2631,7 @@ mod tests {
         ];
         for (name, rows, expected) in cases {
             let _ = fs::remove_file(app.join(JOURNAL));
-            write_rows(&app, &rows);
+            write_rows(&app, &Value::Array(rows));
             let events = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
             let sink = events.clone();
             let guard = progress::install(Some(std::sync::Arc::new(move |event| {
@@ -3944,7 +3944,7 @@ mod tests {
     #[test]
     #[serial_test::serial]
     fn competing_passes_on_one_cohort_publish_once() {
-        let (temp, _app_guard, app, home) = isolated();
+        let (_temp, _app_guard, app, home) = isolated();
         fs::create_dir_all(&app).unwrap();
         fs::create_dir_all(home.join(".gemini/sandbox/history")).unwrap();
         fs::write(home.join(".gemini/sandbox/history/id.json"), b"legacy").unwrap();

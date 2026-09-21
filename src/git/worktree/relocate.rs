@@ -491,7 +491,13 @@ mod tests {
     /// #3695: `git worktree move` refuses worktrees with submodules; the move
     /// must keep uncommitted and untracked work at every level.
     #[test]
+    #[serial_test::serial]
     fn move_worktree_relocates_nested_submodules_and_keeps_local_changes() {
+        // Ambient git config (e.g. a global excludesFile ignoring `.claude`)
+        // breaks the submodule fixtures, so anchor HOME.
+        let home_dir = TempDir::new().unwrap();
+        let _home = crate::session::test_support::isolate_home(home_dir.path());
+
         let dirs = repo_with_nested_submodules("test-move");
         let repo_path = dirs[0].path().to_path_buf();
         let git_wt = GitWorktree::new(repo_path.clone())

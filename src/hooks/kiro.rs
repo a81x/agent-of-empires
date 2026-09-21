@@ -234,7 +234,13 @@ mod tests {
 
     #[test]
     fn resolve_kiro_agent_file_matches_name_field() {
-        let cases: [(&str, &[(&str, &str)], &str); 5] = [
+        /// (case name, files to seed, expected file name)
+        type Case = (
+            &'static str,
+            &'static [(&'static str, &'static str)],
+            &'static str,
+        );
+        let cases: [Case; 5] = [
             ("dir absent", &[], "custom-agent.json"),
             (
                 "no match",

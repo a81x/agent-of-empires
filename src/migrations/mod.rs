@@ -33,6 +33,7 @@ mod v025_reenable_confirm_delete;
 mod v026_repoint_acp_default_agent;
 pub(crate) mod v027_isolate_sandbox_stores;
 mod v028_clear_archived_live_status;
+mod v029_fold_pending_initial_turn;
 
 /// Fixtures shared by the migrations that rewrite agent hook files.
 #[cfg(test)]
@@ -78,7 +79,7 @@ use anyhow::Result;
 use std::fs;
 use tracing::{debug, info};
 
-const CURRENT_VERSION: u32 = 28;
+const CURRENT_VERSION: u32 = 29;
 const VERSION_FILE: &str = ".schema_version";
 
 /// Version, log name, and the one-time transformation to run.
@@ -176,6 +177,11 @@ const MIGRATIONS: &[Migration] = &[
         28,
         "clear_archived_live_status",
         v028_clear_archived_live_status::run,
+    ),
+    (
+        29,
+        "fold_pending_initial_turn",
+        v029_fold_pending_initial_turn::run,
     ),
 ];
 

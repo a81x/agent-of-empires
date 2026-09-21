@@ -871,7 +871,9 @@ mod tests {
         const SUBMODULE: &str =
             "fatal: working trees containing submodules cannot be moved or removed";
         const MISSING: &str = "fatal: '/tmp/wt/.aoe-trash/abc' is not a working tree";
-        let cases: [(fn(&str) -> bool, &str, bool); 14] = [
+        /// (classifier, stderr, matches)
+        type Case = (fn(&str) -> bool, &'static str, bool);
+        let cases: [Case; 14] = [
             (is_permission_error, "Permission denied (os error 13)", true),
             (is_permission_error, "operation not permitted", true),
             (is_permission_error, "Access is denied", true),

@@ -292,7 +292,7 @@ mod tests {
             ("UserPromptSubmit", &["session_id", "printf running"]),
             (
                 "PreToolUse",
-                &[r#"*\"tool_name\":\"AskUserQuestion\"*"#, "S=running"],
+                &[r#"S=running; case "$IN" in *\"tool_name\":\"AskUserQuestion\"*) S=waiting"#][..],
             ),
             ("Stop", &["printf idle"]),
             // A turn killed by an API error fires StopFailure, not Stop.

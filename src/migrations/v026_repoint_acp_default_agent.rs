@@ -43,7 +43,6 @@ pub(crate) fn run_in(path: &Path) -> Result<()> {
 mod tests {
     use super::*;
     use std::fs;
-    use std::path::PathBuf;
 
     fn write(content: &str) -> (tempfile::TempDir, std::path::PathBuf) {
         let dir = tempfile::TempDir::new().unwrap();

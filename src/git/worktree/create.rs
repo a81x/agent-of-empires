@@ -764,7 +764,13 @@ pub(super) mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn create_worktree_submodule_handling() {
+        // Ambient git config (e.g. a global excludesFile ignoring `.claude`)
+        // breaks the submodule fixtures, so anchor HOME.
+        let home_dir = TempDir::new().unwrap();
+        let _home = crate::session::test_support::isolate_home(home_dir.path());
+
         // (file url, allow file transport, init submodules, populated)
         for (file_url, allow, init, populated) in [
             (true, true, true, true),
