@@ -178,6 +178,9 @@ function AcpChrome({
     loadEarlierHistory: ctx.loadEarlierHistory,
     loadingEarlierHistory: ctx.loadingEarlierHistory,
     composerCollapsed,
+    promptSeq: state.promptSeq,
+    hasEverOpened: ctx.hasEverOpened,
+    localInflight: state.inflightPromptIds.length > 0,
   });
 
   // An adapter that failed the compatibility check never runs, so no chat surface.

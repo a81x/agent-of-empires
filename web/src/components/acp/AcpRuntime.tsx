@@ -12,6 +12,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import { useAcpSession } from "../../hooks/useAcpSession";
 import { useHistoryWindow } from "../../hooks/useHistoryWindow";
 import { clearDraft, getDraftAttachments, setDraftAttachments } from "../../lib/acpDrafts";
+import { isVisiblyBusy } from "../../lib/acpTypes";
 import type { AcpState, ApprovalDecision, ElicitationResolution, PromptAttachmentInput } from "../../lib/acpTypes";
 import { useAgentProfile } from "../../lib/agentProfileContext";
 import { canOfferEarlier, earlierAction } from "../../lib/historyScroll";
@@ -140,16 +141,17 @@ export function AcpRuntime({
     return pending.length > 0 ? windowedActivity.concat(pending) : windowedActivity;
   }, [windowedActivity, acp.state.optimisticRows, acp.state.activity]);
 
+  const visiblyBusy = isVisiblyBusy(acp.state);
   const messages = useMemo(
     () =>
       activityToThreadMessages(
         displayActivity,
-        acp.state.turnActive,
+        visiblyBusy,
         showClearedTurns,
         agentProfile.capabilities.todos,
         agentProfile,
       ),
-    [displayActivity, acp.state.turnActive, showClearedTurns, agentProfile],
+    [displayActivity, visiblyBusy, showClearedTurns, agentProfile],
   );
   const foldGeneration = useMemo(
     () => clearFoldGeneration(displayActivity, showClearedTurns),
@@ -158,6 +160,12 @@ export function AcpRuntime({
 
   const adapter: ExternalStoreAdapter<ThreadMessageLike> = {
     messages,
+    // NOT visiblyBusy: assistant-ui's own ComposerInput swallows Enter
+    // outright when isRunning is true and the adapter has no queue
+    // capability (`if (threadState.isRunning && !hasQueue) return;`), so this
+    // has to track only the main turn, exactly like Composer.tsx's turnActive
+    // gate, or a background sub-agent with an idle main turn silently eats
+    // every keystroke.
     isRunning: acp.state.turnActive,
     convertMessage: (m) => m,
     // The idle Enter path: text comes from the message, attachments from our staging.

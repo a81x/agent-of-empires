@@ -1114,6 +1114,13 @@
       "components": ["web/src/components/session-wizard/steps/ProjectStep.tsx"]
     },
     {
+      "id": "wizard.remember-last-project",
+      "kind": "vitest",
+      "risk": "low",
+      "specs": ["src/components/session-wizard/__tests__/SessionWizard.lastProject.test.tsx"],
+      "components": ["web/src/components/session-wizard/SessionWizard.tsx"]
+    },
+    {
       "id": "wizard.scratch-shortcut",
       "kind": "mocked-playwright",
       "risk": "medium",
@@ -1223,6 +1230,23 @@
       "risk": "low",
       "specs": ["src/components/__tests__/SessionRowTriage.test.tsx"],
       "components": ["web/src/components/WorkspaceSidebar.tsx"]
+    },
+    {
+      "id": "sidebar.system-health",
+      "kind": "vitest",
+      "risk": "medium",
+      "specs": [
+        "src/lib/__tests__/systemHealth.test.ts",
+        "src/lib/__tests__/appSettings.test.ts",
+        "src/components/__tests__/SystemHealthStrip.test.tsx"
+      ],
+      "components": [
+        "web/src/lib/systemHealth.ts",
+        "web/src/lib/sessionFlagGate.ts",
+        "web/src/lib/appSettings.ts",
+        "web/src/hooks/useSystemHealth.ts",
+        "web/src/components/SystemHealthStrip.tsx"
+      ]
     },
     {
       "id": "sidebar.session-color-toggle",
@@ -1716,9 +1740,14 @@
       "risk": "medium",
       "specs": [
         "src/components/diff/__tests__/FileContentViewer.test.tsx",
+        "src/components/diff/__tests__/FullFileViewer.test.tsx",
         "src/components/__tests__/FilesPane.test.tsx"
       ],
-      "components": ["web/src/components/FilesPane.tsx", "web/src/components/diff/FileContentViewer.tsx"]
+      "components": [
+        "web/src/components/FilesPane.tsx",
+        "web/src/components/diff/FileContentViewer.tsx",
+        "web/src/components/diff/FullFileViewer.tsx"
+      ]
     },
     {
       "id": "right-panel.files-pane-live",
@@ -1729,6 +1758,7 @@
         "web/src/components/FilesPane.tsx",
         "web/src/components/diff/FileContentViewer.tsx",
         "web/src/components/diff/MarkdownFileView.tsx",
+        "web/src/components/diff/FullFileViewer.tsx",
         "web/src/App.tsx"
       ]
     },
@@ -1751,7 +1781,8 @@
       "specs": [
         "src/components/diff/comments/buildPrompt.test.ts",
         "src/lib/acpTypes.test.ts",
-        "src/components/acp/activityMessages.test.ts"
+        "src/components/acp/activityMessages.test.ts",
+        "src/components/diff/comments/__tests__/DiffCommentsUserCard.test.tsx"
       ],
       "components": [
         "web/src/components/diff/comments/DiffCommentsUserCard.tsx",
@@ -1981,6 +2012,17 @@
         "web/src/components/acp/TodoCards.tsx",
         "web/src/components/acp/ToolCardChrome.tsx",
         "web/src/components/acp/ToolOutputMedia.tsx"
+      ]
+    },
+    {
+      "id": "acp.background-agent-composer",
+      "kind": "mocked-playwright",
+      "risk": "high",
+      "specs": ["tests/acp-background-agent-composer.spec.ts"],
+      "components": [
+        "web/src/components/acp/AcpRuntime.tsx",
+        "web/src/components/acp/Composer.tsx",
+        "web/src/lib/acpTypes.ts"
       ]
     },
     {
@@ -2522,6 +2564,20 @@
         "web/src/components/acp/PromptStrips.tsx",
         "web/src/components/acp/ComposerControls.tsx"
       ]
+    },
+    {
+      "id": "acp.submit-repins-transcript",
+      "kind": "vitest",
+      "risk": "medium",
+      "specs": ["src/lib/promptRepin.test.ts"],
+      "components": ["web/src/lib/promptRepin.ts", "web/src/components/acp/useTranscriptScroll.ts"]
+    },
+    {
+      "id": "acp.submit-repins-transcript-browser",
+      "kind": "mocked-playwright",
+      "risk": "medium",
+      "specs": ["tests/acp-submit-repin.spec.ts"],
+      "components": ["web/src/components/acp/StructuredView.tsx"]
     },
     {
       "id": "acp.mobile-jump-to-bottom",

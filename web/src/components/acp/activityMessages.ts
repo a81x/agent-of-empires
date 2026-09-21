@@ -47,7 +47,7 @@ const CALLOUTS: Partial<Record<ActivityRow["kind"], (text: string) => string>> =
 
 export function activityToThreadMessages(
   rows: readonly ActivityRow[],
-  turnActive: boolean,
+  visiblyBusy: boolean,
   showClearedTurns = false,
   todosEnabled = true,
   profile: AgentProfile = DEFAULT_AGENT_PROFILE,
@@ -131,7 +131,7 @@ export function activityToThreadMessages(
   flushAssistant();
 
   const last = messages[messages.length - 1];
-  if (turnActive && last?.role === "assistant") {
+  if (visiblyBusy && last?.role === "assistant") {
     messages[messages.length - 1] = { ...last, status: { type: "running" } };
   }
   return messages;

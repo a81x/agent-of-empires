@@ -297,7 +297,12 @@ export function HighlightedBlock({
   language?: string;
   maxLines?: number;
 }) {
-  const [html, setHtml] = useState<string | null>(null);
+  // Keyed by the inputs that produced it, so a superseded request resolving
+  // before its effect cleanup renders nothing. Theme is left out of the key so
+  // a theme switch keeps the old palette until the re-highlight lands.
+  // NUL-delimited (as the escape sequence: a raw NUL byte in source makes git
+  // treat the file as binary) so field concatenations cannot collide.
+  const [result, setResult] = useState<{ key: string; html: string } | null>(null);
   const [showAll, setShowAll] = useState(false);
   const shiki = useShikiTheme();
   const unwrapped = unwrapMarkdownFence(text);
@@ -306,6 +311,7 @@ export function HighlightedBlock({
   const limit = showAll ? 1_000_000 : maxLines;
   const shown = lines.length <= limit ? unwrapped.text : lines.slice(0, limit).join("\n");
   const truncated = Math.max(0, lines.length - limit);
+  const inputKey = `${effectiveLang ?? ""}\u0000${shown}`;
   // Shiki cannot highlight SGR escapes, so ANSI output renders styled spans instead.
   const ansi = hasAnsi(shown);
 
@@ -320,8 +326,8 @@ export function HighlightedBlock({
           theme: shiki.theme,
           appearance: shiki.appearance,
         });
-        if (cancelled) return;
-        if (out) setHtml(out);
+        if (cancelled || !out) return;
+        setResult({ key: inputKey, html: out });
       } catch {
         // Unknown language: stay plain.
       }
@@ -329,7 +335,9 @@ export function HighlightedBlock({
     return () => {
       cancelled = true;
     };
-  }, [effectiveLang, shown, shiki.theme, shiki.appearance, ansi]);
+  }, [effectiveLang, shown, inputKey, shiki.theme, shiki.appearance, ansi]);
+
+  const html = result && result.key === inputKey ? result.html : null;
 
   return (
     <div className="border-t border-surface-800 bg-surface-950">

@@ -143,8 +143,15 @@ function TableWithScroll({ children, ...rest }: React.ComponentPropsWithoutRef<"
 
 /** Plain <pre> until shiki loads the language; unknown languages stay plain. */
 function ShikiSyntaxHighlighter({ language, code }: SyntaxHighlighterProps) {
-  const [html, setHtml] = useState<string | null>(null);
+  // Keyed by the inputs that produced it, so a superseded request resolving
+  // before its effect cleanup renders nothing. Theme is left out of the key
+  // so a theme switch keeps the old palette until the re-highlight lands.
+  // NUL-delimited (as the escape sequence: a raw NUL byte in source makes
+  // git treat the file as binary) so field concatenations cannot collide.
+  const inputKey = `${language ?? ""}\u0000${code}`;
+  const [result, setResult] = useState<{ key: string; html: string } | null>(null);
   const shiki = useShikiTheme();
+
   useEffect(() => {
     let cancelled = false;
     if (!language) return;
@@ -155,8 +162,8 @@ function ShikiSyntaxHighlighter({ language, code }: SyntaxHighlighterProps) {
           theme: shiki.theme,
           appearance: shiki.appearance,
         });
-        if (cancelled) return;
-        if (out) setHtml(out);
+        if (cancelled || !out) return;
+        setResult({ key: inputKey, html: out });
       } catch {
         // Unknown language: stay plain.
       }
@@ -164,7 +171,9 @@ function ShikiSyntaxHighlighter({ language, code }: SyntaxHighlighterProps) {
     return () => {
       cancelled = true;
     };
-  }, [language, code, shiki.theme, shiki.appearance]);
+  }, [language, code, inputKey, shiki.theme, shiki.appearance]);
+
+  const html = result && result.key === inputKey ? result.html : null;
 
   // The em-based size carries no line-height, so set it or code inherits the looser body leading.
   if (html) {

@@ -4,6 +4,7 @@ import { useIsCoarsePointer } from "../../hooks/useIsCoarsePointer";
 import { useMobileKeyboard } from "../../hooks/useMobileKeyboard";
 import { loadScrollState, restoredScrollTop, saveScrollState } from "../../lib/acpScrollState";
 import { anchorIsStale, autoLoadDecision, isPinnedToBottom, scrollRestoreDelta } from "../../lib/historyScroll";
+import { promptRepinDecision } from "../../lib/promptRepin";
 import { repinOnResize } from "../../lib/repinOnResize";
 
 /** Stick-to-bottom, earlier-history auto-load, and PWA-reopen scroll restore
@@ -15,12 +16,20 @@ export function useTranscriptScroll({
   loadEarlierHistory,
   loadingEarlierHistory,
   composerCollapsed,
+  promptSeq,
+  hasEverOpened,
+  localInflight,
 }: {
   sessionId: string;
   canLoadEarlierHistory: boolean;
   loadEarlierHistory: () => void;
   loadingEarlierHistory: boolean;
   composerCollapsed: boolean;
+  /** Counts every prompt once, from any path or device; keys the submit re-pin. */
+  promptSeq: number;
+  hasEverOpened: boolean;
+  /** This client has an optimistic prompt row still awaiting its server echo. */
+  localInflight: boolean;
 }) {
   const viewportRef = useRef<HTMLDivElement | null>(null);
   const belowViewportRef = useRef<HTMLDivElement | null>(null);
@@ -36,15 +45,32 @@ export function useTranscriptScroll({
   const { keyboardOpen } = useMobileKeyboard();
   const isCoarse = useIsCoarsePointer();
 
-  const scrollToBottom = useCallback(() => {
+  /** An explicit "stick again": a programmatic scroll fires no gesture, so set
+   *  the stick intent directly. */
+  const pinToBottom = useCallback((behavior: ScrollBehavior) => {
     const vp = viewportRef.current;
     if (!vp) return;
-    // A smooth scroll fires no gesture, so set the stick intent directly.
     wasAtBottomRef.current = true;
     lastAtBottomAtRef.current = performance.now();
     setAtBottom(true);
-    vp.scrollTo({ top: vp.scrollHeight, behavior: "smooth" });
+    vp.scrollTo({ top: vp.scrollHeight, behavior });
   }, []);
+  const scrollToBottom = useCallback(() => pinToBottom("smooth"), [pinToBottom]);
+
+  // A new prompt re-engages stick-to-bottom, as the CLI does: on a fine pointer
+  // the composer growing while typing can drop the pinned intent. See
+  // `promptRepinDecision` for why replayed prompts do not count.
+  const seenPromptSeqRef = useRef<number | null>(null);
+  useEffect(() => {
+    const d = promptRepinDecision({
+      seen: seenPromptSeqRef.current,
+      promptSeq,
+      live: hasEverOpened,
+      localInflight,
+    });
+    seenPromptSeqRef.current = d.seen;
+    if (d.pin) pinToBottom("auto");
+  }, [promptSeq, hasEverOpened, localInflight, pinToBottom]);
 
   // Mirrors so the scroll effect sees the latest load wiring without re-subscribing.
   const canLoadEarlierRef = useRef(canLoadEarlierHistory);

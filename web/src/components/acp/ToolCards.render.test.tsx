@@ -2,7 +2,7 @@
 // Shiki is mocked so HighlightedBlock renders a plain <pre> synchronously.
 
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render } from "@testing-library/react";
+import { cleanup, fireEvent, render, waitFor } from "@testing-library/react";
 
 vi.mock("../../lib/snippetHighlighter", () => ({
   highlightSnippet: vi.fn().mockResolvedValue(null),
@@ -22,6 +22,7 @@ vi.mock("../../hooks/useSkillIndex", () => ({
 }));
 
 import type { ActivityRow, BackgroundAgent, ToolCall, ToolOutputBlock } from "../../lib/acpTypes";
+import { highlightSnippet } from "../../lib/snippetHighlighter";
 import { AgentProfileProvider } from "../../lib/agentProfileContext";
 import type { FileRef, FileRefSession } from "../../lib/fileRef";
 import { buildSkillIndex, type SkillIndex } from "../../lib/skillProvenance";
@@ -32,6 +33,7 @@ import { TodoGroupCard } from "./TodoCards";
 import { formatDurationMs, formatDurationSeconds } from "./ToolCardChrome";
 import { ToolCard } from "./ToolCards";
 import { fixtures, makeCompletion, makeError, makeStopped, makeToolCall } from "./__fixtures__/toolCalls";
+import { renderWithLateResolution } from "../../__tests__/lateResolution";
 
 afterEach(() => {
   cleanup();
@@ -773,5 +775,79 @@ describe("duration formatting", () => {
     [2 * 86400 + 4 * 3600, "2d 4h"],
   ])("formatDurationSeconds(%i) = %s", (s, expected) => {
     expect(formatDurationSeconds(s)).toBe(expected);
+  });
+});
+
+describe("HighlightedBlock stale-content transitions (#3974)", () => {
+  afterEach(() => {
+    vi.mocked(highlightSnippet).mockReset();
+    vi.mocked(highlightSnippet).mockResolvedValue(null);
+  });
+
+  const readCard = (path: string, body: string) =>
+    wrap(
+      <ToolCard
+        tool={makeToolCall({ kind: "read", args_preview: args({ file_path: path }) })}
+        result={makeCompletion({ text: body })}
+      />,
+    );
+
+  it("clears highlighted output when a reused read card's file becomes extensionless", async () => {
+    vi.mocked(highlightSnippet).mockResolvedValueOnce('<pre class="shiki">highlighted rust</pre>');
+
+    const { container, rerender } = render(readCard("/tmp/a.rs", "fn main() {}"));
+    fireEvent.click(container.querySelector("button")!);
+
+    await waitFor(() => {
+      expect(container.querySelector("pre.shiki")).toBeTruthy();
+    });
+
+    vi.mocked(highlightSnippet).mockResolvedValueOnce(null);
+    rerender(readCard("/tmp/README", "plain readme text"));
+
+    expect(container.querySelector("pre.shiki")).toBeNull();
+    expect(container.textContent).toContain("plain readme text");
+    expect(container.textContent).not.toContain("fn main");
+  });
+
+  it("clears highlighted output when a reused read card's highlight rejects", async () => {
+    vi.mocked(highlightSnippet).mockResolvedValueOnce('<pre class="shiki">highlighted rust</pre>');
+
+    const { container, rerender } = render(readCard("/tmp/a.rs", "fn main() {}"));
+    fireEvent.click(container.querySelector("button")!);
+
+    await waitFor(() => {
+      expect(container.querySelector("pre.shiki")).toBeTruthy();
+    });
+
+    vi.mocked(highlightSnippet).mockRejectedValueOnce(new Error("boom"));
+    rerender(readCard("/tmp/b.rs", "fn other() {}"));
+
+    await waitFor(() => {
+      expect(container.textContent).toContain("fn other() {}");
+    });
+    expect(container.querySelector("pre.shiki")).toBeNull();
+    expect(container.textContent).not.toContain("fn main");
+  });
+
+  it("ignores a late resolution from a superseded request (pending A \u2192 committed B \u2192 late A)", async () => {
+    let resolveA!: (v: string | null) => void;
+    vi.mocked(highlightSnippet).mockReturnValueOnce(
+      new Promise<string | null>((res) => {
+        resolveA = res;
+      }),
+    );
+
+    const { html, text } = await renderWithLateResolution({
+      a: readCard("/tmp/a.rs", "fn a() {}"),
+      b: readCard("/tmp/README", "plain readme text"),
+      bText: "plain readme text",
+      resolveStale: () => resolveA('<pre class="shiki">OLD_A</pre>'),
+      // Expand the card so the highlighted body renders.
+      afterMount: (host) => host.querySelector("button")!.dispatchEvent(new MouseEvent("click", { bubbles: true })),
+    });
+
+    expect(text).toContain("plain readme text");
+    expect(html).not.toContain("OLD_A");
   });
 });
