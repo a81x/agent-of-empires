@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { acpHookReducer } from "../hooks/useAcpSession";
+import { reducer as acpHookReducer } from "../hooks/useAcpSession";
 import {
   applyEvent,
   applyReducedState,
