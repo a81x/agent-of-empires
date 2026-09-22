@@ -628,7 +628,7 @@
       "components": ["web/src/components/SettingsView.tsx", "web/src/components/settings/FormFields.tsx"]
     },
     {
-      "id": "settings.global-persistence",
+      "id": "settings.global-migration-and-persistence",
       "kind": "live-playwright",
       "risk": "medium",
       "specs": ["tests/live/settings-persistence.spec.ts"],

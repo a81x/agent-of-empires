@@ -396,10 +396,7 @@ export function SettingsView({
       setSaving(true);
       setSaveError(null);
       const patch = { [section]: { [field]: value } };
-      // The profile endpoint saves logging globally and replaces maps, allowing target removal.
-      const saveGlobally =
-        section !== "logging" &&
-        schema.some((d) => d.section === section && d.field === field && !d.profile_overridable);
+      const saveGlobally = schema.some((d) => d.section === section && d.field === field && !d.profile_overridable);
       const ok = saveGlobally ? await updateSettings(patch) : await updateProfileSettings(selectedProfile, patch);
       setSaving(false);
       if (!ok) {

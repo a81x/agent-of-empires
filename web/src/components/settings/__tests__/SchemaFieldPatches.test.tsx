@@ -148,7 +148,13 @@ describe("schema-driven settings field PATCH payloads", () => {
     const { container } = renderTab(tab);
     await screen.findByText(label);
     fireEvent.change(selectByLabel(container, label), { target: { value } });
-    await waitFor(() => expect(vi.mocked(api.updateProfileSettings)).toHaveBeenCalledWith("main", patch));
+    if (tab === "logging") {
+      await waitFor(() => expect(api.updateSettings).toHaveBeenCalledWith(patch));
+      expect(api.updateProfileSettings).not.toHaveBeenCalled();
+    } else {
+      await waitFor(() => expect(api.updateProfileSettings).toHaveBeenCalledWith("main", patch));
+      expect(api.updateSettings).not.toHaveBeenCalled();
+    }
   });
 
   it("a tmux field edit never leaks sibling fields into the PATCH (sparse leaf)", async () => {

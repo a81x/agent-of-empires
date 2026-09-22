@@ -16,7 +16,7 @@ impl Drop for RestoreFilter {
     }
 }
 
-async fn patch(app: &axum::Router, uri: &str, body: Value) -> Value {
+async fn patch(app: &axum::Router, uri: &str, body: Value, expected: StatusCode) -> Value {
     let mut request = Request::builder()
         .method("PATCH")
         .uri(uri)
@@ -34,7 +34,7 @@ async fn patch(app: &axum::Router, uri: &str, body: Value) -> Value {
         .unwrap();
     assert_eq!(
         status,
-        StatusCode::OK,
+        expected,
         "{uri}: {}",
         String::from_utf8_lossy(&bytes)
     );
@@ -65,7 +65,7 @@ async fn settings_only_reload_changed_log_filters() {
         .unwrap();
         logging::set_filter("agent_of_empires=info").unwrap();
 
-        let mut cases = vec![
+        let cases = [
             ("empty patch", json!({}), false),
             ("empty logging", json!({"logging": {}}), false),
             (
@@ -101,17 +101,49 @@ async fn settings_only_reload_changed_log_filters() {
                 json!({"logging": {"targets": {"acp.protocol": "debug"}}}),
                 true,
             ),
+            (
+                "replaced targets",
+                json!({"logging": {"targets": {"server": "warn"}}}),
+                true,
+            ),
+            ("removed targets", json!({"logging": {"targets": {}}}), true),
         ];
-        if uri != "/api/settings" {
-            cases.push(("removed targets", json!({"logging": {"targets": {}}}), true));
-        }
         for (name, body, filter_changed) in cases {
-            let runtime = patch(&app, "/api/log-level", json!({"filter": temporary})).await;
+            let runtime = patch(
+                &app,
+                "/api/log-level",
+                json!({"filter": temporary}),
+                StatusCode::OK,
+            )
+            .await;
             assert_eq!(runtime["current"], temporary, "{uri}: {name}");
-            let response = patch(&app, uri, body.clone()).await;
+            let rejected = uri != "/api/settings"
+                && body
+                    .get("logging")
+                    .and_then(Value::as_object)
+                    .is_some_and(|fields| !fields.is_empty());
+            let before = serde_json::to_value(Config::load().unwrap()).unwrap();
+            let response = patch(
+                &app,
+                uri,
+                body.clone(),
+                if rejected {
+                    StatusCode::BAD_REQUEST
+                } else {
+                    StatusCode::OK
+                },
+            )
+            .await;
             let saved = Config::load().unwrap();
             let saved_logging = serde_json::to_value(&saved.logging).unwrap();
-            if uri == "/api/settings" {
+            if rejected {
+                assert_eq!(response["error"], "validation_failed");
+                assert_eq!(
+                    serde_json::to_value(&saved).unwrap(),
+                    before,
+                    "{uri}: {name}"
+                );
+            } else if uri == "/api/settings" {
                 assert_eq!(response["logging"], saved_logging, "{uri}: {name}");
             } else {
                 assert!(
@@ -119,12 +151,14 @@ async fn settings_only_reload_changed_log_filters() {
                     "logging must remain global"
                 );
             }
-            if let Some(fields) = body.get("logging").and_then(Value::as_object) {
-                for (key, value) in fields {
-                    assert_eq!(&saved_logging[key], value, "{uri}: {name}: {key}");
+            if !rejected {
+                if let Some(fields) = body.get("logging").and_then(Value::as_object) {
+                    for (key, value) in fields {
+                        assert_eq!(&saved_logging[key], value, "{uri}: {name}: {key}");
+                    }
                 }
             }
-            let expected = if filter_changed {
+            let expected = if filter_changed && !rejected {
                 logging::build_filter_from_config(
                     &saved.logging.default_level,
                     &saved.logging.targets,
@@ -145,4 +179,63 @@ async fn settings_only_reload_changed_log_filters() {
             );
         }
     }
+}
+
+#[tokio::test]
+#[serial_test::serial]
+async fn profile_settings_reject_global_only_fields_without_writing() {
+    let _home = crate::common::setup_temp_home();
+    session::update_config(|config| *config = Config::default()).unwrap();
+    session::save_profile_config("main", &session::ProfileConfig::default()).unwrap();
+    let app = build_router_for_test(build_test_app_state(Vec::new()));
+    let global_path = session::get_app_dir().unwrap().join("config.toml");
+    let profile_path = session::get_profile_dir("main")
+        .unwrap()
+        .join("config.toml");
+    let global_before = std::fs::read(&global_path).unwrap();
+    let profile_before = std::fs::read(&profile_path).unwrap();
+    let uri = "/api/profiles/main/settings";
+    for (section, field, value) in [
+        ("theme", "name", json!("dracula")),
+        ("theme", "color_mode", json!("palette")),
+        ("session", "confirm_before_quit", json!(false)),
+        ("session", "sidebar_position", json!("right")),
+        ("session", "session_id_poller_max_threads", json!(12)),
+        ("web", "notify_on_idle", json!(true)),
+        ("logging", "targets", json!({})),
+        ("acp", "allow_agent_install", json!(true)),
+        ("tmux", "socket_name", json!("custom")),
+        ("telemetry", "enabled", json!(true)),
+        ("session", "sidebar_position", Value::Null),
+    ] {
+        let response = patch(
+            &app,
+            uri,
+            json!({"description": "must not save", section: {field: value}}),
+            StatusCode::BAD_REQUEST,
+        )
+        .await;
+        assert_eq!(response["error"], "validation_failed");
+        let message = response["message"].as_str().unwrap();
+        assert!(
+            message.contains(&format!("{section}.{field}")),
+            "{response}"
+        );
+        assert!(message.contains("PATCH /api/settings"), "{response}");
+        assert_eq!(std::fs::read(&global_path).unwrap(), global_before);
+        assert_eq!(std::fs::read(&profile_path).unwrap(), profile_before);
+    }
+    let saved = patch(&app, uri, json!({"description": "work", "theme": {"idle_decay_minutes": 5}, "session": {"default_tool": "codex"}}), StatusCode::OK).await;
+    assert_eq!(saved["description"], "work");
+    assert_eq!(saved["theme"]["idle_decay_minutes"], 5);
+    assert_eq!(saved["session"]["default_tool"], "codex");
+    assert_eq!(std::fs::read(&global_path).unwrap(), global_before);
+    let saved = patch(
+        &app,
+        uri,
+        json!({"theme": {"idle_decay_minutes": null}}),
+        StatusCode::OK,
+    )
+    .await;
+    assert!(saved.get("theme").is_none());
 }

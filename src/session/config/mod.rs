@@ -3233,7 +3233,7 @@ pub(crate) fn config_path() -> Result<PathBuf> {
 /// Sidecar lock file name for the global `config.toml`. Lives in `<app_dir>`
 /// next to `config.toml`, mirroring `storage.rs`'s `.storage.lock` /
 /// `.workspace-ordering.lock` sidecars.
-const CONFIG_LOCK_FILENAME: &str = ".config.lock";
+pub(crate) const CONFIG_LOCK_FILENAME: &str = ".config.lock";
 
 /// Process-wide mutex serialising [`update_config`] calls. Paired with a
 /// cross-process `flock` on [`CONFIG_LOCK_FILENAME`]; see that function and

@@ -8,6 +8,8 @@ Settings resolve in layers, each overriding the one before it, field by field:
 
 Unset fields inherit from the layer above. List fields replace rather than extend. Everything below is also editable from the TUI settings screen (`s`) and, unless noted, from the web dashboard.
 
+Global-only settings use the global config. On upgrade, existing profile values move there and are removed from profile files. Conflicts prefer the default profile, then profiles alphabetically; existing global values are retained wherever no profile overrides them. `PATCH /api/profiles/<name>/settings` rejects global-only fields with HTTP 400; use `PATCH /api/settings` instead.
+
 ## File locations
 
 | Platform | Global config |
@@ -302,7 +304,7 @@ vt_live = true
 | `status_bar` | `"auto"` | Paint aoe's themed status bar (title, branch, sandbox, detach hint) on its own sessions. The bar is a whole theme, so `"auto"` steps aside whenever you have a tmux config at all. `"disabled"` reverts aoe's session-scoped `status*` overrides, so your own config governs. See [tmux status bar](tmux-status-bar.md). |
 | `mouse` | `"auto"` | Set tmux `mouse` on aoe's sessions, which is what turns a wheel or touch scroll into copy-mode scrollback. `"auto"` defers only when your tmux config sets `mouse` itself, and enables it otherwise. |
 | `clipboard` | `"auto"` | Forward the agent's OSC 52 clipboard writes (`set-clipboard on`, `allow-passthrough on`) to your terminal or the dashboard. Without it, "select to copy" inside an agent silently fails. Same per-option `"auto"` as `mouse`; live-send forwarding stays on for `"auto"` and `"enabled"`. |
-| `socket_name` | unset | Run aoe's sessions on a private tmux server (`tmux -L <name>`), so your own `tmux ls` stays separate. Bare name only, applied at the next aoe start. Global/profile only. |
+| `socket_name` | unset | Run aoe's sessions on a private tmux server (`tmux -L <name>`), so your own `tmux ls` stays separate. Bare name only, applied at the next aoe start. Global only. |
 | `vt_live` | `true` | Render agent previews and the dashboard's agent terminal from a persistent VT channel instead of `capture-pane` polling. See [the VT live transport](live-mode.md#the-vt-live-transport). |
 
 Per-option detection reads `~/.tmux.conf`, `$XDG_CONFIG_HOME/tmux/tmux.conf`, and `~/.config/tmux/tmux.conf` for a `set` / `setw` of the option. It is deliberately conservative: an option reached through `source-file`, `if-shell`, a false `%if`, or a key binding is not detected, so set the mode to `"disabled"` if you keep yours in one of those places. `/etc/tmux.conf` is not consulted.
@@ -359,7 +361,7 @@ environment = ["GH_TOKEN=$AOE_GH_TOKEN"]
 
 ## Profiles
 
-Profiles are separate workspaces with their own sessions, groups, and overrides of anything above.
+Profiles are separate workspaces with their own sessions, groups, and overrides of profile-overridable settings.
 
 ```bash
 aoe                        # "default" profile

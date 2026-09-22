@@ -15,8 +15,8 @@ use crate::session::get_profile_dir;
 /// Every override is a section table keyed by config-section name (e.g.
 /// `sandbox`, `acp`) mirroring the `Config` JSON shape; an absent key
 /// inherits the global value. There are no typed per-section structs: a field
-/// is overridable purely by virtue of existing in the `Config` schema, so
-/// adding one never touches this file. Merging is the generic recursive
+/// is overridable according to its `Config` schema descriptor, so adding one
+/// never touches this file. Merging is the generic recursive
 /// [`merge_configs_generic`].
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ProfileConfig {

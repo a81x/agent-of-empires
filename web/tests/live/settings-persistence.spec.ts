@@ -1,8 +1,10 @@
 // Settings persist through the real server: REST round-trips, the schema UI, and the theme picker.
 
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import type { Locator, Page } from "@playwright/test";
 import { test, expect, authHeaders, bootDashboard, type ServeHandle } from "../helpers/liveTest";
-import { loginWithPassphrase, spawnAoeServe } from "../helpers/aoeServe";
+import { appDirFor, loginWithPassphrase, resolveAoeBinary, spawnAoeServe } from "../helpers/aoeServe";
 
 // #1189: the theme resolver once deadlocked per request, which mocked specs cannot see.
 test.describe("theme API", () => {
@@ -246,17 +248,41 @@ test.describe("passphrase mode", () => {
   });
 });
 
-test("Sidebar Position stays global across profile overrides and a server restart", async ({ serve, page }) => {
+test("global settings migrate from profiles and reject stale profile writes", async ({ spawnServe, page }) => {
+  let appDir = "";
+  const serve = await spawnServe({
+    seedFn: ({ home, xdg }) => {
+      appDir = appDirFor(home, xdg, resolveAoeBinary());
+      writeFileSync(join(appDir, ".schema_version"), "29");
+      writeFileSync(join(appDir, "config.toml"), "default_profile = 'work'\n[theme]\nname = 'empire'\n");
+      for (const name of ["alpha", "work"]) mkdirSync(join(appDir, "profiles", name), { recursive: true });
+      writeFileSync(join(appDir, "profiles", "alpha", "config.toml"), "[theme]\nname = 'rose-pine'\n");
+      writeFileSync(
+        join(appDir, "profiles", "work", "config.toml"),
+        "[theme]\nname = 'dracula'\nidle_decay_minutes = 5\n[session]\nsidebar_position = 'left'\nconfirm_before_quit = false\nsession_id_poller_max_threads = 12\ndefault_tool = 'codex'\n[web]\nnotify_on_idle = true\n",
+      );
+    },
+  });
   const profile = await defaultProfile(serve);
   const globalUrl = `${serve.baseUrl}/api/settings`;
   const profileUrl = `${serve.baseUrl}/api/profiles/${encodeURIComponent(profile)}/settings`;
   const effectiveUrl = `${globalUrl}?profile=${encodeURIComponent(profile)}`;
+  const migrated = await getJson(globalUrl);
+  expect(migrated.theme.name).toBe("dracula");
+  expect(migrated.session.confirm_before_quit).toBe(false);
+  expect(migrated.session.session_id_poller_max_threads).toBe(12);
+  expect(migrated.web.notify_on_idle).toBe(true);
+  const profileBefore = readFileSync(join(appDir, "profiles", "work", "config.toml"), "utf8");
+  expect(profileBefore).not.toContain("sidebar_position");
+  expect(profileBefore).not.toContain("confirm_before_quit");
   const staleOverride = await fetch(profileUrl, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ session: { sidebar_position: "left" } }),
+    body: JSON.stringify({ session: { sidebar_position: "right", default_tool: "claude" } }),
   });
-  expect(staleOverride.ok).toBe(true);
+  expect(staleOverride.status).toBe(400);
+  expect((await staleOverride.json()).message).toContain("session.sidebar_position");
+  expect(readFileSync(join(appDir, "profiles", "work", "config.toml"), "utf8")).toBe(profileBefore);
   const logUrl = `${serve.baseUrl}/api/log-level`;
   const runtimeLog = await fetch(logUrl, {
     method: "PATCH",
@@ -280,7 +306,9 @@ test("Sidebar Position stays global across profile overrides and a server restar
     expect(saved.session.sidebar_position).toBe("right");
   }
   const overrides = await fetch(profileUrl).then((r) => r.json());
-  expect(overrides.session.sidebar_position).toBe("left");
+  expect(overrides.session.sidebar_position).toBeUndefined();
+  expect(overrides.session.default_tool).toBe("codex");
+  expect(overrides.theme.idle_decay_minutes).toBe(5);
   const logStatus = await fetch(logUrl).then((r) => r.json());
   expect(logStatus.current).toBe(temporaryFilter);
 

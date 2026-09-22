@@ -301,6 +301,10 @@ pub async fn update_settings(
         crate::session::update_config(|config| -> anyhow::Result<_> {
             let mut current = serde_json::to_value(&*config)?;
             crate::session::config::settings_schema::merge_json(&mut current, &body);
+            // The target editor sends the complete map, including removals.
+            if let Some(targets) = body.pointer("/logging/targets") {
+                current["logging"]["targets"] = targets.clone();
+            }
             let updated: crate::session::Config = serde_json::from_value(current)?;
             let logging_changed = config.logging.default_level != updated.logging.default_level
                 || config.logging.targets != updated.logging.targets;
@@ -1724,9 +1728,6 @@ pub async fn update_profile_settings(
     if let Err(e) = validate_profile_name(&name) {
         return api_error(StatusCode::BAD_REQUEST, "validation_failed", e);
     }
-    // Strip host-execution surfaces (`local_only`) before validation and merge,
-    // so they can never become a profile override (#1692).
-    strip_local_only(&mut body);
     // Reject any leaf outside the CityHall allowlist, so the endpoint kept open
     // for the Sessions trash toggles cannot write arbitrary overrides (#7).
     if state.cityhall_mode {
@@ -1750,41 +1751,10 @@ pub async fn update_profile_settings(
         return reject_response(rej);
     }
 
-    let result = tokio::task::spawn_blocking(move || {
-        // `logging` is process-global, so peel it off and write it to the
-        // global Config; everything else stays a per-profile override.
-        let mut body = body;
-        let logging_patch = body.as_object_mut().and_then(|obj| obj.remove("logging"));
-        if let Some(patch) = logging_patch {
-            let (logging, filter_changed) =
-                crate::session::update_config(|global| -> anyhow::Result<_> {
-                    let mut current = serde_json::to_value(&global.logging)?;
-                    if let (Some(fields), Some(updates)) =
-                        (current.as_object_mut(), patch.as_object())
-                    {
-                        fields.extend(updates.clone());
-                    } else {
-                        current = patch;
-                    }
-                    let updated: crate::session::config::LoggingConfig =
-                        serde_json::from_value(current)?;
-                    let filter_changed = global.logging.default_level != updated.default_level
-                        || global.logging.targets != updated.targets;
-                    global.logging = updated;
-                    Ok((global.logging.clone(), filter_changed))
-                })
-                .and_then(|inner| inner)?;
-            if filter_changed {
-                if let Ok(app_dir) = crate::session::get_app_dir() {
-                    crate::logging::apply_persisted_config(
-                        &logging.default_level,
-                        &logging.targets,
-                        &app_dir,
-                    );
-                }
-            }
-        }
+    // Validate scope before stripping, including global-only local fields.
+    strip_local_only(&mut body);
 
+    let result = tokio::task::spawn_blocking(move || {
         let config = crate::session::load_profile_config(&name).unwrap_or_default();
         let mut current = serde_json::to_value(&config)?;
         // Apply each validated leaf onto the sparse override object: null
