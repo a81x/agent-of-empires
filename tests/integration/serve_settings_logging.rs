@@ -107,6 +107,17 @@ async fn settings_only_reload_changed_log_filters() {
                 true,
             ),
             ("removed targets", json!({"logging": {"targets": {}}}), true),
+            (
+                "restored targets",
+                json!({"logging": {"targets": {"acp.protocol": "warn"}}}),
+                true,
+            ),
+            ("reset targets", json!({"logging": {"targets": null}}), true),
+            (
+                "already reset targets",
+                json!({"logging": {"targets": null}}),
+                false,
+            ),
         ];
         for (name, body, filter_changed) in cases {
             let runtime = patch(
@@ -154,7 +165,11 @@ async fn settings_only_reload_changed_log_filters() {
             if !rejected {
                 if let Some(fields) = body.get("logging").and_then(Value::as_object) {
                     for (key, value) in fields {
-                        assert_eq!(&saved_logging[key], value, "{uri}: {name}: {key}");
+                        if key == "targets" && value.is_null() {
+                            assert_eq!(saved_logging[key], json!({}), "{uri}: {name}: {key}");
+                        } else {
+                            assert_eq!(&saved_logging[key], value, "{uri}: {name}: {key}");
+                        }
                     }
                 }
             }

@@ -303,7 +303,11 @@ pub async fn update_settings(
             crate::session::config::settings_schema::merge_json(&mut current, &body);
             // The target editor sends the complete map, including removals.
             if let Some(targets) = body.pointer("/logging/targets") {
-                current["logging"]["targets"] = targets.clone();
+                current["logging"]["targets"] = if targets.is_null() {
+                    serde_json::json!({})
+                } else {
+                    targets.clone()
+                };
             }
             let updated: crate::session::Config = serde_json::from_value(current)?;
             let logging_changed = config.logging.default_level != updated.logging.default_level
