@@ -1747,7 +1747,7 @@ pub async fn update_profile_settings(
     // loopback-trusted caller is elevated per the #1168 carve-out (#2610).
     let elevated = handler_elevated(&state, session.as_deref(), loopback.is_some()).await;
 
-    // Validate every remaining leaf against the schema (#1692). An
+    // Validate every leaf against the schema (#1692). An
     // elevation_required 403 mirrors the path-shape gate's payload so
     // web/src/lib/fetchInterceptor.ts fires the passphrase prompt (#1510).
     // `description` is profile-only and rejected on the global endpoint.

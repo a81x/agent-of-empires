@@ -8,7 +8,7 @@ Settings resolve in layers, each overriding the one before it, field by field:
 
 Unset fields inherit from the layer above. List fields replace rather than extend. Everything below is also editable from the TUI settings screen (`s`) and, unless noted, from the web dashboard.
 
-Global-only settings use the global config. On upgrade, existing profile values move there and are removed from profile files. Conflicts prefer the default profile, then profiles alphabetically; existing global values are retained wherever no profile overrides them. `PATCH /api/profiles/<name>/settings` rejects global-only fields with HTTP 400; use `PATCH /api/settings` instead.
+Global-only settings use the global config. On upgrade, the default profile's values for them move there, and other profiles' values are removed. `PATCH /api/profiles/<name>/settings` rejects global-only fields with HTTP 400; use `PATCH /api/settings` instead.
 
 A project registry entry can also override `worktree.enabled` and `session.smart_rename` for that project, from the web Projects view or the TUI add-project form. This override wins over all three layers. It lives in your own registry (`projects.json`), not the repo, so it does not weaken the `repo = "deny"` policy on either field.
 

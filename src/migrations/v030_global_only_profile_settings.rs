@@ -1,4 +1,5 @@
-//! Move global-only profile overrides into the global config before ignoring them.
+//! Move the default profile's global-only overrides into the global config and
+//! drop them from every other profile, before profile merges start ignoring them.
 
 use anyhow::{Context, Result};
 use std::{collections::HashSet, fs, io::ErrorKind, path::Path};
@@ -34,51 +35,52 @@ fn run_in(app_dir: &Path, mut write: impl FnMut(&Path, &[u8]) -> Result<()>) -> 
     let global_path = app_dir.join("config.toml");
     let mut global = read_config(&global_path)?.unwrap_or_default();
     let profiles_dir = app_dir.join("profiles");
-    let mut paths = if profiles_dir.exists() {
+    let names = if profiles_dir.exists() {
         list_profile_names_in(&profiles_dir)?
-            .into_iter()
-            .map(|name| profiles_dir.join(name).join("config.toml"))
-            .collect::<Vec<_>>()
     } else {
         Vec::new()
     };
-    if let Some(default) = global
+    // Same rule as `resolve_default_profile`: the configured name, else the first profile.
+    let default_path = global
         .get("default_profile")
         .and_then(toml::Value::as_str)
         .filter(|name| !name.is_empty())
-    {
-        paths.insert(0, profiles_dir.join(default).join("config.toml"));
-    }
-    // Keep each file's highest-priority alias. A global alias still participates
-    // in precedence, but must never be cleaned as a profile.
-    let global_identity = if global_path.exists() {
-        Some(fs::canonicalize(&global_path)?)
-    } else {
-        None
-    };
-    let mut seen = HashSet::new();
-    let mut unique_paths = Vec::new();
-    for path in paths {
-        match fs::canonicalize(&path) {
-            Ok(target) => {
-                let is_global = global_identity.as_ref() == Some(&target);
-                if seen.insert(target) {
-                    unique_paths.push((path, is_global));
-                }
-            }
-            Err(error) if error.kind() == ErrorKind::NotFound => {}
-            Err(error) => return Err(error).with_context(|| format!("Resolve {}", path.display())),
-        }
-    }
+        .map(str::to_owned)
+        .or_else(|| names.first().cloned())
+        .map(|name| profiles_dir.join(name).join("config.toml"));
+    let paths = default_path.iter().cloned().chain(
+        names
+            .iter()
+            .map(|name| profiles_dir.join(name).join("config.toml")),
+    );
 
-    // Default profile wins, then alphabetical order. Clean the winners last
-    // so a retry after a partial cleanup cannot promote a losing value.
+    // Only the default profile's values move, so the profile users launch by
+    // default keeps its effective settings. A profile aliasing the global
+    // config is skipped: its values are already global.
+    let mut seen = HashSet::new();
+    if global_path.exists() {
+        seen.insert(fs::canonicalize(&global_path)?);
+    }
+    let mut default_identity = None;
+    let mut promoted = false;
     let mut profiles = Vec::new();
-    for (path, is_global) in unique_paths.into_iter().rev() {
+    for path in paths {
+        let target = match fs::canonicalize(&path) {
+            Ok(target) => target,
+            Err(error) if error.kind() == ErrorKind::NotFound => continue,
+            Err(error) => return Err(error).with_context(|| format!("Resolve {}", path.display())),
+        };
+        if default_path.as_ref() == Some(&path) {
+            default_identity = Some(target.clone());
+        }
+        let is_default = default_identity.as_ref() == Some(&target);
+        if !seen.insert(target) {
+            continue;
+        }
         let Some(mut profile) = read_config(&path)? else {
             continue;
         };
-        let mut changed = false;
+        let mut moved = Vec::new();
         for field in schema_ref()
             .iter()
             .filter(|field| !field.profile_overridable)
@@ -95,6 +97,10 @@ fn run_in(app_dir: &Path, mut write: impl FnMut(&Path, &[u8]) -> Result<()>) -> 
             if section.is_empty() {
                 profile.remove(&field.section);
             }
+            moved.push(field.path());
+            if !is_default {
+                continue;
+            }
             let global_section = global
                 .entry(&field.section)
                 .or_insert_with(|| toml::Value::Table(toml::Table::new()))
@@ -109,22 +115,29 @@ fn run_in(app_dir: &Path, mut write: impl FnMut(&Path, &[u8]) -> Result<()>) -> 
             } else {
                 global_section.insert(field.field.clone(), value);
             }
-            changed = true;
+            promoted = true;
         }
-        if changed && !is_global {
-            profiles.push((path, toml::to_string_pretty(&profile)?));
+        if !moved.is_empty() {
+            profiles.push((path, is_default, moved, toml::to_string_pretty(&profile)?));
         }
     }
     if profiles.is_empty() {
         return Ok(());
     }
-    let _: Config = toml::Value::Table(global.clone())
-        .try_into()
-        .context("Invalid global config after migrating profile settings")?;
-    write(&global_path, toml::to_string_pretty(&global)?.as_bytes())?;
-    for (path, content) in profiles {
+    // Global first: a retry after a failed profile write re-promotes the same values.
+    if promoted {
+        let _: Config = toml::Value::Table(global.clone())
+            .try_into()
+            .context("Invalid global config after migrating profile settings")?;
+        write(&global_path, toml::to_string_pretty(&global)?.as_bytes())?;
+    }
+    for (path, is_default, fields, content) in profiles {
         write(&path, content.as_bytes())?;
-        info!(path = %path.display(), "v030: moved global-only profile settings to global config");
+        if is_default {
+            info!(path = %path.display(), ?fields, "v030: moved default profile's global-only settings to global config");
+        } else {
+            info!(path = %path.display(), ?fields, "v030: dropped global-only settings from non-default profile");
+        }
     }
     Ok(())
 }
@@ -144,12 +157,13 @@ mod tests {
     }
 
     #[test]
-    fn promotes_global_fields_with_default_profile_precedence_and_preserves_other_data() {
-        for default in [
-            "default_profile = 'work'\n",
-            "",
-            "default_profile = ''\n",
-            "default_profile = 'missing'\n",
+    fn promotes_only_the_default_profile_and_preserves_other_data() {
+        // (global prefix, default profile resolved from it)
+        for (default, winner) in [
+            ("default_profile = 'work'\n", Some("work")),
+            ("", Some("alpha")),
+            ("default_profile = ''\n", Some("alpha")),
+            ("default_profile = 'missing'\n", None),
         ] {
             let dir = tempfile::tempdir().unwrap();
             let app = dir.path();
@@ -168,29 +182,35 @@ mod tests {
             run_in(app, atomic_write).unwrap();
 
             let global = read(app, "config.toml");
+            let get = |section: &str, field: &str| {
+                global
+                    .get(section)
+                    .and_then(|s| s.get(field))
+                    .map(ToString::to_string)
+            };
+            let theme = match winner {
+                Some("work") => "rose-pine",
+                Some(_) => "dracula",
+                None => "empire",
+            };
+            assert_eq!(global["theme"]["name"].as_str(), Some(theme), "{default:?}");
+            let work = winner == Some("work");
+            let alpha = winner == Some("alpha");
+            assert_eq!(get("theme", "color_mode").is_some(), work, "{default:?}");
+            assert_eq!(get("session", "confirm_before_quit").is_some(), work);
             assert_eq!(
-                global["theme"]["name"].as_str(),
-                Some(if default.contains("'work'") {
-                    "rose-pine"
-                } else {
-                    "dracula"
-                })
+                get("session", "session_id_poller_max_threads").is_some(),
+                work
             );
-            assert_eq!(global["theme"]["color_mode"].as_str(), Some("palette"));
-            assert_eq!(
-                global["session"]["confirm_before_quit"].as_bool(),
-                Some(false)
-            );
-            assert_eq!(
-                global["session"]["session_id_poller_max_threads"].as_integer(),
-                Some(12)
-            );
-            assert_eq!(
-                global["session"]["sidebar_position"].as_str(),
-                Some("right")
-            );
-            assert_eq!(global["web"]["notify_on_idle"].as_bool(), Some(true));
-            assert_eq!(global["web"]["notify_on_error"].as_bool(), Some(false));
+            assert_eq!(get("session", "sidebar_position").is_some(), work);
+            assert_eq!(get("web", "notify_on_error").is_some(), work);
+            assert_eq!(get("web", "notify_on_idle").is_some(), alpha);
+            if work {
+                assert_eq!(
+                    global["session"]["sidebar_position"].as_str(),
+                    Some("right")
+                );
+            }
             assert_eq!(global["unknown"]["keep"].as_integer(), Some(7));
             assert_eq!(read(app, "profiles/work/config.toml"), "description = 'keep me'\n[theme]\nidle_decay_minutes = 5\n[session]\ndefault_tool = 'codex'\n[unknown]\nkeep = 'profile'\n".parse::<toml::Table>().unwrap());
             assert!(read(app, "profiles/alpha/config.toml").is_empty());
@@ -226,16 +246,17 @@ mod tests {
                 atomic_write(path, contents)
             });
             assert!(result.is_err());
-            assert_eq!(
-                read(app, "profiles/work/config.toml")["theme"]["name"].as_str(),
-                Some("rose-pine")
+            // The default's value is never lost: it is global, or still in the profile.
+            let theme = |path| {
+                read(app, path)
+                    .get("theme")
+                    .and_then(|t| t.get("name"))
+                    .and_then(|n| n.as_str().map(str::to_owned))
+            };
+            assert!(
+                theme("config.toml").as_deref() == Some("rose-pine")
+                    || theme("profiles/work/config.toml").as_deref() == Some("rose-pine")
             );
-            if fail_at > 0 {
-                assert_eq!(
-                    read(app, "config.toml")["theme"]["name"].as_str(),
-                    Some("rose-pine")
-                );
-            }
             run_in(app, atomic_write).unwrap();
             assert_eq!(
                 read(app, "config.toml")["theme"]["name"].as_str(),
@@ -253,7 +274,7 @@ mod tests {
             ("config.toml", "[invalid"),
             ("profiles/work/config.toml", "[invalid"),
             (
-                "profiles/work/config.toml",
+                "profiles/aaa/config.toml",
                 "[session]\nconfirm_before_quit = 'wrong type'\n",
             ),
         ] {
@@ -294,17 +315,16 @@ mod tests {
             "[theme]\nname = 'dracula'\n",
         );
         run_in(app, atomic_write).unwrap();
-        assert_eq!(
-            read(app, "config.toml")["theme"]["name"].as_str(),
-            Some("dracula")
-        );
+        // `empty` is the default profile and has no file, so nothing moves.
+        assert!(!app.join("config.toml").exists());
+        assert!(read(app, "profiles/other/config.toml").is_empty());
         assert!(fs::read_to_string(app.join("profiles/work/config.toml"))
             .unwrap()
             .starts_with("# keep this comment"));
     }
 
     #[test]
-    fn merges_maps_and_replaces_lists_with_profile_precedence() {
+    fn merges_default_profile_maps_and_replaces_lists() {
         let dir = tempfile::tempdir().unwrap();
         let app = dir.path();
         seed(app, "config.toml", "default_profile = 'work'\n[logging.targets]\ntmux = 'info'\nserver = 'error'\n[acp]\nallowed_agents = ['claude']\n");
@@ -319,7 +339,7 @@ mod tests {
         assert_eq!(
             global["logging"]["targets"],
             toml::Value::Table(
-                "tmux = 'info'\nserver = 'debug'\nsession = 'debug'\n"
+                "tmux = 'info'\nserver = 'debug'\n"
                     .parse::<toml::Table>()
                     .unwrap()
             )
@@ -410,10 +430,7 @@ mod tests {
         );
         run_in(app, atomic_write).unwrap();
         assert!(read(app, "profiles/alpha/config.toml").is_empty());
-        assert_eq!(
-            read(app, "config.toml")["web"]["notify_on_idle"].as_bool(),
-            Some(true)
-        );
+        assert!(!read(app, "config.toml").contains_key("web"));
         assert!(app.join("profiles/work/config.toml").is_symlink());
         run_in(app, |_, _| {
             panic!("migrated aliases must not trigger writes")
