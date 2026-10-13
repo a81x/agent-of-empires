@@ -62,4 +62,6 @@ live_send_exit_chord = "C-q"
 
 Specs are tmux-style (`C-b`, `C-a`, `M-x`, `F12`). A typo in the leader falls back to the default.
 
+By default `Alt+Up` and `Alt+Down` do not reach the agent either: they leave live mode and jump to the previous or next working or just-finished session. If the agent needs them, rebind or unbind them with `jump_prev_session_chord` and `jump_next_session_chord` (see [Configuration](configuration.md)).
+
 `Ctrl+B` is the default because a prefix steals exactly one chord from the agent, and it is the one tmux users already know, leaving candidates like `Ctrl+K` free for the shell. If you run AoE inside your own tmux session that also uses `Ctrl+B`, the outer tmux claims it first: rebind `live_send_leader` (to `C-a` or `F1`, say), and remember that `Ctrl+Q` always exits.

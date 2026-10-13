@@ -168,6 +168,9 @@ pub struct SettingsView {
 
     pub(super) editing_input: Option<Input>,
 
+    /// The selected key-chord row is waiting for the chord to record.
+    pub(super) capturing_chord: bool,
+
     pub(super) list_edit_state: Option<ListEditState>,
 
     pub(super) custom_instruction_dialog: Option<CustomInstructionDialog>,
@@ -294,6 +297,7 @@ impl SettingsView {
             global_config,
             profile_config,
             editing_input: None,
+            capturing_chord: false,
             list_edit_state: None,
             custom_instruction_dialog: None,
             fields_scroll_offset: 0,
@@ -648,6 +652,11 @@ impl SettingsView {
             .saturating_sub(self.fields_viewport_height)
     }
 
+    /// Whether a key-chord row is waiting for the chord to record.
+    pub fn is_capturing_chord(&self) -> bool {
+        self.capturing_chord
+    }
+
     /// Whether the help overlay or instruction editor covers the panels, so
     /// wheel and scrollbar input must not move the fields behind it.
     pub(super) fn has_overlay(&self) -> bool {
@@ -669,7 +678,7 @@ impl SettingsView {
         // step lands mid-row and reads as jumpy. Line granularity keeps
         // the panel gliding.
         const STEP: u16 = 1;
-        if self.has_overlay() {
+        if self.has_overlay() || self.capturing_chord {
             return false;
         }
         if self.search_input.is_some() {

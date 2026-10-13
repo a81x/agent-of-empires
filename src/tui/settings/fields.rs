@@ -227,6 +227,19 @@ impl SettingField {
         )
     }
 
+    /// The session jump chords are recorded by pressing them, not typed.
+    pub fn is_key_chord(&self) -> bool {
+        matches!(
+            &self.kind,
+            FieldKind::Schema { section, field, .. }
+                if section == "session"
+                    && matches!(
+                        field.as_str(),
+                        "jump_prev_session_chord" | "jump_next_session_chord"
+                    )
+        )
+    }
+
     /// The theme picker live-previews on edit.
     pub fn is_theme_name(&self) -> bool {
         matches!(
@@ -260,6 +273,9 @@ impl SettingField {
     }
 
     pub fn validate(&self) -> Result<(), String> {
+        if let (true, FieldValue::Text(spec)) = (self.is_key_chord(), &self.value) {
+            return crate::tui::home::bindings::validate_jump_chord(spec);
+        }
         match (&self.kind, &self.value) {
             // Snooze has a domain-specific message; defer to its validator.
             (FieldKind::Schema { section, field, .. }, FieldValue::Number(n))

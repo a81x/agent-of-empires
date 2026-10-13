@@ -1521,6 +1521,36 @@ pub struct SessionConfig {
     )]
     pub live_send_leader: String,
 
+    /// Chord that jumps to the previous working or just-finished session, in
+    /// the list and in live-send mode, where the agent never receives it. In
+    /// the TUI settings press Enter, then the chord to record it, or Backspace
+    /// to unbind it. In `config.toml` it is tmux-style (`M-Up`, `M-k`, `F7`)
+    /// and empty unbinds. It needs Ctrl or Alt unless it is a function key; an
+    /// invalid value falls back to the default.
+    // `global_only`: one process-wide cache feeds dispatch, help and the
+    // palette, like `unread_indicator`.
+    #[serde(default = "default_jump_prev_session_chord")]
+    #[setting(
+        label = "Jump to Previous Session Chord",
+        widget = "text",
+        category = "Interaction",
+        global_only,
+        tui_only
+    )]
+    pub jump_prev_session_chord: String,
+
+    /// Chord that jumps to the next working or just-finished session. Same
+    /// format and rules as the previous-session chord; empty unbinds it.
+    #[serde(default = "default_jump_next_session_chord")]
+    #[setting(
+        label = "Jump to Next Session Chord",
+        widget = "text",
+        category = "Interaction",
+        global_only,
+        tui_only
+    )]
+    pub jump_next_session_chord: String,
+
     /// How the TUI activates an existing terminal-mode session when you press
     /// Enter or double-click its row. `Tmux` (default) opens the tmux attach
     /// view. `LiveSend` enters live-send mode, so the home list stays visible
@@ -1956,6 +1986,8 @@ impl Default for SessionConfig {
             show_activity_age: true,
             live_send_exit_chord: default_live_send_exit_chord(),
             live_send_leader: default_live_send_leader(),
+            jump_prev_session_chord: default_jump_prev_session_chord(),
+            jump_next_session_chord: default_jump_next_session_chord(),
             default_attach_mode: AttachMode::default(),
             new_session_mode: NewSessionMode::default(),
             live_send_on_view_switch: false,
@@ -1998,6 +2030,14 @@ fn default_live_send_leader() -> String {
     // and steals only one chord from the agent. Kept in sync with
     // live_send::DEFAULT_LEADER.
     "C-b".to_string()
+}
+
+fn default_jump_prev_session_chord() -> String {
+    "M-Up".to_string()
+}
+
+fn default_jump_next_session_chord() -> String {
+    "M-Down".to_string()
 }
 
 /// Upper bound on snooze duration: 30 days (43,200 minutes). Originally

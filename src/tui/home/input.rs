@@ -416,17 +416,12 @@ fn slice_line_columns(line: &ratatui::text::Line, from: u16, to_excl: u16, width
     crate::tui::components::text::line_columns(line, width).slice(from, to_excl.min(width))
 }
 
-/// `Alt+Up` / `Alt+Down`: the direction they walk the list, or `None` for any other key.
-fn jump_delta_for(key: &KeyEvent) -> Option<isize> {
-    // The bound chord is Alt alone. Ctrl+Alt+arrow is not one of ours, so inside live send it
-    // stays with the pane instead of breaking the relay.
-    if !key.modifiers.contains(KeyModifiers::ALT) || key.modifiers.contains(KeyModifiers::CONTROL) {
-        return None;
-    }
-    match key.code {
-        KeyCode::Up => Some(-1),
-        KeyCode::Down => Some(1),
-        _ => None,
+/// The direction a jump action walks the list.
+fn jump_delta(id: ActionId) -> isize {
+    if id == ActionId::JumpPrevFinished {
+        -1
+    } else {
+        1
     }
 }
 
@@ -1764,9 +1759,9 @@ impl HomeView {
         if self.live_send.is_some() && !self.has_non_live_send_overlay() {
             // The jump keys are the one exception: they mean "take me to another session",
             // which is only answerable from the list, so they leave the relay first.
-            if let Some(delta) = jump_delta_for(&key) {
+            if let Some(id) = bindings::jump_action(&key) {
                 self.exit_live_send_if_active();
-                self.jump_to_adjacent_finished(delta);
+                self.jump_to_adjacent_finished(jump_delta(id));
                 return None;
             }
             self.handle_live_send_key(key);
@@ -2860,12 +2855,7 @@ impl HomeView {
                 }
             }
             id @ (ActionId::JumpPrevFinished | ActionId::JumpNextFinished) => {
-                let delta = if id == ActionId::JumpPrevFinished {
-                    -1
-                } else {
-                    1
-                };
-                self.jump_to_adjacent_finished(delta);
+                self.jump_to_adjacent_finished(jump_delta(id));
             }
             id @ (ActionId::MoveRowUp | ActionId::MoveRowDown) => {
                 let delta = if id == ActionId::MoveRowUp { -1 } else { 1 };

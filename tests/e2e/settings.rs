@@ -253,3 +253,58 @@ fn settings_migration_applies_poller_limit_on_the_first_tui_start() {
         Some(1)
     );
 }
+
+#[test]
+#[parallel]
+fn settings_record_and_unbind_the_session_jump_chords() {
+    require_tmux!();
+    let mut h = TuiTestHarness::new("settings_jump_chords");
+    h.spawn_tui();
+    h.wait_for_ready();
+    h.send_keys("s");
+    h.wait_for("Settings");
+    h.send_keys("/");
+    h.type_text("Jump to Previous Session");
+    h.wait_for("Jump to Previous Session Chord");
+    h.send_keys("Enter");
+    h.wait_for("Alt+Up");
+    h.send_keys("Enter");
+    h.wait_for("Press a chord");
+    h.send_keys("M-k");
+    h.wait_for("Alt+K");
+    h.send_keys("j");
+    h.send_keys("Enter");
+    h.wait_for("Press a chord");
+    h.send_keys("BSpace");
+    h.wait_for("Not bound");
+    h.send_keys("C-s");
+    let config: toml::Table =
+        std::fs::read_to_string(app_dir_in(h.home_path()).join("config.toml"))
+            .unwrap()
+            .parse()
+            .unwrap();
+    assert_eq!(
+        config["session"]["jump_prev_session_chord"].as_str(),
+        Some("M-k")
+    );
+    assert_eq!(
+        config["session"]["jump_next_session_chord"].as_str(),
+        Some("")
+    );
+    h.send_keys("Escape");
+    h.send_keys("Escape");
+    h.wait_for_ready();
+    h.send_keys("?");
+    h.wait_for("Keyboard Shortcuts");
+    // The help rows follow the configured chords: the unbound one is dropped.
+    for _ in 0..40 {
+        if h.capture_screen()
+            .contains("Previous just-finished session")
+        {
+            break;
+        }
+        h.send_keys("Down");
+    }
+    h.wait_for("Alt+K");
+    h.assert_screen_not_contains("Next just-finished session");
+}

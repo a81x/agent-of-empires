@@ -2069,6 +2069,109 @@ fn test_alt_arrows_leave_live_send_before_jumping() {
     );
 }
 
+/// The jump chords come from config: an unbound one stays with the relay and the
+/// help/palette label, and a rebound one takes over in both the list and live send.
+#[test]
+#[serial]
+fn configured_jump_chords_replace_the_alt_arrows() {
+    use crate::session::Status;
+    use crate::tui::home::bindings::{jump_action, label, set_jump_chords, ActionId};
+    use chrono::{Duration as ChronoDuration, Utc};
+
+    let mut env = create_test_env_with_mixed_sessions();
+    // The view's own config load cached the defaults.
+    assert_eq!(label(ActionId::JumpPrevFinished, false), "Alt+Up");
+    assert_eq!(label(ActionId::JumpNextFinished, true), "Alt+Down");
+
+    // Declared after `env`, so the defaults come back while the test still holds its lock.
+    struct Restore;
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            set_jump_chords("M-Up", "M-Down");
+        }
+    }
+    let _restore = Restore;
+
+    // A config change reaches the cache through the refresh path.
+    let config_path = crate::session::get_app_dir().unwrap().join("config.toml");
+    let mut config: toml::Table = std::fs::read_to_string(&config_path)
+        .unwrap_or_default()
+        .parse()
+        .unwrap();
+    let session = config
+        .entry("session")
+        .or_insert_with(|| toml::Value::Table(Default::default()))
+        .as_table_mut()
+        .unwrap();
+    session.insert("jump_prev_session_chord".into(), "".into());
+    session.insert("jump_next_session_chord".into(), "C-M-j".into());
+    std::fs::write(&config_path, toml::to_string(&config).unwrap()).unwrap();
+    env.view
+        .refresh_from_config(crate::tui::home::ConfigRefreshOrigin::Watcher);
+    assert_eq!(label(ActionId::JumpPrevFinished, false), "");
+    assert_eq!(label(ActionId::JumpNextFinished, true), "Ctrl+Alt+J");
+    let alt = |code| KeyEvent::new(code, KeyModifiers::ALT);
+    assert_eq!(jump_action(&alt(KeyCode::Up)), None);
+    assert_eq!(jump_action(&alt(KeyCode::Down)), None);
+
+    env.view.idle_decay_window = std::time::Duration::from_secs(30 * 60);
+    let ids: Vec<String> = env
+        .view
+        .flat_items
+        .iter()
+        .filter_map(|i| match i {
+            Item::Session { id, .. } => Some(id.clone()),
+            _ => None,
+        })
+        .collect();
+    assert!(ids.len() >= 3);
+    env.view
+        .apply_user_action(&ids[2], |inst| {
+            inst.status = Status::Idle;
+            inst.idle_entered_at = Some(Utc::now() - ChronoDuration::minutes(1));
+        })
+        .unwrap();
+    env.view.rebuild_flat_items();
+    env.view.cursor = 0;
+    env.view.update_selected();
+
+    // In the list an unbound Alt+arrow no longer jumps.
+    env.view.handle_key(alt(KeyCode::Up), None);
+    assert_eq!(env.view.selected_session, Some(ids[0].clone()));
+
+    let rebound = KeyEvent::new(
+        KeyCode::Char('j'),
+        KeyModifiers::CONTROL | KeyModifiers::ALT,
+    );
+    env.view.live_send = Some(live_send_state(&ids[0], "relaying", "aoe_test_live_jump"));
+    env.view.handle_key(rebound, None);
+    assert!(
+        env.view.live_send.is_none(),
+        "the rebound chord leaves the relay"
+    );
+    assert_eq!(env.view.selected_session, Some(ids[2].clone()));
+
+    env.view.cursor = 0;
+    env.view.update_selected();
+    env.view.handle_key(rebound, None);
+    assert_eq!(
+        env.view.selected_session,
+        Some(ids[2].clone()),
+        "and jumps from the list too"
+    );
+
+    // A relayed key can leave an overlay open in this fixture, so this check goes last.
+    env.view.cursor = 0;
+    env.view.update_selected();
+    env.view.live_send = Some(live_send_state(&ids[0], "relaying", "aoe_test_live_jump"));
+    env.view.handle_key(alt(KeyCode::Down), None);
+    assert_eq!(
+        env.view.selected_session,
+        Some(ids[0].clone()),
+        "unbound Alt+Down stays with the relay"
+    );
+}
+
 /// Project and Org headers are derived from repo paths, and their rows carry a rewritten
 /// `group_path` for display. A move there would persist a manual membership the list is not
 /// showing, so it is refused and the stored groups stay put.

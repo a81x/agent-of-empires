@@ -16,6 +16,8 @@
 //! action to `Ctrl`+letter. So `d`=delete / `Shift+D`=diff become `Shift+D`=delete /
 //! `Ctrl+D`=diff, and `p`/`Shift+P` likewise.
 
+use std::sync::{PoisonError, RwLock};
+
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use super::ViewMode;
@@ -133,14 +135,6 @@ const fn ctrl_code(code: KeyCode) -> Chord {
     }
 }
 
-const fn alt_code(code: KeyCode) -> Chord {
-    Chord {
-        code,
-        ctrl: false,
-        alt: true,
-    }
-}
-
 /// Contextual guard: a binding only resolves when its context holds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Context {
@@ -230,13 +224,193 @@ fn context_holds(context: Context, ctx: &Ctx) -> bool {
 /// first match in table order; context-guarded entries are listed before the unguarded
 /// entries sharing their chord.
 pub fn resolve(key: &KeyEvent, strict: bool, ctx: &Ctx) -> Option<ActionId> {
+    let jump = jump_action(key);
     for b in BINDINGS {
         let chords = if strict { b.strict } else { b.non_strict };
-        if context_holds(b.context, ctx) && chords.iter().any(|c| chord_matches(c, key)) {
+        if context_holds(b.context, ctx)
+            && (jump == Some(b.id) || chords.iter().any(|c| chord_matches(c, key)))
+        {
             return Some(b.id);
         }
     }
     None
+}
+
+type KeySpec = (KeyCode, KeyModifiers);
+
+const JUMP_ACTIONS: [ActionId; 2] = [ActionId::JumpPrevFinished, ActionId::JumpNextFinished];
+
+/// Defaults of `session.jump_prev_session_chord` and `session.jump_next_session_chord`, as
+/// specs and parsed.
+const DEFAULT_JUMP_CHORDS: [&str; 2] = ["M-Up", "M-Down"];
+const DEFAULT_JUMP_KEYS: [Option<KeySpec>; 2] = [
+    Some((KeyCode::Up, KeyModifiers::ALT)),
+    Some((KeyCode::Down, KeyModifiers::ALT)),
+];
+
+/// The configured chords of [`JUMP_ACTIONS`], cached process-wide like
+/// `crate::session::unread_enabled` so dispatch, help and the palette agree. `None` is unbound.
+static JUMP_CHORDS: RwLock<[Option<KeySpec>; 2]> = RwLock::new(DEFAULT_JUMP_KEYS);
+
+/// Update the cached jump chords from resolved config.
+pub fn set_jump_chords(prev: &str, next: &str) {
+    let [prev_default, next_default] = DEFAULT_JUMP_CHORDS;
+    let chords = [
+        parse_jump_chord(prev, prev_default),
+        parse_jump_chord(next, next_default),
+    ];
+    if chords[0].is_some() && chords[0] == chords[1] {
+        tracing::warn!(
+            "both session jump chords are '{prev}'; only the previous-session jump fires"
+        );
+    }
+    *JUMP_CHORDS.write().unwrap_or_else(PoisonError::into_inner) = chords;
+}
+
+fn jump_chords() -> [Option<KeySpec>; 2] {
+    *JUMP_CHORDS.read().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// Empty unbinds; an invalid spec falls back to the default with a warning, like a typo.
+fn parse_jump_chord(spec: &str, default: &str) -> Option<KeySpec> {
+    if spec.trim().is_empty() {
+        return None;
+    }
+    if let Err(e) = validate_jump_chord(spec) {
+        tracing::warn!("session jump chord '{spec}': {e}; falling back to '{default}'");
+        return super::live_send::parse_chord(default);
+    }
+    super::live_send::parse_chord(spec)
+}
+
+/// Why `spec` cannot be a jump chord. Empty (unbound) is valid. Live send checks these
+/// chords before relaying a key, so one without Ctrl or Alt would swallow typing.
+pub fn validate_jump_chord(spec: &str) -> Result<(), String> {
+    if spec.trim().is_empty() {
+        return Ok(());
+    }
+    let (code, mods) = super::live_send::parse_chord(spec)
+        .ok_or_else(|| format!("Unrecognized chord '{spec}'"))?;
+    if matches!(code, KeyCode::F(_)) || mods.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) {
+        Ok(())
+    } else {
+        Err("Use Ctrl or Alt, or a function key".to_string())
+    }
+}
+
+/// The tmux-style spec (`M-Up`, `C-S-K`) for a pressed key, as the settings view records
+/// it. `None` for keys the spec grammar has no name for.
+pub fn chord_spec(key: &KeyEvent) -> Option<String> {
+    let name = match key.code {
+        KeyCode::Char(' ') => "Space".to_string(),
+        // The spec grammar splits on these.
+        KeyCode::Char('-' | '+') => return None,
+        KeyCode::Char(c) => c.to_string(),
+        KeyCode::F(n) => format!("F{n}"),
+        KeyCode::Up => "Up".to_string(),
+        KeyCode::Down => "Down".to_string(),
+        KeyCode::Left => "Left".to_string(),
+        KeyCode::Right => "Right".to_string(),
+        KeyCode::Home => "Home".to_string(),
+        KeyCode::End => "End".to_string(),
+        KeyCode::PageUp => "PPage".to_string(),
+        KeyCode::PageDown => "NPage".to_string(),
+        KeyCode::Insert => "IC".to_string(),
+        KeyCode::Delete => "DC".to_string(),
+        KeyCode::Backspace => "BSpace".to_string(),
+        KeyCode::Enter => "Enter".to_string(),
+        KeyCode::Tab => "Tab".to_string(),
+        KeyCode::BackTab => "BTab".to_string(),
+        KeyCode::Esc => "Escape".to_string(),
+        _ => return None,
+    };
+    let mut spec = String::new();
+    for (modifier, prefix) in [
+        (KeyModifiers::CONTROL, "C-"),
+        (KeyModifiers::ALT, "M-"),
+        (KeyModifiers::SHIFT, "S-"),
+    ] {
+        if key.modifiers.contains(modifier) {
+            spec.push_str(prefix);
+        }
+    }
+    spec.push_str(&name);
+    Some(spec)
+}
+
+/// What the app does with a chord before the binding table sees it, matching its handlers:
+/// Ctrl+C quits, `q` without Ctrl quits, and Ctrl+K with any other modifiers opens the palette.
+fn app_chord_owner((code, mods): KeySpec) -> Option<&'static str> {
+    let ctrl = mods.contains(KeyModifiers::CONTROL);
+    match code {
+        KeyCode::Char('c') if mods == KeyModifiers::CONTROL => Some("quit"),
+        KeyCode::Char('q') if !ctrl => Some("quit"),
+        KeyCode::Char('k' | 'K') if ctrl => Some("the command palette"),
+        _ => None,
+    }
+}
+
+/// What already uses the chord `spec`: an app-level chord, one of `taken` (`(spec, owner)`
+/// pairs; a spec may be a comma-separated list), or a core binding in the given mode.
+pub fn jump_chord_owner(spec: &str, strict: bool, taken: &[(&str, &str)]) -> Option<String> {
+    let chord = super::live_send::parse_chord(spec)?;
+    if let Some(owner) = app_chord_owner(chord) {
+        return Some(owner.to_string());
+    }
+    let event = KeyEvent::new(chord.0, chord.1);
+    let claims = |other: &str| {
+        other
+            .split(',')
+            .filter_map(super::live_send::parse_chord)
+            .any(|c| super::live_send::chord_matches(c, event))
+    };
+    if let Some((_, owner)) = taken.iter().find(|(other, _)| claims(other)) {
+        return Some(owner.to_string());
+    }
+    BINDINGS
+        .iter()
+        .filter(|b| !JUMP_ACTIONS.contains(&b.id))
+        .find(|b| {
+            let chords = if strict { b.strict } else { b.non_strict };
+            chords.iter().any(|c| chord_matches(c, &event))
+        })
+        .map(|b| match (&b.palette, &b.help) {
+            (Some(p), _) => p.title.to_string(),
+            (None, Some(h)) => h.desc.to_string(),
+            (None, None) => "another action".to_string(),
+        })
+}
+
+/// The spec a jump chord takes effect as: an invalid one falls back to its default.
+pub fn effective_jump_chord(spec: &str, next: bool) -> &str {
+    if validate_jump_chord(spec).is_ok() {
+        spec
+    } else {
+        DEFAULT_JUMP_CHORDS[usize::from(next)]
+    }
+}
+
+/// How the settings view shows a jump chord spec: `Alt+Up`, or `Not bound` when empty. An
+/// invalid spec is shown as written.
+pub fn jump_chord_label(spec: &str) -> String {
+    if spec.trim().is_empty() {
+        return "Not bound".to_string();
+    }
+    match super::live_send::parse_chord(spec).map(format_key_spec) {
+        Some(label) if validate_jump_chord(spec).is_ok() && !label.is_empty() => label,
+        _ => spec.to_string(),
+    }
+}
+
+/// The jump action whose configured chord `key` is, if any.
+pub fn jump_action(key: &KeyEvent) -> Option<ActionId> {
+    jump_chords()
+        .into_iter()
+        .zip(JUMP_ACTIONS)
+        .find_map(|(spec, id)| {
+            spec.is_some_and(|s| super::live_send::chord_matches(s, *key))
+                .then_some(id)
+        })
 }
 
 /// A plugin-contributed action a key resolved to: a plugin id plus the command the keybind
@@ -371,6 +545,9 @@ pub fn core_shadows(chord: &Chord) -> bool {
 /// Human-readable label for a binding's primary chord in the given mode (`"D"`, `"Ctrl+D"`,
 /// `"F5"`), or `""` when the action has no binding in that mode.
 pub fn label(id: ActionId, strict: bool) -> String {
+    if let Some(i) = JUMP_ACTIONS.iter().position(|j| *j == id) {
+        return jump_chords()[i].map(format_key_spec).unwrap_or_default();
+    }
     let Some(b) = BINDINGS.iter().find(|b| b.id == id) else {
         return String::new();
     };
@@ -378,14 +555,39 @@ pub fn label(id: ActionId, strict: bool) -> String {
     chords.first().map(format_chord).unwrap_or_default()
 }
 
+fn format_key_spec((code, mods): KeySpec) -> String {
+    let chord = format_chord(&Chord {
+        code,
+        ctrl: mods.contains(KeyModifiers::CONTROL),
+        alt: mods.contains(KeyModifiers::ALT),
+    });
+    if !mods.contains(KeyModifiers::SHIFT) || chord.is_empty() {
+        return chord;
+    }
+    // Shift goes last among the modifiers: `Ctrl+Shift+K`.
+    let key_at = chord.rfind('+').map_or(0, |i| i + 1);
+    format!("{}Shift+{}", &chord[..key_at], &chord[key_at..])
+}
+
 fn format_chord(c: &Chord) -> String {
     let key = match c.code {
+        KeyCode::Char(' ') => "Space".to_string(),
         KeyCode::Char(ch) => ch.to_ascii_uppercase().to_string(),
         KeyCode::F(n) => format!("F{n}"),
         KeyCode::Up => "Up".to_string(),
         KeyCode::Down => "Down".to_string(),
         KeyCode::Left => "Left".to_string(),
         KeyCode::Right => "Right".to_string(),
+        KeyCode::Home => "Home".to_string(),
+        KeyCode::End => "End".to_string(),
+        KeyCode::PageUp => "PageUp".to_string(),
+        KeyCode::PageDown => "PageDown".to_string(),
+        KeyCode::Insert => "Insert".to_string(),
+        KeyCode::Delete => "Delete".to_string(),
+        KeyCode::Backspace => "Backspace".to_string(),
+        KeyCode::Enter => "Enter".to_string(),
+        KeyCode::Tab | KeyCode::BackTab => "Tab".to_string(),
+        KeyCode::Esc => "Esc".to_string(),
         _ => return String::new(),
     };
     // A bare letter keeps its lone-character form; every modified chord is spelled out, or
@@ -447,8 +649,9 @@ pub static BINDINGS: &[Binding] = &[
     },
     Binding {
         id: ActionId::JumpPrevFinished,
-        non_strict: &[alt_code(KeyCode::Up)],
-        strict: &[alt_code(KeyCode::Up)],
+        // Configured at runtime: see `jump_action`.
+        non_strict: &[],
+        strict: &[],
         context: Context::Always,
         help: Some(HelpMeta {
             section: HelpSection::Attention,
@@ -462,8 +665,9 @@ pub static BINDINGS: &[Binding] = &[
     },
     Binding {
         id: ActionId::JumpNextFinished,
-        non_strict: &[alt_code(KeyCode::Down)],
-        strict: &[alt_code(KeyCode::Down)],
+        // Configured at runtime: see `jump_action`.
+        non_strict: &[],
+        strict: &[],
         context: Context::Always,
         help: Some(HelpMeta {
             section: HelpSection::Attention,
@@ -1425,6 +1629,106 @@ mod tests {
         }
     }
 
+    #[test]
+    fn jump_chord_validation_and_labels() {
+        // (spec, valid, label)
+        let cases = [
+            ("", true, "Not bound"),
+            ("M-Up", true, "Alt+Up"),
+            ("C-M-k", true, "Ctrl+Alt+K"),
+            ("M-S-Down", true, "Alt+Shift+Down"),
+            ("C-S-F5", true, "Ctrl+Shift+F5"),
+            ("M-S-BTab", true, "Alt+Shift+Tab"),
+            ("F7", true, "F7"),
+            ("Up", false, "Up"),
+            ("j", false, "j"),
+            ("S-Up", false, "S-Up"),
+            ("M-Nope", false, "M-Nope"),
+        ];
+        for (spec, valid, label) in cases {
+            assert_eq!(validate_jump_chord(spec).is_ok(), valid, "{spec:?}");
+            assert_eq!(jump_chord_label(spec), label, "{spec:?}");
+        }
+        assert_eq!(parse_jump_chord("", "M-Up"), None, "empty unbinds");
+        assert_eq!(
+            parse_jump_chord("j", "M-Up"),
+            Some((KeyCode::Up, KeyModifiers::ALT)),
+            "an invalid chord falls back to the default"
+        );
+    }
+
+    #[test]
+    fn jump_chord_defaults_agree() {
+        let session = crate::session::config::SessionConfig::default();
+        assert_eq!(
+            [
+                &session.jump_prev_session_chord,
+                &session.jump_next_session_chord
+            ],
+            DEFAULT_JUMP_CHORDS
+        );
+        assert_eq!(
+            DEFAULT_JUMP_CHORDS.map(super::super::live_send::parse_chord),
+            DEFAULT_JUMP_KEYS
+        );
+    }
+
+    #[test]
+    fn jump_chord_owners() {
+        let taken = [
+            ("C-b", "the live-send leader"),
+            ("C-q,F12", "the exit chord"),
+        ];
+        // (spec, strict, owner)
+        let cases = [
+            ("M-k", false, None),
+            ("C-b", false, Some("the live-send leader")),
+            ("F12", false, Some("the exit chord")),
+            ("C-k", false, Some("the command palette")),
+            ("C-M-k", false, Some("the command palette")),
+            ("M-q", false, Some("quit")),
+            ("C-c", false, Some("quit")),
+            ("C-M-c", false, None),
+            ("C-Up", false, Some("Move row up")),
+            ("C-S-Up", false, Some("Move row up")),
+            ("C-d", false, None),
+            ("C-d", true, Some("Open diff view")),
+        ];
+        for (spec, strict, owner) in cases {
+            let got = jump_chord_owner(spec, strict, &taken);
+            assert_eq!(got.as_deref(), owner, "{spec:?} strict={strict}");
+        }
+    }
+
+    /// A recorded chord parses back to a spec that matches the key that produced it.
+    #[test]
+    fn recorded_chords_match_the_pressed_key() {
+        use KeyModifiers as M;
+        let keys = [
+            (KeyCode::Up, M::ALT),
+            (KeyCode::Char('k'), M::CONTROL | M::ALT),
+            (KeyCode::Char('J'), M::ALT | M::SHIFT),
+            (KeyCode::Char(' '), M::ALT),
+            (KeyCode::PageDown, M::CONTROL),
+            (KeyCode::F(7), M::NONE),
+            (KeyCode::Enter, M::ALT),
+            (KeyCode::BackTab, M::ALT | M::SHIFT),
+        ];
+        for (code, mods) in keys {
+            let key = KeyEvent::new(code, mods);
+            let spec = chord_spec(&key).unwrap_or_else(|| panic!("{key:?} has a spec"));
+            let parsed = super::super::live_send::parse_chord(&spec)
+                .unwrap_or_else(|| panic!("{spec:?} parses"));
+            assert!(
+                super::super::live_send::chord_matches(parsed, key),
+                "{spec:?} matches {key:?}"
+            );
+        }
+        for code in [KeyCode::Null, KeyCode::Char('-'), KeyCode::Char('+')] {
+            assert_eq!(chord_spec(&KeyEvent::new(code, M::ALT)), None, "{code:?}");
+        }
+    }
+
     /// Modified chords spell out their key: without this the arrow bindings reach help and
     /// the palette with an empty label, which is how they were invisible when first added.
     #[test]
@@ -1432,8 +1736,6 @@ mod tests {
         for (id, expected) in [
             (ActionId::MoveRowUp, "Ctrl+Up"),
             (ActionId::MoveRowDown, "Ctrl+Down"),
-            (ActionId::JumpPrevFinished, "Alt+Up"),
-            (ActionId::JumpNextFinished, "Alt+Down"),
         ] {
             for strict in [false, true] {
                 assert_eq!(label(id, strict), expected, "{id:?} strict={strict}");

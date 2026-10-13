@@ -2020,8 +2020,10 @@ impl App {
             return Ok(());
         }
         match (key.code, key.modifiers) {
-            // Ctrl+C belongs to the agent in live-send.
-            (KeyCode::Char('c'), KeyModifiers::CONTROL) if !self.home.is_live_send_capturing() => {
+            // Ctrl+C belongs to the agent in live-send, and to a settings chord capture.
+            (KeyCode::Char('c'), KeyModifiers::CONTROL)
+                if !self.home.is_live_send_capturing() && !self.home.is_capturing_chord() =>
+            {
                 if self.home.is_creating_stub_selected() {
                     self.home.cancel_creation();
                     return Ok(());

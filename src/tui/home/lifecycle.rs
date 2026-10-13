@@ -165,6 +165,10 @@ impl HomeView {
             crate::tui::styles::idle_decay_window(resolved.theme.idle_decay_minutes);
         crate::session::set_unread_enabled(resolved.session.unread_indicator);
         crate::session::set_favorites_first(resolved.session.favorites_first);
+        super::bindings::set_jump_chords(
+            &resolved.session.jump_prev_session_chord,
+            &resolved.session.jump_next_session_chord,
+        );
         let user_config = load_config().ok().flatten();
         let sort_order = user_config
             .as_ref()

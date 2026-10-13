@@ -109,6 +109,14 @@ impl HomeView {
         self.live_send.is_some() && !self.has_non_live_send_overlay()
     }
 
+    /// True while the settings view records a chord, so app-level bindings like Ctrl+C
+    /// reach it instead of quitting.
+    pub(in crate::tui) fn is_capturing_chord(&self) -> bool {
+        self.settings_view
+            .as_ref()
+            .is_some_and(|view| view.is_capturing_chord())
+    }
+
     pub(in crate::tui) fn flash_ctrl_c_hint(&mut self) {
         self.live_send_ctrl_c_flash_until = Some(Instant::now() + FLASH_WINDOW);
     }

@@ -46,6 +46,10 @@ impl SettingsView {
             return self.handle_text_edit_key(key);
         }
 
+        if self.capturing_chord {
+            return self.handle_chord_capture_key(key);
+        }
+
         if self.list_edit_state.is_some() {
             return self.handle_list_edit_key(key);
         }
@@ -260,6 +264,9 @@ impl SettingsView {
                             self.fields[self.selected_field].value = FieldValue::Bool(new_value);
                             self.apply_field_to_config(self.selected_field);
                         }
+                        FieldValue::Text(_) if field.is_key_chord() => {
+                            self.capturing_chord = true;
+                        }
                         FieldValue::Text(value) => {
                             self.editing_input = Some(Input::new(value.clone()));
                         }
@@ -441,6 +448,90 @@ impl SettingsView {
             }
         }
         SettingsAction::Continue
+    }
+
+    /// Record the pressed chord into the selected key-chord row. Esc cancels and a bare
+    /// Backspace or Delete unbinds; an invalid or already used chord keeps the capture open.
+    fn handle_chord_capture_key(&mut self, key: KeyEvent) -> SettingsAction {
+        let spec = match (key.code, key.modifiers) {
+            (KeyCode::Modifier(_), _) => return SettingsAction::Continue,
+            (KeyCode::Esc, KeyModifiers::NONE) => {
+                self.capturing_chord = false;
+                self.error_message = None;
+                return SettingsAction::Continue;
+            }
+            (KeyCode::Backspace | KeyCode::Delete, KeyModifiers::NONE) => String::new(),
+            _ => match crate::tui::home::bindings::chord_spec(&key) {
+                Some(spec) => spec,
+                None => {
+                    self.error_message = Some("This key cannot be bound".to_string());
+                    return SettingsAction::Continue;
+                }
+            },
+        };
+        let refusal = crate::tui::home::bindings::validate_jump_chord(&spec)
+            .err()
+            .or_else(|| {
+                self.chord_owner(&spec)
+                    .map(|owner| format!("Taken by: {owner}"))
+            });
+        if let Some(reason) = refusal {
+            self.error_message = Some(reason);
+            return SettingsAction::Continue;
+        }
+        self.fields[self.selected_field].value = FieldValue::Text(spec);
+        self.capturing_chord = false;
+        self.error_message = None;
+        self.apply_field_to_config(self.selected_field);
+        SettingsAction::Continue
+    }
+
+    /// What already uses `spec`, so recording it would shadow or be shadowed: the other jump
+    /// chord, the live-send leader and exit chords, tool hotkeys, or a core binding. Reads the
+    /// staged edits, so a leader changed earlier in this session counts.
+    fn chord_owner(&self, spec: &str) -> Option<String> {
+        use crate::tui::home::bindings::{effective_jump_chord, jump_chord_owner};
+        if spec.is_empty() {
+            return None;
+        }
+        let staged =
+            crate::session::merge_configs(self.global_config.clone(), &self.profile_config);
+        let session = &staged.session;
+        let editing_prev =
+            self.fields[self.selected_field].ident() == "session.jump_prev_session_chord";
+        let other = if editing_prev {
+            (
+                effective_jump_chord(&session.jump_next_session_chord, true),
+                "the next-session jump",
+            )
+        } else {
+            (
+                effective_jump_chord(&session.jump_prev_session_chord, false),
+                "the previous-session jump",
+            )
+        };
+        let mut taken: Vec<(String, String)> = vec![
+            (other.0.to_string(), other.1.to_string()),
+            (
+                session.live_send_leader.clone(),
+                "the live-send leader".to_string(),
+            ),
+            (
+                session.live_send_exit_chord.clone(),
+                "the live-send exit chord".to_string(),
+            ),
+        ];
+        for (tool, config) in &staged.tools {
+            if let Some(hotkey) = &config.hotkey {
+                // Tool hotkeys match case-insensitively.
+                taken.push((hotkey.to_ascii_lowercase(), format!("the {tool} hotkey")));
+            }
+        }
+        let taken: Vec<(&str, &str)> = taken
+            .iter()
+            .map(|(s, o)| (s.as_str(), o.as_str()))
+            .collect();
+        jump_chord_owner(spec, session.strict_hotkeys, &taken)
     }
 
     fn handle_text_edit_key(&mut self, key: KeyEvent) -> SettingsAction {
@@ -716,7 +807,7 @@ impl SettingsView {
         if self.list_edit_state.is_some() {
             return self.handle_list_edit_click(col, row);
         }
-        if self.editing_input.is_some() {
+        if self.editing_input.is_some() || self.capturing_chord {
             return None;
         }
         let pos = ratatui::layout::Position::from((col, row));
@@ -834,6 +925,7 @@ impl SettingsView {
             return true;
         }
         let suppress = self.editing_input.is_some()
+            || self.capturing_chord
             || self.list_edit_state.is_some()
             || self.custom_instruction_dialog.is_some()
             || self.show_help;
@@ -1457,6 +1549,75 @@ mod tests {
                 &draw(120, 40, |f, theme| view.render(f, f.area(), theme)),
                 text,
             )
+        }
+
+        #[test]
+        #[serial]
+        fn key_chord_rows_record_the_pressed_chord() {
+            use crate::tui::dialogs::test_render::draw;
+            let (_t, _guard, mut view) = fresh_view();
+            jump_to(&mut view, "session.jump_next_session_chord");
+            // The first frame measures the panel; scroll the row into it.
+            draw(120, 40, |f, theme| view.render(f, f.area(), theme));
+            view.ensure_field_visible(view.fields_viewport_height);
+            let stored =
+                |view: &SettingsView| view.global_config.session.jump_next_session_chord.clone();
+            let press = |view: &mut SettingsView, code, mods| {
+                view.handle_key(KeyEvent::new(code, mods));
+            };
+            render_and_find(&mut view, "Alt+Down");
+
+            press(&mut view, KeyCode::Enter, KeyModifiers::NONE);
+            render_and_find(&mut view, "Press a chord...");
+            // (key, refusal) pairs that keep the capture open and the stored chord.
+            let refused = [
+                ((KeyCode::Char('j'), KeyModifiers::NONE), "Use Ctrl or Alt"),
+                (
+                    (KeyCode::Up, KeyModifiers::ALT),
+                    "Taken by: the previous-session jump",
+                ),
+                (
+                    (KeyCode::Char('k'), KeyModifiers::CONTROL),
+                    "Taken by: the command palette",
+                ),
+                (
+                    (KeyCode::Char('b'), KeyModifiers::CONTROL),
+                    "Taken by: the live-send leader",
+                ),
+            ];
+            for ((code, mods), reason) in refused {
+                press(&mut view, code, mods);
+                assert!(view.capturing_chord, "{code:?} keeps capturing");
+                assert!(
+                    view.error_message
+                        .as_deref()
+                        .is_some_and(|e| e.starts_with(reason)),
+                    "{code:?}: {:?}",
+                    view.error_message
+                );
+                assert_eq!(stored(&view), "M-Down");
+            }
+            press(
+                &mut view,
+                KeyCode::Char('j'),
+                KeyModifiers::CONTROL | KeyModifiers::ALT,
+            );
+            assert!(!view.capturing_chord);
+            assert!(view.error_message.is_none());
+            assert_eq!(stored(&view), "C-M-j");
+            render_and_find(&mut view, "Ctrl+Alt+J");
+
+            press(&mut view, KeyCode::Enter, KeyModifiers::NONE);
+            press(&mut view, KeyCode::Char('j'), KeyModifiers::NONE);
+            press(&mut view, KeyCode::Esc, KeyModifiers::NONE);
+            assert!(!view.capturing_chord && view.error_message.is_none());
+            assert_eq!(stored(&view), "C-M-j", "Esc keeps the chord");
+
+            press(&mut view, KeyCode::Enter, KeyModifiers::NONE);
+            press(&mut view, KeyCode::Backspace, KeyModifiers::NONE);
+            assert_eq!(stored(&view), "", "Backspace unbinds");
+            render_and_find(&mut view, "Not bound");
+            assert!(view.has_changes);
         }
 
         #[test]

@@ -804,6 +804,14 @@ impl SettingsView {
             FieldValue::Bool(value) => {
                 self.render_bool_field(frame, value_area, *value, is_selected, theme);
             }
+            FieldValue::Text(value) if field.is_key_chord() => {
+                let display = if self.capturing_chord && index == self.selected_field {
+                    "Press a chord...".to_string()
+                } else {
+                    crate::tui::home::bindings::jump_chord_label(value)
+                };
+                self.render_text_field(frame, value_area, &display, index, is_selected, theme);
+            }
             FieldValue::Text(value) => {
                 self.render_text_field(frame, value_area, value, index, is_selected, theme);
             }
@@ -1215,6 +1223,15 @@ impl SettingsView {
                 Span::styled(": focus  ", desc_style),
                 Span::styled("Enter", key_style),
                 Span::styled(": confirm  ", desc_style),
+                Span::styled("Esc", key_style),
+                Span::styled(": cancel", desc_style),
+            ]
+        } else if self.capturing_chord {
+            vec![
+                Span::styled("Chord", key_style),
+                Span::styled(": record  ", desc_style),
+                Span::styled("Backspace", key_style),
+                Span::styled(": unbind  ", desc_style),
                 Span::styled("Esc", key_style),
                 Span::styled(": cancel", desc_style),
             ]
